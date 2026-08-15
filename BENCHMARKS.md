@@ -74,18 +74,20 @@ Practical reading:
 
 ## Same battery, engine vs engine (this box, both measured with `bench-matrix.sh`)
 
-| Workload (battery v1, greedy) | SGLang + DSpark (this repo) | llama.cpp + MTP n=3 (tuned) |
-|---|---|---|
-| Math word problems (EN) | **37–38** | — (answers too short for the delta method; eval-style runs measured 24–30) |
-| Code (EN) | **28–32** | 25–26 |
-| Code (DE) | 24–25 | 21–25 |
-| Technical explanation (FR) | 20–23 | 22 |
-| Reasoning (FR) | **31.6** (twice, identical) | 27–28 |
-| Free prose (EN) | 16 | **17.7** |
-| Free prose (FR) | 13 | **18.2–18.4** |
-| Free prose (DE) | 12.3 | **17–18** |
+| Workload (battery v1, greedy) | SGLang + DSpark (this repo) | SGLang + MTP (same flags, spec swapped) | llama.cpp + MTP n=3 (tuned) |
+|---|---|---|---|
+| Math word problems (EN) | **37–38** | 27.7 | — (too short for the delta method; eval-style runs measured 24–30) |
+| Code (EN) | **28–32** | 23.3 | 25–26 |
+| Code (DE) | 24–25 | 24.1 | 21–25 |
+| Technical explanation (FR) | 20–23 | 22.3 | 22 |
+| Reasoning (FR) | **31.6** (twice, identical) | 30.3 | 27–28 |
+| Free prose (EN) | 16 | **20.1** | 17.7 |
+| Free prose (FR) | 13 | **20.8** | 18.2–18.4 |
+| Free prose (DE) | 12.3 | **18.8** | 17–18 |
 
-Ranges are two independent runs each. The pattern matches the vLLM+MTP numbers from the forum A/B exactly: **the MTP engines are the stable middle (17–28 everywhere), DSpark is the high ceiling with a prose floor**. If your workload is agentic coding — code, diffs, tool calls, math, structured reasoning — this repo's config wins every relevant row plus prefill (~3×) and TTFT. If you mostly generate free-form prose, llama.cpp+MTP is ~40 % faster on that one workload; everything else it loses.
+Ranges are two independent runs each; the SGLang+MTP column uses the checkpoint's own MTP head (`--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4`, acceptance 3.2–3.6 of 4 drafted measured) with every other flag identical to this repo's service — credit to [MiaAI-Lab's repo](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark) for surfacing that option (their repo also documents a GDN state-pool sizing recipe for 10 concurrent requests and a validated YaRN 1M-context setup — worth reading if you serve multiple users; note it ships `--mem-fraction-static 0.95`, which on GB10 unified memory is exactly the freeze trap described above — use 0.50).
+
+The pattern is now three-way: **DSpark = high ceiling (28–40 on structured) with a prose floor (12–16); MTP engines = stable middle; and SGLang+MTP is the best of the stable middles (18.8–20.8 on prose — beats llama.cpp there too)**. If your workload is agentic coding — code, diffs, tool calls, math, structured reasoning — DSpark wins every relevant row plus prefill (~3×) and TTFT. If you mostly generate free-form prose or heavily mixed multilingual content, run the same service with the MTP flags above instead: one flag swap, same image, same everything else.
 
 ## Reproduce it on your box — any engine
 
