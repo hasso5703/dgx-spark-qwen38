@@ -59,6 +59,33 @@ Config details that came out of a full tuning sweep (deterministic greedy A/B, �
 - Checkpoints: [RadixArk/Qwen3.8-27B-NVFP4](https://huggingface.co/RadixArk/Qwen3.8-27B-NVFP4) + [RadixArk/Qwen3.8-27B-DSpark](https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark) (bf16 draft — an fp8 draft measures *slower*: acceptance drops more than the bandwidth saved)
 - Tested and rejected: DSpark `compact` ragged-verify + a GB10-profiled SPS cost table (needs triton attention, −8 %; the ragged scheduler only pays off at high batch sizes), draft block 9 (out-of-training-distribution), single-batch-overlap (neutral)
 
+How many tokens each verify step accepts depends heavily on the content — see the independent A/B below.
+
+## Content dependence — an independent A/B
+
+An independent GB10 owner reproduced this config from the pinned digests and A/B'd it against vLLM 0.26.1 + MTP (`num_speculative_tokens=5`, unsloth NVFP4 checkpoint) on the same machine, same day — full write-up in [the NVIDIA forum thread](https://forums.developer.nvidia.com/t/380257). Methodology: batch 1, streaming, TTFT measured separately, decode = (tokens−1)/(total−TTFT), median of 3–5 runs after warmup. One caveat they state up front: engine and checkpoint differ together, so it is not a single-variable comparison.
+
+| Workload | SGLang + DSpark (this repo) | vLLM + MTP |
+|---|---|---|
+| Code probe (greedy) | **32.8 tok/s** | 25.1 tok/s |
+| Reasoning probe (greedy) | 28.4 tok/s | 29.6 tok/s |
+| Math probe (temp 0.6) | 30.7 tok/s | 29.8 tok/s |
+| Six mixed prompts, half German | 19.5 tok/s | **24.7 tok/s** |
+| TTFT, text | **0.22–0.28 s** | 0.33–0.34 s |
+| Vision 1920×1200 — TTFT / total per image | **2.185 s / 6.90 s** | 2.646 s / 9.06 s |
+
+(Their best on this repo's config was 32.8 tok/s vs the 34 measured here; their GPU clock is capped at 2200 MHz, and decode being bandwidth-bound makes that mostly negligible — close enough either way.)
+
+The acceptance numbers explain the flip. vLLM's MTP head is conditioned on the target's hidden states at every step, so acceptance stays stable (4.35–4.77) on everything they threw at it. The DSpark drafter is a separate 1.36B model that writes whole 7-token blocks from its own distribution: 2.80–5.42 accepted on this repo's probes, but **1.25–1.52 on German prose** — the block dies at verify, and the plain MTP head wins.
+
+Practical reading:
+
+- The **latency** advantage held in every one of their measurements: TTFT on text and the whole vision path (17 % faster encode+prefill, 24 % faster per image). With only ~147 output tokens per image, that one is the engine, not DSpark.
+- The **throughput** advantage is conditional on the draft model matching your content. English code and French agentic work: clear win. Mixed or non-English prose: it can lose to a plain MTP head.
+- If a DSpark draft retrained on broader multilingual data appears, this config gets better for everyone — that is the lever to watch, not the engine.
+
+One bench trap worth stealing from their write-up: repeated images hit the multimodal cache and skip the vision tower entirely, so any image benchmark needs images the instance has never seen. The text-side twin of that trap (measured on this box): llama.cpp with a separate `-hfd` draft model keeps the draft's own KV cache, and a repeated identical prompt replays at chunked-verify speed — 203 tok/s on a prompt whose true cold rate was 25. SGLang+DSpark did not show this effect in testing (repeats reproduce within ±0.2 tok/s), but fresh prompts are the only safe protocol for any speculative bench.
+
 ## ⚠️ The GB10 unified-memory trap (read this before changing anything)
 
 SGLang's memory accounting **does not see 25–40 GB** of transient allocations on GB10 unified memory (the flashinfer fp8 autotuner and CUDA graph capture allocate outside the tracked pool). Running `--mem-fraction-static` above **0.50**, or running SGLang natively (outside Docker), can drive host available memory to **zero** — on a machine where SSH often rides on the same memory, that means a hard freeze only a power cycle fixes. We learned this the hard way.
