@@ -57,7 +57,10 @@ docker info >/dev/null 2>&1 || die "Cannot talk to the docker daemon. Fix: sudo 
 TOTAL_GB=$(free -g | awk '/^Mem/{print $2}')
 [ "$TOTAL_GB" -ge 110 ] || die "This config needs a ~121 GB unified-memory machine; found ${TOTAL_GB} GB."
 FREE_DISK_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
-[ "$FREE_DISK_GB" -ge 85 ] || die "Need ~85 GB free under \$HOME (39 GB image + 24 GB checkpoints + caches); found ${FREE_DISK_GB} GB. Free some space or set HF_CACHE to another disk."
+[ "$FREE_DISK_GB" -ge 45 ] || die "Need ~45 GB free under \$HOME for the checkpoints and caches; found ${FREE_DISK_GB} GB. Free some space or set HF_CACHE to another disk."
+DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+DOCKER_FREE_GB=$(df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')
+[ "${DOCKER_FREE_GB:-0}" -ge 45 ] || die "Need ~45 GB free on $DOCKER_ROOT for the 39 GB Docker image; found ${DOCKER_FREE_GB:-?} GB (docker images live there, not under \$HOME)."
 if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   if docker inspect qwen38-sglang --format '{{join .Args " "}}' 2>/dev/null | grep -qE -- "--port ${PORT}(\s|$)"; then
     echo "Note: $UNIT_NAME is already running on :$PORT — re-installing over it (converging config)."
@@ -83,7 +86,7 @@ docker run --rm -i --network host --user "$(id -u):$(id -g)" \
   -e MODEL_REPO="$MODEL_REPO" -e MODEL_REV="$MODEL_REV" \
   -e DRAFT_REPO="$DRAFT_REPO" -e DRAFT_REV="$DRAFT_REV" \
   -v "$HF_CACHE":/hf \
-  "$IMAGE" python3 - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace outage/rate-limit (re-run: downloads resume), or a pinned revision was removed — try MODEL_REV=main DRAFT_REV=main ./install.sh"
+  "$IMAGE" python3 - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace outage/rate-limit (re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT_REV=main ./install.sh), or a permission error — if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
 import os
 from huggingface_hub import snapshot_download
 for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
