@@ -8,6 +8,9 @@ Two surgical fixes, no behavior change otherwise:
      (Claude Code injects system-reminders after turn 1; the stock template raises
      'System message must be at the beginning').
 
+The 'minimal' -> 'low' mapping (an OpenAI effort tier) was contributed
+by forum user helge: https://forums.developer.nvidia.com/t/380257/10
+
 Usage: patch-template.py <hf_cache_dir> <output_path>
 Idempotent: succeeds if the patches are already applied.
 """
@@ -22,6 +25,8 @@ EFFORT_PATCHED = (
     "    {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\n"
     "    {%- if resolved_reasoning_effort in ('max', 'high') %}\n"
     "        {%- set resolved_reasoning_effort = 'xhigh' %}\n"
+    "    {%- elif resolved_reasoning_effort == 'minimal' %}\n"
+    "        {%- set resolved_reasoning_effort = 'low' %}\n"
     "    {%- endif %}\n"
     "    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}"
 )
@@ -51,7 +56,7 @@ def main() -> None:
     tpl = open(hits[-1]).read()
 
     for name, anchor, patched, marker in (
-        ("reasoning_effort", EFFORT_ANCHOR, EFFORT_PATCHED, "in ('max', 'high')"),
+        ("reasoning_effort", EFFORT_ANCHOR, EFFORT_PATCHED, "'minimal'"),
         ("system-reminder", SYSTEM_ANCHOR, SYSTEM_PATCHED, "<system-reminder>"),
     ):
         if anchor in tpl:

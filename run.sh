@@ -17,8 +17,16 @@ eval "$PINS"
 [ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key — run: ./install.sh --no-service"
 [ -s "$CONFIG_DIR/chat-template-sglang.jinja" ] || die "no patched template in $CONFIG_DIR — run: ./install.sh --no-service"
 for REPO in "$MODEL_REPO" "$DRAFT_REPO"; do
-  SNAP="$HF_CACHE/hub/models--${REPO//\//--}/snapshots"
-  [ -d "$SNAP" ] && [ -n "$(ls -A "$SNAP" 2>/dev/null)" ] || die "checkpoint $REPO not found in $HF_CACHE — run: ./install.sh --no-service"
+  DIR="$HF_CACHE/hub/models--${REPO//\//--}"
+  SNAP="$(ls -d "$DIR"/snapshots/*/ 2>/dev/null | head -1 || true)"
+  [ -n "$SNAP" ] || die "checkpoint $REPO not found in $HF_CACHE — run: ./install.sh --no-service"
+  # An interrupted download leaves snapshots/ in place with only the small
+  # files — so also require finished blobs and actual weights (credit: helge).
+  if compgen -G "$DIR/blobs/*.incomplete" >/dev/null 2>&1; then
+    die "checkpoint $REPO download is incomplete (blobs/*.incomplete) — re-run: ./install.sh --no-service (it resumes)"
+  fi
+  compgen -G "${SNAP}*.safetensors" >/dev/null 2>&1 \
+    || die "checkpoint $REPO has no weight files in its snapshot — re-run: ./install.sh --no-service"
 done
 docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE not pulled — run: ./install.sh --no-service"
 

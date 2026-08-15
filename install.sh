@@ -138,7 +138,8 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144
 export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 export CLAUDE_CODE_ENABLE_TELEMETRY=0
 ENVEOF
-echo "wrote $CONFIG_DIR/claude-code.env"
+chmod 600 "$CONFIG_DIR/claude-code.env"
+echo "wrote $CONFIG_DIR/claude-code.env (mode 600 — it contains the API key)"
 
 if [ "$NO_SERVICE" -eq 1 ]; then
   printf '\n\033[1;32m✅ Prepared (no systemd, nothing needed sudo).\033[0m\n'

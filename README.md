@@ -86,7 +86,7 @@ Practical reading:
 - The **throughput** advantage is conditional on the draft model matching your content. English code and French agentic work: clear win. Mixed or non-English prose: it can lose to a plain MTP head.
 - If a DSpark draft retrained on broader multilingual data appears, this config gets better for everyone — that is the lever to watch, not the engine.
 
-Want to A/B this yourself without installing a service? `./install.sh --no-service && ./run.sh` runs the exact pinned config in the foreground; Ctrl+C stops and removes the container.
+Want to A/B this yourself without installing a service? `./install.sh --no-service && ./run.sh` runs the exact pinned config in the foreground; Ctrl+C stops and removes the container. The A/B author also published [their own standalone launcher](https://forums.developer.nvidia.com/t/380257/10) — same pinned config, rootless container, image-ID fallback for `docker save|load` transfers — plus the `minimal` template fix now folded into this repo.
 
 One bench trap worth stealing from their write-up: repeated images hit the multimodal cache and skip the vision tower entirely, so any image benchmark needs images the instance has never seen. The text-side twin of that trap (measured on this box): llama.cpp with a separate `-hfd` draft model keeps the draft's own KV cache, and a repeated identical prompt replays at chunked-verify speed — 203 tok/s on a prompt whose true cold rate was 25. SGLang+DSpark did not show this effect in testing (repeats reproduce within ±0.2 tok/s), but fresh prompts are the only safe protocol for any speculative bench.
 
@@ -110,7 +110,7 @@ source ~/.config/qwen38/claude-code.env && claude --model qwen3.8-27b
 
 Three integration bugs are already fixed for you:
 
-1. **`reasoning_effort` 500s** — Claude Code sessions set to *max* effort send `reasoning_effort: "max"`, which the stock chat template rejects (only `xhigh/medium/low`). The installer patches the template to map `max`/`high` → `xhigh` (the actual ceiling — no behavior change).
+1. **`reasoning_effort` 500s** — Claude Code sessions set to *max* effort send `reasoning_effort: "max"`, which the stock chat template rejects (only `xhigh/medium/low`). The installer patches the template to map `max`/`high` → `xhigh` (the actual ceiling — no behavior change) and `minimal` → `low` (an OpenAI tier, [contributed by helge](https://forums.developer.nvidia.com/t/380257/10)). This is not a Claude Code quirk: any OpenAI-compatible client sending a `reasoning_effort` outside `xhigh/medium/low` gets the same 400.
 2. **Mid-conversation system messages** — Claude Code injects system-reminders after turn 1; the stock template raises `System message must be at the beginning`. Patched to render them as `<system-reminder>` blocks (their exact semantics).
 3. **5-minute stream aborts** — on a custom `ANTHROPIC_BASE_URL`, Claude Code arms 300 s stream-idle watchdogs; a cold 36K-token prefill or a queued request can trip them while the server is still working. The env file raises them to their 30-minute maximum (`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`, `CLAUDE_STREAM_IDLE_TIMEOUT_MS`) plus `API_TIMEOUT_MS=3600000`.
 
@@ -123,6 +123,11 @@ systemctl status qwen38-sglang          # state
 sudo systemctl restart qwen38-sglang    # ~9 min boot; radix cache is wiped, warmup (if installed) re-heats it
 journalctl -u qwen38-sglang -f          # logs
 ./bench.sh                              # re-measure
+```
+
+Do **not** set `HF_HUB_OFFLINE=1`: SGLang probes for a LongCat config that doesn't exist in these repos (`srt/utils/hf_transformers/config.py`, `_try_load_longcat_config`) and offline mode turns that harmless miss into a hard `LocalEntryNotFoundError` at startup ([reported by helge](https://forums.developer.nvidia.com/t/380257/10); the function is verified present in the pinned image). With the pinned revisions cached, that metadata probe is the only network call.
+
+```bash
 ./uninstall.sh                          # removes service + config (keeps downloaded models)
 ```
 
