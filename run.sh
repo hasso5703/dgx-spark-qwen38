@@ -69,7 +69,8 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
     --disable-prefill-cuda-graph --cuda-graph-max-bs 4 \
     --speculative-algorithm DSPARK --speculative-draft-model-path RadixArk/Qwen3.8-27B-DSpark \
     --speculative-dspark-block-size 7 --speculative-draft-model-quantization unquant \
-    --mamba-scheduler-strategy extra_buffer \
+    --mamba-radix-cache-strategy extra_buffer_lazy --mamba-ssm-dtype bfloat16 \
+    --max-mamba-cache-size 96 --max-running-requests 8 \
     --enable-torch-compile --torch-compile-max-bs 4 \
     --num-continuous-decode-steps 2 \
     --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
