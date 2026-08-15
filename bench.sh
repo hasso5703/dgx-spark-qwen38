@@ -76,5 +76,5 @@ for name, temp, prompt, mt in PROBES:
 print(f"\n  greedy median: {statistics.median(all_greedy):.1f} tok/s")
 print("  (numbers vary with content — acceptance length drives everything;")
 print("   math/code accept ~3.3-5.6 tokens/step, free prose ~1.5-2.2 in any")
-print("   language — see the content-dependence section of the README)")
+print("   language — see BENCHMARKS.md)")
 PYEOF

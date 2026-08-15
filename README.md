@@ -1,135 +1,42 @@
-# Qwen3.8-27B at 34–38 tok/s on DGX Spark (GB10)
+# Qwen3.8-27B at 30–40 tok/s on DGX Spark (GB10)
 
-**One-command setup for the fastest known Qwen3.8-27B config on a single DGX Spark / ASUS Ascent GX10**: SGLang + NVFP4 (W4A4) + DSpark block-speculative decoding, hardened for the GB10's unified memory. Boots automatically with the machine via systemd, serves an OpenAI **and** Anthropic-compatible API, and works with Claude Code out of the box.
+Most GB10 setups serve Qwen3.8-27B at 20–27 tok/s. This repo installs the fastest configuration measured so far — **SGLang + NVFP4 + DSpark speculative decoding** — as a one-command, boot-persistent service, with **zero quality loss** (same NVFP4 quantization floor; speculative decoding is lossless by construction, verified against a Q8 reference).
 
-If you are stuck around **20–27 tok/s** with llama.cpp or vLLM — this gets you to **34–38 tok/s** with **zero quality loss** (same NVFP4 quantization floor, speculative decoding is lossless by construction).
-
-## Measured numbers (single DGX Spark, decode, batch 1)
-
-| Engine / config | Code & math reasoning, French prompts (official sampling, temp 1.0) | Eval-style workloads (EN, temp 0.6) |
-|---|---|---|
-| llama.cpp UD-Q4_K_XL + MTP n=3 (tuned) | ~27 tok/s | 24–30 tok/s |
-| vLLM 0.27 NVFP4 + MTP n=3 (official recipe) | ~24.5 tok/s | — |
-| **This repo: SGLang NVFP4 + DSpark** | **~34 tok/s** | **38.0 avg, 46.7 peak (GSM8K-style)** |
-
-Those numbers are for what coding agents generate — code, math, structured reasoning. Free-form prose is 2–3× slower on any engine+drafter combo here (acceptance collapse, see *Content dependence* below).
-
-The 38.0 average matches [SGLang's announced 38.28 tok/s](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B) for DGX Spark (their number is an eval-suite average at temp 0.6). Quality was verified identical to a Q8 reference on a deterministic battery (code, logic, language, instruction following) — see *Why this is lossless* below.
+You get an **OpenAI and Anthropic-compatible API** on port 30000. **Claude Code works out of the box** — three integration bugs are pre-fixed.
 
 ## Quickstart
 
-Requirements: DGX Spark or other GB10 machine (128 GB unified), DGX OS with Docker + NVIDIA container toolkit (stock), ~85 GB free disk.
+Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit), ~85 GB free disk.
 
 ```bash
 git clone https://github.com/hasso5703/dgx-spark-qwen38.git
 cd dgx-spark-qwen38
-./install.sh            # pulls image, downloads checkpoints, installs the systemd service
+./install.sh            # image + checkpoints + systemd service, starts at every boot
 ./bench.sh              # verify your tok/s
 ```
 
-First boot takes **~9 minutes** (torch.compile + CUDA graph capture; a persistent compile cache makes later boots faster). The service then starts itself at every boot. Add `--with-claude-warmup` to `install.sh` if you use Claude Code and want the server to pre-warm your system prompt after each boot.
+First boot takes **~9 minutes** (kernel compilation, cached afterwards). Then:
 
-**Don't want a systemd service?** `./install.sh --no-service` prepares everything without touching systemd (and never needs sudo), then `./run.sh` runs the exact same pinned config in the foreground — Ctrl+C stops it and removes the container (the compile cache and key stay for next time). Made for trying it out or A/B-ing against another engine without committing to a service.
+- **Claude Code**: `source ~/.config/qwen38/claude-code.env && claude --model qwen3.8-27b`
+- **Any OpenAI client**: `http://<host>:30000/v1/chat/completions`, model `qwen3.8-27b`, Bearer key from `~/.config/qwen38/api-key`
+- **Anthropic protocol** (Claude Code & co): `http://<host>:30000/v1/messages` — `Authorization: Bearer` only, not `x-api-key`
+- **Don't want a systemd service?** `./install.sh --no-service && ./run.sh` — same config, foreground, no sudo, Ctrl+C and it's gone.
+- Everything is **pinned** (image digest + checkpoint revisions validated 2026-08-15) so it still works months from now; the installer is idempotent and every failure path says how to fix itself. `IMAGE=… MODEL_REV=main ./install.sh` overrides the pins.
 
-**Built to still work months from now**: the installer pins the exact Docker image digest and HuggingFace checkpoint revisions that were validated. It is idempotent (re-run it anytime; existing downloads/keys are reused, interrupted downloads resume) and every failure path prints what went wrong and how to fix it. Want to try newer builds instead of the pinned ones?
+## What speed to expect
 
-```bash
-IMAGE=lmsysorg/sglang:qwen38-27b MODEL_REV=main DRAFT_REV=main ./install.sh
-```
+Speculative decoding accepts *predictable* tokens, so speed depends on **what the model generates** — not on one magic number:
 
-Endpoints (default port 30000, API key generated at `~/.config/qwen38/api-key`):
-
-- OpenAI: `http://<host>:30000/v1/chat/completions`
-- Anthropic (Claude Code): `http://<host>:30000/v1/messages`
-- Model id: `qwen3.8-27b`
-
-## Why this config wins (the physics)
-
-Single-stream decode on a dense model is **memory-bandwidth-bound**. The GB10 advertises 273 GB/s; real measurable bandwidth is ~225 GB/s (DRAM refresh, bank conflicts — unrecoverable on any hardware). Every decode step must read all weights:
-
-```
-NVFP4 weights ~16.5 GB + DSpark draft ~2.7 GB + GDN states ≈ ~20 GB per step
-225 GB/s ÷ 20 GB  ≈ 10–11 steps/s
-× 3.3–4.7 accepted tokens per step (DSpark block speculation)
-= 34–47 tok/s        ← this config runs at ~92 % of the physical ceiling
-```
-
-The two levers that matter are **bytes per step** (NVFP4 = the quality floor, don't go lower) and **accepted tokens per step** (DSpark's trained 1.36B block-drafter with confidence heads, [paper](https://arxiv.org/abs/2607.05147)). A "better engine" can only recover the last ~8 % of overhead; the rest is physics.
-
-Config details that came out of a full tuning sweep (deterministic greedy A/B, ±0.2 tok/s reproducibility):
-
-- `--enable-torch-compile --torch-compile-max-bs 4` → +1 tok/s
-- `--num-continuous-decode-steps 2` → less scheduler overhead per token
-- Checkpoints: [RadixArk/Qwen3.8-27B-NVFP4](https://huggingface.co/RadixArk/Qwen3.8-27B-NVFP4) + [RadixArk/Qwen3.8-27B-DSpark](https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark) (bf16 draft — an fp8 draft measures *slower*: acceptance drops more than the bandwidth saved)
-- Tested and rejected: DSpark `compact` ragged-verify + a GB10-profiled SPS cost table (needs triton attention, −8 %; the ragged scheduler only pays off at high batch sizes), draft block 9 (out-of-training-distribution), single-batch-overlap (neutral)
-
-How many tokens each verify step accepts depends heavily on the content — see the independent A/B below.
-
-## Content dependence — an independent A/B
-
-An independent GB10 owner reproduced this config from the pinned digests and A/B'd it against vLLM 0.26.1 + MTP (`num_speculative_tokens=5`, unsloth NVFP4 checkpoint) on the same machine, same day — full write-up in [the NVIDIA forum thread](https://forums.developer.nvidia.com/t/380257). Methodology: batch 1, streaming, TTFT measured separately, decode = (tokens−1)/(total−TTFT), median of 3–5 runs after warmup. One caveat they state up front: engine and checkpoint differ together, so it is not a single-variable comparison.
-
-| Workload | SGLang + DSpark (this repo) | vLLM + MTP |
+| What you generate | This config | Stable-MTP engines (llama.cpp / vLLM) |
 |---|---|---|
-| Code probe (greedy) | **32.8 tok/s** | 25.1 tok/s |
-| Reasoning probe (greedy) | 28.4 tok/s | 29.6 tok/s |
-| Math probe (temp 0.6) | 30.7 tok/s | 29.8 tok/s |
-| Six mixed prompts, half German | 19.5 tok/s | **24.7 tok/s** |
-| TTFT, text | **0.22–0.28 s** | 0.33–0.34 s |
-| Vision 1920×1200 — TTFT / total per image | **2.185 s / 6.90 s** | 2.646 s / 9.06 s |
+| Agentic coding — code, diffs, tool calls | **28–40 tok/s** | 24–28 |
+| Math & structured reasoning | **31–47** | 24–30 |
+| Technical explanations | 20–23 | ~22 |
+| Free-form prose (any language) | 12–16 | **17–18** |
 
-(Their best on this repo's config was 32.8 tok/s vs the 34 measured here; their GPU clock is capped at 2200 MHz, and decode being bandwidth-bound makes that mostly negligible — close enough either way.)
+If you're here for coding agents (Claude Code, agentic workflows), this config wins every relevant row, plus ~3× faster prefill and the best time-to-first-token. If you mostly generate free prose, llama.cpp+MTP is ~40 % faster on that one workload.
 
-The acceptance numbers explain the flip. vLLM's MTP head is conditioned on the target's hidden states at every step, so acceptance stays stable (4.35–4.77) on everything they threw at it. The DSpark drafter is a separate 1.36B model that writes whole 7-token blocks from its own distribution: 2.80–5.42 accepted on this repo's probes, but **1.25–1.52 on German prose** — the block dies at verify, and the plain MTP head wins.
-
-Reproduced and extended on this box (greedy, fresh prompts, decode net of prefill via a two-call delta, accept length read from the server logs):
-
-| Content | tok/s | mean accept length |
-|---|---|---|
-| Code, English prompt | 32.9–40.5 | 3.3 |
-| Code, German prompt | 22.9 | 2.6 |
-| Technical explanation, French | 18.4 | 2.2 |
-| Free prose, English | 16.6 | 2.1 |
-| Free prose, French | 13.7 | 1.9 |
-| Free prose, German | 12.2 (reproducible ±0.1) | 1.5–1.7 |
-| Math word problems, eval-style (temp 0.6) | 43–47 | ~4.9 |
-| Real 56K-context agentic session (mixed FR) | 18–23 | 2.2–2.8 |
-
-So there are two axes, and **content type dominates**: English free prose is 2× slower than English code on the same setup. Language is the second axis (EN > FR > DE at equal content). The German result above is both axes stacked. The headline 34–38 tok/s holds for what coding agents actually generate — code, diffs, tool calls, structured reasoning; free-form prose sits at 12–17 tok/s in any language.
-
-Practical reading:
-
-- The **latency** advantage held in every one of their measurements: TTFT on text and the whole vision path (17 % faster encode+prefill, 24 % faster per image). With only ~147 output tokens per image, that one is the engine, not DSpark.
-- The **throughput** advantage is conditional on the draft model matching your content — and "matching" means content type first, language second. Code/agentic output: clear win regardless of prompt language. Free-form prose: acceptance collapses below 2 in any language and a plain MTP head can win.
-- If a DSpark draft retrained on broader prose + multilingual data appears, this config gets better for everyone — that is the lever to watch, not the engine.
-
-### Same battery, engine vs engine (this box, both measured with `bench-matrix.sh`)
-
-| Workload (battery v1, greedy) | SGLang + DSpark (this repo) | llama.cpp + MTP n=3 (tuned) |
-|---|---|---|
-| Math word problems (EN) | **37–38** | — (answers too short for the delta method; eval-style runs measured 24–30) |
-| Code (EN) | **28–32** | 25–26 |
-| Code (DE) | 24–25 | 21–25 |
-| Technical explanation (FR) | 20–23 | 22 |
-| Reasoning (FR) | **31.6** (twice, identical) | 27–28 |
-| Free prose (EN) | 16 | **17.7** |
-| Free prose (FR) | 13 | **18.2–18.4** |
-| Free prose (DE) | 12.3 | **17–18** |
-
-Ranges are two independent runs each. The pattern matches the vLLM+MTP numbers from the forum A/B exactly: **the MTP engines are the stable middle (17–28 everywhere), DSpark is the high ceiling with a prose floor**. If your workload is agentic coding — code, diffs, tool calls, math, structured reasoning — this repo's config wins every relevant row plus prefill (~3×) and TTFT. If you mostly generate free-form prose, llama.cpp+MTP is ~40 % faster on that one workload; everything else it loses.
-
-Run the same battery on YOUR engine in one command — results are comparable across engines and boxes:
-
-```bash
-./bench-matrix.sh                                  # this repo's service
-BASE_URL=http://127.0.0.1:8000 ./bench-matrix.sh   # any OpenAI-compatible endpoint
-```
-
-The battery is versioned (v1) and frozen: the prompts never change in place, so numbers posted months apart stay comparable. It warms up the server first and refuses to print a number when the sample is unreliable (cold start, short answer, cache artifact) instead of printing a wrong one.
-
-Want to A/B this yourself without installing a service? `./install.sh --no-service && ./run.sh` runs the exact pinned config in the foreground; Ctrl+C stops and removes the container. The A/B author also published [their own standalone launcher](https://forums.developer.nvidia.com/t/380257/10) — same pinned config, rootless container, image-ID fallback for `docker save|load` transfers — plus the `minimal` template fix now folded into this repo.
-
-One bench trap worth stealing from their write-up: repeated images hit the multimodal cache and skip the vision tower entirely, so any image benchmark needs images the instance has never seen. The text-side twin of that trap (measured on this box): llama.cpp with a separate `-hfd` draft model keeps the draft's own KV cache, and a repeated identical prompt replays at chunked-verify speed — 203 tok/s on a prompt whose true cold rate was 25. SGLang+DSpark did not show this effect in testing (repeats reproduce within ±0.2 tok/s), but fresh prompts are the only safe protocol for any speculative bench.
+Full study — methodology, engine-vs-engine matrix, an independent reproduction, the physics of the GB10 ceiling, and a frozen benchmark battery you can run against **any** engine (`./bench-matrix.sh`) — in **[BENCHMARKS.md](BENCHMARKS.md)**.
 
 ## ⚠️ The GB10 unified-memory trap (read this before changing anything)
 
@@ -163,21 +70,19 @@ Also: SGLang's `--api-key` only accepts `Authorization: Bearer` (Claude Code's `
 systemctl status qwen38-sglang          # state
 sudo systemctl restart qwen38-sglang    # ~9 min boot; radix cache is wiped, warmup (if installed) re-heats it
 journalctl -u qwen38-sglang -f          # logs
-./bench.sh                              # re-measure
+./bench.sh                              # re-measure this config
+./bench-matrix.sh                       # per-workload profile, works on any engine
+./uninstall.sh                          # removes service + config (keeps downloaded models)
 ```
 
 Do **not** set `HF_HUB_OFFLINE=1`: SGLang probes for a LongCat config that doesn't exist in these repos (`srt/utils/hf_transformers/config.py`, `_try_load_longcat_config`) and offline mode turns that harmless miss into a hard `LocalEntryNotFoundError` at startup ([reported by helge](https://forums.developer.nvidia.com/t/380257/10); the function is verified present in the pinned image). With the pinned revisions cached, that metadata probe is the only network call.
-
-```bash
-./uninstall.sh                          # removes service + config (keeps downloaded models)
-```
 
 Notes: the server's own `watchdog_timeout=300` is a *hang* detector (kills a genuinely stuck forward so systemd restarts it) — it does not limit generation length. Two concurrent generations share the memory bus (~half speed each): the GB10 is a batch-1-per-moment machine.
 
 ## Credits
 
-All the heavy lifting belongs to the [SGLang](https://github.com/sgl-project/sglang) team (day-0 Qwen3.8 support, the DSpark implementation, the `lmsysorg/sglang:qwen38-27b` image), [RadixArk](https://huggingface.co/RadixArk) for the NVFP4 + DSpark checkpoints, [DeepSeek](https://arxiv.org/abs/2607.05147) for the DSpark method, [Qwen](https://huggingface.co/Qwen/Qwen3.8-27B) for the model, and [Unsloth](https://unsloth.ai/docs/models/qwen3.8) for their guides. This repo just packages a validated, hardened configuration of their work for GB10 machines — the SGLang cookbook's DGX Spark cell was marked "not yet validated" at the time; consider this an independent field validation (2026-08-15, image `lmsysorg/sglang:qwen38-27b`, digest `0076dffa60b7`).
+All the heavy lifting belongs to the [SGLang](https://github.com/sgl-project/sglang) team (day-0 Qwen3.8 support, the DSpark implementation, the `lmsysorg/sglang:qwen38-27b` image), [RadixArk](https://huggingface.co/RadixArk) for the NVFP4 + DSpark checkpoints, [DeepSeek](https://arxiv.org/abs/2607.05147) for the DSpark method, [Qwen](https://huggingface.co/Qwen/Qwen3.8-27B) for the model, and [Unsloth](https://unsloth.ai/docs/models/qwen3.8) for their guides. This repo just packages a validated, hardened configuration of their work for GB10 machines — the SGLang cookbook's DGX Spark cell was marked "not yet validated" at the time; consider this an independent field validation (2026-08-15).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Performance numbers are point-in-time measurements on one machine; your acceptance lengths (and therefore tok/s) vary with workload and language.
+MIT — see [LICENSE](LICENSE). Performance numbers are point-in-time measurements on one machine; your acceptance lengths (and therefore tok/s) vary with workload and language — see [BENCHMARKS.md](BENCHMARKS.md).
