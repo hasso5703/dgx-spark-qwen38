@@ -14,7 +14,7 @@ for arg in "${@:-}"; do
 done
 
 sudo systemctl disable --now "$UNIT_NAME" 2>/dev/null || true
-docker rm -f qwen38-sglang 2>/dev/null || true
+docker rm -f qwen38-sglang qwen38-sglang-run 2>/dev/null || true
 sudo rm -f "/etc/systemd/system/$UNIT_NAME"
 sudo rm -rf "/etc/systemd/system/$UNIT_NAME.d"
 sudo systemctl daemon-reload

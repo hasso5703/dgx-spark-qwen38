@@ -20,17 +20,22 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WITH_WARMUP=0
 NO_START=0
+NO_SERVICE=0
 for arg in "$@"; do
   case "$arg" in
     --with-claude-warmup) WITH_WARMUP=1 ;;
     --no-start) NO_START=1 ;;
+    --no-service) NO_SERVICE=1 ;;
     -h|--help)
       cat <<'HLP'
-Usage: ./install.sh [--with-claude-warmup] [--no-start]
+Usage: ./install.sh [--with-claude-warmup] [--no-start] [--no-service]
 
   --with-claude-warmup  pre-warm your Claude Code system prompt after each boot
                         (requires the 'claude' CLI in PATH)
   --no-start            install everything but don't start the service now
+  --no-service          no systemd, no sudo: just prepare everything (image,
+                        checkpoints, key, template), then run in the foreground
+                        anytime with ./run.sh (Ctrl+C stops it)
 
 Env overrides (defaults are pinned to the validated 2026-08-15 versions):
   IMAGE=lmsysorg/sglang:qwen38-27b   use the moving tag instead of the digest
@@ -42,6 +47,12 @@ HLP
     *) printf 'Unknown flag: %s (see --help)\n' "$arg" >&2; exit 1 ;;
   esac
 done
+if [ "$NO_SERVICE" -eq 1 ] && [ "$WITH_WARMUP" -eq 1 ]; then
+  printf -- '--with-claude-warmup is part of the systemd service; it cannot be combined with --no-service\n' >&2; exit 1
+fi
+if [ "$NO_SERVICE" -eq 1 ] && [ "$NO_START" -eq 1 ]; then
+  printf -- '--no-start controls the systemd service; with --no-service there is no service (drop one flag)\n' >&2; exit 1
+fi
 
 step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
 die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -128,6 +139,13 @@ export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 export CLAUDE_CODE_ENABLE_TELEMETRY=0
 ENVEOF
 echo "wrote $CONFIG_DIR/claude-code.env"
+
+if [ "$NO_SERVICE" -eq 1 ]; then
+  printf '\n\033[1;32m✅ Prepared (no systemd, nothing needed sudo).\033[0m\n'
+  echo "  Run in the foreground: ./run.sh     (Ctrl+C stops it; first boot ≈ 9 min)"
+  echo "  Everything it uses lives in $CONFIG_DIR and $HF_CACHE — delete those to remove."
+  exit 0
+fi
 
 step "7/8 Installing the systemd service (sudo needed)"
 TMP_UNIT="$(mktemp)"

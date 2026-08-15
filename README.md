@@ -27,6 +27,8 @@ cd dgx-spark-qwen38
 
 First boot takes **~9 minutes** (torch.compile + CUDA graph capture; a persistent compile cache makes later boots faster). The service then starts itself at every boot. Add `--with-claude-warmup` to `install.sh` if you use Claude Code and want the server to pre-warm your system prompt after each boot.
 
+**Don't want a systemd service?** `./install.sh --no-service` prepares everything without touching systemd (and never needs sudo), then `./run.sh` runs the exact same pinned config in the foreground — Ctrl+C stops it and removes the container (the compile cache and key stay for next time). Made for trying it out or A/B-ing against another engine without committing to a service.
+
 **Built to still work months from now**: the installer pins the exact Docker image digest and HuggingFace checkpoint revisions that were validated. It is idempotent (re-run it anytime; existing downloads/keys are reused, interrupted downloads resume) and every failure path prints what went wrong and how to fix it. Want to try newer builds instead of the pinned ones?
 
 ```bash
@@ -83,6 +85,8 @@ Practical reading:
 - The **latency** advantage held in every one of their measurements: TTFT on text and the whole vision path (17 % faster encode+prefill, 24 % faster per image). With only ~147 output tokens per image, that one is the engine, not DSpark.
 - The **throughput** advantage is conditional on the draft model matching your content. English code and French agentic work: clear win. Mixed or non-English prose: it can lose to a plain MTP head.
 - If a DSpark draft retrained on broader multilingual data appears, this config gets better for everyone — that is the lever to watch, not the engine.
+
+Want to A/B this yourself without installing a service? `./install.sh --no-service && ./run.sh` runs the exact pinned config in the foreground; Ctrl+C stops and removes the container.
 
 One bench trap worth stealing from their write-up: repeated images hit the multimodal cache and skip the vision tower entirely, so any image benchmark needs images the instance has never seen. The text-side twin of that trap (measured on this box): llama.cpp with a separate `-hfd` draft model keeps the draft's own KV cache, and a repeated identical prompt replays at chunked-verify speed — 203 tok/s on a prompt whose true cold rate was 25. SGLang+DSpark did not show this effect in testing (repeats reproduce within ±0.2 tok/s), but fresh prompts are the only safe protocol for any speculative bench.
 
