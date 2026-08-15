@@ -27,6 +27,12 @@ cd dgx-spark-qwen38
 
 First boot takes **~9 minutes** (torch.compile + CUDA graph capture; a persistent compile cache makes later boots faster). The service then starts itself at every boot. Add `--with-claude-warmup` to `install.sh` if you use Claude Code and want the server to pre-warm your system prompt after each boot.
 
+**Built to still work months from now**: the installer pins the exact Docker image digest and HuggingFace checkpoint revisions that were validated. It is idempotent (re-run it anytime; existing downloads/keys are reused, interrupted downloads resume) and every failure path prints what went wrong and how to fix it. Want to try newer builds instead of the pinned ones?
+
+```bash
+IMAGE=lmsysorg/sglang:qwen38-27b MODEL_REV=main DRAFT_REV=main ./install.sh
+```
+
 Endpoints (default port 30000, API key generated at `~/.config/qwen38/api-key`):
 
 - OpenAI: `http://<host>:30000/v1/chat/completions`

@@ -13,9 +13,9 @@ ExecStart=/bin/bash -c 'exec /usr/bin/docker run --rm --name qwen38-sglang --gpu
   --memory 100g --memory-swap 100g --shm-size 16g --network host --ipc=host \
   -e TORCHINDUCTOR_CACHE_DIR=/cache/inductor \
   -v __HOME__/.config/qwen38/sglang-cache:/cache \
-  -v __HOME__/.cache/huggingface:/root/.cache/huggingface \
+  -v __HF_CACHE__:/root/.cache/huggingface \
   -v __HOME__/.config/qwen38:/out \
-  lmsysorg/sglang:qwen38-27b \
+  __IMAGE__ \
   python3 -m sglang.launch_server \
     --trust-remote-code --model-path RadixArk/Qwen3.8-27B-NVFP4 --tp-size 1 \
     --served-model-name qwen3.8-27b \

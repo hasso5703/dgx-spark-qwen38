@@ -4,6 +4,14 @@
 # (delete those manually if you want the ~63 GB back — see bottom).
 set -euo pipefail
 UNIT_NAME="qwen38-sglang.service"
+PURGE_CONFIG=0
+for arg in "${@:-}"; do
+  case "$arg" in
+    --yes|-y) PURGE_CONFIG=1 ;;
+    "") ;;
+    -h|--help) echo "Usage: ./uninstall.sh [--yes]   (--yes also deletes ~/.config/qwen38 without asking)"; exit 0 ;;
+  esac
+done
 
 sudo systemctl disable --now "$UNIT_NAME" 2>/dev/null || true
 docker rm -f qwen38-sglang 2>/dev/null || true
@@ -12,10 +20,15 @@ sudo rm -rf "/etc/systemd/system/$UNIT_NAME.d"
 sudo systemctl daemon-reload
 echo "service removed."
 
-read -r -p "Also delete ~/.config/qwen38 (API key, patched template, compile cache)? [y/N] " ans
-if [ "${ans:-n}" = "y" ] || [ "${ans:-n}" = "Y" ]; then
+if [ "$PURGE_CONFIG" -eq 0 ] && [ -t 0 ]; then
+  read -r -p "Also delete ~/.config/qwen38 (API key, patched template, compile cache)? [y/N] " ans
+  { [ "${ans:-n}" = "y" ] || [ "${ans:-n}" = "Y" ]; } && PURGE_CONFIG=1 || true
+fi
+if [ "$PURGE_CONFIG" -eq 1 ]; then
   rm -rf "$HOME/.config/qwen38"
   echo "config removed."
+else
+  echo "config kept at ~/.config/qwen38 (delete manually or re-run with --yes)."
 fi
 
 cat <<'EOF'

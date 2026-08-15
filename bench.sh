@@ -30,7 +30,14 @@ def stream(prompt, temp, max_tokens):
     req = urllib.request.Request(BASE + "/v1/chat/completions", json.dumps(body).encode(),
                                  {"Content-Type": "application/json", "Authorization": f"Bearer {KEY}"})
     t_first = t_last = None; n = 0; usage = {}
-    with urllib.request.urlopen(req, timeout=900) as r:
+    try:
+        resp = urllib.request.urlopen(req, timeout=900)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise SystemExit("401/403: the key in ~/.config/qwen38/api-key does not match the "
+                             "server's (was the service installed with a different key? re-run ./install.sh)")
+        raise SystemExit(f"HTTP {e.code} from the server: {e.read()[:300]!r}")
+    with resp as r:
         for line in r:
             line = line.decode().strip()
             if not line.startswith("data: ") or line == "data: [DONE]":
