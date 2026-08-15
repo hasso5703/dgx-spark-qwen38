@@ -103,6 +103,30 @@ Practical reading:
 - The **throughput** advantage is conditional on the draft model matching your content — and "matching" means content type first, language second. Code/agentic output: clear win regardless of prompt language. Free-form prose: acceptance collapses below 2 in any language and a plain MTP head can win.
 - If a DSpark draft retrained on broader prose + multilingual data appears, this config gets better for everyone — that is the lever to watch, not the engine.
 
+### Same battery, engine vs engine (this box, both measured with `bench-matrix.sh`)
+
+| Workload (battery v1, greedy) | SGLang + DSpark (this repo) | llama.cpp + MTP n=3 (tuned) |
+|---|---|---|
+| Math word problems (EN) | **37–38** | — (answers too short for the delta method; eval-style runs measured 24–30) |
+| Code (EN) | **28–32** | 25–26 |
+| Code (DE) | 24–25 | 21–25 |
+| Technical explanation (FR) | 20–23 | 22 |
+| Reasoning (FR) | **31.6** (twice, identical) | 27–28 |
+| Free prose (EN) | 16 | **17.7** |
+| Free prose (FR) | 13 | **18.2–18.4** |
+| Free prose (DE) | 12.3 | **17–18** |
+
+Ranges are two independent runs each. The pattern matches the vLLM+MTP numbers from the forum A/B exactly: **the MTP engines are the stable middle (17–28 everywhere), DSpark is the high ceiling with a prose floor**. If your workload is agentic coding — code, diffs, tool calls, math, structured reasoning — this repo's config wins every relevant row plus prefill (~3×) and TTFT. If you mostly generate free-form prose, llama.cpp+MTP is ~40 % faster on that one workload; everything else it loses.
+
+Run the same battery on YOUR engine in one command — results are comparable across engines and boxes:
+
+```bash
+./bench-matrix.sh                                  # this repo's service
+BASE_URL=http://127.0.0.1:8000 ./bench-matrix.sh   # any OpenAI-compatible endpoint
+```
+
+The battery is versioned (v1) and frozen: the prompts never change in place, so numbers posted months apart stay comparable. It warms up the server first and refuses to print a number when the sample is unreliable (cold start, short answer, cache artifact) instead of printing a wrong one.
+
 Want to A/B this yourself without installing a service? `./install.sh --no-service && ./run.sh` runs the exact pinned config in the foreground; Ctrl+C stops and removes the container. The A/B author also published [their own standalone launcher](https://forums.developer.nvidia.com/t/380257/10) — same pinned config, rootless container, image-ID fallback for `docker save|load` transfers — plus the `minimal` template fix now folded into this repo.
 
 One bench trap worth stealing from their write-up: repeated images hit the multimodal cache and skip the vision tower entirely, so any image benchmark needs images the instance has never seen. The text-side twin of that trap (measured on this box): llama.cpp with a separate `-hfd` draft model keeps the draft's own KV cache, and a repeated identical prompt replays at chunked-verify speed — 203 tok/s on a prompt whose true cold rate was 25. SGLang+DSpark did not show this effect in testing (repeats reproduce within ±0.2 tok/s), but fresh prompts are the only safe protocol for any speculative bench.
