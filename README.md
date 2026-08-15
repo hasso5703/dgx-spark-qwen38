@@ -6,11 +6,13 @@ If you are stuck around **20–27 tok/s** with llama.cpp or vLLM — this gets y
 
 ## Measured numbers (single DGX Spark, decode, batch 1)
 
-| Engine / config | French agentic workload (official sampling, temp 1.0) | Eval-style workloads (EN, temp 0.6) |
+| Engine / config | Code & math reasoning, French prompts (official sampling, temp 1.0) | Eval-style workloads (EN, temp 0.6) |
 |---|---|---|
 | llama.cpp UD-Q4_K_XL + MTP n=3 (tuned) | ~27 tok/s | 24–30 tok/s |
 | vLLM 0.27 NVFP4 + MTP n=3 (official recipe) | ~24.5 tok/s | — |
 | **This repo: SGLang NVFP4 + DSpark** | **~34 tok/s** | **38.0 avg, 46.7 peak (GSM8K-style)** |
+
+Those numbers are for what coding agents generate — code, math, structured reasoning. Free-form prose is 2–3× slower on any engine+drafter combo here (acceptance collapse, see *Content dependence* below).
 
 The 38.0 average matches [SGLang's announced 38.28 tok/s](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B) for DGX Spark (their number is an eval-suite average at temp 0.6). Quality was verified identical to a Q8 reference on a deterministic battery (code, logic, language, instruction following) — see *Why this is lossless* below.
 
@@ -80,11 +82,26 @@ An independent GB10 owner reproduced this config from the pinned digests and A/B
 
 The acceptance numbers explain the flip. vLLM's MTP head is conditioned on the target's hidden states at every step, so acceptance stays stable (4.35–4.77) on everything they threw at it. The DSpark drafter is a separate 1.36B model that writes whole 7-token blocks from its own distribution: 2.80–5.42 accepted on this repo's probes, but **1.25–1.52 on German prose** — the block dies at verify, and the plain MTP head wins.
 
+Reproduced and extended on this box (greedy, fresh prompts, decode net of prefill via a two-call delta, accept length read from the server logs):
+
+| Content | tok/s | mean accept length |
+|---|---|---|
+| Code, English prompt | 32.9–40.5 | 3.3 |
+| Code, German prompt | 22.9 | 2.6 |
+| Technical explanation, French | 18.4 | 2.2 |
+| Free prose, English | 16.6 | 2.1 |
+| Free prose, French | 13.7 | 1.9 |
+| Free prose, German | 12.2 (reproducible ±0.1) | 1.5–1.7 |
+| Math word problems, eval-style (temp 0.6) | 43–47 | ~4.9 |
+| Real 56K-context agentic session (mixed FR) | 18–23 | 2.2–2.8 |
+
+So there are two axes, and **content type dominates**: English free prose is 2× slower than English code on the same setup. Language is the second axis (EN > FR > DE at equal content). The German result above is both axes stacked. The headline 34–38 tok/s holds for what coding agents actually generate — code, diffs, tool calls, structured reasoning; free-form prose sits at 12–17 tok/s in any language.
+
 Practical reading:
 
 - The **latency** advantage held in every one of their measurements: TTFT on text and the whole vision path (17 % faster encode+prefill, 24 % faster per image). With only ~147 output tokens per image, that one is the engine, not DSpark.
-- The **throughput** advantage is conditional on the draft model matching your content. English code and French agentic work: clear win. Mixed or non-English prose: it can lose to a plain MTP head.
-- If a DSpark draft retrained on broader multilingual data appears, this config gets better for everyone — that is the lever to watch, not the engine.
+- The **throughput** advantage is conditional on the draft model matching your content — and "matching" means content type first, language second. Code/agentic output: clear win regardless of prompt language. Free-form prose: acceptance collapses below 2 in any language and a plain MTP head can win.
+- If a DSpark draft retrained on broader prose + multilingual data appears, this config gets better for everyone — that is the lever to watch, not the engine.
 
 Want to A/B this yourself without installing a service? `./install.sh --no-service && ./run.sh` runs the exact pinned config in the foreground; Ctrl+C stops and removes the container. The A/B author also published [their own standalone launcher](https://forums.developer.nvidia.com/t/380257/10) — same pinned config, rootless container, image-ID fallback for `docker save|load` transfers — plus the `minimal` template fix now folded into this repo.
 
