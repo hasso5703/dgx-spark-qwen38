@@ -91,6 +91,18 @@ Adopted from that comparison into this repo's service (validated on this box: si
 
 The pattern is now three-way: **DSpark = high ceiling (28–40 on structured) with a prose floor (12–16); MTP engines = stable middle; and SGLang+MTP is the best of the stable middles (18.8–20.8 on prose — beats llama.cpp there too)**. If your workload is agentic coding — code, diffs, tool calls, math, structured reasoning — DSpark wins every relevant row plus prefill (~3×) and TTFT. If you mostly generate free-form prose or heavily mixed multilingual content, run the same service with the MTP flags above instead: one flag swap, same image, same everything else.
 
+## Concurrency — measured, not projected
+
+With the GDN state-pool sizing this repo ships (`extra_buffer_lazy`, bf16 SSM states, 96 slots, `--max-running-requests 8`), the service runs **8 truly concurrent streams** (verified in the scheduler logs, not just accepted connections):
+
+| Load | Aggregate | Per stream | Conditions |
+|---|---|---|---|
+| 1 stream | 28–40 tok/s | 28–40 | fresh coding/reasoning |
+| 8 streams, 250-tok bursts | **108.9 tok/s** | ~13.6 | mixed explanations, cold |
+| 7–8 streams sustained for hours | 84–107 (median **~94**) | ~12 | multilingual mixed content (hardest acceptance regime) |
+
+KV budget at these settings: **386K tokens shared pool** (fp8 KV), 262K max per request, 96 GDN state slots. Multiple Claude Code sessions share their 36K system prompt in the radix cache, so 8 real agent sessions fit comfortably — the pool holds ~8 × 45K of *unique* context on top of the shared prefix.
+
 ## Reproduce it on your box — any engine
 
 ```bash

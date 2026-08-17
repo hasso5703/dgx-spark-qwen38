@@ -34,7 +34,7 @@ Speculative decoding accepts *predictable* tokens, so speed depends on **what th
 | Technical explanations | 20–23 | ~22 |
 | Free-form prose (any language) | 12–16 | **17–18** |
 
-If you're here for coding agents (Claude Code, agentic workflows), this config wins every relevant row, plus ~3× faster prefill and the best time-to-first-token. If you mostly generate free prose, llama.cpp+MTP is ~40 % faster on that one workload.
+If you're here for coding agents (Claude Code, agentic workflows), this config wins every relevant row, plus ~3× faster prefill and the best time-to-first-token. It also serves **8 truly concurrent streams (~94–109 tok/s aggregate measured)** — see BENCHMARKS.md. If you mostly generate free prose, llama.cpp+MTP is ~40 % faster on that one workload.
 
 Full study — methodology, engine-vs-engine matrix, an independent reproduction, the physics of the GB10 ceiling, and a frozen benchmark battery you can run against **any** engine (`./bench-matrix.sh`) — in **[BENCHMARKS.md](BENCHMARKS.md)**.
 
