@@ -103,6 +103,25 @@ With the GDN state-pool sizing this repo ships (`extra_buffer_lazy`, bf16 SSM st
 
 KV budget at these settings: **386K tokens shared pool** (fp8 KV), 262K max per request, 96 GDN state slots. Multiple Claude Code sessions share their 36K system prompt in the radix cache, so 8 real agent sessions fit comfortably — the pool holds ~8 × 45K of *unique* context on top of the shared prefix.
 
+## Long-prefix decode (third-party data)
+
+Ciprian Ursu ran this repo's launch config — same flag stack, same pinned image digest, plus `--tp-size 2` — across **two** DGX Sparks over CX-7 and posted the full depth ladder on [spark-arena](https://spark-arena.com/benchmark/87a93f88-afee-4e93-89de-7cfec34c8345). Two things fall out of it:
+
+| Prefix depth | tg128 c1 (tok/s) |
+|---|---|
+| fresh | 40.09 ± 3.50 |
+| 4K | 36.38 |
+| 8K | 39.71 |
+| 16K | 33.91 |
+| 32K | 34.67 |
+| 65K | 35.31 |
+| 100K | 28.77 |
+
+1. **Deep context does not collapse speculative decode.** −13 % at 32K, −28 % at 100K, flat between 16K and 65K. The real 56K agentic session in the table above pointed the same way: acceptance follows content, not context length.
+2. **Two Sparks at TP=2 land in the same 34–40 tok/s band as one Spark.** Batch-1 decode is latency-bound, so a second box and a CX-7 link buy concurrency headroom (c5 115, c10 97 aggregate on that run), not single-stream speed. Don't cluster for latency.
+
+Caveat on cross-reading: that harness generates synthetic tokens (`tg128` at a set prefix depth), which is a different acceptance regime from real content — compare its *shape across depth*, not its absolute values, against this repo's battery. A controlled single-box long-prefix cell (DSpark vs MTP at 0/8K/32K) is still on this repo's list.
+
 ## Reproduce it on your box — any engine
 
 ```bash
