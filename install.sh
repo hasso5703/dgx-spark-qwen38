@@ -65,7 +65,8 @@ echo "GPU: $GPU_NAME"
 case "$GPU_NAME" in *GB10*) ;; *) echo "WARNING: expected GB10, found '$GPU_NAME'. Continuing — but this config was only validated on GB10 (memory sizing may not fit other GPUs)." ;; esac
 command -v docker >/dev/null || die "docker not found. Install Docker + NVIDIA Container Toolkit (stock on DGX OS)."
 docker info >/dev/null 2>&1 || die "Cannot talk to the docker daemon. Fix: sudo usermod -aG docker \$USER && re-login (or run with a user in the docker group)."
-TOTAL_GB=$(free -g | awk '/^Mem/{print $2}')
+# /proc/meminfo, not `free`: free(1) localizes its row labels (issue #3)
+TOTAL_GB=$(awk '/^MemTotal/{print int($2/1048576)}' /proc/meminfo)
 [ "$TOTAL_GB" -ge 110 ] || die "This config needs a ~121 GB unified-memory machine; found ${TOTAL_GB} GB."
 FREE_DISK_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
 [ "$FREE_DISK_GB" -ge 45 ] || die "Need ~45 GB free under \$HOME for the checkpoints and caches; found ${FREE_DISK_GB} GB. Free some space or set HF_CACHE to another disk."
