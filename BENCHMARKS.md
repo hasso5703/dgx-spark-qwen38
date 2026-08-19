@@ -122,6 +122,23 @@ Ciprian Ursu ran this repo's launch config — same flag stack, same pinned imag
 
 Caveat on cross-reading: that harness generates synthetic tokens (`tg128` at a set prefix depth), which is a different acceptance regime from real content — compare its *shape across depth*, not its absolute values, against this repo's battery. A controlled single-box long-prefix cell (DSpark vs MTP at 0/8K/32K) is still on this repo's list.
 
+## vLLM + DSpark, same battery (third-party data)
+
+[erikvullings](https://github.com/hasso5703/dgx-spark-qwen38/issues/2) ran battery v1 (`bench-matrix.sh`, two-call wall-clock delta, temperature 0) against vLLM 0.27-dev serving the **same pinned checkpoints as this repo** — `RadixArk/Qwen3.8-27B-NVFP4` plus the RadixArk DSpark drafter, wired into vLLM via [eugr's radixark-dspark mod](https://github.com/eugr/spark-vllm-docker/tree/main/mods/radixark-dspark) — on a freshly rebooted, otherwise idle GB10 Spark:
+
+| Workload (battery v1, greedy) | vLLM + DSpark (idle box) | SGLang + DSpark (this repo, loaded box) |
+|---|---|---|
+| Math word problems (EN) | guard refused the sample (answer too short) | 37–38 |
+| Code (EN) | 38.1 | 28–32 |
+| Code (DE) | 25.3 | 24–25 |
+| Technical explanation (FR) | 36.8 | 20–23 |
+| Reasoning (FR) | 39.2 | 31.6 |
+| Free prose (EN) | 16.9 | 16 |
+| Free prose (FR) | 13.1 | 13 |
+| Free prose (DE) | 12.8 | 12.3 |
+
+Read it carefully before concluding "vLLM is faster": the prose floor is identical (the drafter's low-acceptance signature, quant and drafter being the same), and the structured cells sit +15–25 % above this repo's reference numbers — measured on an **idle, freshly rebooted box**, where this repo's reference cells are measured on a box that concurrently runs the very agent sessions it serves. Independent reproducers on the NVIDIA forum thread (pontostroy, Schnabulator) report the same +8–30 % offset on quiet boxes with this exact config. The honest conclusion: **on identical hardware, quant and drafter, eugr's vLLM path and SGLang land in the same band; engine choice is not the lever — box load and content are.** A controlled idle-box re-baseline of this repo's config (benched from a second machine, zero local sessions) is on the list and will get its own column.
+
 ## Reproduce it on your box — any engine
 
 ```bash
@@ -140,5 +157,6 @@ Want to A/B against another engine without installing a service? `./install.sh -
 - **Repeated text prompts** on llama.cpp with a separate `-hfd` draft model replay at chunked-verify speed — 203 tok/s measured on a prompt whose true cold rate was 25. SGLang+DSpark did not show this effect (repeats reproduce within ±0.2 tok/s), but fresh prompts are the only safe protocol for any speculative bench.
 - **The first request after a model load** pays one-time costs (mmap page-in, spec-path warmup) that poison both calls of a delta measurement — `bench-matrix.sh` burns a warmup call and flags any sample whose deltas are too small to trust (its own first version printed a 979 tok/s artifact before this guard existed).
 - **Short answers** (eval-style math) end before the second call's budget and break the two-call delta — measure those with streaming TTFT-separated timing instead (`bench.sh` does).
+- **Renamed streaming fields** silently start a streaming benchmark's clock late: vLLM ≥ 0.27 streams thinking tokens as `delta.reasoning` (SGLang: `reasoning_content`); a client that only recognizes one name times just the visible answer while `usage.completion_tokens` counts the whole generation, inflating tok/s by the think-to-answer ratio. Produced a reported 97 tok/s on a box whose wall-clock rate was 19.9 (issue #2); `bench.sh` fixed in `9cf6b20`, plus a warning above the DSpark block-7 physical ceiling (~90 tok/s here). Wall-clock delta methods (`bench-matrix.sh`) are immune.
 
 Point-in-time note: all numbers are 2026-08-15, image `lmsysorg/sglang:qwen38-27b` (pull digest `febfb971c735…`, image ID `0076dffa60b7…`), checkpoints pinned in `install.sh`. Kernels for sm_121 are young; gaps will move with releases — that is exactly why everything here is pinned and the battery is frozen.
