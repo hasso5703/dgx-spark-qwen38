@@ -124,20 +124,20 @@ Caveat on cross-reading: that harness generates synthetic tokens (`tg128` at a s
 
 ## vLLM + DSpark, same battery (third-party data)
 
-[erikvullings](https://github.com/hasso5703/dgx-spark-qwen38/issues/2) ran battery v1 (`bench-matrix.sh`, two-call wall-clock delta, temperature 0) against vLLM 0.27-dev serving the **same pinned checkpoints as this repo** — `RadixArk/Qwen3.8-27B-NVFP4` plus the RadixArk DSpark drafter, wired into vLLM via [eugr's radixark-dspark mod](https://github.com/eugr/spark-vllm-docker/tree/main/mods/radixark-dspark) — on a freshly rebooted, otherwise idle GB10 Spark:
+[erikvullings](https://github.com/hasso5703/dgx-spark-qwen38/issues/2) ran battery v1 (`bench-matrix.sh`, two-call wall-clock delta, temperature 0) against vLLM 0.27-dev serving the **same pinned checkpoints as this repo** (`RadixArk/Qwen3.8-27B-NVFP4` plus the RadixArk DSpark drafter, wired into vLLM via [eugr's radixark-dspark mod](https://github.com/eugr/spark-vllm-docker/tree/main/mods/radixark-dspark)) on a freshly rebooted, otherwise idle GB10 Spark:
 
 | Workload (battery v1, greedy) | vLLM + DSpark (idle box) | SGLang + DSpark (this repo, loaded box) |
 |---|---|---|
-| Math word problems (EN) | guard refused the sample (answer too short) | 37–38 |
-| Code (EN) | 38.1 | 28–32 |
-| Code (DE) | 25.3 | 24–25 |
-| Technical explanation (FR) | 36.8 | 20–23 |
+| Math word problems (EN) | guard refused the sample (answer too short) | 37-38 |
+| Code (EN) | 38.1 | 28-32 |
+| Code (DE) | 25.3 | 24-25 |
+| Technical explanation (FR) | 36.8 | 20-23 |
 | Reasoning (FR) | 39.2 | 31.6 |
 | Free prose (EN) | 16.9 | 16 |
 | Free prose (FR) | 13.1 | 13 |
 | Free prose (DE) | 12.8 | 12.3 |
 
-Read it carefully before concluding "vLLM is faster": the prose floor is identical (the drafter's low-acceptance signature, quant and drafter being the same), and the structured cells sit +15–25 % above this repo's reference numbers — measured on an **idle, freshly rebooted box**, where this repo's reference cells are measured on a box that concurrently runs the very agent sessions it serves. Independent reproducers on the NVIDIA forum thread (pontostroy, Schnabulator) report the same +8–30 % offset on quiet boxes with this exact config. The honest conclusion: **on identical hardware, quant and drafter, eugr's vLLM path and SGLang land in the same band; engine choice is not the lever — box load and content are.** A controlled idle-box re-baseline of this repo's config (benched from a second machine, zero local sessions) is on the list and will get its own column.
+Read it carefully before concluding "vLLM is faster": the prose floor is identical (the drafter's low-acceptance signature, quant and drafter being the same), and the structured cells sit +15-25 % above this repo's reference numbers, measured on an **idle, freshly rebooted box**, where this repo's reference cells are measured on a box that concurrently runs the very agent sessions it serves. Independent reproducers on the NVIDIA forum thread (pontostroy, Schnabulator) report the same +8-30 % offset on quiet boxes with this exact config. The honest conclusion: **on identical hardware, quant and drafter, eugr's vLLM path and SGLang land in the same band; engine choice is not the lever, box load and content are.** A controlled idle-box re-baseline of this repo's config (benched from a second machine, zero local sessions) is on the list and will get its own column.
 
 ## Reproduce it on your box — any engine
 
