@@ -56,11 +56,12 @@ The installer writes a ready-to-source env file at `~/.config/qwen38/claude-code
 source ~/.config/qwen38/claude-code.env && claude --model qwen3.8-27b
 ```
 
-Three integration bugs are already fixed for you:
+Four integration bugs are already fixed for you:
 
 1. **`reasoning_effort` 500s** — Claude Code sessions set to *max* effort send `reasoning_effort: "max"`, which the stock chat template rejects (only `xhigh/medium/low`). The installer patches the template to map `max`/`high` → `xhigh` (the actual ceiling — no behavior change) and `minimal` → `low` (an OpenAI tier, [contributed by helge](https://forums.developer.nvidia.com/t/380257/10)). This is not a Claude Code quirk: any OpenAI-compatible client sending a `reasoning_effort` outside `xhigh/medium/low` gets the same 400.
 2. **Mid-conversation system messages** — Claude Code injects system-reminders after turn 1; the stock template raises `System message must be at the beginning`. Patched to render them as `<system-reminder>` blocks (their exact semantics).
 3. **5-minute stream aborts** — on a custom `ANTHROPIC_BASE_URL`, Claude Code arms 300 s stream-idle watchdogs; a cold 36K-token prefill or a queued request can trip them while the server is still working. The env file raises them to their 30-minute maximum (`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`, `CLAUDE_STREAM_IDLE_TIMEOUT_MS`) plus `API_TIMEOUT_MS=3600000`.
+4. **Truncated long answers** — Claude Code sends `max_tokens: 32000` per request by default (verified by request capture on Claude Code 2.1.235), and reasoning tokens count against that budget, so long turns ended mid-sentence. The env file raises it with `CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000`. It also declares the context window with a safety margin (`CLAUDE_CODE_MAX_CONTEXT_TOKENS=258048`, i.e. 262144 − 4096) so auto-compaction fires *before* the server's hard limit — client-side token counting is approximate (see [#2](https://github.com/hasso5703/dgx-spark-qwen38/issues/2)).
 
 Also: SGLang's `--api-key` only accepts `Authorization: Bearer` (Claude Code's `ANTHROPIC_AUTH_TOKEN`), **not** `x-api-key`. Another 90 %-slowdown killer, `CLAUDE_CODE_ATTRIBUTION_HEADER`, is disabled in the env file per [Unsloth's guide](https://unsloth.ai/docs/basics/claude-code).
 

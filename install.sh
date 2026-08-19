@@ -135,7 +135,13 @@ export CLAUDE_CODE_SUBAGENT_MODEL="qwen3.8-27b"
 export API_TIMEOUT_MS=3600000
 export CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=1800000
 export CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144
+# Per-request output budget: reasoning tokens count against it, and Claude Code
+# sends max_tokens=32000 by default (verified by request capture on 2.1.235 —
+# the variable is undocumented but effective). Long answers were truncating.
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000
+# 262144 minus a 4096 margin: client-side token counting is approximate, so
+# auto-compact must fire BEFORE the server's real limit (see issue #2).
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=258048
 export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 export CLAUDE_CODE_ENABLE_TELEMETRY=0
 ENVEOF
