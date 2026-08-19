@@ -57,7 +57,10 @@ def stream(prompt, temp, max_tokens):
             if not d.get("choices"):
                 continue
             delta = d["choices"][0].get("delta", {})
-            if delta.get("content") or delta.get("reasoning_content"):
+            # thinking streams as reasoning_content (SGLang) or reasoning (vLLM >= 0.27);
+            # missing a field name starts the clock after the thinking phase while
+            # usage still counts it, inflating tok/s several-fold (issue #2)
+            if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
                 now = time.time()
                 if t_first is None:
                     t_first = now
@@ -73,6 +76,10 @@ for name, temp, prompt, mt in PROBES:
     if temp == 0.0 and "worst-case" not in name:
         all_greedy += speeds
     print(f"  {name}: {speeds[0]:.1f} / {speeds[1]:.1f} tok/s")
+    if max(speeds) > 90:
+        print("    ^ above the DSpark block-7 physical ceiling for this box (~8x the")
+        print("      ~11 tok/s AR floor) — almost certainly a measurement artifact, not")
+        print("      real speed. Cross-check with bench-matrix.sh (wall-clock method).")
 print(f"\n  greedy median: {statistics.median(all_greedy):.1f} tok/s")
 print("  (numbers vary with content — acceptance length drives everything;")
 print("   math/code accept ~3.3-5.6 tokens/step, free prose ~1.5-2.2 in any")
