@@ -37,13 +37,34 @@ main() {
 
   echo "── Repo: $DIR"
   git -C "$DIR" fetch -q origin main
+
+  # Invariant: if this script completes, you ARE on the latest origin/main.
   if [ -n "$(git -C "$DIR" status --porcelain)" ]; then
-    echo "NOTE: local changes present, leaving them untouched (no pull). Delete or stash them to update."
-  else
-    git -C "$DIR" merge -q --ff-only origin/main 2>/dev/null \
-      || echo "NOTE: local branch diverged from origin/main, leaving it as is."
-    echo "── At: $(git -C "$DIR" log -1 --format='%h %s')"
+    if [ "${FORCE_UPDATE:-0}" = "1" ]; then
+      echo "── FORCE_UPDATE=1: stashing your local changes (recoverable: git stash list)"
+      git -C "$DIR" stash push -u -m "get.sh auto-stash before update"
+    else
+      echo "ERROR: $DIR has local modifications, refusing to install a stale or altered version." >&2
+      git -C "$DIR" status --short | head -10 >&2
+      echo "Fix with ONE of:" >&2
+      echo "  keep your changes aside :  FORCE_UPDATE=1  then rerun this command (recover later: git -C $DIR stash pop)" >&2
+      echo "  discard your changes    :  git -C $DIR checkout -- . && git -C $DIR clean -fd  then rerun" >&2
+      exit 1
+    fi
   fi
+  if ! git -C "$DIR" merge -q --ff-only origin/main 2>/dev/null; then
+    if [ "${FORCE_UPDATE:-0}" = "1" ]; then
+      BK="backup-$(git -C "$DIR" rev-parse --short HEAD)"
+      git -C "$DIR" branch -f "$BK" >/dev/null
+      echo "── FORCE_UPDATE=1: local branch diverged; kept as branch '$BK', resetting to origin/main"
+      git -C "$DIR" reset -q --hard origin/main
+    else
+      echo "ERROR: local branch diverged from origin/main, refusing to install a stale version." >&2
+      echo "  keep your commits aside :  FORCE_UPDATE=1  then rerun (they stay on a backup branch)" >&2
+      exit 1
+    fi
+  fi
+  echo "── At: $(git -C "$DIR" log -1 --format='%h %s')"
 
   cd "$DIR"
   # exec from a real file: sudo prompts on the tty, and stdin is no longer the pipe.
