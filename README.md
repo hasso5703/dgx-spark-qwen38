@@ -8,6 +8,14 @@ You get an **OpenAI and Anthropic-compatible API** on port 30000. **Claude Code 
 
 Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit), ~85 GB free disk.
 
+One command, first install and updates alike (clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
+```
+
+Or the explicit way:
+
 ```bash
 git clone https://github.com/hasso5703/dgx-spark-qwen38.git
 cd dgx-spark-qwen38
