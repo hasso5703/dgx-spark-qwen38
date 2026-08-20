@@ -27,7 +27,9 @@ First boot takes **~7-9 minutes** (CUDA graph capture + kernel compilation, cach
 
 Speculative decoding accepts *predictable* tokens, so speed depends on **what the model generates** — not on one magic number:
 
-| What you generate (thinking on) | v1.2 (DFlash2, this repo) | v1.1 (DSpark) | Stable-MTP engines |
+Two instruments, both in the box, both reproducible. The headline **50 tok/s greedy median** is `./bench.sh` (streaming decode rate net of TTFT, the repo's historical headline instrument: v1.0-v1.1 measured ~36-40 on it, v1.2 measures 41-57 per probe). The table below is the harsher one: the frozen battery `./bench-matrix.sh` (two-call wall-clock delta, comparable across engines and boxes):
+
+| What you generate (thinking on, battery v1) | v1.2 (DFlash2, this repo) | v1.1 (DSpark) | Stable-MTP engines |
 |---|---|---|---|
 | Agentic coding — code, diffs, tool calls | **32-40 tok/s** | 28-36 | 24-28 |
 | Math & structured reasoning | **41-44** | 38-42 | 24-33 |
