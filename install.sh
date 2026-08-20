@@ -45,7 +45,9 @@ Usage: ./install.sh [--with-claude-warmup] [--no-start] [--no-service]
 Env overrides (defaults are pinned to the validated 2026-08-15 versions):
   IMAGE=lmsysorg/sglang:qwen38-27b   use the moving tag instead of the digest
   MODEL_REV=main  DRAFT_REV=main     use latest checkpoint revisions
-  HF_CACHE=/path                     HuggingFace cache location (needs ~24 GB)
+  DRAFT2_REV=main                    latest DFlash2 draft revision
+  SERVE_IMAGE=name:tag               local tag for the built serving image
+  HF_CACHE=/path                     HuggingFace cache location (needs ~28 GB)
   PORT=30000                         serving port
 HLP
       exit 0 ;;
@@ -69,6 +71,7 @@ GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 echo "GPU: $GPU_NAME"
 case "$GPU_NAME" in *GB10*) ;; *) echo "WARNING: expected GB10, found '$GPU_NAME'. Continuing — but this config was only validated on GB10 (memory sizing may not fit other GPUs)." ;; esac
 command -v docker >/dev/null || die "docker not found. Install Docker + NVIDIA Container Toolkit (stock on DGX OS)."
+command -v python3 >/dev/null || die "python3 not found on the host (needed for the template patcher; stock on DGX OS)."
 docker info >/dev/null 2>&1 || die "Cannot talk to the docker daemon. Fix: sudo usermod -aG docker \$USER && re-login (or run with a user in the docker group)."
 # /proc/meminfo, not `free`: free(1) localizes its row labels (issue #3)
 TOTAL_GB=$(awk '/^MemTotal/{print int($2/1048576)}' /proc/meminfo)

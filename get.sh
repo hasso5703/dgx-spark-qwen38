@@ -31,12 +31,32 @@ main() {
       exit 1
     else
       echo "── Cloning $REPO_URL into $DIR"
-      git clone --depth 1 "$REPO_URL" "$DIR"
+      git clone "$REPO_URL" "$DIR"
     fi
   fi
 
+  # Whatever resolved DIR: it must be a clone of THIS repo before we touch it.
+  DIR_ORIGIN=$(git -C "$DIR" remote get-url origin 2>/dev/null || true)
+  case "$DIR_ORIGIN" in
+    *hasso5703/dgx-spark-qwen38*) : ;;
+    *) echo "ERROR: $DIR is not a clone of this repo (origin: ${DIR_ORIGIN:-none}). Refusing to touch it." >&2; exit 1 ;;
+  esac
+
   echo "── Repo: $DIR"
   git -C "$DIR" fetch -q origin main
+
+  # Must be on main (a detached HEAD or a side branch would silently pin an old version).
+  CUR=$(git -C "$DIR" symbolic-ref -q --short HEAD || echo DETACHED)
+  if [ "$CUR" != "main" ]; then
+    if [ "${FORCE_UPDATE:-0}" = "1" ]; then
+      echo "── FORCE_UPDATE=1: switching from '$CUR' to main (your branch is kept)"
+      git -C "$DIR" checkout -q main 2>/dev/null || git -C "$DIR" checkout -qb main origin/main
+    else
+      echo "ERROR: $DIR is on '$CUR', not 'main'; refusing to install from it." >&2
+      echo "  rerun with FORCE_UPDATE=1 to switch to main (your branch/commit is kept)" >&2
+      exit 1
+    fi
+  fi
 
   # Invariant: if this script completes, you ARE on the latest origin/main.
   if [ -n "$(git -C "$DIR" status --porcelain)" ]; then
@@ -52,18 +72,21 @@ main() {
       exit 1
     fi
   fi
-  if ! git -C "$DIR" merge -q --ff-only origin/main 2>/dev/null; then
+  AHEAD=$(git -C "$DIR" rev-list --count origin/main..HEAD 2>/dev/null || echo 1)
+  if [ "$AHEAD" != "0" ]; then
     if [ "${FORCE_UPDATE:-0}" = "1" ]; then
       BK="backup-$(git -C "$DIR" rev-parse --short HEAD)"
       git -C "$DIR" branch -f "$BK" >/dev/null
-      echo "── FORCE_UPDATE=1: local branch diverged; kept as branch '$BK', resetting to origin/main"
-      git -C "$DIR" reset -q --hard origin/main
+      echo "── FORCE_UPDATE=1: local commits kept on branch '$BK', resetting to origin/main"
     else
-      echo "ERROR: local branch diverged from origin/main, refusing to install a stale version." >&2
+      echo "ERROR: $DIR has local commits not on origin/main, refusing to install a stale version." >&2
       echo "  keep your commits aside :  FORCE_UPDATE=1  then rerun (they stay on a backup branch)" >&2
       exit 1
     fi
   fi
+  # Tree verified clean and no local commits (or backed up): hard sync is lossless
+  # and, unlike ff-only, immune to shallow-clone ancestry gaps.
+  git -C "$DIR" reset -q --hard origin/main
   echo "── At: $(git -C "$DIR" log -1 --format='%h %s')"
 
   cd "$DIR"
