@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.2.1 (2026-08-20)
+
+Correctness alignment of the vendored DFlash2 overlay with upstream, plus the quality study
+that the community's reports triggered.
+
+- **Quantized-head logits: crop → contiguous mask.** Upstream merged the official quantized
+  lm_head support for the DFlash2 selector hours after this repo's v1.2 vendoring
+  ([sgl-project/sglang#35496](https://github.com/sgl-project/sglang/pull/35496)): slicing the
+  padded local vocab produces a non-contiguous view that flashinfer's radix top-k rejects or
+  can misread; the fix keeps the logits contiguous and masks the padded tail to -inf. Both
+  overlay call sites now follow that pattern. The serving image tag becomes
+  `qwen38-dflash2:v1.2.1` (rebuilt automatically by `./install.sh`).
+- **The quality question, measured.** Forum users reported a 2-6 point tool-eval drop and
+  anecdotal hallucinations vs DSpark. We measured instead of guessing, on a deterministic
+  server (reproducible to the point): tool-eval 93/93 (DSpark) vs 91/91 (DFlash2), a stable
+  3-scenario delta; then GSM8K 200: **exact parity, 188/200 both**; IFEval 200: split within
+  noise (prompt-level favors DSpark with 15 excluded timeouts muddying its denominator,
+  instruction-level favors DFlash2). A token-identity test at temperature 0 against the pure
+  autoregressive model shows **both** drafters diverge from it (10/10 prompts each, equally
+  early): speculative decoding is lossless in exact arithmetic, not in floating point, and
+  near-tie argmax flips cascade. The 2-3 tool-eval points are those flips landing, not a
+  quality regression. Full methodology and numbers in BENCHMARKS.md, "The losslessness study".
+  DFlash2 stays the default.
+
 ## v1.2 (2026-08-20)
 
 **DFlash2 becomes the default.** The service now serves the z-lab DFlash2 drafter instead of

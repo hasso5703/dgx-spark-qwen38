@@ -16,7 +16,7 @@ DRAFT2_REPO="z-lab/Qwen3.8-27B-DFlash2"
 DRAFT2_REV="${DRAFT2_REV:-50307d4c4cde6860d4eee73e2547cd786fe8e8a4}"
 # Served image = pinned base + the 5 sha256-verified DFlash2 files (dflash2/, built locally,
 # offline). Replaced by an official image digest the day one ships DFLASH2.
-SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2}"
+SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2.1}"
 PORT="${PORT:-30000}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 CONFIG_DIR="$HOME/.config/qwen38"

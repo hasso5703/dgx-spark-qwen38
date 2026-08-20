@@ -940,7 +940,12 @@ class DFlash2DraftModel(DFlashDraftModel):
         weight = getattr(lm_head, "weight", None)
         quant_method = getattr(lm_head, "quant_method", None)
         if should_apply_lm_head_quant_method(lm_head, quant_method):
-            local_logits = quant_method.apply(lm_head, hidden, None)[:, :num_org]
+            # Upstream fix (sglang #35496): flashinfer's radix top-k must not see a
+            # cropped (non-contiguous) view of the padded local vocab — keep the
+            # logits contiguous and mask the padded tail out of the top-k instead.
+            local_logits = quant_method.apply(lm_head, hidden, None).contiguous()
+            if local_logits.shape[-1] > num_org:
+                local_logits[:, num_org:] = float("-inf")
         elif is_dense_head_weight(weight):
             local_logits = torch.matmul(hidden.to(weight.dtype), weight[:num_org].T)
         else:

@@ -189,6 +189,44 @@ and 258 tok/s at c32** (max-running-requests 32), still climbing at c32. It ship
 108 tok/s c8 with the same drafter: above the old DSpark default, and the fallback if
 NVFP4-target quality evaluations ever demand it.
 
+
+## The losslessness study (2026-08-20)
+
+Community reports after v1.2 (a 2-6 point tool-eval drop vs DSpark, anecdotal hallucination
+reports) triggered the deepest measurement pass of this repo. Everything below ran on the
+deterministic stack (`--disable-flashinfer-autotune`), which turns out to make even quality
+benchmarks reproducible to the point across seeds.
+
+**Step 1, reproduce.** tool-eval-bench (69 scenarios, two seeds each): DSpark **93 / 93**
+(identical points per seed), DFlash2 **91 / 91**. The deficit is real, stable, and lives in a
+core of 4 long-agentic-chain scenarios. Greedy (temperature 0) does not remove it. The
+community's inter-run "variance" (88-92 for the same config) does not exist on a deterministic
+server: it was the boot lottery again.
+
+**Step 2, ground truth.** At temperature 0, a lossless speculative decoder should reproduce the
+pure autoregressive model token for token. Measured (10 diverse prompts, sequential, full
+content+reasoning compared): **DSpark diverges from the AR ground truth on 10/10 prompts, and
+so does DFlash2, equally early** (2-33% into the reasoning). Speculative decoding is lossless
+in exact arithmetic, not in floating point: block verification changes reduction orders, a
+near-tie argmax flips, and the chain cascades. Neither drafter's text is "the model's true
+output"; both are equally legitimate samples of its numeric neighborhood. (Escha Labs'
+runtime docs independently document the same effect: "never A/B two configurations by diffing
+one generation".)
+
+**Step 3, does it cost real quality?** Large-n standard evals, same box, same night, both
+drafters: GSM8K 200 → **exact parity, 188/200 vs 188/200**. IFEval 200 → split within noise:
+prompt-level 86.5 (DSpark, with 15 server timeouts excluded from its denominator; it is the
+slower config under a fixed budget) vs 81.4 (DFlash2, 1 timeout); instruction-level flips the
+other way, 87.4 (DFlash2) vs 83.7 (DSpark). At n=200 the +-1 sigma band is ~3 points: no
+consistent direction survives.
+
+**Verdict:** no measurable real-quality loss; the 2-3 tool-eval points are floating-point
+near-tie flips landing unfavorably on a handful of long scenarios of one benchmark, made
+visible (and stable) by determinism. DFlash2 stays the default: it wins every speed lane by
+20-40% and ties the quality battery. A pure-AR tool-eval baseline (the number nobody measures, ~3x slower to produce) is planned
+and will be appended here: it is the final arbiter of what the tool-eval score of "the model
+itself" even is.
+
 ## Benchmarking traps (all hit for real)
 
 - **Repeated images** hit the multimodal cache and skip the vision tower entirely — any image benchmark needs images the instance has never seen (found by the forum A/B author).

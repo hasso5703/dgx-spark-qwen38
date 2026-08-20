@@ -1036,7 +1036,9 @@ class DFlashWorkerV2(BaseSpecWorker):
             end = min(num_tokens, start + int(chunk_size))
             logits = lm_head.quant_method.apply(lm_head, hidden_states[start:end], None)
             if num_org is not None and logits.shape[-1] > num_org:
-                logits = logits[:, :num_org]
+                # Same contiguity rule as the selector path (sglang #35496).
+                logits = logits.contiguous()
+                logits[:, num_org:] = float("-inf")
             out_tokens[start:end] = torch.argmax(logits, dim=-1).to(torch.long)
         return out_tokens
 
