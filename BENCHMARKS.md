@@ -1,6 +1,6 @@
 # Benchmarks — methodology, full results, and how to reproduce them
 
-Everything here was measured on one ASUS Ascent GX10 (GB10, 128 GB unified, stock DGX OS) on 2026-08-14/15, plus an independent reproduction by a second GB10 owner. Speeds are **batch-1 decode**; quality was verified identical to a Q8 reference on a deterministic battery (code, logic, language, instruction following) — speculative decoding is lossless by construction (the verify step only ever accepts tokens the target model would have emitted).
+Everything here was measured on one ASUS Ascent GX10 (GB10, 128 GB unified, stock DGX OS) on 2026-08-14/15 (v1.0-v1.1 sections) and 2026-08-19/20 (v1.2, the boot-lottery campaign), plus independent reproductions by other GB10 owners. Speeds are **batch-1 decode**; quality was verified identical to a Q8 reference on a deterministic battery (code, logic, language, instruction following) — speculative decoding is lossless by construction (the verify step only ever accepts tokens the target model would have emitted).
 
 ## Headline numbers (same box, same day)
 
@@ -8,9 +8,9 @@ Everything here was measured on one ASUS Ascent GX10 (GB10, 128 GB unified, stoc
 |---|---|---|
 | llama.cpp UD-Q4_K_XL + MTP n=3 (tuned) | ~27 tok/s | 24–30 tok/s |
 | vLLM 0.27 NVFP4 + MTP n=3 (official recipe) | ~24.5 tok/s | — |
-| **This repo: SGLang NVFP4 + DSpark** | **~34 tok/s** | **38.0 avg, 46.7 peak (GSM8K-style)** |
+| **This repo v1.0-v1.1: SGLang NVFP4 + DSpark** | **~34 tok/s** | **38.0 avg, 46.7 peak (GSM8K-style)** |
 
-The 38.0 average matches [SGLang's announced 38.28 tok/s](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B) for DGX Spark (their number is an eval-suite average at temp 0.6). Those headline numbers are for what coding agents generate — code, math, structured reasoning. Free-form prose is 2–3× slower on any engine+drafter combo here; the whole story is below.
+**v1.2 (DFlash2, 2026-08-20) supersedes this table's repo row**: bench.sh greedy median 50.0 on the same instrument that measured ~36-40 above, with the full same-night three-way comparison in "The boot lottery" section below and the workload table in the README. The historical rows stay for context. The 38.0 average matches [SGLang's announced 38.28 tok/s](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B) for DGX Spark (their number is an eval-suite average at temp 0.6). Those headline numbers are for what coding agents generate — code, math, structured reasoning. Free-form prose is 2–3× slower on any engine+drafter combo here; the whole story is below.
 
 ## Why this config wins (the physics)
 
