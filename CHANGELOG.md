@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.3 (2026-08-20)
+
+One fix from the lifecycle audit: the systemd unit file was installed with mode 600 (a
+`mktemp` + `sudo cp` interaction), so the service ran fine but `systemctl cat` and any
+non-root inspection of the unit failed with permission denied. `install.sh` now writes it
+with `install -m 644`, the standard mode for unit files. Re-running the one-liner (or
+`./install.sh --no-start`) fixes the mode in place without restarting the service.
+
 ## v1.2.2 (2026-08-20)
 
 Typography pass, no functional change. All prose dashes were removed from every document,

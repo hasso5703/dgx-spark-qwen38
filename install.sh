@@ -183,7 +183,7 @@ sed -e "s|__HOME__|$HOME|g" \
     -e "s|__HF_CACHE__|$HF_CACHE|g" \
     -e "s|__DRAFT2_REV__|$DRAFT2_REV|g" \
     "$REPO_DIR/qwen38-sglang.service.template" > "$TMP_UNIT"
-sudo cp "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME"; rm -f "$TMP_UNIT"
+sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME"; rm -f "$TMP_UNIT"
 if [ "$WITH_WARMUP" -eq 1 ]; then
   sed -e "s|__HOME__|$HOME|g" -e "s|__PORT__|$PORT|g" \
       "$REPO_DIR/warmup-claude-code.sh" > "$CONFIG_DIR/warmup-claude-code.sh"
