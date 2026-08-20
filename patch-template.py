@@ -11,10 +11,13 @@ Two surgical fixes, no behavior change otherwise:
 The 'minimal' -> 'low' mapping (an OpenAI effort tier) was contributed
 by forum user helge: https://forums.developer.nvidia.com/t/380257/10
 
-Usage: patch-template.py <hf_cache_dir> <output_path>
-Idempotent: succeeds if the patches are already applied.
+Usage: patch-template.py <hf_cache_dir> <output_path> [revision]
+Idempotent: succeeds if the patches are already applied. When a revision is
+given (sha or ref name like 'main'), the template is taken from that exact
+snapshot; otherwise the most recently modified snapshot is used.
 """
 import glob
+import os
 import sys
 
 EFFORT_ANCHOR = (
@@ -45,15 +48,30 @@ SYSTEM_PATCHED = (
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
     hf_cache, out_path = sys.argv[1], sys.argv[2]
-    hits = sorted(glob.glob(
-        f"{hf_cache}/hub/models--RadixArk--Qwen3.8-27B-NVFP4/snapshots/*/chat_template.jinja"
-    ))
-    if not hits:
-        sys.exit(f"chat_template.jinja not found under {hf_cache} — run the checkpoint download first")
-    tpl = open(hits[-1]).read()
+    revision = sys.argv[3] if len(sys.argv) == 4 else None
+    repo_dir = f"{hf_cache}/hub/models--RadixArk--Qwen3.8-27B-NVFP4"
+    chosen = None
+    if revision:
+        ref_file = f"{repo_dir}/refs/{revision}"
+        if os.path.isfile(ref_file):  # ref name (e.g. 'main') -> resolve to the sha
+            revision = open(ref_file).read().strip()
+        cand = f"{repo_dir}/snapshots/{revision}/chat_template.jinja"
+        if os.path.isfile(cand):
+            chosen = cand
+        else:
+            print(f"note: pinned revision {revision[:12]} has no chat_template.jinja snapshot, "
+                  "falling back to the newest one")
+    if chosen is None:
+        hits = glob.glob(f"{repo_dir}/snapshots/*/chat_template.jinja")
+        if not hits:
+            sys.exit(f"chat_template.jinja not found under {hf_cache} — run the checkpoint download first")
+        chosen = max(hits, key=os.path.getmtime)
+        if len(hits) > 1:
+            print(f"note: {len(hits)} snapshots present, using the most recent: {chosen.split('/')[-2][:12]}")
+    tpl = open(chosen).read()
 
     for name, anchor, patched, marker in (
         ("reasoning_effort", EFFORT_ANCHOR, EFFORT_PATCHED, "'minimal'"),

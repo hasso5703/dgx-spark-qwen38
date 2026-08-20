@@ -34,7 +34,9 @@ fi
 cat <<'EOF'
 
 To also reclaim disk space:
-  docker rmi lmsysorg/sglang:qwen38-27b                                      # ~39 GB
+  docker rmi $(docker images -q 'qwen38-dflash2')                            # locally built serving images
+  docker rmi lmsysorg/sglang:qwen38-27b                                      # ~39 GB base image
   rm -rf ~/.cache/huggingface/hub/models--RadixArk--Qwen3.8-27B-NVFP4        # ~21 GB
+  rm -rf ~/.cache/huggingface/hub/models--z-lab--Qwen3.8-27B-DFlash2         # ~4 GB
   rm -rf ~/.cache/huggingface/hub/models--RadixArk--Qwen3.8-27B-DSpark       # ~3 GB
 EOF

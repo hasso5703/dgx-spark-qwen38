@@ -134,7 +134,7 @@ if [ ! -s "$CONFIG_DIR/api-key" ]; then
 else
   echo "API key already present — keeping it"
 fi
-python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$CONFIG_DIR/chat-template-sglang.jinja" \
+python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$CONFIG_DIR/chat-template-sglang.jinja" "$MODEL_REV" \
   || die "Template patch failed (see message above). If the upstream template changed, please open an issue on this repo."
 
 step "7/9 Claude Code env file"
