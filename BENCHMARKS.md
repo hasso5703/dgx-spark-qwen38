@@ -223,9 +223,9 @@ consistent direction survives.
 **Verdict:** no measurable real-quality loss; the 2-3 tool-eval points are floating-point
 near-tie flips landing unfavorably on a handful of long scenarios of one benchmark, made
 visible (and stable) by determinism. DFlash2 stays the default: it wins every speed lane by
-20-40% and ties the quality battery. A pure-AR tool-eval baseline (the number nobody measures, ~3x slower to produce) is planned
-and will be appended here: it is the final arbiter of what the tool-eval score of "the model
-itself" even is.
+20-40% and ties the quality battery. What the tool-eval score of "the model itself" would be (a pure-AR run, ~3x slower to
+produce) is left as an open question; the token-identity test above already establishes that
+neither drafter reproduces it exactly, and the large-n evals settle the practical one.
 
 ## Benchmarking traps (all hit for real)
 
