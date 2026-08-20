@@ -68,8 +68,8 @@ def stream(prompt, temp, max_tokens):
     out = usage.get("completion_tokens") or n
     return (out - 1) / (t_last - t_first) if t_first and t_last > t_first else -1
 
-print("Qwen3.8-27B NVFP4+DSpark benchmark (batch 1 decode)")
-print("reference box: ~34 greedy median (code+reasoning) / 45+ math peak / 13-17 free prose\n")
+print("Qwen3.8-27B NVFP4+DFlash2 benchmark (batch 1 decode)")
+print("reference box (DFlash2 v1.2): ~50 greedy median — code 41-47 / reasoning 52-57 / math peak 50-60 / free prose ~23\n")
 all_greedy = []
 for name, temp, prompt, mt in PROBES:
     speeds = [stream(prompt, temp, mt) for _ in range(2)]
@@ -77,7 +77,7 @@ for name, temp, prompt, mt in PROBES:
         all_greedy += speeds
     print(f"  {name}: {speeds[0]:.1f} / {speeds[1]:.1f} tok/s")
     if max(speeds) > 90:
-        print("    ^ above the DSpark block-7 physical ceiling for this box (~8x the")
+        print("    ^ above the block-8 speculative physical ceiling for this box (~9x the")
         print("      ~11 tok/s AR floor) — almost certainly a measurement artifact, not")
         print("      real speed. Cross-check with bench-matrix.sh (wall-clock method).")
 print(f"\n  greedy median: {statistics.median(all_greedy):.1f} tok/s")

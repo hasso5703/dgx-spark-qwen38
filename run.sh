@@ -9,14 +9,14 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── Same pins as install.sh (read from it — single source of truth) ──
-PINS="$(grep -E '^(IMAGE|MODEL_REPO|DRAFT_REPO|MODEL_REV|DRAFT_REV|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
-[ "$(printf '%s\n' "$PINS" | wc -l)" -eq 8 ] || die "could not read the 8 pinned variables from install.sh (repo layout changed?)"
+PINS="$(grep -E '^(IMAGE|MODEL_REPO|DRAFT_REPO|MODEL_REV|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+[ "$(printf '%s\n' "$PINS" | wc -l)" -eq 11 ] || die "could not read the 11 pinned variables from install.sh (repo layout changed?)"
 eval "$PINS"
 
 # ── Everything prepared? ──
 [ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key — run: ./install.sh --no-service"
 [ -s "$CONFIG_DIR/chat-template-sglang.jinja" ] || die "no patched template in $CONFIG_DIR — run: ./install.sh --no-service"
-for REPO in "$MODEL_REPO" "$DRAFT_REPO"; do
+for REPO in "$MODEL_REPO" "$DRAFT_REPO" "$DRAFT2_REPO"; do
   DIR="$HF_CACHE/hub/models--${REPO//\//--}"
   SNAP="$(ls -d "$DIR"/snapshots/*/ 2>/dev/null | head -1 || true)"
   [ -n "$SNAP" ] || die "checkpoint $REPO not found in $HF_CACHE — run: ./install.sh --no-service"
@@ -28,7 +28,7 @@ for REPO in "$MODEL_REPO" "$DRAFT_REPO"; do
   compgen -G "${SNAP}*.safetensors" >/dev/null 2>&1 \
     || die "checkpoint $REPO has no weight files in its snapshot — re-run: ./install.sh --no-service"
 done
-docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE not pulled — run: ./install.sh --no-service"
+docker image inspect "$SERVE_IMAGE" >/dev/null 2>&1 || die "serving image $SERVE_IMAGE not built — run: ./install.sh --no-service"
 
 # ── Nothing else may be using the GPU or the port (GB10: one engine at a time) ──
 if systemctl is-active --quiet qwen38-sglang 2>/dev/null; then
@@ -60,7 +60,7 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
   -v "$CONFIG_DIR/sglang-cache":/cache \
   -v "$HF_CACHE":/root/.cache/huggingface \
   -v "$CONFIG_DIR":/out \
-  "$IMAGE" \
+  "$SERVE_IMAGE" \
   python3 -m sglang.launch_server \
     --trust-remote-code --model-path RadixArk/Qwen3.8-27B-NVFP4 --tp-size 1 \
     --served-model-name qwen3.8-27b \
@@ -68,9 +68,10 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
     --attention-backend flashinfer --chunked-prefill-size 8192 \
     --disable-prefill-cuda-graph --cuda-graph-max-bs 8 \
     --disable-flashinfer-autotune \
-    --speculative-algorithm DSPARK --speculative-draft-model-path RadixArk/Qwen3.8-27B-DSpark \
-    --speculative-dspark-block-size 7 --speculative-draft-model-quantization unquant \
-    --mamba-radix-cache-strategy extra_buffer_lazy --mamba-ssm-dtype bfloat16 \
+    --speculative-algorithm DFLASH --speculative-draft-model-path z-lab/Qwen3.8-27B-DFlash2 \
+    --speculative-draft-model-revision "$DRAFT2_REV" \
+    --speculative-num-draft-tokens 8 --speculative-draft-model-quantization unquant \
+    --mamba-radix-cache-strategy extra_buffer --mamba-ssm-dtype bfloat16 \
     --max-mamba-cache-size 96 --max-running-requests 8 \
     --enable-torch-compile --torch-compile-max-bs 4 \
     --num-continuous-decode-steps 2 \

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Removes the qwen38-sglang service and its config.
-# Keeps: the SGLang docker image and the downloaded checkpoints in ~/.cache/huggingface
+# Keeps: the docker images (base + locally built qwen38-dflash2) and the downloaded checkpoints in ~/.cache/huggingface
 # (delete those manually if you want the ~63 GB back — see bottom).
 set -euo pipefail
 UNIT_NAME="qwen38-sglang.service"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Qwen3.8-27B NVFP4 + DSpark on DGX Spark (GB10) — SGLang, systemd, hardened.
+# Qwen3.8-27B NVFP4 + DFlash2 on DGX Spark (GB10) — SGLang, systemd, hardened.
 # Idempotent: safe to re-run at any time (uses local caches when present).
 # Everything is PINNED to the versions validated on 2026-08-15; override with
 # env vars if you want to try newer builds (see --help).
@@ -11,7 +11,12 @@ IMAGE="${IMAGE:-lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d8960249
 MODEL_REPO="RadixArk/Qwen3.8-27B-NVFP4"
 DRAFT_REPO="RadixArk/Qwen3.8-27B-DSpark"
 MODEL_REV="${MODEL_REV:-52d1adc5f38aa5ebf099c29ed7025ba34cfbb854}"
-DRAFT_REV="${DRAFT_REV:-923ed3a8572615643f0137e424e4ce4edd7f1cda}"
+DRAFT_REV="${DRAFT_REV:-85ef153be924f17ce4bf62726954eeaa4a73e854}"
+DRAFT2_REPO="z-lab/Qwen3.8-27B-DFlash2"
+DRAFT2_REV="${DRAFT2_REV:-50307d4c4cde6860d4eee73e2547cd786fe8e8a4}"
+# Served image = pinned base + the 5 sha256-verified DFlash2 files (dflash2/, built locally,
+# offline). Replaced by an official image digest the day one ships DFLASH2.
+SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2}"
 PORT="${PORT:-30000}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 CONFIG_DIR="$HOME/.config/qwen38"
@@ -57,7 +62,7 @@ fi
 step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
 die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-step "1/8 Preflight checks"
+step "1/9 Preflight checks"
 [ "$(uname -m)" = "aarch64" ] || die "This setup targets GB10 (aarch64). Detected: $(uname -m)."
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found — is the NVIDIA driver stack installed? (stock on DGX OS)"
 GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
@@ -69,7 +74,11 @@ docker info >/dev/null 2>&1 || die "Cannot talk to the docker daemon. Fix: sudo 
 TOTAL_GB=$(awk '/^MemTotal/{print int($2/1048576)}' /proc/meminfo)
 [ "$TOTAL_GB" -ge 110 ] || die "This config needs a ~121 GB unified-memory machine; found ${TOTAL_GB} GB."
 FREE_DISK_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
-[ "$FREE_DISK_GB" -ge 45 ] || die "Need ~45 GB free under \$HOME for the checkpoints and caches; found ${FREE_DISK_GB} GB. Free some space or set HF_CACHE to another disk."
+# Fresh installs need ~45 GB (checkpoints + caches); upgrades where the big
+# checkpoint is already cached only need room for the DFlash2 draft (~5 GB).
+NEED_GB=45
+ls -d "$HF_CACHE/hub/models--${MODEL_REPO//\//--}/snapshots/"*/ >/dev/null 2>&1 && NEED_GB=10
+[ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free under \$HOME for the checkpoints and caches; found ${FREE_DISK_GB} GB. Free some space or set HF_CACHE to another disk."
 DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
 DOCKER_FREE_GB=$(df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')
 [ "${DOCKER_FREE_GB:-0}" -ge 45 ] || die "Need ~45 GB free on $DOCKER_ROOT for the 39 GB Docker image; found ${DOCKER_FREE_GB:-?} GB (docker images live there, not under \$HOME)."
@@ -83,32 +92,38 @@ fi
 if [ "$WITH_WARMUP" -eq 1 ]; then command -v claude >/dev/null || die "--with-claude-warmup requires the 'claude' CLI in PATH (https://claude.com/claude-code)."; fi
 echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
 
-step "2/8 Pulling the SGLang image (~39 GB, one-time — resumable)"
+step "2/9 Pulling the SGLang image (~39 GB, one-time — resumable)"
 docker pull "$IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream — try IMAGE=lmsysorg/sglang:qwen38-27b ./install.sh"
 
-step "3/8 Verifying the container can see the GPU"
+step "3/9 Verifying the container can see the GPU"
 docker run --rm --gpus all "$IMAGE" nvidia-smi -L >/dev/null 2>&1 \
   || die "'docker run --gpus all' cannot access the GPU. The NVIDIA Container Toolkit is missing or unconfigured. Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
 echo "OK — container sees: $(docker run --rm --gpus all "$IMAGE" nvidia-smi -L 2>/dev/null | head -1)"
 
-step "4/8 Downloading checkpoints (~24 GB, one-time — reuses/resumes any local copy)"
+step "4/9 Downloading checkpoints (~28 GB, one-time — reuses/resumes any local copy)"
 mkdir -p "$HF_CACHE" "$CONFIG_DIR/sglang-cache"
 docker run --rm -i --network host --user "$(id -u):$(id -g)" \
   -e HF_HOME=/hf \
   -e MODEL_REPO="$MODEL_REPO" -e MODEL_REV="$MODEL_REV" \
   -e DRAFT_REPO="$DRAFT_REPO" -e DRAFT_REV="$DRAFT_REV" \
+  -e DRAFT2_REPO="$DRAFT2_REPO" -e DRAFT2_REV="$DRAFT2_REV" \
   -v "$HF_CACHE":/hf \
   "$IMAGE" python3 - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace outage/rate-limit (re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT_REV=main ./install.sh), or a permission error — if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
 import os
 from huggingface_hub import snapshot_download
 for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
-                  (os.environ["DRAFT_REPO"], os.environ["DRAFT_REV"])):
+                  (os.environ["DRAFT_REPO"], os.environ["DRAFT_REV"]),
+                  (os.environ["DRAFT2_REPO"], os.environ["DRAFT2_REV"])):
     print(f"── {repo} @ {rev}", flush=True)
     snapshot_download(repo, revision=rev)
 print("checkpoints ready", flush=True)
 PYEOF
 
-step "5/8 API key + patched chat template"
+step "5/9 Building the DFlash2 serving image (pinned base + 5 verified files, offline, ~1 min)"
+BASE_IMAGE="$IMAGE" TAG="$SERVE_IMAGE" "$REPO_DIR/dflash2/build-image.sh" \
+  || die "DFlash2 image build failed — see dflash2/ATTRIBUTION.md; the checksums are verified before building, so a mismatch means a corrupted checkout (git status)."
+
+step "6/9 API key + patched chat template"
 if [ ! -s "$CONFIG_DIR/api-key" ]; then
   head -c 24 /dev/urandom | base64 | tr -d '/+=' > "$CONFIG_DIR/api-key"
   chmod 600 "$CONFIG_DIR/api-key"
@@ -119,7 +134,7 @@ fi
 python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$CONFIG_DIR/chat-template-sglang.jinja" \
   || die "Template patch failed (see message above). If the upstream template changed, please open an issue on this repo."
 
-step "6/8 Claude Code env file"
+step "7/9 Claude Code env file"
 KEY="$(cat "$CONFIG_DIR/api-key")"
 cat > "$CONFIG_DIR/claude-code.env" <<ENVEOF
 # source this file, then run:  claude --model qwen3.8-27b
@@ -155,14 +170,15 @@ if [ "$NO_SERVICE" -eq 1 ]; then
   exit 0
 fi
 
-step "7/8 Installing the systemd service (sudo needed)"
+step "8/9 Installing the systemd service (sudo needed)"
 TMP_UNIT="$(mktemp)"
 sed -e "s|__HOME__|$HOME|g" \
     -e "s|__USER__|$(id -un)|g" \
     -e "s|__GROUP__|$(id -gn)|g" \
     -e "s|__PORT__|$PORT|g" \
-    -e "s|__IMAGE__|$IMAGE|g" \
+    -e "s|__IMAGE__|$SERVE_IMAGE|g" \
     -e "s|__HF_CACHE__|$HF_CACHE|g" \
+    -e "s|__DRAFT2_REV__|$DRAFT2_REV|g" \
     "$REPO_DIR/qwen38-sglang.service.template" > "$TMP_UNIT"
 sudo cp "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME"; rm -f "$TMP_UNIT"
 if [ "$WITH_WARMUP" -eq 1 ]; then
@@ -181,7 +197,7 @@ if [ "$NO_START" -eq 1 ]; then
   exit 0
 fi
 
-step "8/8 Starting (first boot ≈ 9 min: torch.compile + CUDA graph capture; later boots are faster)"
+step "9/9 Starting (first boot ≈ 9 min: torch.compile + CUDA graph capture; later boots are faster)"
 sudo systemctl restart "$UNIT_NAME"
 for i in $(seq 1 150); do
   if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then

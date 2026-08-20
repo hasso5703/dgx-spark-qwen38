@@ -1,6 +1,6 @@
-# Qwen3.8-27B at 30–40 tok/s on DGX Spark (GB10)
+# Qwen3.8-27B at 20-45 tok/s single-stream and 148+ tok/s aggregate on DGX Spark (GB10)
 
-Most GB10 setups serve Qwen3.8-27B at 20–27 tok/s. This repo installs the fastest configuration measured so far — **SGLang + NVFP4 + DSpark speculative decoding** — as a one-command, boot-persistent service, with **zero quality loss** (same NVFP4 quantization floor; speculative decoding is lossless by construction, verified against a Q8 reference).
+Most GB10 setups serve Qwen3.8-27B at 20-27 tok/s single-stream with boot-to-boot variance nobody controls for. This repo installs the fastest configuration measured so far, **SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels**, as a one-command, boot-persistent service, with **zero quality loss** (same NVFP4 quantization floor; speculative decoding is lossless by construction, verified against a Q8 reference and live canaries). Measured on the reference box, thinking on: code 32-33 tok/s, math 41-44, free prose 17-22 (2-3x the stock drafter), **135-148 tok/s aggregate at 8 concurrent streams and 258 tok/s at 32** (`--max-running-requests 32`). Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
 
 You get an **OpenAI and Anthropic-compatible API** on port 30000. **Claude Code works out of the box** — three integration bugs are pre-fixed.
 
@@ -15,26 +15,28 @@ cd dgx-spark-qwen38
 ./bench.sh              # verify your tok/s
 ```
 
-First boot takes **~9 minutes** (kernel compilation, cached afterwards). Then:
+First boot takes **~7-9 minutes** (CUDA graph capture + kernel compilation, cached afterwards; later boots ~5-7 min). Then:
 
 - **Claude Code**: `source ~/.config/qwen38/claude-code.env && claude --model qwen3.8-27b`
 - **Any OpenAI client**: `http://<host>:30000/v1/chat/completions`, model `qwen3.8-27b`, Bearer key from `~/.config/qwen38/api-key`
 - **Anthropic protocol** (Claude Code & co): `http://<host>:30000/v1/messages` — `Authorization: Bearer` only, not `x-api-key`
 - **Don't want a systemd service?** `./install.sh --no-service && ./run.sh` — same config, foreground, no sudo, Ctrl+C and it's gone.
-- Everything is **pinned** (image digest + checkpoint revisions validated 2026-08-15) so it still works months from now; the installer is idempotent and every failure path says how to fix itself. `IMAGE=… MODEL_REV=main ./install.sh` overrides the pins.
+- Everything is **pinned** (base image digest + checkpoint revisions + five sha256-verified DFlash2 overlay files, see `dflash2/ATTRIBUTION.md`) so it still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
 
 ## What speed to expect
 
 Speculative decoding accepts *predictable* tokens, so speed depends on **what the model generates** — not on one magic number:
 
-| What you generate | This config | Stable-MTP engines (llama.cpp / vLLM) |
-|---|---|---|
-| Agentic coding — code, diffs, tool calls | **28–40 tok/s** | 24–28 |
-| Math & structured reasoning | **31–47** | 24–30 |
-| Technical explanations | 20–23 | ~22 |
-| Free-form prose (any language) | 12–16 | **17–18** |
+| What you generate (thinking on) | v1.2 (DFlash2, this repo) | v1.1 (DSpark) | Stable-MTP engines |
+|---|---|---|---|
+| Agentic coding — code, diffs, tool calls | **32-40 tok/s** | 28-36 | 24-28 |
+| Math & structured reasoning | **41-44** | 38-42 | 24-33 |
+| Technical explanations (FR) | **26** | 23-25 | ~22 |
+| Free-form prose EN / FR / DE | **22 / 20 / 17** | 17 / 14 / 13 | 17-20 |
+| **8 concurrent streams, aggregate** | **135-148** | 100-104 | ~92 |
+| **32 concurrent streams, aggregate** | **258** | not measured | not measured |
 
-If you're here for coding agents (Claude Code, agentic workflows), this config wins every relevant row, plus ~3× faster prefill and the best time-to-first-token. It also serves **8 truly concurrent streams (~94–109 tok/s aggregate measured)** — see BENCHMARKS.md. If you mostly generate free prose, llama.cpp+MTP is ~40 % faster on that one workload.
+v1.2 wins every row of the frozen battery except eval-style math (parity with stock), including free prose, historically the weak spot of block drafters. Every number above is deterministic across boots (`--disable-flashinfer-autotune`, see BENCHMARKS.md "The boot lottery") and was re-verified after a full machine reboot, with output-quality canaries passing. This machine serves its own Claude Code sessions with this exact repo, unmodified: if something breaks, it breaks here first.
 
 Full study — methodology, engine-vs-engine matrix, an independent reproduction, the physics of the GB10 ceiling, and a frozen benchmark battery you can run against **any** engine (`./bench-matrix.sh`) — in **[BENCHMARKS.md](BENCHMARKS.md)**.
 
@@ -69,7 +71,7 @@ Also: SGLang's `--api-key` only accepts `Authorization: Bearer` (Claude Code's `
 
 ```bash
 systemctl status qwen38-sglang          # state
-sudo systemctl restart qwen38-sglang    # ~9 min boot; radix cache is wiped, warmup (if installed) re-heats it
+sudo systemctl restart qwen38-sglang    # ~5-7 min boot; radix cache is wiped, warmup (if installed) re-heats it
 journalctl -u qwen38-sglang -f          # logs
 ./bench.sh                              # re-measure this config
 ./bench-matrix.sh                       # per-workload profile, works on any engine
@@ -80,9 +82,21 @@ Do **not** set `HF_HUB_OFFLINE=1`: SGLang probes for a LongCat config that doesn
 
 Notes: the server's own `watchdog_timeout=300` is a *hang* detector (kills a genuinely stuck forward so systemd restarts it) — it does not limit generation length. Two concurrent generations share the memory bus (~half speed each): the GB10 is a batch-1-per-moment machine.
 
+## Upgrading from an earlier version
+
+```bash
+cd dgx-spark-qwen38 && git pull && ./install.sh
+```
+
+Your API key, patched template, and any systemd drop-ins under
+`/etc/systemd/system/qwen38-sglang.service.d/` are kept; the unit is rewritten and the service
+restarts on the new config. v1.1 → v1.2 downloads the ~4 GB DFlash2 draft and builds the serving
+image locally (~1 min, offline, sha256-verified — see `dflash2/ATTRIBUTION.md`). To return to
+the DSpark config: `git checkout v1.1 && ./install.sh`. Change history: [CHANGELOG.md](CHANGELOG.md).
+
 ## Credits
 
-All the heavy lifting belongs to the [SGLang](https://github.com/sgl-project/sglang) team (day-0 Qwen3.8 support, the DSpark implementation, the `lmsysorg/sglang:qwen38-27b` image), [RadixArk](https://huggingface.co/RadixArk) for the NVFP4 + DSpark checkpoints, [DeepSeek](https://arxiv.org/abs/2607.05147) for the DSpark method, [Qwen](https://huggingface.co/Qwen/Qwen3.8-27B) for the model, and [Unsloth](https://unsloth.ai/docs/models/qwen3.8) for their guides. This repo just packages a validated, hardened configuration of their work for GB10 machines — the SGLang cookbook's DGX Spark cell was marked "not yet validated" at the time; consider this an independent field validation (2026-08-15).
+All the heavy lifting belongs to the [SGLang](https://github.com/sgl-project/sglang) team (day-0 Qwen3.8 support, the DSPARK and DFLASH implementations, the `lmsysorg/sglang:qwen38-27b` image), [z-lab / Inco AI](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) for the DFlash2 drafter, [MiaAI-Lab](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark) for the quantized-lm_head fix that makes DFlash2 safe on GB10, [r0b0tlab](https://github.com/r0b0tlab/qwen38-27b-nvfp4-sm121-sglang) for the draft-block sweep, [RadixArk](https://huggingface.co/RadixArk) for the NVFP4 + DSpark checkpoints, [DeepSeek](https://arxiv.org/abs/2607.05147) for the DSpark method, [Qwen](https://huggingface.co/Qwen/Qwen3.8-27B) for the model, and [Unsloth](https://unsloth.ai/docs/models/qwen3.8) for their guides. This repo just packages a validated, hardened configuration of their work for GB10 machines — the SGLang cookbook's DGX Spark cell was marked "not yet validated" at the time; consider this an independent field validation (2026-08-15).
 
 ## License
 

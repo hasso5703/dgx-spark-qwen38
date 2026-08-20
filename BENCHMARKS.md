@@ -179,16 +179,13 @@ Two more sizing facts from the same campaign, both measured multi-boot:
   box despite plausible single-stream stories; their apparent c1 gains did not survive the
   boot-lottery control.
 
-### What's coming: DFlash2
+### DFlash2: now the default (v1.2)
 
 With the same deterministic stack, the z-lab DFlash2 drafter (merged into SGLang main
 2026-08-19) measured on this box, thinking on, quality canaries passing: **wins every
 single-stream cell of the battery** (prose FR 20.2 vs 14.0 stock, reasoning FR 43.5 vs 30.5,
 code DE 39.4 vs 25.4, math at parity) and lifts aggregate throughput to **135-148 tok/s at c8
-and 258 tok/s at c32** (max-running-requests 32), still climbing at c32. It becomes this
-repo's default once an official release image ships DFLASH2; interim overlay-build path with
-credit to MiaAI-Lab (quantized lm_head fix) and r0b0tlab (K sweep: block 8 optimal, 9
-collapses) lands with it. An FP8-target variant (zero quantization-quality questions) measured
+and 258 tok/s at c32** (max-running-requests 32), still climbing at c32. It ships as this repo's default in v1.2 via a locally built, sha256-pinned overlay image (see dflash2/ATTRIBUTION.md; credit MiaAI-Lab for the quantized lm_head fix and r0b0tlab for the K sweep: block 8 optimal, 9 collapses). The repo repins to the official image the day one ships DFLASH2. An FP8-target variant (zero quantization-quality questions) measured
 108 tok/s c8 with the same drafter: above the old DSpark default, and the fallback if
 NVFP4-target quality evaluations ever demand it.
 

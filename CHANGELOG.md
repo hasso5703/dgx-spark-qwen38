@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.2 (2026-08-20)
+
+**DFlash2 becomes the default.** The service now serves the z-lab DFlash2 drafter instead of
+DSpark. Measured on the reference box against the v1.1 config, same battery, same night,
+deterministic mode, thinking on: every single-stream cell improves except math (parity), with
+free prose FR 20.2 vs 14.0, reasoning FR 43.5 vs 30.5, code DE 39.4 vs 25.4; aggregate
+throughput 135-148 tok/s at concurrency 8 (vs 100-104) and 258 tok/s at c32
+(`--max-running-requests 32`). Quality canaries pass; speculative decoding remains lossless by
+construction. Validated end to end including a full machine reboot.
+
+No official SGLang image contains DFLASH2 yet (merged upstream 2026-08-19), so `install.sh`
+now builds the serving image locally: the same pinned base digest plus five sha256-verified
+overlay files vendored in `dflash2/` (Apache-2.0 from sgl-project PR #35371, plus MiaAI-Lab's
+MIT-licensed quantized-lm_head fix; full provenance in `dflash2/ATTRIBUTION.md`, K choice per
+r0b0tlab's block sweep). The build is offline and takes about a minute. The day an official
+image ships DFLASH2, the repo repins to it and `dflash2/` is retired.
+
+Upgrade: `git pull && ./install.sh` (key and template kept; ~4 GB one-time draft download;
+first boot recaptures CUDA graphs). To stay on the DSpark config instead:
+`git checkout v1.1 && ./install.sh`.
+
+Also: the DSpark draft pin moves to RadixArk's 2026-08-16 revision (identical weights and
+config; the commit only fixed the transformers reference code).
+
 ## v1.1 (2026-08-20)
 
 Two flag changes, both measured overnight on the reference box (same battery, same night,
