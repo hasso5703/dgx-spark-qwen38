@@ -40,6 +40,17 @@ Two instruments, both in the box, both reproducible. The headline **50 tok/s gre
 
 v1.2 wins every row of the frozen battery except eval-style math (parity with stock), including free prose, historically the weak spot of block drafters. Every number above is deterministic across boots (`--disable-flashinfer-autotune`, see BENCHMARKS.md "The boot lottery") and was re-verified after a full machine reboot, with output-quality canaries passing. This machine serves its own Claude Code sessions with this exact repo, unmodified: if something breaks, it breaks here first.
 
+**Quality, measured (not claimed).** Same box, v1.2.1, thinking on:
+
+| Quality check | Result |
+|---|---|
+| GSM8K, 200 problems | **94.0%** (188/200), exact parity with the DSpark profile |
+| IFEval, 200 prompts | **81.4%** prompt-level / **87.4%** instruction-level |
+| tool-eval-bench, 69 scenarios | **91/100** (Excellent), reproducible to the point across seeds |
+| Independent users on this config | **92-94/100** tool-calling ([forum thread](https://forums.developer.nvidia.com/t/380257)) |
+| Losslessness | token-identity study vs the pure model in BENCHMARKS.md ("The losslessness study") |
+
+
 Full study — methodology, engine-vs-engine matrix, an independent reproduction, the physics of the GB10 ceiling, and a frozen benchmark battery you can run against **any** engine (`./bench-matrix.sh`) — in **[BENCHMARKS.md](BENCHMARKS.md)**.
 
 ## ⚠️ The GB10 unified-memory trap (read this before changing anything)
