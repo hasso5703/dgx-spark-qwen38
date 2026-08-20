@@ -66,7 +66,8 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
     --served-model-name qwen3.8-27b \
     --mem-fraction-static 0.50 \
     --attention-backend flashinfer --chunked-prefill-size 8192 \
-    --disable-prefill-cuda-graph --cuda-graph-max-bs 4 \
+    --disable-prefill-cuda-graph --cuda-graph-max-bs 8 \
+    --disable-flashinfer-autotune \
     --speculative-algorithm DSPARK --speculative-draft-model-path RadixArk/Qwen3.8-27B-DSpark \
     --speculative-dspark-block-size 7 --speculative-draft-model-quantization unquant \
     --mamba-radix-cache-strategy extra_buffer_lazy --mamba-ssm-dtype bfloat16 \

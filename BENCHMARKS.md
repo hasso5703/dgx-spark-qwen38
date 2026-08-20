@@ -151,6 +151,47 @@ The battery is versioned (v1) and frozen: the prompts never change in place, so 
 
 Want to A/B against another engine without installing a service? `./install.sh --no-service && ./run.sh` runs the exact pinned config in the foreground; Ctrl+C stops and removes the container. The forum A/B author also published [their own standalone launcher](https://forums.developer.nvidia.com/t/380257/10) — same pinned config, rootless container, image-ID fallback for `docker save|load` transfers — plus the `minimal` template fix now folded into this repo.
 
+## The boot lottery, and how we killed it (2026-08-20)
+
+The single most consequential finding of this repo's overnight flag campaign: **on GB10,
+the identical SGLang config does not perform identically across boots.** Measured on this box,
+same config, same load, same battery: concurrency-8 aggregate ranged from 92 to 111 tok/s
+across boots, and verify-heavy single-stream cells (code, math) swung up to ±15 % while prose
+cells stayed stable to the decimal. Root cause, isolated by A/B: FlashInfer's kernel autotune
+re-measures and re-picks kernels at every boot (its on-disk cache turns out to be advisory;
+we verified the cache file is read but a different draw can still land). Any cross-box or
+cross-config comparison that did not control for this contains boot noise, including earlier
+numbers in this file and every third-party GB10 table we have seen.
+
+The fix shipped in v1.1: `--disable-flashinfer-autotune`. With it, single-stream cells
+reproduce to the decimal across boots, c8 lands within ±1.6 %, and boots get about 2 minutes
+faster, for roughly 2 % of the lottery's average throughput. Additionally
+`--cuda-graph-max-bs 8` captures decode batches 5-8 that previously ran eager: +6.5 % at c8,
+reproduced across boots. Net: a stable 100-104 tok/s c8 instead of a 92-111 roll of the dice.
+
+Two more sizing facts from the same campaign, both measured multi-boot:
+
+- **GDN slot headroom is throughput.** `--max-mamba-cache-size 32` (the sizing rule's exact
+  minimum for 8 requests) costs ~14 % of c8 aggregate vs 96; 64 keeps full c8 and frees
+  ~55K KV tokens. The cookbook's memory-saving settings (fewer slots,
+  `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK`) both cost c8 on this hardware.
+- **Chunked-prefill 4096 and `--num-continuous-decode-steps 3` both cost ~16 % of c8** on this
+  box despite plausible single-stream stories; their apparent c1 gains did not survive the
+  boot-lottery control.
+
+### What's coming: DFlash2
+
+With the same deterministic stack, the z-lab DFlash2 drafter (merged into SGLang main
+2026-08-19) measured on this box, thinking on, quality canaries passing: **wins every
+single-stream cell of the battery** (prose FR 20.2 vs 14.0 stock, reasoning FR 43.5 vs 30.5,
+code DE 39.4 vs 25.4, math at parity) and lifts aggregate throughput to **135-148 tok/s at c8
+and 258 tok/s at c32** (max-running-requests 32), still climbing at c32. It becomes this
+repo's default once an official release image ships DFLASH2; interim overlay-build path with
+credit to MiaAI-Lab (quantized lm_head fix) and r0b0tlab (K sweep: block 8 optimal, 9
+collapses) lands with it. An FP8-target variant (zero quantization-quality questions) measured
+108 tok/s c8 with the same drafter: above the old DSpark default, and the fallback if
+NVFP4-target quality evaluations ever demand it.
+
 ## Benchmarking traps (all hit for real)
 
 - **Repeated images** hit the multimodal cache and skip the vision tower entirely — any image benchmark needs images the instance has never seen (found by the forum A/B author).
