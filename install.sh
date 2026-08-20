@@ -99,9 +99,10 @@ step "2/9 Pulling the SGLang image (~39 GB, one-time, resumable)"
 docker pull "$IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:qwen38-27b ./install.sh"
 
 step "3/9 Verifying the container can see the GPU"
-docker run --rm --gpus all "$IMAGE" nvidia-smi -L >/dev/null 2>&1 \
-  || die "'docker run --gpus all' cannot access the GPU. The NVIDIA Container Toolkit is missing or unconfigured. Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
-echo "OK, container sees: $(docker run --rm --gpus all "$IMAGE" nvidia-smi -L 2>/dev/null | head -1)"
+GPU_SEEN="$(docker run --rm --gpus all "$IMAGE" nvidia-smi -L 2>/dev/null | grep -m1 '^GPU' || true)"
+[ -n "$GPU_SEEN" ] \
+  || die "'docker run --gpus all' cannot see the GPU (no GPU line from nvidia-smi -L in the container). The NVIDIA Container Toolkit is missing or unconfigured. Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+echo "OK, container sees: $GPU_SEEN"
 
 step "4/9 Downloading checkpoints (~28 GB, one-time, reuses/resumes any local copy)"
 mkdir -p "$HF_CACHE" "$CONFIG_DIR/sglang-cache"

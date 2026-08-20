@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.4 (2026-08-21)
+
+Second fix from the lifecycle audit: the step-3 "container sees the GPU" line always printed
+blank, because the image's entrypoint banner starts with an empty line and the check displayed
+the first line of output. The GPU line comes after the banner. The check now extracts the
+actual `GPU 0: ...` line, refuses to continue if no GPU line appears even when the command
+exits 0, and runs one container instead of two. Verified on the reference box, including with
+the GPU busy serving.
+
 ## v1.2.3 (2026-08-20)
 
 One fix from the lifecycle audit: the systemd unit file was installed with mode 600 (a
