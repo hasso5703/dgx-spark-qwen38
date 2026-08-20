@@ -1,5 +1,5 @@
 [Unit]
-Description=Qwen3.8-27B NVFP4 + DFlash2 (SGLang, capped docker) — OpenAI+Anthropic API :__PORT__
+Description=Qwen3.8-27B NVFP4 + DFlash2 (SGLang, capped docker), OpenAI+Anthropic API :__PORT__
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service

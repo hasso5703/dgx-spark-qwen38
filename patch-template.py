@@ -67,7 +67,7 @@ def main() -> None:
     if chosen is None:
         hits = glob.glob(f"{repo_dir}/snapshots/*/chat_template.jinja")
         if not hits:
-            sys.exit(f"chat_template.jinja not found under {hf_cache} — run the checkpoint download first")
+            sys.exit(f"chat_template.jinja not found under {hf_cache}. Run the checkpoint download first")
         chosen = max(hits, key=os.path.getmtime)
         if len(hits) > 1:
             print(f"note: {len(hits)} snapshots present, using the most recent: {chosen.split('/')[-2][:12]}")
@@ -81,10 +81,10 @@ def main() -> None:
             tpl = tpl.replace(anchor, patched, 1)
             print(f"patch '{name}': applied")
         elif marker in tpl:
-            print(f"patch '{name}': already present upstream — nothing to do")
+            print(f"patch '{name}': already present upstream, nothing to do")
         else:
             sys.exit(
-                f"patch '{name}': anchor not found and fix not present — the upstream "
+                f"patch '{name}': anchor not found and fix not present: the upstream "
                 "template changed. Please open an issue with the template revision."
             )
 

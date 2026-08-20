@@ -4,7 +4,7 @@
 set -euo pipefail
 PORT="${PORT:-30000}"
 KEY_FILE="$HOME/.config/qwen38/api-key"
-[ -s "$KEY_FILE" ] || { echo "API key not found at $KEY_FILE — run ./install.sh first"; exit 1; }
+[ -s "$KEY_FILE" ] || { echo "API key not found at $KEY_FILE. Run ./install.sh first"; exit 1; }
 for i in 1 2 3; do
   curl -s -m 5 "http://127.0.0.1:$PORT/health" >/dev/null && break
   [ "$i" = 3 ] && { echo "server not up on :$PORT after 3 tries (systemctl status qwen38-sglang)"; exit 1; }
@@ -25,9 +25,9 @@ PROBES = [
     ("math peak (temp 0.6, like SGLang's eval setting)", 0.6,
      "Natalia sold clips to 48 friends in April, half as many in May, and 3x May's amount in June. How many clips did she sell in total? Think step by step.", 2048),
     # Deliberate worst case, NOT in the median: free prose collapses draft
-    # acceptance (~1.5-2.2 vs 3.3-5.6) — see the README's content-dependence
+    # acceptance (~1.5-2.2 vs 3.3-5.6); see the README's content-dependence
     # section. If this one is slow but the others are fast, that is EXPECTED.
-    ("free prose (greedy, worst-case — excluded from median)", 0.0,
+    ("free prose (greedy, worst-case, excluded from median)", 0.0,
      "Describe in detail a walk through an autumn forest: the colors of the leaves, the sounds, the smell after rain, and the thoughts that cross your mind.", 800),
 ]
 
@@ -69,7 +69,7 @@ def stream(prompt, temp, max_tokens):
     return (out - 1) / (t_last - t_first) if t_first and t_last > t_first else -1
 
 print("Qwen3.8-27B NVFP4+DFlash2 benchmark (batch 1 decode)")
-print("reference box (DFlash2 v1.2): ~50 greedy median — code 41-47 / reasoning 52-57 / math peak 50-60 / free prose ~23\n")
+print("reference box (DFlash2 v1.2+): ~50 greedy median (code 41-47 / reasoning 52-57 / math peak 50-60 / free prose ~23)\n")
 all_greedy = []
 for name, temp, prompt, mt in PROBES:
     speeds = [stream(prompt, temp, mt) for _ in range(2)]
@@ -78,10 +78,10 @@ for name, temp, prompt, mt in PROBES:
     print(f"  {name}: {speeds[0]:.1f} / {speeds[1]:.1f} tok/s")
     if max(speeds) > 90:
         print("    ^ above the block-8 speculative physical ceiling for this box (~9x the")
-        print("      ~11 tok/s AR floor) — almost certainly a measurement artifact, not")
+        print("      ~11 tok/s AR floor), almost certainly a measurement artifact, not")
         print("      real speed. Cross-check with bench-matrix.sh (wall-clock method).")
 print(f"\n  greedy median: {statistics.median(all_greedy):.1f} tok/s")
-print("  (numbers vary with content — acceptance length drives everything;")
+print("  (numbers vary with content: acceptance length drives everything;")
 print("   math/code accept ~3.3-5.6 tokens/step, free prose ~1.5-2.2 in any")
-print("   language — see BENCHMARKS.md)")
+print("   language, see BENCHMARKS.md)")
 PYEOF

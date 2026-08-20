@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Workload matrix benchmark — engine-agnostic.
+# Workload matrix benchmark: engine-agnostic.
 # Runs a FIXED, versioned probe battery (v1: 8 workloads × 3 languages spread)
 # against ANY OpenAI-compatible endpoint, so results are comparable across
 # engines, boxes and months. Decode is measured net of prefill with a
@@ -30,7 +30,7 @@ import json, os, time, urllib.request
 
 BASE, MODEL, KEY, LABEL = (os.environ[k] for k in ("BASE_URL", "MODEL", "API_KEY", "LABEL"))
 
-# Probe battery v1 — DO NOT edit prompts in place: results stop being
+# Probe battery v1: DO NOT edit prompts in place, results stop being
 # comparable. Add a v2 battery instead if it ever needs to change.
 BATTERY_VERSION = 1
 PROBES = [
@@ -59,7 +59,7 @@ def call(prompt, max_tok):
     u = r.get("usage") or {}
     ct = u.get("completion_tokens")
     if ct is None:
-        raise SystemExit("endpoint returns no usage.completion_tokens — cannot measure")
+        raise SystemExit("endpoint returns no usage.completion_tokens, cannot measure")
     return time.time() - t0, ct
 
 served = "?"
@@ -70,7 +70,7 @@ try:
 except Exception:
     pass
 
-print(f"Workload matrix v{BATTERY_VERSION} — endpoint {BASE} (model id: {served})")
+print(f"Workload matrix v{BATTERY_VERSION}, endpoint {BASE} (model id: {served})")
 print("greedy, fresh single-turn prompts, decode net of prefill (two-call delta)\n")
 # Discarded warmup: the very first request after a model load pays one-time
 # costs (mmap page-in, graph/kernel warmup) that would poison the first probe.
@@ -80,8 +80,8 @@ for name, prompt in PROBES:
     d1, c1 = call(prompt, 80)
     d2, c2 = call(prompt, 680)
     if c2 - c1 < 50 or d2 - d1 < 2.0:
-        print(f"  {name:24s}: unreliable sample (Δtok={c2-c1}, Δt={d2-d1:.2f}s — short answer,"
-              " cold start or cache artifact) — skipped")
+        print(f"  {name:24s}: unreliable sample (Δtok={c2-c1}, Δt={d2-d1:.2f}s: short answer,"
+              " cold start or cache artifact), skipped")
         results.append({"probe": name, "tok_s": None})
         continue
     tps = (c2 - c1) / (d2 - d1)
@@ -92,5 +92,5 @@ out = {"battery_version": BATTERY_VERSION, "endpoint": BASE, "model_id": served,
        "method": "two-call delta, temperature 0, max_tokens 80/680", "results": results}
 path = f"bench-matrix-{LABEL}.json"
 json.dump(out, open(path, "w"), indent=1)
-print(f"\nwritten: {path}   (post it — results are comparable across engines/boxes)")
+print(f"\nwritten: {path}   (post it: results are comparable across engines/boxes)")
 PYEOF

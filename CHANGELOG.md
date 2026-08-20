@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.2.2 (2026-08-20)
+
+Typography pass, no functional change. All prose dashes were removed from every document,
+script message and comment (house style). One comment line inside the vendored overlay
+(`dflash2/sglang/srt/models/dflash.py`) was reworded, so the manifest is regenerated and the
+serving image tag becomes `qwen38-dflash2:v1.2.2` (rebuilt automatically by `./install.sh`,
+about a minute, offline). Runtime behavior, flags, pins and performance are identical to
+v1.2.1. Also validated in this release cycle, on the reference box: the full lifecycle
+`get.sh` one-liner (fresh install, upgrade over a modified clone, uninstall/reinstall),
+`./run.sh` end to end, and the manifest tamper guard (a modified overlay file refuses to
+build).
+
 ## v1.2.1 (2026-08-20)
 
 Correctness alignment of the vendored DFlash2 overlay with upstream, plus the quality study

@@ -8,7 +8,7 @@ BASE_IMAGE="${BASE_IMAGE:?BASE_IMAGE required (pinned digest ref)}"
 TAG="${TAG:?TAG required (local image tag)}"
 
 docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 || { echo "base image not present: $BASE_IMAGE" >&2; exit 1; }
-(cd "$DIR" && sha256sum -c MANIFEST.sha256 >/dev/null) || { echo "overlay checksum mismatch — refusing to build" >&2; exit 1; }
+(cd "$DIR" && sha256sum -c MANIFEST.sha256 >/dev/null) || { echo "overlay checksum mismatch, refusing to build" >&2; exit 1; }
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT

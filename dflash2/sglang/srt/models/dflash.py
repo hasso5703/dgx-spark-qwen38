@@ -941,7 +941,7 @@ class DFlash2DraftModel(DFlashDraftModel):
         quant_method = getattr(lm_head, "quant_method", None)
         if should_apply_lm_head_quant_method(lm_head, quant_method):
             # Upstream fix (sglang #35496): flashinfer's radix top-k must not see a
-            # cropped (non-contiguous) view of the padded local vocab — keep the
+            # cropped (non-contiguous) view of the padded local vocab; keep the
             # logits contiguous and mask the padded tail out of the top-k instead.
             local_logits = quant_method.apply(lm_head, hidden, None).contiguous()
             if local_logits.shape[-1] > num_org:

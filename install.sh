@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Qwen3.8-27B NVFP4 + DFlash2 on DGX Spark (GB10) — SGLang, systemd, hardened.
+# Qwen3.8-27B NVFP4 + DFlash2 on DGX Spark (GB10): SGLang, systemd, hardened.
 # Idempotent: safe to re-run at any time (uses local caches when present).
 # Everything is PINNED to the versions validated on 2026-08-15; override with
 # env vars if you want to try newer builds (see --help).
 set -euo pipefail
-trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-running ./install.sh is safe — completed steps are skipped.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
+trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-running ./install.sh is safe: completed steps are skipped.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 # ── Pinned, validated versions (override via env if you know what you do) ──
 IMAGE="${IMAGE:-lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1}"  # = lmsysorg/sglang:qwen38-27b, 2026-08-15
@@ -16,7 +16,7 @@ DRAFT2_REPO="z-lab/Qwen3.8-27B-DFlash2"
 DRAFT2_REV="${DRAFT2_REV:-50307d4c4cde6860d4eee73e2547cd786fe8e8a4}"
 # Served image = pinned base + the 5 sha256-verified DFlash2 files (dflash2/, built locally,
 # offline). Replaced by an official image digest the day one ships DFLASH2.
-SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2.1}"
+SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2.2}"
 PORT="${PORT:-30000}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 CONFIG_DIR="$HOME/.config/qwen38"
@@ -66,10 +66,10 @@ die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 step "1/9 Preflight checks"
 [ "$(uname -m)" = "aarch64" ] || die "This setup targets GB10 (aarch64). Detected: $(uname -m)."
-command -v nvidia-smi >/dev/null || die "nvidia-smi not found — is the NVIDIA driver stack installed? (stock on DGX OS)"
+command -v nvidia-smi >/dev/null || die "nvidia-smi not found. Is the NVIDIA driver stack installed? (stock on DGX OS)"
 GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 echo "GPU: $GPU_NAME"
-case "$GPU_NAME" in *GB10*) ;; *) echo "WARNING: expected GB10, found '$GPU_NAME'. Continuing — but this config was only validated on GB10 (memory sizing may not fit other GPUs)." ;; esac
+case "$GPU_NAME" in *GB10*) ;; *) echo "WARNING: expected GB10, found '$GPU_NAME'. Continuing, but this config was only validated on GB10 (memory sizing may not fit other GPUs)." ;; esac
 command -v docker >/dev/null || die "docker not found. Install Docker + NVIDIA Container Toolkit (stock on DGX OS)."
 command -v python3 >/dev/null || die "python3 not found on the host (needed for the template patcher; stock on DGX OS)."
 docker info >/dev/null 2>&1 || die "Cannot talk to the docker daemon. Fix: sudo usermod -aG docker \$USER && re-login (or run with a user in the docker group)."
@@ -87,7 +87,7 @@ DOCKER_FREE_GB=$(df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null | tail -1 | tr
 [ "${DOCKER_FREE_GB:-0}" -ge 45 ] || die "Need ~45 GB free on $DOCKER_ROOT for the 39 GB Docker image; found ${DOCKER_FREE_GB:-?} GB (docker images live there, not under \$HOME)."
 if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   if docker inspect qwen38-sglang --format '{{join .Args " "}}' 2>/dev/null | grep -qE -- "--port ${PORT}(\s|$)"; then
-    echo "Note: $UNIT_NAME is already running on :$PORT — re-installing over it (converging config)."
+    echo "Note: $UNIT_NAME is already running on :$PORT, re-installing over it (converging config)."
   else
     die "Port $PORT is already in use by another program (see: ss -tlnp | grep :$PORT). Free it, or install with PORT=<other> ./install.sh"
   fi
@@ -95,15 +95,15 @@ fi
 if [ "$WITH_WARMUP" -eq 1 ]; then command -v claude >/dev/null || die "--with-claude-warmup requires the 'claude' CLI in PATH (https://claude.com/claude-code)."; fi
 echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
 
-step "2/9 Pulling the SGLang image (~39 GB, one-time — resumable)"
-docker pull "$IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream — try IMAGE=lmsysorg/sglang:qwen38-27b ./install.sh"
+step "2/9 Pulling the SGLang image (~39 GB, one-time, resumable)"
+docker pull "$IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:qwen38-27b ./install.sh"
 
 step "3/9 Verifying the container can see the GPU"
 docker run --rm --gpus all "$IMAGE" nvidia-smi -L >/dev/null 2>&1 \
   || die "'docker run --gpus all' cannot access the GPU. The NVIDIA Container Toolkit is missing or unconfigured. Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
-echo "OK — container sees: $(docker run --rm --gpus all "$IMAGE" nvidia-smi -L 2>/dev/null | head -1)"
+echo "OK, container sees: $(docker run --rm --gpus all "$IMAGE" nvidia-smi -L 2>/dev/null | head -1)"
 
-step "4/9 Downloading checkpoints (~28 GB, one-time — reuses/resumes any local copy)"
+step "4/9 Downloading checkpoints (~28 GB, one-time, reuses/resumes any local copy)"
 mkdir -p "$HF_CACHE" "$CONFIG_DIR/sglang-cache"
 docker run --rm -i --network host --user "$(id -u):$(id -g)" \
   -e HF_HOME=/hf \
@@ -111,7 +111,7 @@ docker run --rm -i --network host --user "$(id -u):$(id -g)" \
   -e DRAFT_REPO="$DRAFT_REPO" -e DRAFT_REV="$DRAFT_REV" \
   -e DRAFT2_REPO="$DRAFT2_REPO" -e DRAFT2_REV="$DRAFT2_REV" \
   -v "$HF_CACHE":/hf \
-  "$IMAGE" python3 - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace outage/rate-limit (re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT_REV=main ./install.sh), or a permission error — if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
+  "$IMAGE" python3 - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace outage/rate-limit (re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT_REV=main ./install.sh), or a permission error: if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
 import os
 from huggingface_hub import snapshot_download
 for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
@@ -124,7 +124,7 @@ PYEOF
 
 step "5/9 Building the DFlash2 serving image (pinned base + 5 verified files, offline, ~1 min)"
 BASE_IMAGE="$IMAGE" TAG="$SERVE_IMAGE" "$REPO_DIR/dflash2/build-image.sh" \
-  || die "DFlash2 image build failed — see dflash2/ATTRIBUTION.md; the checksums are verified before building, so a mismatch means a corrupted checkout (git status)."
+  || die "DFlash2 image build failed: see dflash2/ATTRIBUTION.md; the checksums are verified before building, so a mismatch means a corrupted checkout (git status)."
 
 step "6/9 API key + patched chat template"
 if [ ! -s "$CONFIG_DIR/api-key" ]; then
@@ -132,7 +132,7 @@ if [ ! -s "$CONFIG_DIR/api-key" ]; then
   chmod 600 "$CONFIG_DIR/api-key"
   echo "API key generated at $CONFIG_DIR/api-key"
 else
-  echo "API key already present — keeping it"
+  echo "API key already present, keeping it"
 fi
 python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$CONFIG_DIR/chat-template-sglang.jinja" "$MODEL_REV" \
   || die "Template patch failed (see message above). If the upstream template changed, please open an issue on this repo."
@@ -154,7 +154,7 @@ export API_TIMEOUT_MS=3600000
 export CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=1800000
 export CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000
 # Per-request output budget: reasoning tokens count against it, and Claude Code
-# sends max_tokens=32000 by default (verified by request capture on 2.1.235 —
+# sends max_tokens=32000 by default (verified by request capture on 2.1.235;
 # the variable is undocumented but effective). Long answers were truncating.
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000
 # 262144 minus a 4096 margin: client-side token counting is approximate, so
@@ -164,12 +164,12 @@ export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 export CLAUDE_CODE_ENABLE_TELEMETRY=0
 ENVEOF
 chmod 600 "$CONFIG_DIR/claude-code.env"
-echo "wrote $CONFIG_DIR/claude-code.env (mode 600 — it contains the API key)"
+echo "wrote $CONFIG_DIR/claude-code.env (mode 600: it contains the API key)"
 
 if [ "$NO_SERVICE" -eq 1 ]; then
   printf '\n\033[1;32m✅ Prepared (no systemd, nothing needed sudo).\033[0m\n'
   echo "  Run in the foreground: ./run.sh     (Ctrl+C stops it; first boot ≈ 9 min)"
-  echo "  Everything it uses lives in $CONFIG_DIR and $HF_CACHE — delete those to remove."
+  echo "  Everything it uses lives in $CONFIG_DIR and $HF_CACHE: delete those to remove."
   exit 0
 fi
 
@@ -196,7 +196,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable "$UNIT_NAME"
 
 if [ "$NO_START" -eq 1 ]; then
-  step "Done (service installed and enabled at boot — start it with: sudo systemctl start $UNIT_NAME)"
+  step "Done (service installed and enabled at boot; start it with: sudo systemctl start $UNIT_NAME)"
   exit 0
 fi
 
@@ -204,7 +204,7 @@ step "9/9 Starting (first boot ≈ 9 min: torch.compile + CUDA graph capture; la
 sudo systemctl restart "$UNIT_NAME"
 for i in $(seq 1 150); do
   if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-    echo "health OK — running a real generation smoke test..."
+    echo "health OK, running a real generation smoke test..."
     SMOKE="$(curl -s -m 300 "http://127.0.0.1:$PORT/v1/chat/completions" \
       -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
       -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"Reply with exactly: READY"}],"max_tokens":600}' \
@@ -224,8 +224,8 @@ except Exception as e:
     exit 0
   fi
   ST="$(systemctl is-active "$UNIT_NAME" || true)"
-  [ "$ST" = "failed" ] && { journalctl -u "$UNIT_NAME" --no-pager | tail -25; die "Service failed during startup — logs above. Common cause: another process eating GPU/unified memory (this config needs the machine to itself)."; }
-  [ $((i % 15)) -eq 0 ] && echo "  still loading... ($((i*8))s — first boot compiles kernels, be patient)"
+  [ "$ST" = "failed" ] && { journalctl -u "$UNIT_NAME" --no-pager | tail -25; die "Service failed during startup, logs above. Common cause: another process eating GPU/unified memory (this config needs the machine to itself)."; }
+  [ $((i % 15)) -eq 0 ] && echo "  still loading... ($((i*8))s; first boot compiles kernels, be patient)"
   sleep 8
 done
 die "Server did not come up within 20 min. Watch: journalctl -u $UNIT_NAME -f"

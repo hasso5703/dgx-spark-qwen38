@@ -8,31 +8,31 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# ── Same pins as install.sh (read from it — single source of truth) ──
+# ── Same pins as install.sh (read from it: single source of truth) ──
 PINS="$(grep -E '^(IMAGE|MODEL_REPO|DRAFT_REPO|MODEL_REV|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
 [ "$(printf '%s\n' "$PINS" | wc -l)" -eq 11 ] || die "could not read the 11 pinned variables from install.sh (repo layout changed?)"
 eval "$PINS"
 
 # ── Everything prepared? ──
-[ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key — run: ./install.sh --no-service"
-[ -s "$CONFIG_DIR/chat-template-sglang.jinja" ] || die "no patched template in $CONFIG_DIR — run: ./install.sh --no-service"
+[ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key. Run: ./install.sh --no-service"
+[ -s "$CONFIG_DIR/chat-template-sglang.jinja" ] || die "no patched template in $CONFIG_DIR. Run: ./install.sh --no-service"
 for REPO in "$MODEL_REPO" "$DRAFT_REPO" "$DRAFT2_REPO"; do
   DIR="$HF_CACHE/hub/models--${REPO//\//--}"
   SNAP="$(ls -d "$DIR"/snapshots/*/ 2>/dev/null | head -1 || true)"
-  [ -n "$SNAP" ] || die "checkpoint $REPO not found in $HF_CACHE — run: ./install.sh --no-service"
+  [ -n "$SNAP" ] || die "checkpoint $REPO not found in $HF_CACHE. Run: ./install.sh --no-service"
   # An interrupted download leaves snapshots/ in place with only the small
-  # files — so also require finished blobs and actual weights (credit: helge).
+  # files, so also require finished blobs and actual weights (credit: helge).
   if compgen -G "$DIR/blobs/*.incomplete" >/dev/null 2>&1; then
-    die "checkpoint $REPO download is incomplete (blobs/*.incomplete) — re-run: ./install.sh --no-service (it resumes)"
+    die "checkpoint $REPO download is incomplete (blobs/*.incomplete). Re-run: ./install.sh --no-service (it resumes)"
   fi
   compgen -G "${SNAP}*.safetensors" >/dev/null 2>&1 \
-    || die "checkpoint $REPO has no weight files in its snapshot — re-run: ./install.sh --no-service"
+    || die "checkpoint $REPO has no weight files in its snapshot. Re-run: ./install.sh --no-service"
 done
-docker image inspect "$SERVE_IMAGE" >/dev/null 2>&1 || die "serving image $SERVE_IMAGE not built — run: ./install.sh --no-service"
+docker image inspect "$SERVE_IMAGE" >/dev/null 2>&1 || die "serving image $SERVE_IMAGE not built. Run: ./install.sh --no-service"
 
 # ── Nothing else may be using the GPU or the port (GB10: one engine at a time) ──
 if systemctl is-active --quiet qwen38-sglang 2>/dev/null; then
-  die "the qwen38-sglang systemd service is running — stop it first: sudo systemctl stop qwen38-sglang"
+  die "the qwen38-sglang systemd service is running. Stop it first: sudo systemctl stop qwen38-sglang"
 fi
 for NAME in qwen38-sglang qwen38-sglang-run; do
   [ -z "$(docker ps -q -f "name=^${NAME}$")" ] || die "container $NAME is already running (docker stop $NAME)"
@@ -41,7 +41,7 @@ if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   die "port $PORT is already in use (ss -tlnp | grep :$PORT). Free it or run: PORT=<other> ./run.sh"
 fi
 GPU_APPS="$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null || true)"
-[ -z "$GPU_APPS" ] || die "the GPU is busy — this config needs the machine to itself (unified memory):
+[ -z "$GPU_APPS" ] || die "the GPU is busy. This config needs the machine to itself (unified memory):
 $GPU_APPS"
 
 KEY="$(cat "$CONFIG_DIR/api-key")"
