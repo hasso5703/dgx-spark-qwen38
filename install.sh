@@ -155,12 +155,17 @@ export API_TIMEOUT_MS=3600000
 export CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=1800000
 export CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000
 # Per-request output budget: reasoning tokens count against it, and Claude Code
-# sends max_tokens=32000 by default (verified by request capture on 2.1.235;
-# the variable is undocumented but effective). Long answers were truncating.
-export CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000
-# 262144 minus a 4096 margin: client-side token counting is approximate, so
-# auto-compact must fire BEFORE the server's real limit (see issue #2).
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=258048
+# sends max_tokens=32000 by default. 128000 is the hard ceiling for a
+# third-party model id: any higher value (129000, 258048, ...) is silently
+# capped back to 128000 (verified by request capture on 2.1.238).
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000
+# The server rejects any request where input + max_tokens exceeds 262144 (a
+# 400, no clamping) and Claude Code never shrinks max_tokens to fit, so the
+# pair must satisfy CONTEXT + OUTPUT <= 258048 (262144 minus a 4096 margin:
+# client-side token counting is approximate, see issue #2). 130048 = 262144 -
+# 128000 - 4096. Prefer longer context over long single answers? Use
+# OUTPUT=64000 with CONTEXT=194048; keep the sum at or under 258048.
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=130048
 export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 export CLAUDE_CODE_ENABLE_TELEMETRY=0
 ENVEOF

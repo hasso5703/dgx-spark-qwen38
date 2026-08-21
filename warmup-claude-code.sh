@@ -24,7 +24,7 @@ timeout 420 env \
   ANTHROPIC_DEFAULT_OPUS_MODEL="qwen3.8-27b" \
   ANTHROPIC_DEFAULT_FABLE_MODEL="qwen3.8-27b" \
   CLAUDE_CODE_SUBAGENT_MODEL="qwen3.8-27b" \
-  CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144 \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=130048 \
   claude --settings '{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0","CLAUDE_CODE_ENABLE_TELEMETRY":"0"}}' \
     --model qwen3.8-27b --exclude-dynamic-system-prompt-sections \
     -p "Reply with exactly: warmup-ok" >> "$LOG" 2>&1

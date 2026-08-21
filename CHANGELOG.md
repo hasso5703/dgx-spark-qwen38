@@ -1,6 +1,19 @@
 # Changelog
 
-## v1.2.4 (2026-08-21)
+## v1.2.5 (2026-08-21)
+
+Claude Code env pair rebalanced after a real 64K truncation report and a request-capture
+study on Claude Code 2.1.238. `CLAUDE_CODE_MAX_OUTPUT_TOKENS` goes 64000 -> 128000, which
+is the CLI's hard ceiling for a third-party model id (any higher value, e.g. 258048, is
+silently capped back to 128000). `CLAUDE_CODE_MAX_CONTEXT_TOKENS` goes 258048 -> 130048,
+because the pair must satisfy CONTEXT + OUTPUT <= 258048: the server rejects any request
+where input + max_tokens exceeds 262144 (a 400, no clamping), Claude Code never shrinks
+max_tokens to fit, and its auto-compaction reserves at most 20000 output tokens. The
+previous 64000/258048 pair had a latent dead zone (every request past ~198K input tokens
+got a 400 before auto-compaction fired at ~225K); no field report yet, fixed preemptively.
+Users who prefer longer context over very long single answers can set 64000/194048, as
+documented in the README. Existing installs: re-run the one-liner (or `./install.sh
+--no-start`) to regenerate `claude-code.env`; the serving image and unit are untouched.
 
 Second fix from the lifecycle audit: the step-3 "container sees the GPU" line always printed
 blank, because the image's entrypoint banner starts with an empty line and the check displayed
