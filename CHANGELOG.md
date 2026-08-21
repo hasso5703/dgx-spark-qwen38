@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.6 (2026-08-21)
+
+The systemd unit now passes `--sleep-on-idle`. Without it, SGLang's scheduler busy-spins a
+full CPU core whenever the queue is empty, which two users measured as +10-12 W at the wall
+(alef204 and emX0r on the forum thread, root-caused by emX0r in MiaAI-Lab issue #4; the flag
+exists in the pinned image, so no rebuild). A/B on the reference box before adopting:
+scheduler CPU at idle 101 % -> 1.7 %, module power 12.1 -> 10.5 W (median over 60 s), wake-up
+TTFT unchanged after 60 s and 300 s of idle (0.234-0.240 s -> 0.234-0.239 s), decode
+throughput in family (41.5 tok/s code, 52.8 math, answers correct). Existing installs:
+re-run the one-liner or `./install.sh --no-start`, then `sudo systemctl restart qwen38-sglang`.
+
 ## v1.2.5 (2026-08-21)
 
 Claude Code env pair rebalanced after a real 64K truncation report and a request-capture
