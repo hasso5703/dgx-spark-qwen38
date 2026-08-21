@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.7 (2026-08-21)
+
+`run.sh` now passes `--sleep-on-idle` too, matching the systemd unit which got the flag in
+v1.2.6. Contributed by struxoje in [#4](https://github.com/hasso5703/dgx-spark-qwen38/pull/4),
+opened before v1.2.6 was even tagged: the community caught the run.sh path while the unit
+path was being A/B tested. Same behavior as measured in the v1.2.6 notes (scheduler idle
+CPU 101 % -> 1.7 %, wake-up TTFT unchanged).
+
 ## v1.2.6 (2026-08-21)
 
 The systemd unit now passes `--sleep-on-idle`. Without it, SGLang's scheduler busy-spins a
