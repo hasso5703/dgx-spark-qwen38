@@ -89,6 +89,26 @@ Four integration bugs are already fixed for you:
 
 Also: SGLang's `--api-key` only accepts `Authorization: Bearer` (Claude Code's `ANTHROPIC_AUTH_TOKEN`), **not** `x-api-key`. Another 90 %-slowdown killer, `CLAUDE_CODE_ATTRIBUTION_HEADER`, is disabled in the env file per [Unsloth's guide](https://unsloth.ai/docs/basics/claude-code).
 
+## Field report: 1M context + opencode, battle-tested
+
+The stock 262144 context can be stretched to **1,010,000 tokens** with YaRN static scaling
+(factor 4.0, `original_max_position_embeddings: 262144`) patched into **both** `config.json`
+files (target model and DFlash2 draft, or the draft crashes at load), plus
+`--context-length 1010000` and `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`. On the GB10 this
+fits with `--mem-fraction-static 0.70`: about 960K tokens of KV pool, DFlash2 acceptance
+unchanged. Two things to know before copying it: SGLang buffers tool-call arguments during
+generation (silences of several minutes on big file writes, so put a keepalive proxy in front
+for any agent CLI), and YaRN output quality beyond the native window is not formally evaluated
+here, so treat it as an experimental preset.
+
+Proof it holds up: one continuous **opencode** session (reasoning effort `xhigh`,
+`OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=200000` to lift opencode's hidden 32K output cap)
+built a playable 3D zombie FPS from a single prompt by YouTuber Bijan Bowen:
+
+- **535,361 tokens** of context reached in one session, twice the native window, zero compaction
+- **~360K tokens generated**, 239 agent steps, 274 tool calls, no retry, no manual rescue
+- Result, single HTML file: **https://subway-fps.vercel.app**
+
 ## Operations
 
 ```bash
