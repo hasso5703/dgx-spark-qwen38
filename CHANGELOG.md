@@ -1,5 +1,135 @@
 # Changelog
 
+## v1.3 (2026-08-27)
+
+Release validated end to end on the reference box before tagging: a converging
+upgrade over the live install (only the Description and the new `--revision`
+changed in the unit, everything else preserved), stock and uncensored switches
+with reboots proving the revision lock (the pinned sha served while the cache
+held a newer upstream revision AND a `refs/main` pointing at it), `./run.sh`
+foreground with a clean stop, a from-scratch cache simulating a fresh machine
+(which caught the Xet stall and the anonymous throttling fixed below),
+`./bench.sh` at 50.7 tok/s greedy median (reference: ~50), and a real opencode
+session writing files through the `oc` launcher and the keepalive proxy
+(which caught the `--yolo` flag-position fix below).
+
+- The 1M context mode: `CONTEXT_MODE=1m ./install.sh` installs the preset that
+  serves the reference box daily since 2026-08-22, as one converging command.
+  It patches YaRN static scaling (factor 4.0) into both cached `config.json`
+  files via the new `patch-yarn.py` (target AND DFlash2 draft, originals
+  backed up as `config.json.pre-yarn`; the shared script also replaces
+  `switch-model.sh`'s inline patcher and handles the draft's root-level
+  config shape), renders a dedicated 1m unit (`--context-length 1010000`,
+  `--mem-fraction-static 0.70`, `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`,
+  `HF_HUB_OFFLINE=1` to shield the patched configs from Hub re-resolution,
+  `Restart=always` because a Triton crash measured on 2026-08-22 exited 0 and
+  `on-failure` never relaunched it), and installs the vendored keepalive proxy
+  (`keepalive-proxy.py` v6.6 + `qwen38-keepalive.service` on `PORT+1`): SGLang
+  buffers tool-call arguments (127 s of measured silence on a 400-line write)
+  and agent CLIs abort silent streams, so the proxy injects the official
+  Anthropic ping event / an authentic empty OpenAI chunk every 10 s at SSE
+  event boundaries only, closes the upstream when the client leaves, and
+  reports an explicit error after 3600 s of upstream silence. `./run.sh`
+  refuses 1m (the proxy is a service); `uninstall.sh` removes the proxy
+  service too. Native stays the default and is byte-identical to v1.2.7
+  behavior.
+- Converging upgrades: re-running `install.sh` (or the `get.sh` one-liner) now
+  reads the installed unit and keeps the operator's choices instead of
+  silently resetting them to the defaults: the target model (stock/uncensored,
+  or a custom `--model-path`, kept verbatim with its download and template
+  steps skipped), the context mode (native/1m, plus the proxy port), the
+  port, and the HF cache location. An explicit env var (`MODEL_CHOICE=`,
+  `CONTEXT_MODE=`, `PORT=`, `PROXY_PORT=`, `HF_CACHE=`) still wins. The
+  previous unit is backed up to
+  `~/.config/qwen38/qwen38-sglang.service.bak-preupdate` before being
+  rewritten, so hand-tuned flags stay recoverable. The `oc` launcher passes
+  `--yolo` after the user's arguments, not before: opencode's parser rejects
+  global flags placed before a subcommand (`oc run ...` printed the help
+  instead of running; caught by the release campaign's live opencode test).
+- The repo's client story moves from Claude Code to opencode. `install.sh` now
+  writes a complete provider config to `~/.config/qwen38/opencode.json`
+  (limits sized per context mode so no request can ever 400, reasoning-effort
+  variants, vision declared, key referenced via `{file:...}`), installs an
+  `oc` launcher to `~/.local/bin/oc` that lifts opencode's hidden 32000
+  max_tokens cap to the declared output limit (never clobbering a foreign
+  `oc` binary), and no longer writes `claude-code.env` (an existing copy
+  keeps working but is unmaintained). The
+  Claude Code warmup is removed: `--with-claude-warmup` is now a no-op with a
+  notice, `warmup-claude-code.sh` leaves the repo, and an installed
+  `warmup.conf` drop-in from an earlier version is cleaned up on upgrade
+  (other drop-ins are untouched). The template patches are unchanged: they
+  were always server-side and client-agnostic.
+- New `extras/` directory, two field-tested opt-ins from the reference box:
+  `extras/opencode/auto-continue.js` (opencode plugin that resumes a session
+  after a transient technical error or a stuck compaction; never after a
+  deliberate abort or an auth problem; stops after 25 relaunches without
+  progress) and `extras/cake-ingress/` (ingress anti-bufferbloat: CAKE shapes
+  received traffic just under the measured downlink so SSH and the API stay
+  at milliseconds while a model download saturates the link; interface
+  auto-detected, BANDWIDTH deliberately required and validated, full
+  measurement sweep in the script header, `setup.sh --uninstall` restores
+  stock networking). The README's Operations section also documents
+  `/abort_request` for killing abandoned generations on direct connections.
+- The keepalive proxy ships with every service install, not only 1m: SGLang
+  buffers tool-call arguments at any context length (127 s of measured
+  silence on one 400-line write) and agent CLIs abort silent streams, so the
+  proxy is the difference between a finished write and a client retry loop.
+  The generated opencode config points at the proxy port on service installs
+  and at the server directly with --no-service (where ./run.sh has no proxy).
+  The oc launcher resolves opencode from PATH with a fallback to
+  ~/.opencode/bin/opencode.
+- The native unit moves to `Restart=always` (matching the 1m unit and the
+  reference box): a Triton compile crash measured on 2026-08-22 terminated
+  with `SystemExit: 0`, a clean exit in systemd's eyes, so `Restart=on-failure`
+  never relaunched it. Documentation sweep: real disk numbers everywhere
+  (~90 GB fresh, +22 GB with both targets cached), the `HF_HUB_OFFLINE`
+  guidance rewritten from measurements, and a note that `claude-code.env` is
+  never overwritten again.
+- Serve-time revision lock: the units and `run.sh` now pass the pinned
+  `--revision` to the server for the target model (the draft already had its
+  own pinned revision flag). Until now the pin only governed the download:
+  at boot the server could still resolve the repo's "main" and pick up an
+  upstream push (RadixArk has already published two newer stock revisions).
+  With the sha passed to the server, upstream changes cannot affect what is
+  served, online or offline; `switch-model.sh` rewrites the revision together
+  with the model path, and a kept custom model reuses its unit's existing
+  revision or none. Combined with `HF_HUB_OFFLINE=1` in the 1m unit, the
+  running configuration is exactly the repo's, whatever happens upstream.
+- Fresh-machine hardening and small fixes, ahead of the release stress test.
+  Downloads: a fresh-cache pull stalled forever at 3.3 GB during the release
+  campaign; root-caused live to the hub library's Xet transfer backend (an
+  established socket moving zero bytes, 0-8 MB/s when moving at all, while
+  the classic CDN path measured 89 MB/s on the same box in the same second).
+  The download containers now set `HF_HUB_DISABLE_XET=1`, plus
+  `HF_HUB_DOWNLOAD_TIMEOUT=30` and a 5-attempt resume loop as a belt for any
+  other silent stall, and `HF_TOKEN` is passed through for authenticated
+  rate limits (a token already in `$HF_CACHE/token` keeps working through
+  the mount). Also,
+  pinned-sha downloads now also write the cache's `refs/main` when absent
+  (`huggingface_hub` only writes refs for named revisions, so on a fresh
+  machine the 1m unit's `HF_HUB_OFFLINE=1` boot would fail to resolve "main";
+  never overwritten if present). `switch-model.sh` also regenerates the
+  patched chat template from the target's own snapshot on every switch
+  (byte-identical between the two known targets today, verified; the belt
+  keeps the served template following the served model if one ever diverges).
+  `run.sh` error messages now echo the fix-it command with the active
+  `MODEL_CHOICE` prefix, so following the advice prepares the configuration
+  that failed, not the default one. `uninstall.sh`'s reclaim list gains the
+  uncensored checkpoint (~22 GB). The `oc` launcher passes `--yolo` (the
+  reference box's way; documented, removable in the launcher file).
+- Model switch option: `MODEL_CHOICE=stock|uncensored` in `install.sh` and
+  `run.sh`, plus `./switch-model.sh` for surgical live installs (downloads the
+  checkpoint, patches 1M YaRN config if the unit uses it, rewrites only the
+  `--model-path` line, daemon-reload; no service restart by the script itself).
+  Uncensored target = huihui-ai abliteration re-quantized with the identical
+  RadixArk modelopt NVFP4 recipe
+  (`edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4` @ `21565d3`);
+  the DFlash2 drafter stays unchanged in both modes. `patch-template.py` now
+  takes the repo as an optional fourth argument. `switch-model.sh` rewrites the
+  unit via a temp file + `sudo install -m 644` (no `sudo sed`) and skips the
+  download/YaRN steps idempotently when already done. See README, "Stock ↔
+  Uncensored target model".
+
 ## v1.2.7 (2026-08-21)
 
 `run.sh` now passes `--sleep-on-idle` too, matching the systemd unit which got the flag in

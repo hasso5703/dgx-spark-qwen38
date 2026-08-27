@@ -11,10 +11,12 @@ Two surgical fixes, no behavior change otherwise:
 The 'minimal' -> 'low' mapping (an OpenAI effort tier) was contributed
 by forum user helge: https://forums.developer.nvidia.com/t/380257/10
 
-Usage: patch-template.py <hf_cache_dir> <output_path> [revision]
+Usage: patch-template.py <hf_cache_dir> <output_path> [revision] [repo]
 Idempotent: succeeds if the patches are already applied. When a revision is
 given (sha or ref name like 'main'), the template is taken from that exact
-snapshot; otherwise the most recently modified snapshot is used.
+snapshot; otherwise the most recently modified snapshot is used. The optional
+repo arg (default: RadixArk/Qwen3.8-27B-NVFP4) selects which cached repo to
+read the template from.
 """
 import glob
 import os
@@ -48,16 +50,17 @@ SYSTEM_PATCHED = (
 
 
 def main() -> None:
-    if len(sys.argv) not in (3, 4):
+    if len(sys.argv) not in (3, 4, 5):
         sys.exit(__doc__)
     hf_cache, out_path = sys.argv[1], sys.argv[2]
-    revision = sys.argv[3] if len(sys.argv) == 4 else None
-    repo_dir = f"{hf_cache}/hub/models--RadixArk--Qwen3.8-27B-NVFP4"
+    revision = sys.argv[3] if len(sys.argv) >= 4 else None
+    repo = sys.argv[4] if len(sys.argv) == 5 else "RadixArk/Qwen3.8-27B-NVFP4"
+    repo_dir = f"{hf_cache}/hub/models--{repo.replace('/', '--')}"
     chosen = None
     if revision:
         ref_file = f"{repo_dir}/refs/{revision}"
         if os.path.isfile(ref_file):  # ref name (e.g. 'main') -> resolve to the sha
-            revision = open(ref_file).read().strip()
+            revision = open(ref_file, encoding="utf-8").read().strip()
         cand = f"{repo_dir}/snapshots/{revision}/chat_template.jinja"
         if os.path.isfile(cand):
             chosen = cand
@@ -71,7 +74,7 @@ def main() -> None:
         chosen = max(hits, key=os.path.getmtime)
         if len(hits) > 1:
             print(f"note: {len(hits)} snapshots present, using the most recent: {chosen.split('/')[-2][:12]}")
-    tpl = open(chosen).read()
+    tpl = open(chosen, encoding="utf-8").read()
 
     for name, anchor, patched, marker in (
         ("reasoning_effort", EFFORT_ANCHOR, EFFORT_PATCHED, "'minimal'"),
@@ -88,7 +91,7 @@ def main() -> None:
                 "template changed. Please open an issue with the template revision."
             )
 
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(tpl)
     print(f"patched template written to {out_path}")
 

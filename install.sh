@@ -6,14 +6,40 @@
 set -euo pipefail
 trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-running ./install.sh is safe: completed steps are skipped.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
+# Remember which knobs the operator set explicitly on THIS invocation, before
+# the defaults below fill them in: an explicit env var beats the installed
+# unit, which beats the defaults (see the convergence block further down).
+_ENV_MODEL_CHOICE="${MODEL_CHOICE:-}"; _ENV_MODEL_REV="${MODEL_REV:-}"
+_ENV_PORT="${PORT:-}"; _ENV_HF_CACHE="${HF_CACHE:-}"
+_ENV_CONTEXT_MODE="${CONTEXT_MODE:-}"; _ENV_PROXY_PORT="${PROXY_PORT:-}"
+
 # ── Pinned, validated versions (override via env if you know what you do) ──
 IMAGE="${IMAGE:-lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1}"  # = lmsysorg/sglang:qwen38-27b, 2026-08-15
-MODEL_REPO="RadixArk/Qwen3.8-27B-NVFP4"
+# Target model choice: "stock" (validated censored base, default) or "uncensored"
+# (huihui-ai abliteration re-quantized with the identical RadixArk modelopt
+# NVFP4 recipe: same architecture, chat template, MTP + vision, ~22 GB).
+STOCK_REPO="RadixArk/Qwen3.8-27B-NVFP4"
+STOCK_REV="52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"
+UNC_REPO="edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4"
+UNC_REV="21565d389fe573a32c1c425e0c7ade204ddb2263"
+MODEL_CHOICE="${MODEL_CHOICE:-stock}"
+case "$MODEL_CHOICE" in
+  stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
+  uncensored) MODEL_REPO="$UNC_REPO";   MODEL_REV="${MODEL_REV:-$UNC_REV}" ;;
+  *) printf 'ERROR: MODEL_CHOICE must be "stock" or "uncensored" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
+esac
 DRAFT_REPO="RadixArk/Qwen3.8-27B-DSpark"
-MODEL_REV="${MODEL_REV:-52d1adc5f38aa5ebf099c29ed7025ba34cfbb854}"
 DRAFT_REV="${DRAFT_REV:-85ef153be924f17ce4bf62726954eeaa4a73e854}"
 DRAFT2_REPO="z-lab/Qwen3.8-27B-DFlash2"
 DRAFT2_REV="${DRAFT2_REV:-50307d4c4cde6860d4eee73e2547cd786fe8e8a4}"
+# Context mode: "native" (262144, the validated default) or "1m" (1,010,000
+# via YaRN static scaling, mem-fraction 0.70, plus a keepalive proxy for agent
+# clients; the field-tested preset from the reference box, see the README).
+CONTEXT_MODE="${CONTEXT_MODE:-native}"
+case "$CONTEXT_MODE" in
+  native|1m) ;;
+  *) printf 'ERROR: CONTEXT_MODE must be "native" or "1m" (got: %s)\n' "$CONTEXT_MODE" >&2; exit 1 ;;
+esac
 # Served image = pinned base + the 5 sha256-verified DFlash2 files (dflash2/, built locally,
 # offline). Replaced by an official image digest the day one ships DFLASH2.
 SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2.2}"
@@ -23,42 +49,106 @@ CONFIG_DIR="$HOME/.config/qwen38"
 UNIT_NAME="qwen38-sglang.service"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-WITH_WARMUP=0
 NO_START=0
 NO_SERVICE=0
 for arg in "$@"; do
   case "$arg" in
-    --with-claude-warmup) WITH_WARMUP=1 ;;
     --no-start) NO_START=1 ;;
     --no-service) NO_SERVICE=1 ;;
+    --with-claude-warmup)
+      echo "NOTE: --with-claude-warmup was removed in v1.3 (the repo's client story moved to opencode)."
+      echo "      The flag is ignored; an installed warmup drop-in from an earlier version is cleaned up." ;;
     -h|--help)
       cat <<'HLP'
-Usage: ./install.sh [--with-claude-warmup] [--no-start] [--no-service]
+Usage: ./install.sh [--no-start] [--no-service]
 
-  --with-claude-warmup  pre-warm your Claude Code system prompt after each boot
-                        (requires the 'claude' CLI in PATH)
   --no-start            install everything but don't start the service now
   --no-service          no systemd, no sudo: just prepare everything (image,
                         checkpoints, key, template), then run in the foreground
                         anytime with ./run.sh (Ctrl+C stops it)
 
+Re-running over an existing install keeps the operator's choices: the target
+model (stock/uncensored), the context mode (native/1m), the port and the HF
+cache location are read from the installed unit unless the env var is passed
+explicitly.
+
 Env overrides (defaults are pinned to the validated 2026-08-15 versions):
   IMAGE=lmsysorg/sglang:qwen38-27b   use the moving tag instead of the digest
   MODEL_REV=main  DRAFT_REV=main     use latest checkpoint revisions
   DRAFT2_REV=main                    latest DFlash2 draft revision
+  MODEL_CHOICE=uncensored            serve the huihui-abliterated model
+                                     (edp1096 NVFP4) instead of the stock base
+  CONTEXT_MODE=1m                    1,010,000-token context via YaRN static
+                                     scaling (see the README, "The 1M context mode")
+  PROXY_PORT=30001                   keepalive proxy port (default: PORT+1)
   SERVE_IMAGE=name:tag               local tag for the built serving image
-  HF_CACHE=/path                     HuggingFace cache location (needs ~28 GB)
+  HF_CACHE=/path                     HuggingFace cache location (~28 GB, ~50 with both targets)
   PORT=30000                         serving port
 HLP
       exit 0 ;;
     *) printf 'Unknown flag: %s (see --help)\n' "$arg" >&2; exit 1 ;;
   esac
 done
-if [ "$NO_SERVICE" -eq 1 ] && [ "$WITH_WARMUP" -eq 1 ]; then
-  printf -- '--with-claude-warmup is part of the systemd service; it cannot be combined with --no-service\n' >&2; exit 1
+
+# ── Converge on the operator's installed choices ──
+# Re-running the installer (or the get.sh one-liner) must never silently reset
+# a choice that is already serving: the target model (stock/uncensored), the
+# port, and the HF cache location are read from the installed unit and kept,
+# unless the corresponding env var was passed explicitly on this invocation.
+# Everything else (image digest, checkpoint revisions, launch flags) always
+# follows the repo: that is what an upgrade is.
+KEEP_MODEL_VERBATIM=0
+UNIT_PATH="/etc/systemd/system/$UNIT_NAME"
+if [ -f "$UNIT_PATH" ] && [ ! -r "$UNIT_PATH" ]; then
+  echo "NOTE: an installed unit exists but is not readable (pre-v1.2.3 installs used mode 600),"
+  echo "      so its choices cannot be preserved automatically. If you had a custom PORT= or"
+  echo "      MODEL_CHOICE=, pass them explicitly on this command."
 fi
+if [ -f "$UNIT_PATH" ] && [ -r "$UNIT_PATH" ]; then
+  CUR_MODEL="$(grep -oE -- '--model-path [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+  # The target's --revision (never matches --speculative-draft-model-revision:
+  # that flag has a single dash before "revision")
+  CUR_REV="$(grep -oE -- '--revision [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+  CUR_PORT="$(grep -oE -- '--port [0-9]+' "$UNIT_PATH" | head -1 | tr -dc '0-9' || true)"
+  CUR_HF="$(grep -oE -- '-v [^ :]+:/root/\.cache/huggingface' "$UNIT_PATH" | head -1 | sed -e 's/^-v //' -e 's|:/root/\.cache/huggingface$||' || true)"
+  if [ -z "$_ENV_MODEL_CHOICE" ] && [ -n "$CUR_MODEL" ] && [ "$CUR_MODEL" != "$MODEL_REPO" ]; then
+    case "$CUR_MODEL" in
+      "$STOCK_REPO") MODEL_CHOICE=stock;      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$STOCK_REV}" ;;
+      "$UNC_REPO")   MODEL_CHOICE=uncensored; MODEL_REPO="$UNC_REPO";   MODEL_REV="${_ENV_MODEL_REV:-$UNC_REV}" ;;
+      *) KEEP_MODEL_VERBATIM=1; MODEL_CHOICE=custom; MODEL_REPO="$CUR_MODEL" ;;
+    esac
+    if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
+      echo "NOTE: keeping the custom --model-path already installed ($CUR_MODEL)."
+      echo "      Its download and template steps are skipped (it is already serving from cache)."
+      echo "      Pass MODEL_CHOICE=stock or MODEL_CHOICE=uncensored to override."
+    else
+      echo "Keeping the installed target model: $MODEL_CHOICE ($MODEL_REPO). Pass MODEL_CHOICE= to change."
+    fi
+  fi
+  if [ -z "$_ENV_PORT" ] && [ -n "$CUR_PORT" ] && [ "$CUR_PORT" != "$PORT" ]; then
+    PORT="$CUR_PORT"
+    echo "Keeping the installed port: :$PORT. Pass PORT= to change."
+  fi
+  if [ -z "$_ENV_HF_CACHE" ] && [ -n "$CUR_HF" ] && [ "$CUR_HF" != "$HF_CACHE" ]; then
+    HF_CACHE="$CUR_HF"
+    echo "Keeping the installed HF cache location: $HF_CACHE. Pass HF_CACHE= to change."
+  fi
+  if [ -z "$_ENV_CONTEXT_MODE" ] && grep -q -- '--context-length 1010000' "$UNIT_PATH"; then
+    CONTEXT_MODE=1m
+    echo "Keeping the installed context mode: 1m. Pass CONTEXT_MODE=native to change."
+  fi
+fi
+if [ -z "$_ENV_PROXY_PORT" ] && [ -r "/etc/systemd/system/qwen38-keepalive.service" ]; then
+  CUR_PROXY="$(grep -oE 'keepalive-proxy\.py [0-9]+' /etc/systemd/system/qwen38-keepalive.service | head -1 | tr -dc '0-9' || true)"
+  [ -n "${CUR_PROXY:-}" ] && PROXY_PORT="$CUR_PROXY"
+fi
+PROXY_PORT="${PROXY_PORT:-$((PORT+1))}"
+
 if [ "$NO_SERVICE" -eq 1 ] && [ "$NO_START" -eq 1 ]; then
   printf -- '--no-start controls the systemd service; with --no-service there is no service (drop one flag)\n' >&2; exit 1
+fi
+if [ "$NO_SERVICE" -eq 1 ] && [ "$CONTEXT_MODE" = "1m" ]; then
+  printf -- 'CONTEXT_MODE=1m needs the systemd path (keepalive proxy service); ./run.sh serves the native config only.\nEither drop --no-service, or pass CONTEXT_MODE=native explicitly.\n' >&2; exit 1
 fi
 
 step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
@@ -92,7 +182,13 @@ if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
     die "Port $PORT is already in use by another program (see: ss -tlnp | grep :$PORT). Free it, or install with PORT=<other> ./install.sh"
   fi
 fi
-if [ "$WITH_WARMUP" -eq 1 ]; then command -v claude >/dev/null || die "--with-claude-warmup requires the 'claude' CLI in PATH (https://claude.com/claude-code)."; fi
+if [ "$NO_SERVICE" -eq 0 ] && ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PROXY_PORT\$"; then
+  if systemctl is-active --quiet qwen38-keepalive 2>/dev/null; then
+    echo "Note: the keepalive proxy is already running on :$PROXY_PORT, re-installing over it."
+  else
+    die "Port $PROXY_PORT (keepalive proxy) is already in use by another program. Free it, or install with PROXY_PORT=<other>"
+  fi
+fi
 echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
 
 step "2/9 Pulling the SGLang image (~39 GB, one-time, resumable)"
@@ -106,20 +202,54 @@ echo "OK, container sees: $GPU_SEEN"
 
 step "4/9 Downloading checkpoints (~28 GB, one-time, reuses/resumes any local copy)"
 mkdir -p "$HF_CACHE" "$CONFIG_DIR/sglang-cache"
+# A kept custom model is already serving from this cache: skip its download.
+DL_MODEL_REPO="$MODEL_REPO"
+[ "$KEEP_MODEL_VERBATIM" -eq 1 ] && DL_MODEL_REPO=""
+# Unauthenticated downloads get throttled by the Hub (measured: a fresh-cache
+# pull stalled at 3.3 GB). A token in $HF_CACHE/token is picked up through the
+# mount; HF_TOKEN in the environment is passed through as well.
+DL_TOKEN_ARGS=()
+[ -n "${HF_TOKEN:-}" ] && DL_TOKEN_ARGS=(-e HF_TOKEN="$HF_TOKEN")
+# HF_HUB_DISABLE_XET: the hub library's Xet transfer backend stalled silently
+# during the release campaign (ESTAB socket, zero bytes, forever; 0-8 MB/s
+# when moving at all) while the classic CDN path measured 89 MB/s on the same
+# box, same second. HF_HUB_DOWNLOAD_TIMEOUT turns any remaining silent stall
+# into a ReadTimeout that the retry loop below resumes from.
 docker run --rm -i --network host --user "$(id -u):$(id -g)" \
-  -e HF_HOME=/hf \
-  -e MODEL_REPO="$MODEL_REPO" -e MODEL_REV="$MODEL_REV" \
+  -e HF_HOME=/hf -e HF_HUB_DOWNLOAD_TIMEOUT=30 -e HF_HUB_DISABLE_XET=1 \
+  -e MODEL_REPO="$DL_MODEL_REPO" -e MODEL_REV="$MODEL_REV" \
   -e DRAFT_REPO="$DRAFT_REPO" -e DRAFT_REV="$DRAFT_REV" \
   -e DRAFT2_REPO="$DRAFT2_REPO" -e DRAFT2_REV="$DRAFT2_REV" \
+  "${DL_TOKEN_ARGS[@]}" \
   -v "$HF_CACHE":/hf \
-  "$IMAGE" python3 - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace outage/rate-limit (re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT_REV=main ./install.sh), or a permission error: if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
+  "$IMAGE" python3 - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace throttling of unauthenticated downloads (set HF_TOKEN=<your token>, or re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT_REV=main ./install.sh), or a permission error: if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
 import os
+import time
 from huggingface_hub import snapshot_download
 for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
                   (os.environ["DRAFT_REPO"], os.environ["DRAFT_REV"]),
                   (os.environ["DRAFT2_REPO"], os.environ["DRAFT2_REV"])):
+    if not repo:  # kept custom model: already in cache, nothing to download
+        continue
     print(f"── {repo} @ {rev}", flush=True)
-    snapshot_download(repo, revision=rev)
+    for attempt in range(1, 6):  # a resumed attempt reuses every finished byte
+        try:
+            path = snapshot_download(repo, revision=rev)
+            break
+        except Exception as e:
+            if attempt == 5:
+                raise
+            print(f"download interrupted ({type(e).__name__}), resuming ({attempt}/5)...", flush=True)
+            time.sleep(10)
+    # A pinned-sha download writes no refs/main; serving later with
+    # HF_HUB_OFFLINE=1 (the 1m unit) resolves "main" through that file and
+    # would fail on a fresh machine. Write it once, never overwrite.
+    sha = os.path.basename(path.rstrip("/"))
+    ref = os.path.join(os.path.dirname(os.path.dirname(path.rstrip("/"))), "refs", "main")
+    if len(sha) == 40 and not os.path.exists(ref):
+        os.makedirs(os.path.dirname(ref), exist_ok=True)
+        with open(ref, "w") as f:
+            f.write(sha)
 print("checkpoints ready", flush=True)
 PYEOF
 
@@ -135,42 +265,110 @@ if [ ! -s "$CONFIG_DIR/api-key" ]; then
 else
   echo "API key already present, keeping it"
 fi
-python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$CONFIG_DIR/chat-template-sglang.jinja" "$MODEL_REV" \
-  || die "Template patch failed (see message above). If the upstream template changed, please open an issue on this repo."
+KEY="$(cat "$CONFIG_DIR/api-key")"   # used by the step-9 smoke test
+if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
+  [ -s "$CONFIG_DIR/chat-template-sglang.jinja" ] \
+    || die "custom model kept, but no patched template at $CONFIG_DIR/chat-template-sglang.jinja. Pass MODEL_CHOICE=stock or MODEL_CHOICE=uncensored to regenerate it."
+  echo "custom target model kept: existing patched template left untouched"
+else
+  python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$CONFIG_DIR/chat-template-sglang.jinja" "$MODEL_REV" "$MODEL_REPO" \
+    || die "Template patch failed (see message above). If the upstream template changed, please open an issue on this repo."
+fi
+if [ "$CONTEXT_MODE" = "1m" ]; then
+  # Both configs must carry the YaRN patch (target AND draft, or the draft
+  # crashes at load). Idempotent; originals backed up as config.json.pre-yarn.
+  # A kept custom model has no known pin: its newest cached snapshot is patched.
+  if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
+    python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$MODEL_REPO" || die "YaRN patch failed on the target model"
+  else
+    python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$MODEL_REPO" "$MODEL_REV" || die "YaRN patch failed on the target model"
+  fi
+  python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$DRAFT2_REPO" "$DRAFT2_REV" || die "YaRN patch failed on the DFlash2 draft"
+fi
 
-step "7/9 Claude Code env file"
-KEY="$(cat "$CONFIG_DIR/api-key")"
-cat > "$CONFIG_DIR/claude-code.env" <<ENVEOF
-# source this file, then run:  claude --model qwen3.8-27b
-export ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT"
-export ANTHROPIC_AUTH_TOKEN="$KEY"
-export ANTHROPIC_API_KEY=""
-export ANTHROPIC_MODEL="qwen3.8-27b"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="qwen3.8-27b"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="qwen3.8-27b"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="qwen3.8-27b"
-export ANTHROPIC_DEFAULT_FABLE_MODEL="qwen3.8-27b"
-export CLAUDE_CODE_SUBAGENT_MODEL="qwen3.8-27b"
-export API_TIMEOUT_MS=3600000
-export CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=1800000
-export CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000
-# Per-request output budget: reasoning tokens count against it, and Claude Code
-# sends max_tokens=32000 by default. 128000 is the hard ceiling for a
-# third-party model id: any higher value (129000, 258048, ...) is silently
-# capped back to 128000 (verified by request capture on 2.1.238).
-export CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000
-# The server rejects any request where input + max_tokens exceeds 262144 (a
-# 400, no clamping) and Claude Code never shrinks max_tokens to fit, so the
-# pair must satisfy CONTEXT + OUTPUT <= 258048 (262144 minus a 4096 margin:
-# client-side token counting is approximate, see issue #2). 130048 = 262144 -
-# 128000 - 4096. Prefer longer context over long single answers? Use
-# OUTPUT=64000 with CONTEXT=194048; keep the sum at or under 258048.
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=130048
-export CLAUDE_CODE_ATTRIBUTION_HEADER=0
-export CLAUDE_CODE_ENABLE_TELEMETRY=0
-ENVEOF
-chmod 600 "$CONFIG_DIR/claude-code.env"
-echo "wrote $CONFIG_DIR/claude-code.env (mode 600: it contains the API key)"
+step "7/9 opencode provider config + oc launcher"
+# A complete, ready-to-use opencode config (https://opencode.ai). The limits
+# satisfy the serving window with margin in BOTH modes, including when
+# opencode's hidden 32000 output cap is lifted by the oc launcher below:
+#   native: 194048 + 64000 = 258048 <= 262144 - 4096
+#   1m:     700000 (compaction at 680000) + 200000 = 880000 <= worst measured
+#           KV pool at mem-fraction 0.70 (boot lottery floor: 917877 measured)
+# Service installs point agent clients at the keepalive proxy (step 8): SGLang
+# buffers tool-call arguments at any context length and agent CLIs abort
+# silent streams. --no-service has no proxy: direct server port for ./run.sh.
+# The key is referenced via {file:...}: no secret in the file.
+# opencode limits per context mode
+if [ "$CONTEXT_MODE" = "1m" ]; then
+  OC_CTX=700000; OC_OUT=200000; OC_LABEL="local, 1M"
+else
+  OC_CTX=194048; OC_OUT=64000;  OC_LABEL="local"
+fi
+OC_PORT="$PROXY_PORT"
+[ "${NO_SERVICE:-0}" -eq 1 ] && OC_PORT="$PORT"
+# end oc mode
+cat > "$CONFIG_DIR/opencode.json" <<OCEOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "qwen38": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qwen3.8-27B (DGX Spark)",
+      "options": {
+        "baseURL": "http://127.0.0.1:$OC_PORT/v1",
+        "apiKey": "{file:$CONFIG_DIR/api-key}"
+      },
+      "models": {
+        "qwen3.8-27b": {
+          "name": "Qwen3.8-27B NVFP4+DFlash2 ($OC_LABEL)",
+          "limit": { "context": $OC_CTX, "input": $OC_CTX, "output": $OC_OUT },
+          "variants": {
+            "medium": { "chat_template_kwargs": { "reasoning_effort": "medium" } },
+            "low":    { "chat_template_kwargs": { "reasoning_effort": "low" } }
+          },
+          "attachment": true,
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
+        }
+      }
+    }
+  },
+  "model": "qwen38/qwen3.8-27b",
+  "small_model": "qwen38/qwen3.8-27b"
+}
+OCEOF
+echo "wrote $CONFIG_DIR/opencode.json ($CONTEXT_MODE limits, port $OC_PORT)"
+echo "  no opencode config yet:  mkdir -p ~/.config/opencode && cp $CONFIG_DIR/opencode.json ~/.config/opencode/opencode.json"
+echo "  existing config:         merge the \"qwen38\" provider block into it (README, \"opencode integration\")"
+# oc: launcher that lifts opencode's hidden 32000 max_tokens cap to the
+# declared output limit (without it, long thinking is cut at 32000 and the
+# turn ends silently). Never clobbers a foreign oc binary (e.g. OpenShift).
+OC_BIN="$HOME/.local/bin/oc"
+OC_EXISTING="$(command -v oc || true)"
+if [ -n "$OC_EXISTING" ] && [ "$OC_EXISTING" != "$OC_BIN" ] && ! grep -q 'dgx-spark-qwen38' "$OC_EXISTING" 2>/dev/null; then
+  echo "NOTE: an unrelated 'oc' command exists at $OC_EXISTING; not installing the launcher."
+  echo "      Launch opencode with:  OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=$OC_OUT opencode --yolo"
+else
+  mkdir -p "$HOME/.local/bin"
+  cat > "$OC_BIN" <<OCWRAP
+#!/bin/bash
+# oc launcher installed by dgx-spark-qwen38: opencode wired to the local server.
+# Lifts opencode's hidden 32000 max_tokens cap to the declared output limit;
+# without this, long thinking phases are cut at 32000 and the turn ends silently.
+# --yolo auto-approves permissions (the reference box runs this way; remove it
+# below if you prefer per-action prompts).
+export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=$OC_OUT
+OPENCODE_BIN="\$(command -v opencode || true)"
+[ -n "\$OPENCODE_BIN" ] || OPENCODE_BIN="\$HOME/.opencode/bin/opencode"
+# --yolo goes LAST: opencode's parser rejects global flags before a
+# subcommand (opencode --yolo run ... prints the help instead of running)
+exec "\$OPENCODE_BIN" "\$@" --yolo
+OCWRAP
+  chmod +x "$OC_BIN"
+  echo "installed the oc launcher at $OC_BIN (output cap lifted to $OC_OUT)"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) echo "NOTE: $HOME/.local/bin is not in your PATH; add it or call $OC_BIN directly." ;;
+  esac
+fi
 
 if [ "$NO_SERVICE" -eq 1 ]; then
   printf '\n\033[1;32m✅ Prepared (no systemd, nothing needed sudo).\033[0m\n'
@@ -180,6 +378,24 @@ if [ "$NO_SERVICE" -eq 1 ]; then
 fi
 
 step "8/9 Installing the systemd service (sudo needed)"
+if [ -f "$UNIT_PATH" ]; then
+  # Safety net for hand-tuned units: the previous unit stays recoverable.
+  sudo cp "$UNIT_PATH" "$CONFIG_DIR/qwen38-sglang.service.bak-preupdate"
+  sudo chown "$(id -u):$(id -g)" "$CONFIG_DIR/qwen38-sglang.service.bak-preupdate"
+  echo "previous unit backed up at $CONFIG_DIR/qwen38-sglang.service.bak-preupdate"
+fi
+UNIT_TPL="$REPO_DIR/qwen38-sglang.service.template"
+[ "$CONTEXT_MODE" = "1m" ] && UNIT_TPL="$REPO_DIR/qwen38-sglang-1m.service.template"
+# Serve-time revision lock: the pinned sha is passed to the server itself, so
+# an upstream push to the checkpoint repo can never change what is served
+# (download-time pinning alone leaves "main" resolvable at boot). A kept
+# custom model reuses its unit's existing --revision, or none.
+if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
+  MODEL_REV_ARGS=""
+  [ -n "${CUR_REV:-}" ] && MODEL_REV_ARGS="--revision $CUR_REV"
+else
+  MODEL_REV_ARGS="--revision $MODEL_REV"
+fi
 TMP_UNIT="$(mktemp)"
 sed -e "s|__HOME__|$HOME|g" \
     -e "s|__USER__|$(id -un)|g" \
@@ -188,21 +404,39 @@ sed -e "s|__HOME__|$HOME|g" \
     -e "s|__IMAGE__|$SERVE_IMAGE|g" \
     -e "s|__HF_CACHE__|$HF_CACHE|g" \
     -e "s|__DRAFT2_REV__|$DRAFT2_REV|g" \
-    "$REPO_DIR/qwen38-sglang.service.template" > "$TMP_UNIT"
+    -e "s|__MODEL_REV_ARGS__|$MODEL_REV_ARGS|g" \
+    -e "s|__MODEL__|$MODEL_REPO|g" \
+    "$UNIT_TPL" > "$TMP_UNIT"
 sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME"; rm -f "$TMP_UNIT"
-if [ "$WITH_WARMUP" -eq 1 ]; then
-  sed -e "s|__HOME__|$HOME|g" -e "s|__PORT__|$PORT|g" \
-      "$REPO_DIR/warmup-claude-code.sh" > "$CONFIG_DIR/warmup-claude-code.sh"
-  chmod +x "$CONFIG_DIR/warmup-claude-code.sh"
-  sudo mkdir -p "/etc/systemd/system/$UNIT_NAME.d"
-  printf '[Service]\nExecStartPost=/bin/sh -c '\''%s/warmup-claude-code.sh &'\''\n' "$CONFIG_DIR" \
-    | sudo tee "/etc/systemd/system/$UNIT_NAME.d/warmup.conf" >/dev/null
+KEEPALIVE_UNIT="qwen38-keepalive.service"
+# Every service install gets the keepalive proxy: SGLang buffers tool-call
+# arguments while they stream (127 s of measured silence on a 400-line write,
+# at native context) and agent CLIs abort a silent stream (~140-180 s for
+# opencode). It also aborts zombie generations when the client disconnects.
+install -m 755 "$REPO_DIR/keepalive-proxy.py" "$CONFIG_DIR/keepalive-proxy.py"
+TMP_KA="$(mktemp)"
+sed -e "s|__HOME__|$HOME|g" \
+    -e "s|__USER__|$(id -un)|g" \
+    -e "s|__GROUP__|$(id -gn)|g" \
+    -e "s|__PORT__|$PORT|g" \
+    -e "s|__PROXY_PORT__|$PROXY_PORT|g" \
+    "$REPO_DIR/qwen38-keepalive.service.template" > "$TMP_KA"
+sudo install -m 644 "$TMP_KA" "/etc/systemd/system/$KEEPALIVE_UNIT"; rm -f "$TMP_KA"
+sudo systemctl enable "$KEEPALIVE_UNIT"
+# The Claude Code warmup was removed in v1.3: clean up what earlier versions
+# installed (only the warmup drop-in; any other drop-in in the .d dir is kept).
+if [ -f "/etc/systemd/system/$UNIT_NAME.d/warmup.conf" ]; then
+  echo "removing the deprecated Claude Code warmup drop-in"
+  sudo rm -f "/etc/systemd/system/$UNIT_NAME.d/warmup.conf"
+  sudo rmdir "/etc/systemd/system/$UNIT_NAME.d" 2>/dev/null || true
 fi
+rm -f "$CONFIG_DIR/warmup-claude-code.sh"
 sudo systemctl daemon-reload
 sudo systemctl enable "$UNIT_NAME"
 
 if [ "$NO_START" -eq 1 ]; then
   step "Done (service installed and enabled at boot; start it with: sudo systemctl start $UNIT_NAME)"
+  echo "also start the keepalive proxy with: sudo systemctl start $KEEPALIVE_UNIT"
   exit 0
 fi
 
@@ -221,11 +455,20 @@ try:
 except Exception as e:
     print(f"FAIL:{e}")')"
     [ "$SMOKE" = "OK" ] || die "Server is up but the smoke generation failed ($SMOKE). Check: journalctl -u $UNIT_NAME -n 50"
+    sudo systemctl restart "$KEEPALIVE_UNIT"
+    PROXY_OK=0
+    for _ in 1 2 3 4 5; do
+      curl -s -m 5 "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1 && { PROXY_OK=1; break; }
+      sleep 2
+    done
+    [ "$PROXY_OK" = 1 ] || die "the keepalive proxy did not come up on :$PROXY_PORT. Check: journalctl -u $KEEPALIVE_UNIT -n 30"
+    echo "keepalive proxy OK on :$PROXY_PORT (agent clients use this port)"
     printf '\n\033[1;32m✅ Installed, verified, and enabled at boot.\033[0m\n'
     echo "  OpenAI     : http://<host>:$PORT/v1/chat/completions"
     echo "  Anthropic  : http://<host>:$PORT/v1/messages   (Bearer auth only)"
+    echo "  Agent CLIs : http://<host>:$PROXY_PORT (keepalive proxy, use THIS for opencode)"
     echo "  API key    : $CONFIG_DIR/api-key"
-    echo "  Claude Code: source $CONFIG_DIR/claude-code.env && claude --model qwen3.8-27b"
+    echo "  opencode   : provider config ready at $CONFIG_DIR/opencode.json (README, \"opencode integration\")"
     echo "  Benchmark  : ./bench.sh"
     exit 0
   fi

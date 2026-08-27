@@ -1,0 +1,16 @@
+[Unit]
+Description=CAKE ingress anti-bufferbloat (__IFACE__ shaped at __BANDWIDTH__)
+Documentation=file:/usr/local/sbin/cake-ingress
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=IF=__IFACE__
+Environment=RATE_DOWN=__BANDWIDTH__
+ExecStart=/usr/local/sbin/cake-ingress start
+ExecStop=/usr/local/sbin/cake-ingress stop
+
+[Install]
+WantedBy=multi-user.target

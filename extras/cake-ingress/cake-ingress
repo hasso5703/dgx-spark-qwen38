@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# cake-ingress: ingress anti-bufferbloat for the DGX Spark.
+#
+# The problem it fixes: during a big download (a model pull saturating the
+# link), the queue builds up inside the ISP box and latency explodes for
+# everything else on the machine. Measured on the reference box (1 Gb/s fiber,
+# 2026-08-14): ping went from 1 ms to a 4797 ms average (9525 ms peak) and the
+# Cloudflare tunnel in front of the API answered 502.
+#
+# The fix: shape RECEIVED traffic just UNDER the real link capacity, which
+# moves the queue from the ISP box into this kernel, where CAKE schedules it
+# fairly between flows. Bandwidth sweep on the reference box, same day:
+#   off      -> 952 Mb/s, ping 4797 ms avg / 9525 max, tunnel 1/5 OK
+#   970Mbit  -> 929 Mb/s, ping    9 ms avg /  259 max, tunnel 5/14 OK
+#   950Mbit  -> 920 Mb/s, ping    6 ms avg /  179 max, tunnel 49/49 OK  <= kept
+#   930Mbit  -> 901 Mb/s, ping    4 ms avg /  204 max, tunnel 47/47 OK
+#   850Mbit  -> 815 Mb/s, ping    1 ms avg /    6 max, tunnel 14/14 OK
+# no-split-gso: same rate, same latency, 7.7x less softirq CPU.
+# rtt 50ms: rejected (average latency doubled, no throughput gain).
+#
+# The rule: RATE_DOWN = ~95 % of your MEASURED downlink (speedtest), never the
+# NIC speed. Above the real bottleneck the shaper controls nothing; redo the
+# sweep above if you want the exact sweet spot for your link.
+#
+# Egress: deliberately NOT shaped. Measured 2026-08-14: saturated upload at
+# 324 Mb/s gave 1.45 ms avg / 19 ms max latency, 0 % loss. Nothing to fix
+# there, and shaping it would cost throughput.
+set -u
+
+IF=${IF:-$(ip route show default 2>/dev/null | awk '/^default/ {print $5; exit}')}
+IFB=${IFB:-ifb0}
+RATE_DOWN=${RATE_DOWN:-}
+CAKE_DOWN=${CAKE_DOWN:-besteffort ingress ethernet no-split-gso}
+
+TC=/usr/sbin/tc
+IP=/usr/sbin/ip
+MODPROBE=/usr/sbin/modprobe
+if [ "$(id -u)" -ne 0 ]; then
+  TC="sudo -n $TC"; IP="sudo -n $IP"; MODPROBE="sudo -n $MODPROBE"
+fi
+
+[ -n "${IF:-}" ] || { echo "cake-ingress: no default-route interface found; set IF=<iface>" >&2; exit 1; }
+
+teardown() {
+  $TC qdisc del dev "$IF" clsact 2>/dev/null || true
+  $TC qdisc del dev "$IFB" root 2>/dev/null || true
+}
+
+start() {
+  [ -e "/sys/class/net/$IF" ] || { echo "cake-ingress: interface $IF does not exist" >&2; exit 1; }
+  if [ -z "$RATE_DOWN" ]; then
+    echo "cake-ingress: RATE_DOWN is required: ~95 % of your MEASURED downlink." >&2
+    echo "  examples: 500 Mb/s link -> RATE_DOWN=475Mbit ; 1 Gb/s -> 950Mbit ; 2.5 Gb/s -> 2350Mbit" >&2
+    exit 1
+  fi
+  $MODPROBE ifb numifbs=1
+  $MODPROBE sch_cake
+  $IP link add "$IFB" type ifb 2>/dev/null || true
+  $IP link set "$IFB" up
+  teardown
+  # all ingress of $IF is redirected to $IFB, where CAKE can shape it
+  $TC qdisc add dev "$IF" clsact
+  $TC filter add dev "$IF" ingress protocol all matchall \
+      action mirred egress redirect dev "$IFB"
+  # shellcheck disable=SC2086
+  $TC qdisc add dev "$IFB" root cake bandwidth "$RATE_DOWN" $CAKE_DOWN
+  echo "cake-ingress: active  $IF -> $IFB  at $RATE_DOWN  ($CAKE_DOWN)"
+}
+
+stop() {
+  teardown
+  $IP link set "$IFB" down 2>/dev/null || true
+  echo "cake-ingress: stopped, $IF back on its default qdisc (mq/fq_codel)"
+}
+
+status() {
+  local rc=0
+  echo "--- ingress redirection of $IF ---"
+  $TC filter show dev "$IF" ingress | grep -q mirred \
+    && echo "  [OK] ingress redirected to $IFB" \
+    || { echo "  [KO] no ingress redirection"; rc=1; }
+  echo "--- shaping on $IFB ---"
+  if $TC qdisc show dev "$IFB" | grep -q cake; then
+    $TC -s qdisc show dev "$IFB" | sed 's/^/  /'
+  else
+    echo "  [KO] no cake qdisc on $IFB"; rc=1
+  fi
+  return $rc
+}
+
+case "${1:-start}" in
+  start)   start ;;
+  stop)    stop ;;
+  restart) stop; start ;;
+  status)  status ;;
+  *) echo "usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+esac

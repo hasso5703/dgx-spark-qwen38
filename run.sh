@@ -9,26 +9,38 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── Same pins as install.sh (read from it: single source of truth) ──
-PINS="$(grep -E '^(IMAGE|MODEL_REPO|DRAFT_REPO|MODEL_REV|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
-[ "$(printf '%s\n' "$PINS" | wc -l)" -eq 11 ] || die "could not read the 11 pinned variables from install.sh (repo layout changed?)"
+PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+[ "$(printf '%s\n' "$PINS" | wc -l)" -eq 15 ] || die "could not read the 15 pinned variables from install.sh (repo layout changed?)"
 eval "$PINS"
+case "${MODEL_CHOICE}" in
+  stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
+  uncensored) MODEL_REPO="$UNC_REPO";   MODEL_REV="${MODEL_REV:-$UNC_REV}" ;;
+  *) die "MODEL_CHOICE must be stock or uncensored (got: ${MODEL_CHOICE})" ;;
+esac
+if [ "${CONTEXT_MODE}" = "1m" ]; then
+  die "CONTEXT_MODE=1m needs the systemd path (keepalive proxy + YaRN service units): run CONTEXT_MODE=1m ./install.sh. ./run.sh serves the native 262144 config only."
+fi
+# The fix-it command echoed by every check below, carrying the active choices
+# so following it prepares THIS configuration (not the defaults).
+PREP="./install.sh --no-service"
+[ "$MODEL_CHOICE" != "stock" ] && PREP="MODEL_CHOICE=$MODEL_CHOICE $PREP"
 
 # ── Everything prepared? ──
-[ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key. Run: ./install.sh --no-service"
-[ -s "$CONFIG_DIR/chat-template-sglang.jinja" ] || die "no patched template in $CONFIG_DIR. Run: ./install.sh --no-service"
+[ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key. Run: $PREP"
+[ -s "$CONFIG_DIR/chat-template-sglang.jinja" ] || die "no patched template in $CONFIG_DIR. Run: $PREP"
 for REPO in "$MODEL_REPO" "$DRAFT_REPO" "$DRAFT2_REPO"; do
   DIR="$HF_CACHE/hub/models--${REPO//\//--}"
   SNAP="$(ls -d "$DIR"/snapshots/*/ 2>/dev/null | head -1 || true)"
-  [ -n "$SNAP" ] || die "checkpoint $REPO not found in $HF_CACHE. Run: ./install.sh --no-service"
+  [ -n "$SNAP" ] || die "checkpoint $REPO not found in $HF_CACHE. Run: $PREP"
   # An interrupted download leaves snapshots/ in place with only the small
   # files, so also require finished blobs and actual weights (credit: helge).
   if compgen -G "$DIR/blobs/*.incomplete" >/dev/null 2>&1; then
-    die "checkpoint $REPO download is incomplete (blobs/*.incomplete). Re-run: ./install.sh --no-service (it resumes)"
+    die "checkpoint $REPO download is incomplete (blobs/*.incomplete). Re-run: $PREP (it resumes)"
   fi
   compgen -G "${SNAP}*.safetensors" >/dev/null 2>&1 \
-    || die "checkpoint $REPO has no weight files in its snapshot. Re-run: ./install.sh --no-service"
+    || die "checkpoint $REPO has no weight files in its snapshot. Re-run: $PREP"
 done
-docker image inspect "$SERVE_IMAGE" >/dev/null 2>&1 || die "serving image $SERVE_IMAGE not built. Run: ./install.sh --no-service"
+docker image inspect "$SERVE_IMAGE" >/dev/null 2>&1 || die "serving image $SERVE_IMAGE not built. Run: $PREP"
 
 # ── Nothing else may be using the GPU or the port (GB10: one engine at a time) ──
 if systemctl is-active --quiet qwen38-sglang 2>/dev/null; then
@@ -49,7 +61,7 @@ mkdir -p "$CONFIG_DIR/sglang-cache"
 echo "Starting in the foreground (first boot ≈ 9 min: torch.compile + CUDA graph capture)."
 echo "  Ready when the log says:  The server is fired up and ready to roll!"
 echo "  Test from another shell:  curl http://127.0.0.1:$PORT/health"
-echo "  Claude Code:              source $CONFIG_DIR/claude-code.env && claude --model qwen3.8-27b"
+echo "  opencode:                 provider config at $CONFIG_DIR/opencode.json (README, \"opencode integration\")"
 echo "  Stop:                     Ctrl+C (container removed; compile cache kept for faster next boots)"
 echo
 
@@ -62,7 +74,7 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
   -v "$CONFIG_DIR":/out \
   "$SERVE_IMAGE" \
   python3 -m sglang.launch_server \
-    --trust-remote-code --model-path RadixArk/Qwen3.8-27B-NVFP4 --tp-size 1 \
+    --trust-remote-code --model-path "$MODEL_REPO" --revision "$MODEL_REV" --tp-size 1 \
     --served-model-name qwen3.8-27b \
     --mem-fraction-static 0.50 \
     --attention-backend flashinfer --chunked-prefill-size 8192 \

@@ -2,16 +2,22 @@
 
 Most GB10 setups serve Qwen3.8-27B at 20-27 tok/s single-stream with boot-to-boot variance nobody controls for. This repo installs the fastest configuration measured so far, **SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels**, as a one-command, boot-persistent service, with **zero quality loss** (same NVFP4 quantization floor; speculative decoding is lossless by construction, verified against a Q8 reference and live canaries). Measured on the reference box, thinking on: **50 tok/s greedy median on `./bench.sh` (code 41-47, reasoning 52-57, math peak 60)**, free prose 17-23 in any language (2-3x the stock drafter, its historical weak spot), and **135-148 tok/s aggregate at 8 concurrent streams, 258 tok/s at 32** (`--max-running-requests 32`). Per-workload profile on a frozen battery below. Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
 
-You get an **OpenAI and Anthropic-compatible API** on port 30000. **Claude Code works out of the box**: three integration bugs are pre-fixed.
+You get an **OpenAI and Anthropic-compatible API** on port 30000, ready for agent CLIs: **[opencode](https://opencode.ai) works out of the box** (the installer writes a ready-to-use provider config), and the chat template ships pre-patched for agentic clients.
 
 ## Quickstart
 
-Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit), ~85 GB free disk.
+Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit), **~90 GB free disk** (~45 under `$HOME` for checkpoints and caches, ~45 on the Docker partition for the 39 GB image; the uncensored target is the same size as stock, and keeping **both** targets cached adds ~22 GB).
 
 One command, first install and updates alike (clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
+```
+
+Options ride on the **bash side** of the pipe (an env prefix on `curl` would not reach the installer):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=uncensored CONTEXT_MODE=1m bash
 ```
 
 Or the explicit way:
@@ -25,11 +31,11 @@ cd dgx-spark-qwen38
 
 First boot takes **~7-9 minutes** (CUDA graph capture + kernel compilation, cached afterwards; later boots ~5-7 min). Then:
 
-- **Claude Code**: `source ~/.config/qwen38/claude-code.env && claude --model qwen3.8-27b`
+- **opencode**: ready config at `~/.config/qwen38/opencode.json`, see "opencode integration" below
 - **Any OpenAI client**: `http://<host>:30000/v1/chat/completions`, model `qwen3.8-27b`, Bearer key from `~/.config/qwen38/api-key`
-- **Anthropic protocol** (Claude Code & co): `http://<host>:30000/v1/messages` (`Authorization: Bearer` only, not `x-api-key`)
+- **Anthropic protocol**: `http://<host>:30000/v1/messages` (`Authorization: Bearer` only, not `x-api-key`)
 - **Don't want a systemd service?** `./install.sh --no-service && ./run.sh`: same config, foreground, no sudo, Ctrl+C and it's gone.
-- Everything is **pinned** (base image digest + checkpoint revisions + five sha256-verified DFlash2 overlay files, see `dflash2/ATTRIBUTION.md`) so it still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
+- Everything is **pinned twice** (base image digest + checkpoint revisions at download, and the same `--revision` passed to the server itself, so an upstream push to a checkpoint repo can never change what you serve; plus five sha256-verified DFlash2 overlay files, see `dflash2/ATTRIBUTION.md`). It still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
 - Since 2026-08-21, this same combination (DFLASH2, draft block 8) is the **official recipe in the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**. No official image ships it yet (the cookbook has you build from source at a pinned commit), so this repo's prebuilt overlay stays the no-build path until one does.
 
 ## What speed to expect
@@ -47,7 +53,7 @@ Two instruments, both in the box, both reproducible. The headline **50 tok/s gre
 | **8 concurrent streams, aggregate** | **135-148** | 100-104 | ~92 |
 | **32 concurrent streams, aggregate** | **258** | not measured | not measured |
 
-v1.2 wins every row of the frozen battery except eval-style math (parity with stock), including free prose, historically the weak spot of block drafters. Every number above is deterministic across boots (`--disable-flashinfer-autotune`, see BENCHMARKS.md "The boot lottery") and was re-verified after a full machine reboot, with output-quality canaries passing. This machine serves its own Claude Code sessions with this exact repo, unmodified: if something breaks, it breaks here first.
+v1.2 wins every row of the frozen battery except eval-style math (parity with stock), including free prose, historically the weak spot of block drafters. Every number above is deterministic across boots (`--disable-flashinfer-autotune`, see BENCHMARKS.md "The boot lottery") and was re-verified after a full machine reboot, with output-quality canaries passing. This machine serves its own opencode sessions daily on this config (stretched to the 1M preset from the field report below): if something breaks, it breaks here first.
 
 **Quality, measured (not claimed).** Same box, v1.2.1, thinking on:
 
@@ -70,61 +76,189 @@ This repo's service is safe by construction:
 
 - Docker hard caps: `--memory 100g --memory-swap 100g` (a runaway kills the container, never the host; note the cgroup does *not* see CUDA unified allocations, so the real guard is the fraction)
 - `--mem-fraction-static 0.50` (plenty for 262K context at batch ≤ 4)
-- `Restart=on-failure` + a clean `ExecStartPre docker rm -f` so even a power cut leaves nothing stale
+- `Restart=always` + a clean `ExecStartPre docker rm -f` so even a power cut leaves nothing stale (`always` and not `on-failure`: a Triton compile crash measured on 2026-08-22 ended in `SystemExit: 0`, which `on-failure` never relaunches)
 
-## Claude Code integration
+The 1m mode deliberately runs **0.70** inside the same docker caps, with the autotuner
+disabled: field-tested continuously on the reference box (~17 GiB host headroom). **0.80 was
+measured crashing** under 3 concurrent requests (2 GiB free, Triton `CUDA operation not
+permitted`), and the 25-40 GB invisible-allocation bursts above all belong to native runs and
+the autotuner. Treat anything past 0.70 as livelock territory.
 
-The installer writes a ready-to-source env file at `~/.config/qwen38/claude-code.env`:
+## opencode integration
+
+The installer writes a complete, ready-to-use [opencode](https://opencode.ai) config at `~/.config/qwen38/opencode.json` (the API key is referenced via `{file:...}`, no secret inside):
 
 ```bash
-source ~/.config/qwen38/claude-code.env && claude --model qwen3.8-27b
+# no opencode config yet? use it as-is:
+mkdir -p ~/.config/opencode && cp ~/.config/qwen38/opencode.json ~/.config/opencode/opencode.json
+# already have one? merge the "qwen38" provider block into it
+opencode
 ```
 
-Four integration bugs are already fixed for you:
+What the shipped config gets right for you:
 
-1. **`reasoning_effort` 500s**: Claude Code sessions set to *max* effort send `reasoning_effort: "max"`, which the stock chat template rejects (only `xhigh/medium/low`). The installer patches the template to map `max`/`high` → `xhigh` (the actual ceiling, no behavior change) and `minimal` → `low` (an OpenAI tier, [contributed by helge](https://forums.developer.nvidia.com/t/380257/10)). This is not a Claude Code quirk: any OpenAI-compatible client sending a `reasoning_effort` outside `xhigh/medium/low` gets the same 400.
-2. **Mid-conversation system messages**: Claude Code injects system-reminders after turn 1; the stock template raises `System message must be at the beginning`. Patched to render them as `<system-reminder>` blocks (their exact semantics).
-3. **5-minute stream aborts**: on a custom `ANTHROPIC_BASE_URL`, Claude Code arms 300 s stream-idle watchdogs; a cold 36K-token prefill or a queued request can trip them while the server is still working. The env file raises them to their 30-minute maximum (`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`, `CLAUDE_STREAM_IDLE_TIMEOUT_MS`) plus `API_TIMEOUT_MS=3600000`.
-4. **Truncated long answers, and a long-context dead zone**: Claude Code sends `max_tokens: 32000` per request by default, and reasoning tokens count against that budget, so long turns ended mid-sentence. The env file raises it to the real ceiling: `CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000`. For a third-party model id, any higher value (129000, 258048, ...) is silently capped back to 128000, verified by request capture on Claude Code 2.1.238. The context declaration is the subtle half of the pair: the server rejects any request where `input + max_tokens > 262144` (a 400, no clamping), Claude Code never shrinks `max_tokens` to fit (verified by capture up to ~200K input tokens), and its auto-compaction reserves at most 20000 output tokens no matter what you set. So the two variables must satisfy `CONTEXT + OUTPUT <= 258048` (262144 minus a 4096 margin: client-side token counting is approximate, see [#2](https://github.com/hasso5703/dgx-spark-qwen38/issues/2)), otherwise every request landing between `262144 - OUTPUT` input tokens and the auto-compaction threshold gets a 400 before compaction can rescue it (the previous 64000/258048 pair had exactly that dead zone from ~198K on). The env file ships `CLAUDE_CODE_MAX_CONTEXT_TOKENS=130048` (262144 - 128000 - 4096); if you prefer longer context over very long single answers, use `OUTPUT=64000` with `CONTEXT=194048`.
+1. **The hidden 32K output cap**: opencode sends `max_tokens = min(limit.output, OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX or 32000)`. Without that env var, a long thinking phase hits 32000 tokens, the turn ends silently (`finish_reason: length`, no text, no tool call) and you have to re-prompt. The installer ships an **`oc` launcher** (`~/.local/bin/oc`, skipped if an unrelated `oc` binary exists) that exports the right value and execs `opencode --yolo`: launch with `oc` instead of `opencode` and the cap matches the declared output limit in either context mode. Note that `--yolo` auto-approves every tool action (how the reference box runs); remove it from the launcher file if you prefer per-action prompts.
+2. **Limits that can never 400**: the server rejects any request where `input + max_tokens` exceeds the window (no clamping), so the config ships `context/input 194048, output 64000` in native mode (258048 worst case, a 4096 margin under 262144, whether the 32K cap is lifted or not) and `700000/200000` in 1m mode (worst case 880000, under the worst measured KV pool).
+3. **Reasoning-effort variants**: the generated config declares `medium` and `low` variants (ctrl+t in the TUI); the default is the model's `xhigh`. This works because the patched template accepts and maps effort tiers (`max`/`high` → `xhigh`, `minimal` → `low`, [contributed by helge](https://forums.developer.nvidia.com/t/380257/10)); any client sending an unmapped tier would get a 500 on the stock template.
+4. **Mid-conversation system messages**: some agent clients inject system messages after turn 1; the stock template raises `System message must be at the beginning`. Patched to render them as `<system-reminder>` blocks.
+5. **Vision declared**: `attachment` + `modalities` are set, so image attachments and on-disk image reads work end to end (the model is natively multimodal).
 
-Also: SGLang's `--api-key` only accepts `Authorization: Bearer` (Claude Code's `ANTHROPIC_AUTH_TOKEN`), **not** `x-api-key`. Another 90 %-slowdown killer, `CLAUDE_CODE_ATTRIBUTION_HEADER`, is disabled in the env file per [Unsloth's guide](https://unsloth.ai/docs/basics/claude-code).
+On service installs the generated config points at the **keepalive proxy port** (`PORT+1`), not the server directly, and that is deliberate: SGLang buffers tool-call arguments while they stream (127 s of measured silence on one 400-line file write, at native context), and opencode drops a stream after roughly 140-180 s without a real chunk. The proxy (`qwen38-keepalive.service`, vendored `keepalive-proxy.py`) fills those silences with protocol-correct keepalives, at SSE event boundaries only, and aborts the generation server-side the moment the client disconnects (no zombie generations). With `./install.sh --no-service` there is no proxy: the config then points at the server directly, and huge single-file writes may abort. One more caveat, measured: SGLang's `--api-key` only accepts `Authorization: Bearer`, **not** `x-api-key`.
 
-## Field report: 1M context + opencode, battle-tested
+## The 1M context mode
 
-The stock 262144 context can be stretched to **1,010,000 tokens** with YaRN static scaling
-(factor 4.0, `original_max_position_embeddings: 262144`) patched into **both** `config.json`
-files (target model and DFlash2 draft, or the draft crashes at load), plus
-`--context-length 1010000` and `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`. On the GB10 this
-fits with `--mem-fraction-static 0.70`: about 960K tokens of KV pool, DFlash2 acceptance
-unchanged. Two things to know before copying it: SGLang buffers tool-call arguments during
-generation (silences of several minutes on big file writes, so put a keepalive proxy in front
-for any agent CLI), and YaRN output quality beyond the native window is not formally evaluated
-here, so treat it as an experimental preset.
+```bash
+CONTEXT_MODE=1m ./install.sh        # combines freely with MODEL_CHOICE=uncensored
+# one-liner: curl -fsSL .../get.sh | CONTEXT_MODE=1m bash
+```
 
-Proof it holds up: one continuous **opencode** session (reasoning effort `xhigh`,
-`OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=200000` to lift opencode's hidden 32K output cap)
-built a playable 3D zombie FPS from a single prompt by YouTuber Bijan Bowen:
+This installs, as one converging command, the exact preset that serves the reference box
+daily since 2026-08-22:
+
+- **1,010,000-token window** via YaRN static scaling (factor 4.0,
+  `original_max_position_embeddings: 262144`) patched into **both** cached `config.json`
+  files by `patch-yarn.py` (target model AND DFlash2 draft, or the draft crashes at load;
+  originals backed up next to them as `config.json.pre-yarn`), plus
+  `--context-length 1010000` and `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`.
+- **`--mem-fraction-static 0.70`**: 917K-1019K tokens of KV pool depending on the boot
+  (a lottery; 5 measured boots), DFlash2 acceptance unchanged; a real 690K-token request
+  has been served (cold prefill 40 min, then cached).
+- **The keepalive proxy becomes load-bearing.** Every service install ships it (see
+  "opencode integration"), but at 1M it is not optional: a cold 690K-token prefill can
+  keep the wire silent for tens of minutes. The proxy injects the official Anthropic
+  `ping` event on `/v1/messages` and an authentic empty chunk on the OpenAI dialect,
+  every 10 s, only at SSE event boundaries (a keepalive inside an event corrupts the
+  JSON, measured); it closes the upstream the moment the client disconnects, and
+  reports an explicit SSE error after 3600 s of true upstream silence (above the worst
+  legitimate prefill). **Agent clients must use the proxy port**; the direct server
+  port stays for curl and benches.
+- **`HF_HUB_OFFLINE=1`** in the unit, so no Hub metadata check can re-resolve a
+  checkpoint and silently undo the YaRN-patched configs (see "Operations" below).
+- **`Restart=always`**: a crash that exits 0 (a Triton compile crash measured 2026-08-22
+  ended in `SystemExit: 0`) still gets relaunched; `on-failure` would not.
+- The generated opencode config switches to `context/input 700000, output 200000`
+  (compaction fires at 680000; worst case 880000, under the worst measured pool).
+
+Quality past the native 262144 window is not formally evaluated here: treat it as an
+experimental preset. Proof it holds up operationally, one continuous **opencode** session
+(reasoning effort `xhigh`, output cap lifted) built a playable 3D zombie FPS from a single
+prompt by YouTuber Bijan Bowen:
 
 - **535,361 tokens** of context reached in one session, twice the native window, zero compaction
 - **~360K tokens generated**, 239 agent steps, 274 tool calls, no retry, no manual rescue
 - Result, single HTML file: **https://subway-fps.vercel.app**
 
+Back to native: `CONTEXT_MODE=native ./install.sh` (removes the proxy service; the
+`config.json.pre-yarn` backups let you undo the YaRN patches, though a 1010000
+`max_position_embeddings` is harmless at native context length).
+
+## Stock ↔ Uncensored target model
+
+The target checkpoint is selectable (the DFlash2 drafter and every other flag
+are unchanged):
+
+| choice | checkpoint | revision |
+|---|---|---|
+| `stock` (default) | `RadixArk/Qwen3.8-27B-NVFP4` | `52d1adc` |
+| `uncensored` | `edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4` | `21565d3` |
+
+The uncensored target is huihui-ai's abliteration of Qwen3.8-27B re-quantized
+with the identical RadixArk modelopt NVFP4 recipe (verified: same
+`text_config`, same mixed 8-bit attention / 4-bit MLP quant groups, same
+chat template, MTP + vision intact, ~22 GB). It refuses the least while keeping
+the stock NVFP4 serving path.
+
+- Fresh install: `MODEL_CHOICE=uncensored ./install.sh` (one-liner:
+  `curl -fsSL .../get.sh | MODEL_CHOICE=uncensored bash`). Upgrades keep the
+  installed choice; switch back anytime with `MODEL_CHOICE=stock ./install.sh`.
+- Existing install: `./switch-model.sh uncensored` (or `stock`), as many times
+  as you like. It downloads the checkpoint (cached after the first time),
+  applies the 1M YaRN config patch if the installed unit uses
+  `--context-length 1010000`, regenerates the patched chat template from the
+  target's own snapshot, rewrites **only** the `--model-path` line of
+  `/etc/systemd/system/qwen38-sglang.service` and daemon-reloads. It never
+  restarts the service: the switch takes effect on the next
+  `sudo systemctl restart qwen38-sglang` or reboot.
+- Speculative decoding stays lossless with either target (drafts are verified
+  against the target); only the DFlash2 acceptance rate may vary slightly.
+
 ## Operations
 
 ```bash
-systemctl status qwen38-sglang          # state
-sudo systemctl restart qwen38-sglang    # ~5-7 min boot; radix cache is wiped, warmup (if installed) re-heats it
-journalctl -u qwen38-sglang -f          # logs
+systemctl status qwen38-sglang          # server state
+systemctl status qwen38-keepalive       # keepalive proxy state
+sudo systemctl restart qwen38-sglang    # ~5-7 min boot; the radix (prefix) cache starts empty
+journalctl -u qwen38-sglang -f          # server logs
+journalctl -u qwen38-keepalive -f       # one line per proxied request (bytes, first/last event, outcome)
 ./bench.sh                              # re-measure this config
 ./bench-matrix.sh                       # per-workload profile, works on any engine
-./uninstall.sh                          # removes service + config (keeps downloaded models)
+./uninstall.sh                          # removes services + config (keeps downloaded models)
 ```
 
-Do **not** set `HF_HUB_OFFLINE=1`: SGLang probes for a LongCat config that doesn't exist in these repos (`srt/utils/hf_transformers/config.py`, `_try_load_longcat_config`) and offline mode turns that harmless miss into a hard `LocalEntryNotFoundError` at startup ([reported by helge](https://forums.developer.nvidia.com/t/380257/10); the function is verified present in the pinned image). With the pinned revisions cached, that metadata probe is the only network call.
+**Killing an abandoned generation.** If a client dies mid-generation the server keeps
+decoding for nothing (symptom: power draw and GPU busy with no active session). Behind
+the keepalive proxy this heals itself: the proxy aborts the upstream the moment the
+client disconnects. For direct connections (`./run.sh`, curl, custom clients), abort
+everything in flight with:
+
+```bash
+curl -X POST -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)" \
+  -H 'Content-Type: application/json' -d '{"abort_all": true}' http://127.0.0.1:30000/abort_request
+```
+
+The server keeps running; use it only when you know the in-flight work is abandoned,
+because it aborts EVERY request currently decoding, yours included.
+
+`HF_HUB_OFFLINE=1` is fine **once every pinned checkpoint is cached**: the 1m unit sets it on
+purpose (it protects the YaRN-patched configs from any Hub re-resolution) and the reference
+box serves that way across reboots; the LongCat metadata probe
+(`srt/utils/hf_transformers/config.py`) reads from the cache, verified in the pinned image.
+Do **not** set it on a first install or over an incomplete cache: the probe's harmless online
+miss then becomes a hard `LocalEntryNotFoundError` at startup
+([reported by helge](https://forums.developer.nvidia.com/t/380257/10)). With the pinned
+revisions cached, that metadata probe is the only network call.
 
 Notes: the server's own `watchdog_timeout=300` is a *hang* detector (kills a genuinely stuck forward so systemd restarts it); it does not limit generation length. Two concurrent generations share the memory bus (~half speed each): the GB10 is a batch-1-per-moment machine.
 
 **Idle power**: without `--sleep-on-idle`, SGLang's scheduler busy-spins a full CPU core while doing nothing (reported as +10-12 W at the wall by [alef204 and emX0r](https://forums.developer.nvidia.com/t/380257/56), diagnosed in [MiaAI-Lab issue #4](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark/issues/4)). The unit ships the flag since v1.2.6. A/B on the reference box: scheduler CPU 101 % -> 1.7 % at idle, module power 12.1 -> 10.5 W, and wake-up TTFT unchanged (0.234-0.240 s before, 0.234-0.239 s after, measured after 60 s and 300 s of idle), throughput in family (41.5 tok/s code, 52.8 math).
+
+## Extras (opt-in)
+
+Two field-tested pieces from the reference box, deliberately not part of the default
+install because they touch things beyond the serving stack:
+
+**`extras/opencode/auto-continue.js`**: an opencode plugin that automatically resumes a
+session interrupted by a transient technical error (tool-call delta without id, timeout,
+network reset) or left stuck right after a context compaction, so a one-off incident no
+longer freezes an overnight run. It never resumes after a deliberate abort, a permission
+prompt, or an auth/quota problem, and stops after 25 relaunches without progress. Install:
+
+```bash
+mkdir -p ~/.config/opencode/plugins && cp extras/opencode/auto-continue.js ~/.config/opencode/plugins/
+```
+
+Plugins load when opencode starts (a running session never picks it up). Log at
+`~/.config/qwen38/auto-continue.log`; tune with `AC_THROTTLE_MS`, `AC_IDLE_DELAY_MS`,
+`AC_MAX_CONSECUTIVE`, `AC_LOG`.
+
+**`extras/cake-ingress/`**: ingress anti-bufferbloat. While a model download saturates
+your link, the queue builds up inside the ISP box and everything else drowns (measured on
+the reference box: 1 ms ping became a 4797 ms average and the tunnel in front of the API
+answered 502). The fix shapes RECEIVED traffic just under your real link capacity with
+CAKE, so the queue forms on the Spark where it is scheduled fairly; SSH and the API stay
+at a few milliseconds while the download still runs at ~97 % speed. You must pass your
+own measured downlink (never the NIC speed; the interface is auto-detected):
+
+```bash
+BANDWIDTH=950Mbit  extras/cake-ingress/setup.sh    # 1 Gb/s link (the reference box)
+BANDWIDTH=475Mbit  extras/cake-ingress/setup.sh    # 500 Mb/s link
+BANDWIDTH=2350Mbit extras/cake-ingress/setup.sh    # 2.5 Gb/s link
+extras/cake-ingress/setup.sh --uninstall           # back to stock networking
+```
+
+Boot-persistent (`cake-ingress.service`). Verify with a `ping 1.1.1.1` kept running
+during a big download. The full bandwidth sweep and the reasoning are in the script's
+header; setting BANDWIDTH too high is the one mistake that silently does nothing.
 
 ## Upgrading from an earlier version
 
@@ -132,11 +266,18 @@ Notes: the server's own `watchdog_timeout=300` is a *hang* detector (kills a gen
 cd dgx-spark-qwen38 && git pull && ./install.sh
 ```
 
-Your API key, patched template, and any systemd drop-ins under
-`/etc/systemd/system/qwen38-sglang.service.d/` are kept; the unit is rewritten and the service
-restarts on the new config. v1.1 → v1.2 downloads the ~4 GB DFlash2 draft and builds the serving
-image locally (~1 min, offline, sha256-verified, see `dflash2/ATTRIBUTION.md`). To return to
-the DSpark config: `git checkout v1.1 && ./install.sh`. Change history: [CHANGELOG.md](CHANGELOG.md).
+Your choices survive the upgrade: the API key, the patched template, your own systemd drop-ins
+under `/etc/systemd/system/qwen38-sglang.service.d/`, and (since v1.3) the installed target
+model, port and HF cache location, which are read from the unit in place. The unit itself is
+rewritten on the repo's current flags (the previous one is backed up to
+`~/.config/qwen38/qwen38-sglang.service.bak-preupdate`) and the service restarts on the new
+config. Upgrading from v1.2.x also removes the deprecated Claude Code warmup drop-in if you had
+installed it, and no longer writes `claude-code.env`: an existing copy keeps working and will
+never be overwritten again (earlier versions regenerated it on every install, losing any
+customization), but it is unmaintained; the supported client config is `opencode.json`. v1.1 → v1.2 downloads the ~4 GB
+DFlash2 draft and builds the serving image locally (~1 min, offline, sha256-verified, see
+`dflash2/ATTRIBUTION.md`). To return to the DSpark config: `git checkout v1.1 && ./install.sh`.
+Change history: [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits
 

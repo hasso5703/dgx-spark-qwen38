@@ -1,0 +1,103 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh; do
+            bash -n "$f"
+          done
+
+      - name: shellcheck (warning severity)
+        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh
+
+      - name: opencode plugin syntax (node)
+        run: node --check extras/opencode/auto-continue.js
+
+      - name: Python correctness (ruff F,E9 + compile)
+        run: |
+          pip install 'ruff==0.5.0'
+          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py tests/*.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py
+
+      - name: Pin contracts (run.sh expects 15, switch-model.sh expects 8)
+        run: |
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 15 ] || { echo "run.sh pin contract broken: $n != 15"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 8 ] || { echo "switch-model.sh pin contract broken: $n != 8"; exit 1; }
+          PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)"
+          eval "$PINS"
+          [ -n "$UNC_REV" ] && [ -n "$STOCK_REV" ] && [ "$MODEL_CHOICE" = "stock" ] && [ "$CONTEXT_MODE" = "native" ]
+
+      - name: Unit templates render with no leftover placeholder
+        run: |
+          render() {
+            sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" \
+                -e "s|__PORT__|30000|g" -e "s|__PROXY_PORT__|30001|g" -e "s|__IMAGE__|img:v|g" \
+                -e "s|__HF_CACHE__|/hf|g" -e "s|__DRAFT2_REV__|deadbeef|g" \
+                -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL__|org/repo|g" "$1"
+          }
+          for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template qwen38-keepalive.service.template; do
+            render "$t" > /tmp/unit.rendered
+            if grep -q '__[A-Z_]*__' /tmp/unit.rendered; then
+              echo "unsubstituted placeholder in $t:"; grep '__[A-Z_]*__' /tmp/unit.rendered; exit 1
+            fi
+          done
+          render qwen38-sglang-1m.service.template | grep -q -- '--context-length 1010000'
+          render qwen38-sglang-1m.service.template | grep -q 'HF_HUB_OFFLINE=1'
+          render qwen38-sglang.service.template | grep -q 'Restart=always'
+
+      - name: opencode limits block (both modes and both install paths, from install.sh itself)
+        run: |
+          get() { bash -c "CONTEXT_MODE=$1; NO_SERVICE=$2; PORT=30000; PROXY_PORT=30001; eval \"\$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; echo \"\$OC_PORT \$OC_CTX \$OC_OUT\""; }
+          [ "$(get native 0)" = "30001 194048 64000" ] || { echo "native service limits drifted"; exit 1; }
+          [ "$(get 1m 0)" = "30001 700000 200000" ] || { echo "1m limits drifted"; exit 1; }
+          [ "$(get native 1)" = "30000 194048 64000" ] || { echo "no-service limits drifted"; exit 1; }
+
+      - name: Anti-drift, the two unit templates differ only on the four known lines
+        run: |
+          filt() { grep -vE 'Description=|--mem-fraction-static|--model-path|TORCHINDUCTOR_CACHE_DIR'; }
+          diff <(filt < qwen38-sglang.service.template) <(filt < qwen38-sglang-1m.service.template)
+          grep -q -- '--mem-fraction-static 0.50' qwen38-sglang.service.template
+          grep -q -- '--mem-fraction-static 0.70' qwen38-sglang-1m.service.template
+          grep -q -- '--context-length 1010000 --model-path __MODEL__ __MODEL_REV_ARGS__' qwen38-sglang-1m.service.template
+          grep -q 'HF_HUB_OFFLINE=1' qwen38-sglang-1m.service.template
+          if grep -q 'HF_HUB_OFFLINE' qwen38-sglang.service.template; then
+            echo "the native template must not set HF_HUB_OFFLINE"; exit 1
+          fi
+
+      - name: Anti-drift, run.sh serves the native unit's exact flag set and constants
+        run: |
+          tpl_flags() { sed 's|__MODEL_REV_ARGS__|--revision X|' qwen38-sglang.service.template | sed -n '/ExecStart=/,/--port/p' | grep -oE -- '--[a-z][a-z-]*' | sort -u; }
+          run_flags() { sed -n '/exec docker run/,/--port/p' run.sh | grep -oE -- '--[a-z][a-z-]*' | sort -u; }
+          diff <(tpl_flags) <(run_flags)
+          vals() { grep -oE -- '--(memory-swap|memory|shm-size|mem-fraction-static|chunked-prefill-size|cuda-graph-max-bs|speculative-num-draft-tokens|max-mamba-cache-size|max-running-requests|torch-compile-max-bs|num-continuous-decode-steps) [^ \\]+' "$1" | sort; }
+          diff <(vals qwen38-sglang.service.template) <(vals run.sh)
+
+      - name: patch-yarn fixtures (both config shapes, idempotence, revision pin)
+        run: python3 tests/test_patch_yarn.py
+
+      - name: patch-template fixture (anchors, idempotence, revision pin)
+        run: python3 tests/test_patch_template.py
+
+      - name: Vendored DFlash2 overlay integrity
+        run: cd dflash2 && sha256sum -c MANIFEST.sha256
+
+      - name: House typography (no em/en dashes in tracked files)
+        run: |
+          if git ls-files -z | xargs -0 grep -nP '[\x{2014}\x{2013}\x{2212}]' 2>/dev/null; then
+            echo "em/en dash found (house style forbids them)"; exit 1
+          fi
