@@ -139,6 +139,42 @@ Caveat on cross-reading: that harness generates synthetic tokens (`tg128` at a s
 
 Read it carefully before concluding "vLLM is faster": the prose floor is identical (the drafter's low-acceptance signature, quant and drafter being the same), and the structured cells sit +15-25 % above this repo's reference numbers, measured on an **idle, freshly rebooted box**, where this repo's reference cells are measured on a box that concurrently runs the very agent sessions it serves. Independent reproducers on the NVIDIA forum thread (pontostroy, Schnabulator) report the same +8-30 % offset on quiet boxes with this exact config. The honest conclusion: **on identical hardware, quant and drafter, eugr's vLLM path and SGLang land in the same band; engine choice is not the lever, box load and content are.** A controlled idle-box re-baseline of this repo's config (benched from a second machine, zero local sessions) is on the list and will get its own column.
 
+## The flash target: Qwen3.8-Flash-Next 176B, measured (2026-08-27)
+
+Same box, same instruments (two-call wall-clock delta for decode, single-shot
+usage/wall for prefill). Serving config: vLLM official image + the PLE-mmap
+overlay, NVFP4, MTP `num_speculative_tokens=2`, 262,144 context, GPU fraction
+0.78, PLE prewarm on.
+
+| probe | measured |
+|---|---|
+| decode, code | 31.0 tok/s |
+| decode, reasoning | 31.1 tok/s |
+| decode, free prose | 20.8 tok/s |
+| prefill, 60K prompt | 2,284 tok/s (24.3 s) |
+| prefill, 120K prompt | 2,073 tok/s (54.2 s) |
+| prefill, 189K prompt | 2,099 tok/s (90.0 s) |
+| MTP acceptance | ~2.2 tokens/step (rate ~0.69) |
+| quality canaries (merge/logic/fr/primes) | 4/4 |
+| needle at 190K depth | found |
+
+Notes from the sweep that produced this config:
+
+- MTP=2 is the optimum on this box: MTP=3 lowers mean acceptance (2.2 -> 1.9)
+  with no speed gain. The official GB300 recipe uses 3; GB10 pays more per
+  rejected draft.
+- FlashInfer autotune ON and `--max-num-batched-tokens 16384` were measured:
+  no gain over the pinned config (30.6/30.7/20.4 decode, 2,240 prefill), so
+  the repo keeps autotune off, like every official recipe for this model.
+- The ~31 tok/s decode ceiling is kernel-launch overhead in the 512-expert
+  MoE at batch 1, not bandwidth and not the PLE table (PLE placement measured
+  irrelevant to decode; it only affects long-context prefill). The same
+  ceiling shows on llama.cpp with the same checkpoint quantized to Q4.
+- For reference, the public single-Spark alternatives measured/reported at the
+  time of writing: llama.cpp GGUF recipes 22-27 tok/s decode with prefill in
+  the low hundreds (and ~8 tok/s decode at 185K depth), dual-Spark SGLang TP2
+  64 tok/s. This target keeps single-box, full NVFP4 quality, native 262K.
+
 ## Reproduce it on your box, any engine
 
 ```bash

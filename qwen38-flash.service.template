@@ -1,0 +1,18 @@
+[Unit]
+Description=Qwen3.8-Flash-Next NVFP4 + MTP (vLLM, PLE table on NVMe, capped docker), OpenAI API :__PORT__
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+ExecStartPre=-/usr/bin/docker rm -f qwen38-flash
+ExecStart=/bin/bash __HOME__/.config/qwen38/launch-flash.sh
+ExecStop=-/usr/bin/docker stop -t 20 qwen38-flash
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

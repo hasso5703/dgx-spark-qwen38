@@ -1,12 +1,22 @@
-# Qwen3.8-27B at 50 tok/s greedy median and 148+ tok/s aggregate on DGX Spark (GB10)
+# Qwen3.8 on DGX Spark (GB10): 27B at 50 tok/s, Flash-Next 176B on one box
 
-Most GB10 setups serve Qwen3.8-27B at 20-27 tok/s single-stream with boot-to-boot variance nobody controls for. This repo installs the fastest configuration measured so far, **SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels**, as a one-command, boot-persistent service, with **zero quality loss** (same NVFP4 quantization floor; speculative decoding is lossless by construction, verified against a Q8 reference and live canaries). Measured on the reference box, thinking on: **50 tok/s greedy median on `./bench.sh` (code 41-47, reasoning 52-57, math peak 60)**, free prose 17-23 in any language (2-3x the stock drafter, its historical weak spot), and **135-148 tok/s aggregate at 8 concurrent streams, 258 tok/s at 32** (`--max-running-requests 32`). Per-workload profile on a frozen battery below. Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
+One command installs a boot-persistent, hardened serving stack for the Qwen3.8 family on a single DGX Spark, with **three switchable targets** and **zero quality loss** on each (NVFP4 quantization floor everywhere; every speculative path is lossless by construction):
 
-You get an **OpenAI and Anthropic-compatible API** on port 30000, ready for agent CLIs: **[opencode](https://opencode.ai) works out of the box** (the installer writes a ready-to-use provider config), and the chat template ships pre-patched for agentic clients.
+| target | model | engine | headline (measured here) |
+|---|---|---|---|
+| `stock` (default) | Qwen3.8-27B NVFP4 | SGLang + DFlash2 | **50 tok/s** greedy median, 148+ aggregate at 8 streams, optional 1M context |
+| `uncensored` | Qwen3.8-27B abliterated NVFP4 | SGLang + DFlash2 | same speed and serving path as stock |
+| `flash` | **Qwen3.8-Flash-Next 176B** hybrid MoE NVFP4 | vLLM + MTP | **31 tok/s decode, ~2,280 tok/s prefill**, 262K context, on ONE box |
+
+The 27B path is the fastest configuration measured so far on GB10 (**SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels**): **50 tok/s greedy median on `./bench.sh` (code 41-47, reasoning 52-57, math peak 60)**, free prose 17-23 in any language, **135-148 tok/s aggregate at 8 concurrent streams, 258 at 32**. Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
+
+The flash path serves a model that does not otherwise fit: the 176B checkpoint's 51B N-gram table is **mmap-served from NVMe through the page cache** (a two-file, sha256-verified overlay on the official vLLM image, bit-exactness-tested at every install; see `flash/ATTRIBUTION.md`), leaving the unified pool to the compute weights and a real 262K KV cache. Decode ~31 tok/s with the model's own MTP head, prefill ~2,280 tok/s at 60K and still ~2,100 at 189K thanks to the real QSA sparse-attention kernels.
+
+Whatever the target, you get the same surface: an **OpenAI-compatible API** on port 30000 (the 27B path also speaks the Anthropic protocol), a keepalive proxy for agent CLIs on 30001, and **[opencode](https://opencode.ai) works out of the box** (the installer writes a ready-to-use provider config; the chat template ships pre-patched for agentic clients). The stack is built to grow: more targets, engines and drafters will slot into the same switch surface.
 
 ## Quickstart
 
-Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit), **~90 GB free disk** (~45 under `$HOME` for checkpoints and caches, ~45 on the Docker partition for the 39 GB image; the uncensored target is the same size as stock, and keeping **both** targets cached adds ~22 GB).
+Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). Free disk: **~90 GB** for a 27B target (~45 under `$HOME` for checkpoints and caches, ~45 on the Docker partition for the 39 GB image; keeping both 27B targets cached adds ~22 GB), **~170 GB** for the flash target (~145 under `$HOME`, the checkpoint is ~136 GB and doubles as the mmap-served table; ~25 on the Docker partition).
 
 One command, first install and updates alike (clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer):
 
@@ -18,6 +28,7 @@ Options ride on the **bash side** of the pipe (an env prefix on `curl` would not
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=uncensored CONTEXT_MODE=1m bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=flash bash
 ```
 
 Or the explicit way:
@@ -29,13 +40,13 @@ cd dgx-spark-qwen38
 ./bench.sh              # verify your tok/s
 ```
 
-First boot takes **~7-9 minutes** (CUDA graph capture + kernel compilation, cached afterwards; later boots ~5-7 min). Then:
+First boot takes **~7-9 minutes** for a 27B target (CUDA graph capture + kernel compilation, cached afterwards; later boots ~5-7 min) and **~10 minutes** for flash (weight load + PLE prewarm). Then:
 
 - **opencode**: ready config at `~/.config/qwen38/opencode.json`, see "opencode integration" below
-- **Any OpenAI client**: `http://<host>:30000/v1/chat/completions`, model `qwen3.8-27b`, Bearer key from `~/.config/qwen38/api-key`
-- **Anthropic protocol**: `http://<host>:30000/v1/messages` (`Authorization: Bearer` only, not `x-api-key`)
-- **Don't want a systemd service?** `./install.sh --no-service && ./run.sh`: same config, foreground, no sudo, Ctrl+C and it's gone.
-- Everything is **pinned twice** (base image digest + checkpoint revisions at download, and the same `--revision` passed to the server itself, so an upstream push to a checkpoint repo can never change what you serve; plus five sha256-verified DFlash2 overlay files, see `dflash2/ATTRIBUTION.md`). It still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
+- **Any OpenAI client**: `http://<host>:30000/v1/chat/completions`, model `qwen3.8-27b` (flash: `qwen3.8-flash-next`), Bearer key from `~/.config/qwen38/api-key`
+- **Anthropic protocol** (27B targets): `http://<host>:30000/v1/messages` (`Authorization: Bearer` only, not `x-api-key`)
+- **Don't want a systemd service?** `./install.sh --no-service && ./run.sh`: same config, foreground, no sudo, Ctrl+C and it's gone (27B targets; flash is service-only in this release).
+- Everything is **pinned twice** (base image digest + checkpoint revisions at download, and the same `--revision` passed to the server itself, so an upstream push to a checkpoint repo can never change what you serve; plus sha256-verified overlay files: five for DFlash2, `dflash2/ATTRIBUTION.md`, two for flash, `flash/ATTRIBUTION.md`). It still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
 - Since 2026-08-21, this same combination (DFLASH2, draft block 8) is the **official recipe in the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**. No official image ships it yet (the cookbook has you build from source at a pinned commit), so this repo's prebuilt overlay stays the no-build path until one does.
 
 ## What speed to expect
@@ -86,12 +97,12 @@ the autotuner. Treat anything past 0.70 as livelock territory.
 
 ## opencode integration
 
-The installer writes a complete, ready-to-use [opencode](https://opencode.ai) config at `~/.config/qwen38/opencode.json` (the API key is referenced via `{file:...}`, no secret inside):
+The installer writes a complete, ready-to-use [opencode](https://opencode.ai) config at `~/.config/qwen38/opencode.json` (the API key is referenced via `{file:...}`, no secret inside). It contains one provider per installed engine (`qwen38` for the 27B pair, `flashnext` for flash), each with `low` / `medium` / `xhigh` reasoning-effort variants (no variant = the template's own default, xhigh), and its default model follows the installed target (`./switch-model.sh` re-points it on every switch):
 
 ```bash
 # no opencode config yet? use it as-is:
 mkdir -p ~/.config/opencode && cp ~/.config/qwen38/opencode.json ~/.config/opencode/opencode.json
-# already have one? merge the "qwen38" provider block into it
+# already have one? merge the "qwen38" (and/or "flashnext") provider block into it
 opencode
 ```
 
@@ -152,15 +163,55 @@ Back to native: `CONTEXT_MODE=native ./install.sh` (removes the proxy service; t
 `config.json.pre-yarn` backups let you undo the YaRN patches, though a 1010000
 `max_position_embeddings` is harmless at native context length).
 
-## Stock ↔ Uncensored target model
+## The flash target: Qwen3.8-Flash-Next 176B on one Spark
 
-The target checkpoint is selectable (the DFlash2 drafter and every other flag
-are unchanged):
+Qwen's official validation environment for this model is a dual GB300 node;
+on Sparks, the public recipes run it on **two** boxes (TP2). This target runs
+it on **one**, at full 262K native context and full NVFP4 quality, because of
+one structural trick and three GB10-specific fixes, all vendored, verified and
+pinned in `flash/`:
 
-| choice | checkpoint | revision |
-|---|---|---|
-| `stock` (default) | `RadixArk/Qwen3.8-27B-NVFP4` | `52d1adc` |
-| `uncensored` | `edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4` | `21565d3` |
+- **The 51B N-gram (PLE) table never enters GPU memory.** A 478-line overlay
+  (`flash/vllm_ple_mmap.py`, by [blazux](https://github.com/blazux/qwen3.8-Flash-DGX),
+  Apache-2.0, sha256-pinned) registers the embedding gather as a custom vLLM op
+  that reads the checkpoint's own safetensors shards through mmap: the table is
+  served from NVMe by the Linux page cache, warmed once at boot
+  (`VLLM_PLE_MMAP_PREWARM=1`). Correctness is not assumed: a bit-exactness test
+  of the gather (dedup, multi-shard spans, fp8 view path, out-of-range) runs
+  inside the freshly built image at **every install**, and the build refuses to
+  tag if it fails.
+- **PIECEWISE CUDA graphs** with the PLE op declared as a splitting op (the
+  gather is CPU work + a pageable copy: it cannot live inside a captured graph).
+- **Prefix caching off**: a GDN `in_proj` GEMM hits `CUBLAS_STATUS_INTERNAL_ERROR`
+  on the cached-block path on sm_121 (stock-model bug).
+- **torch.compile off for the lookup op**: Inductor int64-indexing assert on sm_121.
+
+Measured on the reference box (two-call wall-clock, quality canaries 4/4,
+needle-in-haystack passing at 190K+ depth):
+
+| axis | measured |
+|---|---|
+| decode, fresh code/reasoning | **~31 tok/s** (MTP head, acceptance ~2.2 tokens/step) |
+| decode, free prose | ~21 tok/s |
+| prefill, 60K prompt | **~2,280 tok/s** (real QSA sparse kernels) |
+| prefill, 189K prompt | **~2,100 tok/s** (a 189K prompt lands in ~90 s) |
+| context | 262,144 native, no YaRN |
+| memory | GPU fraction 0.78 + docker cap 110g, ~17 GB host headroom in steady state |
+
+The MTP speculative head is the model's own next-token module: drafts are
+verified by the target, so output quality is exactly the target's (`MTP=2`
+measured optimal; 3 lowers acceptance with no speed gain). Note the engine
+serves the OpenAI protocol only (no `/v1/messages` on this target), one
+request at a time is the validated shape (`--max-num-seqs 2` leaves headroom),
+and vision inputs work (the checkpoint keeps the multimodal tower).
+
+## The three targets, and switching between them
+
+| choice | checkpoint | revision | engine, unit |
+|---|---|---|---|
+| `stock` (default) | `RadixArk/Qwen3.8-27B-NVFP4` | `52d1adc` | SGLang, `qwen38-sglang` |
+| `uncensored` | `edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4` | `21565d3` | SGLang, `qwen38-sglang` |
+| `flash` | `RadixArk/Qwen3.8-Flash-Next-NVFP4` | `7b71922` | vLLM, `qwen38-flash` |
 
 The uncensored target is huihui-ai's abliteration of Qwen3.8-27B re-quantized
 with the identical RadixArk modelopt NVFP4 recipe (verified: same
@@ -168,27 +219,43 @@ with the identical RadixArk modelopt NVFP4 recipe (verified: same
 chat template, MTP + vision intact, ~22 GB). It refuses the least while keeping
 the stock NVFP4 serving path.
 
-- Fresh install: `MODEL_CHOICE=uncensored ./install.sh` (one-liner:
-  `curl -fsSL .../get.sh | MODEL_CHOICE=uncensored bash`). Upgrades keep the
-  installed choice; switch back anytime with `MODEL_CHOICE=stock ./install.sh`.
-- Existing install: `./switch-model.sh uncensored` (or `stock`), as many times
-  as you like. It downloads the checkpoint (cached after the first time),
-  applies the 1M YaRN config patch if the installed unit uses
-  `--context-length 1010000`, regenerates the patched chat template from the
-  target's own snapshot, rewrites **only** the `--model-path` line of
-  `/etc/systemd/system/qwen38-sglang.service` and daemon-reloads. It never
-  restarts the service: the switch takes effect on the next
-  `sudo systemctl restart qwen38-sglang` or reboot.
-- Speculative decoding stays lossless with either target (drafts are verified
-  against the target); only the DFlash2 acceptance rate may vary slightly.
+The flash target is Qwen3.8-Flash-Next (Qwen4-generation preview: 176B hybrid
+MoE, 6B active, QSA sparse attention, multimodal) in RadixArk's NVFP4, served
+by vLLM with the model's own MTP speculative head. Both units publish the same
+port and are never enabled together: switching targets across engines flips
+which unit starts at boot, the API surface and the keepalive proxy stay put.
+
+- Fresh install: `MODEL_CHOICE=uncensored ./install.sh` or
+  `MODEL_CHOICE=flash ./install.sh` (one-liner: `curl -fsSL .../get.sh |
+  MODEL_CHOICE=flash bash`). Upgrades keep the installed choice.
+- Existing install, 27B pair (`stock` ↔ `uncensored`): `./switch-model.sh
+  uncensored` (or `stock`), as many times as you like. It downloads the
+  checkpoint (cached after the first time), applies the 1M YaRN config patch if
+  the installed unit uses `--context-length 1010000`, regenerates the patched
+  chat template from the target's own snapshot, rewrites **only** the
+  `--model-path` line of `/etc/systemd/system/qwen38-sglang.service` and
+  daemon-reloads.
+- Existing install, across engines (`flash` ↔ either 27B target): install each
+  stack once (`MODEL_CHOICE=flash ./install.sh` downloads the image and
+  checkpoint and builds the overlay); after that `./switch-model.sh flash` /
+  `./switch-model.sh stock` is surgical too: it re-verifies the checkpoint,
+  regenerates the target's template, flips which unit is enabled at boot, and
+  points the opencode default model at the target.
+- `switch-model.sh` never restarts a service itself: every switch takes effect
+  on the next restart or reboot, and the script prints the exact stop/start
+  commands for the engine pair it just queued.
+- Speculation stays lossless with every target (DFlash2 drafts and MTP drafts
+  are verified against the target model); only acceptance rates vary.
 
 ## Operations
 
 ```bash
-systemctl status qwen38-sglang          # server state
+systemctl status qwen38-sglang          # 27B server state (target stock/uncensored)
+systemctl status qwen38-flash           # Flash-Next server state (target flash)
 systemctl status qwen38-keepalive       # keepalive proxy state
-sudo systemctl restart qwen38-sglang    # ~5-7 min boot; the radix (prefix) cache starts empty
-journalctl -u qwen38-sglang -f          # server logs
+sudo systemctl restart qwen38-sglang    # 27B: ~5-7 min boot; the radix (prefix) cache starts empty
+sudo systemctl restart qwen38-flash     # flash: ~10 min boot (weight load + PLE prewarm)
+journalctl -u qwen38-sglang -f          # server logs (qwen38-flash for the flash target)
 journalctl -u qwen38-keepalive -f       # one line per proxied request (bytes, first/last event, outcome)
 ./bench.sh                              # re-measure this config
 ./bench-matrix.sh                       # per-workload profile, works on any engine
@@ -268,10 +335,13 @@ cd dgx-spark-qwen38 && git pull && ./install.sh
 
 Your choices survive the upgrade: the API key, the patched template, your own systemd drop-ins
 under `/etc/systemd/system/qwen38-sglang.service.d/`, and (since v1.3) the installed target
-model, port and HF cache location, which are read from the unit in place. The unit itself is
+model, port and HF cache location, which are read from the installed unit (v1.4: units; a box
+serving the flash target keeps it, exactly like a 27B choice). The unit itself is
 rewritten on the repo's current flags (the previous one is backed up to
-`~/.config/qwen38/qwen38-sglang.service.bak-preupdate`) and the service restarts on the new
-config. Upgrading from v1.2.x also removes the deprecated Claude Code warmup drop-in if you had
+`~/.config/qwen38/<unit>.bak-preupdate`) and the service restarts on the new
+config. v1.3 -> v1.4 changes nothing by itself for a 27B box: the flash stack is only
+downloaded and installed when you ask for it (`MODEL_CHOICE=flash`), and the regenerated
+`opencode.json` gains an `xhigh` reasoning-effort variant. Upgrading from v1.2.x also removes the deprecated Claude Code warmup drop-in if you had
 installed it, and no longer writes `claude-code.env`: an existing copy keeps working and will
 never be overwritten again (earlier versions regenerated it on every install, losing any
 customization), but it is unmaintained; the supported client config is `opencode.json`. v1.1 → v1.2 downloads the ~4 GB

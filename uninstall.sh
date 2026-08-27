@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Removes the qwen38-sglang service and its config.
+# Removes the qwen38 serving services (27B SGLang and/or Flash-Next vLLM) and their config.
 # Keeps: the docker images (base + locally built qwen38-dflash2) and the downloaded checkpoints in ~/.cache/huggingface
 # (delete those manually if you want the ~67-89 GB back, upper end with the uncensored target cached: see bottom).
 set -euo pipefail
@@ -15,9 +15,10 @@ for arg in "${@:-}"; do
 done
 
 sudo systemctl disable --now "$UNIT_NAME" 2>/dev/null || true
+sudo systemctl disable --now qwen38-flash.service 2>/dev/null || true
 sudo systemctl disable --now qwen38-keepalive.service 2>/dev/null || true
-docker rm -f qwen38-sglang qwen38-sglang-run 2>/dev/null || true
-sudo rm -f "/etc/systemd/system/$UNIT_NAME" /etc/systemd/system/qwen38-keepalive.service
+docker rm -f qwen38-sglang qwen38-sglang-run qwen38-flash 2>/dev/null || true
+sudo rm -f "/etc/systemd/system/$UNIT_NAME" /etc/systemd/system/qwen38-flash.service /etc/systemd/system/qwen38-keepalive.service
 sudo rm -rf "/etc/systemd/system/$UNIT_NAME.d"
 sudo systemctl daemon-reload
 # The oc launcher, only if it is ours (never a foreign oc binary)
@@ -40,10 +41,13 @@ fi
 cat <<'EOF'
 
 To also reclaim disk space:
-  docker rmi $(docker images -q 'qwen38-dflash2')                            # locally built serving images
+  docker rmi $(docker images -q 'qwen38-dflash2')                            # locally built 27B serving images
+  docker rmi $(docker images -q 'qwen38-flash')                              # locally built Flash-Next serving images
   docker rmi lmsysorg/sglang:qwen38-27b                                      # ~39 GB base image
+  docker rmi vllm/vllm-openai:qwen38-flash-next                              # ~21 GB base image (flash, if installed)
   rm -rf ~/.cache/huggingface/hub/models--edp1096--Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4   # ~22 GB (uncensored target, if downloaded)
   rm -rf ~/.cache/huggingface/hub/models--RadixArk--Qwen3.8-27B-NVFP4        # ~21 GB
+  rm -rf ~/.cache/huggingface/hub/models--RadixArk--Qwen3.8-Flash-Next-NVFP4 # ~136 GB (flash target, if downloaded)
   rm -rf ~/.cache/huggingface/hub/models--z-lab--Qwen3.8-27B-DFlash2         # ~4 GB
   rm -rf ~/.cache/huggingface/hub/models--RadixArk--Qwen3.8-27B-DSpark       # ~3 GB
 EOF

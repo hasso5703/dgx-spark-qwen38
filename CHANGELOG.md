@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.4 (2026-08-27)
+
+Qwen3.8-Flash-Next 176B as a third switchable target, on one box.
+
+- **New target `MODEL_CHOICE=flash`**: Qwen3.8-Flash-Next (176B hybrid MoE, 6B
+  active, QSA sparse attention, multimodal) in RadixArk NVFP4, served by vLLM
+  with the model's own MTP speculative head. Full native 262,144 context on a
+  single GB10. Measured on the reference box: decode ~31 tok/s
+  (code/reasoning), prefill ~2,280 tok/s at 60K and ~2,100 at 189K, quality
+  canaries 4/4, needle passing at 190K+ depth.
+- **`flash/` vendored overlay** (Apache-2.0, by blazux): the checkpoint's 51B
+  N-gram (PLE) table is mmap-served from NVMe through the page cache instead of
+  living in the unified pool; that single change is what makes the model fit.
+  Two files, sha256-pinned, and the bit-exactness test of the gather runs
+  inside the freshly built image at every install (the build refuses to tag on
+  failure).
+- **`qwen38-flash.service`**: same hardening as the 27B unit (docker caps
+  110g, Restart=always, ExecStartPre rm, API key, serve-time --revision lock,
+  HF_HUB_OFFLINE boot) plus the GB10-specific serving flags (PIECEWISE CUDA
+  graphs with the PLE op split out, prefix caching off on sm_121, FlashInfer
+  autotune off), each now guarded by CI.
+- **Cross-engine switching**: `./switch-model.sh flash` / `stock` /
+  `uncensored`. Both units publish the same port and are never enabled
+  together; the switch flips which unit starts at boot, re-verifies the
+  checkpoint, regenerates the target template and re-points the opencode
+  default model. The installer converges on whichever target is installed,
+  including flash, and never resets a served choice.
+- **opencode config generation reworked**: one provider per installed engine
+  (`qwen38`, `flashnext`), each with `low`/`medium`/`xhigh` reasoning-effort
+  variants (xhigh added for the 27B too), written by json.dump instead of a
+  heredoc; the default model follows the installed target. Flash limits:
+  226,000 context / 32,000 output inside the 262,144 window.
+- **Patched chat template for flash** (`chat-template-flashnext.jinja`): the
+  upstream Flash-Next template ships the same two agent-hostile behaviors as
+  the 27B one (500 on reasoning_effort "max"/"high", 500 on mid-conversation
+  system messages); the same two surgical fixes apply, verified by rendering
+  all six effort levels.
+- CI: flash unit render guards (the GB10-critical flags can never silently
+  regress), flash overlay manifest check, opencode generator executed on all
+  three install shapes, pin contracts extended (12 for switch-model.sh).
+- Uninstall now removes both engines and lists the flash reclaim paths.
+
 ## v1.3 (2026-08-27)
 
 Release validated end to end on the reference box before tagging: a converging

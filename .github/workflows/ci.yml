@@ -16,12 +16,12 @@ jobs:
 
       - name: Shell syntax
         run: |
-          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh; do
+          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh; do
             bash -n "$f"
           done
 
       - name: shellcheck (warning severity)
-        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh
+        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh
 
       - name: opencode plugin syntax (node)
         run: node --check extras/opencode/auto-continue.js
@@ -30,17 +30,21 @@ jobs:
         run: |
           pip install 'ruff==0.5.0'
           ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py tests/*.py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py flash/vllm_ple_mmap.py flash/test_ple_mmap_cpu.py
 
       - name: Pin contracts (run.sh expects 15, switch-model.sh expects 8)
         run: |
           n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
           [ "$n" -eq 15 ] || { echo "run.sh pin contract broken: $n != 15"; exit 1; }
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 8 ] || { echo "switch-model.sh pin contract broken: $n != 8"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 12 ] || { echo "switch-model.sh pin contract broken: $n != 12"; exit 1; }
           PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)"
           eval "$PINS"
           [ -n "$UNC_REV" ] && [ -n "$STOCK_REV" ] && [ "$MODEL_CHOICE" = "stock" ] && [ "$CONTEXT_MODE" = "native" ]
+          PINS_F="$(grep -E '^(FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE)=' install.sh)"
+          eval "$PINS_F"
+          [ "${#FLASH_REV}" -eq 40 ] || { echo "FLASH_REV is not a 40-char sha"; exit 1; }
+          case "$FLASH_IMAGE" in *@sha256:*) ;; *) echo "FLASH_IMAGE is not digest-pinned"; exit 1 ;; esac
 
       - name: Unit templates render with no leftover placeholder
         run: |
@@ -50,7 +54,7 @@ jobs:
                 -e "s|__HF_CACHE__|/hf|g" -e "s|__DRAFT2_REV__|deadbeef|g" \
                 -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL__|org/repo|g" "$1"
           }
-          for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template qwen38-keepalive.service.template; do
+          for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template qwen38-flash.service.template qwen38-keepalive.service.template; do
             render "$t" > /tmp/unit.rendered
             if grep -q '__[A-Z_]*__' /tmp/unit.rendered; then
               echo "unsubstituted placeholder in $t:"; grep '__[A-Z_]*__' /tmp/unit.rendered; exit 1
@@ -59,6 +63,29 @@ jobs:
           render qwen38-sglang-1m.service.template | grep -q -- '--context-length 1010000'
           render qwen38-sglang-1m.service.template | grep -q 'HF_HUB_OFFLINE=1'
           render qwen38-sglang.service.template | grep -q 'Restart=always'
+          # Flash: the unit is a thin pointer at the rendered launch script
+          # (the docker-run JSON args cannot survive systemd's own unescaping,
+          # learned live on the reference box). The GB10-critical serving flags
+          # live in the launch template and must never regress
+          # (see flash/ATTRIBUTION.md for why each one exists).
+          render qwen38-flash.service.template > /tmp/flash-unit.rendered
+          grep -q 'Restart=always' /tmp/flash-unit.rendered
+          grep -q 'launch-flash.sh' /tmp/flash-unit.rendered
+          render qwen38-flash-launch.sh.template > /tmp/flash.rendered
+          bash -n /tmp/flash.rendered
+          grep -q -- '--no-enable-prefix-caching' /tmp/flash.rendered
+          grep -q -- '-cc.cudagraph_mode=PIECEWISE' /tmp/flash.rendered
+          grep -q 'ple_mmap_lookup' /tmp/flash.rendered
+          grep -q -- '--no-enable-flashinfer-autotune' /tmp/flash.rendered
+          grep -q 'VLLM_PLE_MMAP=1' /tmp/flash.rendered
+          grep -q 'HF_HUB_OFFLINE=1' /tmp/flash.rendered
+          grep -q -- '--api-key' /tmp/flash.rendered
+          grep -q 'chat-template-flashnext.jinja' /tmp/flash.rendered
+          grep -qE 'speculative-config.*mtp' /tmp/flash.rendered
+          # and the JSON args must reach the process intact through bash
+          bash -c 'docker(){ for a in "$@"; do printf "%s\n" "$a"; done; }; export -f docker; source <(sed "s|exec /usr/bin/docker|docker|" /tmp/flash.rendered)' \
+            | grep -qx '{"method":"mtp","num_speculative_tokens":2}'
+
 
       - name: opencode limits block (both modes and both install paths, from install.sh itself)
         run: |
@@ -66,6 +93,44 @@ jobs:
           [ "$(get native 0)" = "30001 194048 64000" ] || { echo "native service limits drifted"; exit 1; }
           [ "$(get 1m 0)" = "30001 700000 200000" ] || { echo "1m limits drifted"; exit 1; }
           [ "$(get native 1)" = "30000 194048 64000" ] || { echo "no-service limits drifted"; exit 1; }
+          getf() { bash -c "ENGINE=vllm; CONTEXT_MODE=native; NO_SERVICE=0; PORT=30000; PROXY_PORT=30001; eval \"\$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; echo \"\$OC_PORT \$OC_CTX \$OC_OUT\""; }
+          [ "$(getf)" = "30001 226000 32000" ] || { echo "flash limits drifted"; exit 1; }
+
+      - name: opencode generator produces a valid config (all three install shapes)
+        run: |
+          gen() {  # engine, has27b, hasflash, ctx, out, context_mode
+            rm -f /tmp/octest/opencode.json; mkdir -p /tmp/octest
+            OC_ENGINE="$1" OC_27B="$2" OC_FLASH="$3" OC_PORT=30001 OC_CTX="$4" OC_OUT="$5" \
+            OC_LABEL=local OC_CONTEXT_MODE="$6" OC_CONFIG_DIR=/tmp/octest \
+            python3 <(sed -n '/^OC_ENGINE=/,/^PYEOF$/p' install.sh | sed -n '/^import json$/,/^PYEOF$/p' | sed '$d')
+          }
+          gen sglang 1 0 194048 64000 native
+          python3 - <<'PY'
+          import json
+          c = json.load(open("/tmp/octest/opencode.json"))
+          assert set(c["provider"]) == {"qwen38"}, c["provider"].keys()
+          m = c["provider"]["qwen38"]["models"]["qwen3.8-27b"]
+          assert set(m["variants"]) == {"low", "medium", "xhigh"}
+          assert c["model"] == "qwen38/qwen3.8-27b"
+          PY
+          gen vllm 0 1 226000 32000 native
+          python3 - <<'PY'
+          import json
+          c = json.load(open("/tmp/octest/opencode.json"))
+          assert set(c["provider"]) == {"flashnext"}, c["provider"].keys()
+          m = c["provider"]["flashnext"]["models"]["qwen3.8-flash-next"]
+          assert m["limit"] == {"context": 226000, "input": 226000, "output": 32000}
+          assert set(m["variants"]) == {"low", "medium", "xhigh"}
+          assert c["model"] == "flashnext/qwen3.8-flash-next"
+          PY
+          gen vllm 1 1 226000 32000 1m
+          python3 - <<'PY'
+          import json
+          c = json.load(open("/tmp/octest/opencode.json"))
+          assert set(c["provider"]) == {"qwen38", "flashnext"}
+          assert c["provider"]["qwen38"]["models"]["qwen3.8-27b"]["limit"]["context"] == 700000
+          assert c["model"] == "flashnext/qwen3.8-flash-next"
+          PY
 
       - name: Anti-drift, the two unit templates differ only on the four known lines
         run: |
@@ -95,6 +160,9 @@ jobs:
 
       - name: Vendored DFlash2 overlay integrity
         run: cd dflash2 && sha256sum -c MANIFEST.sha256
+
+      - name: Vendored Flash overlay integrity
+        run: cd flash && sha256sum -c MANIFEST.sha256
 
       - name: House typography (no em/en dashes in tracked files)
         run: |

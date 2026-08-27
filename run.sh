@@ -15,7 +15,8 @@ eval "$PINS"
 case "${MODEL_CHOICE}" in
   stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
   uncensored) MODEL_REPO="$UNC_REPO";   MODEL_REV="${MODEL_REV:-$UNC_REV}" ;;
-  *) die "MODEL_CHOICE must be stock or uncensored (got: ${MODEL_CHOICE})" ;;
+  flash)      die "MODEL_CHOICE=flash is service-only in this release: MODEL_CHOICE=flash ./install.sh (./run.sh covers the 27B targets)" ;;
+  *) die "MODEL_CHOICE must be stock, uncensored or flash (got: ${MODEL_CHOICE})" ;;
 esac
 if [ "${CONTEXT_MODE}" = "1m" ]; then
   die "CONTEXT_MODE=1m needs the systemd path (keepalive proxy + YaRN service units): run CONTEXT_MODE=1m ./install.sh. ./run.sh serves the native 262144 config only."

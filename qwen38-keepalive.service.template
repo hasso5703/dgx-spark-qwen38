@@ -1,6 +1,6 @@
 [Unit]
-Description=Keepalive proxy in front of SGLang :__PORT__ (agent clients connect to :__PROXY_PORT__)
-After=network-online.target qwen38-sglang.service
+Description=Keepalive proxy in front of the serving engine :__PORT__ (agent clients connect to :__PROXY_PORT__)
+After=network-online.target qwen38-sglang.service qwen38-flash.service
 Wants=network-online.target
 
 [Service]
