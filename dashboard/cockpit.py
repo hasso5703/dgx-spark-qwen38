@@ -29,6 +29,7 @@ from pathlib import Path
 from collections import deque
 
 import lifecycle as lc
+import registry as rg
 
 # ── Configuration (env-overridable, safe defaults) ──────────────────────────
 HERE = Path(__file__).resolve().parent
@@ -601,6 +602,40 @@ def _session_secret() -> bytes:
 
 
 SESSION_SECRET = _session_secret()
+
+REGISTRY_CACHE: dict = {"ts": 0.0, "data": None}
+REGISTRY_LOCK = threading.Lock()
+
+
+def registry_snapshot(max_age: float = 300.0) -> dict:
+    """Local registry, cached; the scan is metadata-only but not free."""
+    with REGISTRY_LOCK:
+        if REGISTRY_CACHE["data"] and time.time() - REGISTRY_CACHE["ts"] < max_age:
+            return REGISTRY_CACHE["data"]
+        pins = {}
+        for f in ("switch-model.sh", "run.sh", "install.sh"):
+            try:
+                pins.update(rg.parse_pins((REPO_DIR / f).read_text()))
+            except OSError:
+                pass
+        try:
+            models = rg.classify(rg.scan_hf_cache(
+                Path.home() / ".cache/huggingface/hub"), pins)
+        except OSError as e:
+            models = []
+        images = rg.parse_docker_images(
+            run(["docker", "images", "--format",
+                 "{{.Repository}}:{{.Tag}} {{.Size}} {{.ID}}"],
+                timeout=10).splitlines())
+        data = {"pins": pins,
+                "models": [m for m in models if m["managed"]],
+                "other_models": [{"repo_id": m["repo_id"],
+                                  "disk_bytes": m["disk_bytes"]}
+                                 for m in models if not m["managed"]],
+                "images": [i for i in images if i["engine"]],
+                "ts": time.time()}
+        REGISTRY_CACHE.update(ts=time.time(), data=data)
+        return data
 LOGIN_FAILS: dict[str, list] = {}
 
 
@@ -675,6 +710,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({n: {"danger": s["danger"],
                                        "params": s["params"]}
                                    for n, s in ACTIONS.items()})
+        if path == "/api/registry":
+            try:
+                return self.send_json(registry_snapshot())
+            except Exception as e:  # noqa: BLE001 (isolated endpoint)
+                return self.send_json({"error": str(e)[:200]}, 500)
         if path == "/api/inventory":
             # uninstall.sh --list is read-only by design; parse its rows.
             out = run(["bash", str(REPO_DIR / "uninstall.sh"), "--list"],

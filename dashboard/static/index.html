@@ -294,6 +294,14 @@
     <table id="invtable"><thead><tr><th>Kind</th><th>What</th></tr></thead><tbody></tbody></table>
   </section>
 
+  <section class="wide">
+    <h2>Registry <button class="chip" id="regbtn" style="margin-left:auto;cursor:pointer">scan</button></h2>
+    <p style="color:var(--mut);font-size:12px;margin-bottom:8px">
+      Models, revisions and engine images on this box; pinned means a repo script serves exactly this revision.</p>
+    <table id="regmodels"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">Disk</th><th>Status</th></tr></thead><tbody></tbody></table>
+    <table id="regimages" style="margin-top:14px"><thead><tr><th>Engine image</th><th class="r">Size</th><th class="r">Id</th></tr></thead><tbody></tbody></table>
+  </section>
+
   <section>
     <h2>Repo</h2>
     <dl class="kv">
@@ -678,6 +686,32 @@ $('logbtn').onclick = async () => {
     v.textContent = (d.lines||[]).join('\n') || '(empty)';
     v.scrollTop = v.scrollHeight;
   }catch(e){ v.textContent = 'failed: ' + e.message; }
+};
+const fmtGiB = b => (b/1024**3).toFixed(1)+' GiB';
+$('regbtn').onclick = async () => {
+  $('regbtn').textContent = 'scanning...';
+  try{
+    const d = await (await fetch('/api/registry')).json();
+    const tb = $('regmodels').tBodies[0]; tb.innerHTML='';
+    (d.models||[]).forEach(m => (m.revisions||[]).forEach((r,i) => {
+      const tr = tb.insertRow();
+      tr.insertCell().textContent = i ? '' : m.repo_id.split('/').pop();
+      const c1 = tr.insertCell(); c1.textContent = r.rev.slice(0,10); c1.className='num';
+      const c2 = tr.insertCell(); c2.textContent = fmtGiB(r.bytes); c2.className='r num';
+      const c3 = tr.insertCell(); c3.textContent = i ? '' : fmtGiB(m.disk_bytes); c3.className='r num';
+      const cls = r.status==='pinned' ? 'ok' : r.status==='stray' ? 'warn' : '';
+      tr.insertCell().innerHTML = `<span class="chip ${cls}">${r.status}</span>`+(r.pin?` <span class="chip">${r.pin}</span>`:'');
+    }));
+    const ti = $('regimages').tBodies[0]; ti.innerHTML='';
+    (d.images||[]).forEach(im => {
+      const tr = ti.insertRow();
+      tr.insertCell().textContent = im.ref;
+      const a2 = tr.insertCell(); a2.textContent = im.size; a2.className='r num';
+      const b2 = tr.insertCell(); b2.textContent = im.id; b2.className='r num';
+    });
+    const strays = (d.models||[]).flatMap(m=>m.revisions).filter(r=>r.status==='stray');
+    $('regbtn').textContent = strays.length ? strays.length+' stray rev' : 'clean';
+  }catch{ $('regbtn').textContent = 'scan failed'; }
 };
 $('invbtn').onclick = async () => {
   $('invbtn').textContent = 'scanning...';
