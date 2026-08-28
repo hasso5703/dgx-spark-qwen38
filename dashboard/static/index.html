@@ -300,6 +300,9 @@
       Models, revisions and engine images on this box; pinned means a repo script serves exactly this revision.</p>
     <table id="regmodels"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">Disk</th><th>Status</th></tr></thead><tbody></tbody></table>
     <table id="regimages" style="margin-top:14px"><thead><tr><th>Engine image</th><th class="r">Size</th><th class="r">Id</th></tr></thead><tbody></tbody></table>
+    <h2 style="margin-top:16px">Upstream watch <button class="chip" id="upbtn" style="margin-left:auto;cursor:pointer">check</button></h2>
+    <table id="uptable"><thead><tr><th>Model</th><th>Pinned</th><th>Upstream main</th><th>Status</th></tr></thead><tbody></tbody></table>
+    <p id="upline" style="color:var(--mut);font-size:12px;margin-top:8px"></p>
   </section>
 
   <section>
@@ -688,6 +691,28 @@ $('logbtn').onclick = async () => {
   }catch(e){ v.textContent = 'failed: ' + e.message; }
 };
 const fmtGiB = b => (b/1024**3).toFixed(1)+' GiB';
+$('upbtn').onclick = async () => {
+  $('upbtn').textContent = 'checking...';
+  try{
+    const d = await (await fetch('/api/upstream')).json();
+    const tb = $('uptable').tBodies[0]; tb.innerHTML='';
+    (d.models||[]).forEach(m => {
+      const tr = tb.insertRow();
+      tr.insertCell().textContent = m.model.split('/').pop();
+      const a1 = tr.insertCell(); a1.textContent = m.pin; a1.className='num';
+      const a2 = tr.insertCell(); a2.textContent = m.upstream || '?'; a2.className='num';
+      const cls = m.status==='same' ? 'ok' : m.status==='moved' ? 'warn' : 'err';
+      tr.insertCell().innerHTML = `<span class="chip ${cls}">${m.status}</span>`;
+    });
+    const r = d.release || {};
+    $('upline').textContent = r.latest
+      ? `repo release: local ${r.local}, latest published ${r.latest}` +
+        (r.latest === r.local ? ' (up to date)' : ' (update available)')
+      : 'release check offline';
+    const moved = (d.models||[]).filter(m=>m.status==='moved').length;
+    $('upbtn').textContent = moved ? moved+' moved' : 'all same';
+  }catch{ $('upbtn').textContent = 'check failed'; }
+};
 $('regbtn').onclick = async () => {
   $('regbtn').textContent = 'scanning...';
   try{

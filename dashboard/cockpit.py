@@ -603,6 +603,59 @@ def _session_secret() -> bytes:
 
 SESSION_SECRET = _session_secret()
 
+UPSTREAM_CACHE: dict = {"ts": 0.0, "data": None}
+UPSTREAM_LOCK = threading.Lock()
+
+
+def _get_json(url: str, timeout: float = 5.0):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "spark-cockpit/" + VERSION, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def upstream_snapshot(max_age: float = 3600.0) -> dict:
+    """Are our pins behind their upstreams? Cached 1h, offline-tolerant:
+    every remote failure degrades to status offline for that row only."""
+    with UPSTREAM_LOCK:
+        if UPSTREAM_CACHE["data"] and time.time() - UPSTREAM_CACHE["ts"] < max_age:
+            return UPSTREAM_CACHE["data"]
+        reg = registry_snapshot()
+        rows = []
+        for var, model_id in rg.PIN_MODELS.items():
+            pin = reg["pins"].get(var)
+            if not pin:
+                continue
+            row = {"model": model_id, "pin": pin[:10], "var": var}
+            try:
+                j = _get_json("https://huggingface.co/api/models/"
+                              f"{model_id}/revision/main")
+                sha = j.get("sha", "")
+                row["upstream"] = sha[:10]
+                row["status"] = "same" if sha == pin else "moved"
+            except Exception as e:  # noqa: BLE001
+                row["status"] = "offline"
+                row["detail"] = str(e)[:80]
+            rows.append(row)
+        rel = {"local": run(["git", "-C", str(REPO_DIR), "describe",
+                             "--tags", "--abbrev=0"]).strip()}
+        try:
+            j = _get_json("https://api.github.com/repos/hasso5703/"
+                          "dgx-spark-qwen38/releases/latest")
+            rel["latest"] = j.get("tag_name", "")
+        except Exception as e:  # noqa: BLE001
+            try:
+                tags = _get_json("https://api.github.com/repos/hasso5703/"
+                                 "dgx-spark-qwen38/tags")
+                rel["latest"] = tags[0]["name"] if tags else ""
+            except Exception:  # noqa: BLE001
+                rel["latest"] = None
+                rel["detail"] = str(e)[:80]
+        data = {"models": rows, "release": rel, "ts": time.time()}
+        UPSTREAM_CACHE.update(ts=time.time(), data=data)
+        return data
+
+
 REGISTRY_CACHE: dict = {"ts": 0.0, "data": None}
 REGISTRY_LOCK = threading.Lock()
 
@@ -710,6 +763,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({n: {"danger": s["danger"],
                                        "params": s["params"]}
                                    for n, s in ACTIONS.items()})
+        if path == "/api/upstream":
+            try:
+                return self.send_json(upstream_snapshot())
+            except Exception as e:  # noqa: BLE001
+                return self.send_json({"error": str(e)[:200]}, 500)
         if path == "/api/registry":
             try:
                 return self.send_json(registry_snapshot())
