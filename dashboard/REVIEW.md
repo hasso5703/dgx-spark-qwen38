@@ -37,6 +37,11 @@ the unit start/stop buttons; everything else runs unprivileged.
 - opencode card with the one-command handoff.
 - Login page, house palette light/dark, BETA badge, canvas sparklines,
   zero external dependencies anywhere (stdlib backend, vanilla frontend).
+- Hardening: CSP + nosniff + no-referrer on every response, login rate
+  limiting (5 tries per minute per address, audited), tested live
+  (5x403 then 429, lockout applies to the right key too).
+- End-to-end action demo performed IN the UI: Run smoke clicked, confirm
+  modal, canary through the keepalive proxy, audit line `smoke ok:true`.
 
 ## Deliberately not done yet (needs your call or the next iteration)
 
