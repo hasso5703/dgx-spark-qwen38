@@ -58,3 +58,38 @@ The cockpit caught real things while being built: a broken containers
 collector (docker stats with an absent name), the display:grid vs hidden
 modal bug, the engine restart of 17:34 whose clean-stop origin the tripwire
 now watches for, and the boot-is-not-a-freeze lesson now encoded in the UI.
+
+
+## Etape 1 livree: machine a etats + orchestrateur (29/08, nuit)
+
+Validee par un test de torture REEL (stop puis start du 176B via l'API du
+cockpit, boot complet observe en direct dans un navigateur pilote).
+
+Ce que l'etape apporte, tout verifie a l'ecran ou par sonde:
+- Etats explicites par moteur avec barre de progression par etape (pilules
+  init/weights/draft/KV/graphs/warmup, shimmer, elapsed vs ETA apprise).
+- Verrou anti-deux-moteurs applique DES DEUX COTES: bouton start grise avec
+  la raison imprimee, ET refus 409 serveur avec les memes raisons.
+- Avertissements honnetes: stop du flash en plein boot = alerte table PLE
+  dans la modale; stop d'un moteur pret = alerte clients :30001.
+- Fil d'evenements (transitions d'etats, jobs) pousse en SSE.
+- Apprentissage des durees de boot (buckets rebuild separes, mediane /12),
+  garde anti-fausse-mesure (activation temoin obligatoire).
+
+Bugs REELS attrapes par le test (tous corriges + tests de regression):
+1. parse sans marqueur pretendait toutes les etapes faites (queue de log
+   d'un serveur mur = bruit decode pur).
+2. docker logs parle sur stderr: le parseur et la telemetrie decode
+   lisaient du VIDE depuis le debut (run() stdout-only).
+3. le cockpit redemarre face a un moteur chaud enregistrait son uptime
+   comme duree de boot (garde temoin ajoutee, historique purge).
+4. chaque restart du service deconnectait tout le monde (secret HMAC en
+   memoire): secret persiste 0600, session prouvee survivante.
+
+Decouverte niveau REPO (backlog v1.6, branche main): systemctl stop laisse
+l'unite en failed car le conteneur meurt en SIGKILL (exit 137); fix =
+SuccessExitStatus=137 143 dans les templates d'unites, a valider par un
+vrai cycle stop avant push.
+
+Backlog court terme: persister le fil d'evenements (process-local
+aujourd'hui), page-iser les logs, refonte design (etape 2).

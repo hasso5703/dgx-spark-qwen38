@@ -121,3 +121,24 @@ the single home:
   template validation, auth check expecting 401.
 - HostAdapter naming for the future multi-node layer (matches the collector
   node_id groundwork).
+
+
+## Lifecycle engine (etape 1, 2026-08-29)
+
+One pure module (lifecycle.py) turns raw facts into a single explicit state
+per engine: stopped, failed, starting, loading-weights, loading-draft,
+allocating-kv, capturing-graphs, warming-up, ready, degraded, stopping.
+Facts in: systemd ActiveState/SubState + ActiveEnterTimestampMonotonic,
+container presence, the container log tail (markers are SGLang's own lines),
+/health, and the unit journal (PLE rebuild flag). Boot durations are learned
+per unit (rebuild-aware buckets, median of the last 12) and drive the ETA;
+a boot is only recorded if the cockpit witnessed the activation change,
+so a cockpit restart facing a warm engine never records its uptime.
+
+Action gates live server-side in the same module: starting one engine while
+the other occupies the pool is refused with the reason (409), switch and
+update wait for transitional states to settle, and mid-boot flash stops are
+allowed with a truthful warning (next boot rebuilds the PLE table). The UI
+renders the same rules: disabled buttons print their reason, the confirm
+modal carries the warnings, and the per-stage progress bar animates from
+stage pills plus elapsed-vs-learned-ETA.
