@@ -182,3 +182,12 @@ class EtaHistory(unittest.TestCase):
 
     def test_no_history_gives_none(self):
         self.assertIsNone(lc.eta_for({}, "u", False))
+
+
+class NoMarkerTail(unittest.TestCase):
+    def test_decode_only_tail_claims_nothing(self):
+        tail = ["[2026-08-29 00:40:00] Decode batch, #running-req: 1",
+                "[2026-08-29 00:40:01] Prefill batch, #new-seq: 1"] * 150
+        b = lc.parse_boot_log(tail)
+        self.assertIsNone(b["stage"])
+        self.assertEqual(b["done"], [])   # regression: used to claim ALL stages

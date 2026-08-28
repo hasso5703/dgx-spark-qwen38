@@ -85,10 +85,22 @@ def api_key() -> str:
         return ""
 
 
-def run(argv: list[str], timeout: float = 5.0) -> str:
-    """Fixed-argv runner: never a shell, never client input."""
+def run(argv: list[str], timeout: float = 5.0, merge_err: bool = False) -> str:
+    """Fixed-argv runner: never a shell, never client input.
+
+    merge_err folds stderr into the result: docker logs streams the
+    container's stderr (where SGLang actually speaks) to its own stderr,
+    so every docker-logs reader MUST pass merge_err=True (field bug: the
+    stage parser and decode telemetry read empty stdout for a night).
+    """
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        if merge_err:
+            out = subprocess.run(argv, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True,
+                                 timeout=timeout)
+        else:
+            out = subprocess.run(argv, capture_output=True, text=True,
+                                 timeout=timeout)
         return out.stdout
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -248,7 +260,8 @@ def collect_decode_telemetry():
             break
     if not active:
         return {"node_id": "local", "lane": None}
-    tail = run(["docker", "logs", "--since", "30s", active], timeout=6)[-8000:]
+    tail = run(["docker", "logs", "--since", "30s", active], timeout=6,
+               merge_err=True)[-8000:]
     last = None
     for line in tail.splitlines():
         m = DECODE_RE.search(line)
@@ -295,11 +308,13 @@ def collect_lifecycle():
         cont = UNIT2CONT[unit]
         running = bool(run(["docker", "ps", "-q", "-f",
                             f"name=^{cont}$"]).strip())
-        boot = {"stage": None, "fired_up": False}
+        boot = {"stage": None, "fired_up": False, "done": []}
         rebuild = False
-        if running:
+        if running and not healthy:
+            # A mature server's tail is pure decode noise: only read logs
+            # while health is down (boot or trouble), where markers live.
             tail = run(["docker", "logs", "--tail", "300", cont],
-                       timeout=6).splitlines()
+                       timeout=6, merge_err=True).splitlines()
             boot = lc.parse_boot_log(tail)
         st = lc.derive_state(unit_active=active, unit_sub=d.get("SubState", "?"),
                              container_running=running,
@@ -644,7 +659,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/logs/"):
             name = path.rsplit("/", 1)[1]
             if name in CONTAINERS:
-                txt = run(["docker", "logs", "--tail", "120", name], timeout=8)
+                txt = run(["docker", "logs", "--tail", "120", name],
+                          timeout=8, merge_err=True)
             elif name in UNITS:
                 txt = run(["journalctl", "-u", name, "-n", "120",
                            "--no-pager", "-o", "cat"], timeout=8)

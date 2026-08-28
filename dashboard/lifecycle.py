@@ -89,10 +89,11 @@ def parse_boot_log(lines: list[str]) -> dict:
     else:
         stage = None                  # no boot evidence in this tail
     done = []
-    for s in STAGES:
-        if s == stage:
-            break
-        done.append(s)
+    if stage in STAGES:            # no marker evidence => nothing is "done"
+        for s in STAGES:
+            if s == stage:
+                break
+            done.append(s)
     return {"stage": stage, "done": done, "fired_up": fired,
             "ple_mmap": ple, "weight_ends": weight_ends,
             "graphs_done": graphs_done}
