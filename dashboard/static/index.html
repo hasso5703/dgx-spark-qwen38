@@ -80,6 +80,37 @@
   td{padding:5px 6px; border-top:1px solid var(--line)}
   td.r{text-align:right}
   footer{color:var(--mut); font-size:11px; text-align:center; padding:0 0 24px}
+
+  .actions .arow{display:flex; align-items:center; gap:10px; padding:9px 0;
+                 border-top:1px solid var(--line); font-size:13px}
+  .actions .arow:first-child{border-top:0}
+  .actions .arow span{flex:1}
+  select{background:var(--soft); color:var(--txt); border:1px solid var(--line);
+         border-radius:8px; padding:6px 10px; font-size:13px}
+  .btn{border:1px solid var(--acc); color:var(--acc); background:transparent;
+       border-radius:8px; padding:6px 14px; font-size:12.5px; font-weight:600;
+       cursor:pointer; transition:all .15s ease-out}
+  .btn:hover{background:var(--acc); color:#fff}
+  .btn.low{border-color:var(--ok); color:var(--ok)}
+  .btn.low:hover{background:var(--ok); color:#fff}
+  .btn.danger{border-color:var(--err); color:var(--err)}
+  .btn.danger:hover{background:var(--err); color:#fff}
+  .btn.ghost{border-color:var(--line); color:var(--mut)}
+  .btn.mini{padding:3px 9px; font-size:11px}
+  .btn:disabled{opacity:.45; pointer-events:none}
+  .joblog{margin-top:12px; background:var(--soft); border:1px solid var(--line);
+          border-radius:10px; padding:12px; font:11.5px/1.5 ui-monospace,monospace;
+          max-height:260px; overflow:auto; white-space:pre-wrap}
+  .modal{position:fixed; inset:0; background:rgba(11,16,32,.55); z-index:20;
+         display:grid; place-items:center}
+  .modal[hidden]{display:none}
+  .joblog[hidden]{display:none}
+  .mcard{width:min(560px,92vw); background:var(--card); border:1px solid var(--line);
+         border-radius:14px; padding:22px; box-shadow:0 18px 60px rgba(0,0,0,.35)}
+  .mcard h3{font-size:15px}
+  .mcard pre{background:var(--soft); border:1px solid var(--line); border-radius:8px;
+             padding:10px 12px; font:12px ui-monospace,monospace; overflow:auto}
+  .mrow{display:flex; justify-content:flex-end; gap:10px; margin-top:16px}
 </style>
 </head>
 <body>
@@ -172,7 +203,41 @@
       <dt>Working tree</dt><dd id="repodirty">...</dd>
     </dl>
   </section>
+
+  <section>
+    <h2>Actions <span class="chip" id="jobchip">idle</span></h2>
+    <div class="actions">
+      <div class="arow">
+        <span>Switch target model</span>
+        <select id="switchsel">
+          <option value="stock">stock (27B)</option>
+          <option value="uncensored">uncensored (27B)</option>
+          <option value="flash">flash (176B)</option>
+        </select>
+        <button class="btn" data-act="switch">Queue switch</button>
+      </div>
+      <div class="arow"><span>Health smoke (canary via proxy)</span>
+        <button class="btn low" data-act="smoke">Run smoke</button></div>
+      <div class="arow"><span>Flush engine cache</span>
+        <button class="btn low" data-act="flush_cache">Flush</button></div>
+      <div class="arow"><span>Update serving stack (converging install)</span>
+        <button class="btn danger" data-act="update_stack">Update</button></div>
+    </div>
+    <pre id="joblog" class="joblog" hidden></pre>
+  </section>
 </main>
+
+<div class="modal" id="modal" hidden>
+  <div class="mcard">
+    <h3 id="mtitle">Confirm</h3>
+    <p id="mwhat" style="color:var(--mut);font-size:13px;margin:8px 0"></p>
+    <pre id="margv"></pre>
+    <div class="mrow">
+      <button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn danger" id="mgo">Run it</button>
+    </div>
+  </div>
+</div>
 <footer>Spark Cockpit BETA. Read-only build: actions arrive in the next phase.</footer>
 
 <script>
@@ -254,8 +319,13 @@ function rEngineInfo(d){
 }
 function rEngineFast(d){
   const l = (d.load||[])[0] || {};
-  $('engchip').textContent = d.healthy ? 'healthy' : 'down';
-  $('engchip').className = 'chip '+(d.healthy?'ok':'err');
+  // A container burning CPU with health still down is a BOOT, not an outage
+  // (weight loads are journal-silent for many minutes; field lesson).
+  const c = window._containers || {};
+  const busy = Object.values(c).some(x => parseFloat(x.cpu) > 15);
+  const state = d.healthy ? 'healthy' : busy ? 'booting' : 'down';
+  $('engchip').textContent = state;
+  $('engchip').className = 'chip '+(d.healthy?'ok':busy?'warn':'err');
   $('reqrun').textContent = l.num_reqs ?? '...';
   $('reqwait').textContent = l.num_waiting_reqs ?? '...';
   $('reqtok').textContent = (l.num_tokens??0).toLocaleString('en');
@@ -279,10 +349,18 @@ function rUnits(d){
       `<span class="name">${name.replace('.service','')}</span>`+
       `<span class="chip ${lane(name)}">${u.enabled}</span>`+
       `<span class="since">${(u.since||'').replace(/^\w+ /,'')}</span>`;
+    const btn = document.createElement('button');
+    btn.className = 'btn mini'+(on?' danger':'');
+    btn.textContent = on ? 'stop' : 'start';
+    btn.onclick = () => askAction('unit',
+      {verb: on?'stop':'start', unit: name},
+      ['sudo','-n','/usr/bin/systemctl', on?'stop':'start', name]);
+    row.appendChild(btn);
     box.appendChild(row);
   });
 }
 function rContainers(d){
+  window._containers = d.containers || {};
   const tb = $('ctable').tBodies[0]; tb.innerHTML='';
   Object.entries(d.containers||{}).forEach(([n,c])=>{
     const tr = tb.insertRow();
@@ -339,6 +417,77 @@ function connect(){
 fetch('/api/state').then(r=>{ if(r.status===401){location.href='/login';return;}
   return r.json();}).then(s=>{ if(s) apply(s); connect(); })
   .catch(()=>{ setConn(false,'offline'); startPolling(); });
+
+// ── actions: confirm modal with the exact command, CSRF, one job at a time ──
+let pendingRun = null;
+function askAction(name, params, argv){
+  $('mtitle').textContent = 'Confirm: ' + name;
+  $('mwhat').textContent = Object.entries(params||{}).map(([k,v])=>k+' = '+v).join('   ') || 'no parameters';
+  $('margv').textContent = argv.join(' ');
+  $('modal').hidden = false;
+  pendingRun = () => runAction(name, params);
+}
+$('mcancel').onclick = () => { $('modal').hidden = true; pendingRun = null; };
+$('mgo').onclick = () => { $('modal').hidden = true; const f = pendingRun; pendingRun = null; if (f) f(); };
+$('modal').addEventListener('click', e => { if (e.target === $('modal')) $('mcancel').onclick(); });
+
+async function runAction(name, params){
+  const chip = $('jobchip'), log = $('joblog');
+  chip.textContent = 'running'; chip.className = 'chip warn';
+  log.hidden = false; log.textContent = '$ ' + name + ' ' + JSON.stringify(params||{}) + '\n';
+  try{
+    const t = await (await fetch('/api/csrf', {method:'POST'})).json();
+    const r = await fetch('/api/action', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name, params, csrf: t.token})});
+    const out = await r.json();
+    if (r.status === 202 && out.job){
+      log.textContent += out.argv.join(' ') + '\n';
+      return pollJob(out.job);
+    }
+    log.textContent += JSON.stringify(out, null, 1) + '\n';
+    chip.textContent = r.ok && out.ok !== false ? 'done' : 'failed';
+    chip.className = 'chip ' + (r.ok && out.ok !== false ? 'ok' : 'err');
+  }catch(e){
+    log.textContent += 'request failed: ' + e.message + '\n';
+    chip.textContent = 'failed'; chip.className = 'chip err';
+  }
+}
+async function pollJob(id){
+  const chip = $('jobchip'), log = $('joblog');
+  let shown = 0;
+  for(;;){
+    await new Promise(res => setTimeout(res, 1200));
+    let j;
+    try{ j = await (await fetch('/api/jobs/' + id)).json(); }
+    catch{ continue; }
+    const lines = j.lines || [];
+    if (lines.length > shown){
+      log.textContent += lines.slice(shown).join('\n') + '\n';
+      shown = lines.length;
+      log.scrollTop = log.scrollHeight;
+    }
+    if (j.status !== 'running'){
+      chip.textContent = j.status + (j.rc!=null ? ' (rc '+j.rc+')' : '');
+      chip.className = 'chip ' + (j.status === 'done' ? 'ok' : 'err');
+      return;
+    }
+  }
+}
+document.querySelectorAll('.btn[data-act]').forEach(b => {
+  b.onclick = () => {
+    const act = b.dataset.act;
+    if (act === 'switch'){
+      const target = $('switchsel').value;
+      askAction('switch', {target},
+        ['bash','switch-model.sh', target]);
+    } else if (act === 'update_stack'){
+      askAction('update_stack', {}, ['bash','install.sh','(converging upgrade)']);
+    } else {
+      askAction(act, {}, ['engine:', act]);
+    }
+  };
+});
 </script>
 </body>
 </html>

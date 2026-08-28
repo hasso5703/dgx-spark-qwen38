@@ -475,6 +475,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({n: {"danger": s["danger"],
                                        "params": s["params"]}
                                    for n, s in ACTIONS.items()})
+        if path == "/api/inventory":
+            # uninstall.sh --list is read-only by design; parse its rows.
+            out = run(["bash", str(REPO_DIR / "uninstall.sh"), "--list"],
+                      timeout=30)
+            items = []
+            for line in out.splitlines():
+                m = re.match(r"\s{2}(\S+)\s+(.*)", line)
+                if m and m.group(1) in ("unit", "drop-ins", "backup", "config",
+                                        "legacy", "launcher", "image",
+                                        "weights", "ple-file"):
+                    items.append({"kind": m.group(1), "what": m.group(2)})
+            return self.send_json({"items": items})
+        if path.startswith("/api/logs/"):
+            name = path.rsplit("/", 1)[1]
+            if name in CONTAINERS:
+                txt = run(["docker", "logs", "--tail", "120", name], timeout=8)
+            elif name in UNITS:
+                txt = run(["journalctl", "-u", name, "-n", "120",
+                           "--no-pager", "-o", "cat"], timeout=8)
+            else:
+                return self.send_json({"error": "unknown source"}, 404)
+            return self.send_json({"name": name,
+                                   "lines": txt.splitlines()[-120:]})
         if path.startswith("/api/jobs/"):
             job = JOBS.get(path.rsplit("/", 1)[1])
             if not job:
