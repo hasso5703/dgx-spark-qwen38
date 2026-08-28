@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spark Cockpit</title>
+<link rel="icon" href="/static/favicon.svg">
+<style>
+  :root{
+    --paper:#f6f7fb; --card:#ffffff; --line:#e3e6ef;
+    --txt:#1a2033; --mut:#6b7280; --acc:#5b8cff; --err:#e5484d;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --paper:#0b1020; --card:#121a30; --line:#232c4a;
+           --txt:#e8ecf8; --mut:#93a0bd; }
+  }
+  *{box-sizing:border-box; margin:0}
+  body{
+    min-height:100vh; display:grid; place-items:center;
+    background:var(--paper); color:var(--txt);
+    font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .card{
+    width:min(380px, 92vw); background:var(--card);
+    border:1px solid var(--line); border-radius:16px; padding:32px;
+    box-shadow:0 12px 40px rgba(11,16,32,.12);
+  }
+  .logo{display:flex; align-items:center; gap:12px; margin-bottom:6px}
+  .logo img{width:40px; height:40px}
+  h1{font-size:20px; letter-spacing:.2px}
+  .beta{font-size:10px; font-weight:700; letter-spacing:.12em;
+        color:var(--acc); border:1px solid var(--acc); border-radius:6px;
+        padding:2px 6px; vertical-align:middle}
+  p{color:var(--mut); font-size:13px; margin:10px 0 22px}
+  code{background:var(--paper); border:1px solid var(--line);
+       border-radius:6px; padding:1px 6px; font-size:12px}
+  input{
+    width:100%; padding:12px 14px; border-radius:10px;
+    border:1px solid var(--line); background:var(--paper);
+    color:var(--txt); font-size:15px; outline:none;
+  }
+  input:focus{border-color:var(--acc); box-shadow:0 0 0 3px rgba(91,140,255,.18)}
+  button{
+    width:100%; margin-top:14px; padding:12px; border:0; border-radius:10px;
+    background:var(--acc); color:#fff; font-size:15px; font-weight:600;
+    cursor:pointer; transition:filter .15s ease-out;
+  }
+  button:hover{filter:brightness(1.08)}
+  .err{color:var(--err); font-size:13px; margin-top:12px; min-height:18px}
+</style>
+</head>
+<body>
+  <form class="card" id="f">
+    <div class="logo">
+      <img src="/static/favicon.svg" alt="">
+      <h1>Spark Cockpit <span class="beta">BETA</span></h1>
+    </div>
+    <p>Paste the server API key from <code>~/.config/qwen38/api-key</code></p>
+    <input id="k" type="password" autocomplete="current-password"
+           placeholder="API key" autofocus>
+    <button>Enter the cockpit</button>
+    <div class="err" id="e"></div>
+  </form>
+<script>
+document.getElementById('f').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const e = document.getElementById('e');
+  e.textContent = '';
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: document.getElementById('k').value.trim()})
+    });
+    if (r.ok) { location.href = '/'; return; }
+    e.textContent = r.status === 403 ? 'Wrong key.' : 'Login failed (' + r.status + ').';
+  } catch { e.textContent = 'Cockpit unreachable.'; }
+});
+</script>
+</body>
+</html>

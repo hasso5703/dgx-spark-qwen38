@@ -105,3 +105,19 @@ GET for the fallback path. Actions are POST with JSON, CSRF-protected.**
 4. Update engine + inventory + opencode shortcut + polish.
 5. Hardening pass: failure injection, load, security review, docs.
 Each phase ends with a browser-validated visual check and a written test log.
+
+## Absorbed from the parallel session's webui/SPEC.md (now merged here)
+
+Ideas adopted on top of the plan above; `webui/` is removed, `dashboard/` is
+the single home:
+- Every mutating action shows THE EXACT shell command in its confirm modal,
+  with a dry-run first wherever the underlying script offers one.
+- Append-only audit log file of every action (who, when, argv, outcome).
+- During a lane boot, the lane card streams the unit journal live with a
+  boot-time counter (boots are 7-15 min; silence is the enemy).
+- Pins vs upstream drift detection stays READ-ONLY (show, never auto-bump).
+- Log views are virtualized (bounded DOM), streams are bounded server-side.
+- Health actions: one-click smoke (canary via proxy), quick needle test,
+  template validation, auth check expecting 401.
+- HostAdapter naming for the future multi-node layer (matches the collector
+  node_id groundwork).
