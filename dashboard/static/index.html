@@ -74,7 +74,9 @@
   .unit .name{font-weight:600}
   .unit .since{color:var(--mut); font-size:11px; margin-left:auto}
 
-  table{width:100%; border-collapse:collapse; font-size:13px}
+  table{width:100%; border-collapse:collapse; font-size:13px; table-layout:fixed}
+  td{overflow-wrap:anywhere}
+  th:first-child, td:first-child{width:92px}
   th{color:var(--mut); text-align:left; font-weight:500; font-size:11px;
      text-transform:uppercase; letter-spacing:.06em; padding:3px 6px}
   td{padding:5px 6px; border-top:1px solid var(--line)}
@@ -205,6 +207,36 @@
   </section>
 
   <section>
+    <h2>Live logs
+      <select id="logsel" style="margin-left:auto">
+        <option value="qwen38-flash">qwen38-flash (container)</option>
+        <option value="qwen38-sglang">qwen38-sglang (container)</option>
+        <option value="qwen38-keepalive.service">keepalive (journal)</option>
+      </select>
+      <button class="btn mini" id="logbtn">Tail</button>
+    </h2>
+    <pre id="logview" class="joblog" style="max-height:220px" hidden></pre>
+  </section>
+
+  <section>
+    <h2>Inventory <button class="chip" id="invbtn" style="margin-left:auto;cursor:pointer">scan</button></h2>
+    <p style="color:var(--mut);font-size:12px;margin-bottom:8px">
+      Everything any version of this repo left on this box (read-only scan).</p>
+    <table id="invtable"><thead><tr><th>Kind</th><th>What</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>opencode</h2>
+    <p style="font-size:13px;color:var(--mut);margin-bottom:10px">
+      The box's agent CLI is wired to this server through the keepalive proxy.
+      Open a terminal and run:</p>
+    <pre style="background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:13px ui-monospace,monospace">oc</pre>
+    <p style="font-size:12px;color:var(--mut);margin-top:8px">
+      One command: the launcher lifts the output cap and auto-approves
+      permissions. The default model follows the served lane.</p>
+  </section>
+
+  <section>
     <h2>Actions <span class="chip" id="jobchip">idle</span></h2>
     <div class="actions">
       <div class="arow">
@@ -238,7 +270,7 @@
     </div>
   </div>
 </div>
-<footer>Spark Cockpit BETA. Read-only build: actions arrive in the next phase.</footer>
+<footer>Spark Cockpit BETA. Every action asks first and shows the exact command it will run.</footer>
 
 <script>
 "use strict";
@@ -474,6 +506,27 @@ async function pollJob(id){
     }
   }
 }
+$('logbtn').onclick = async () => {
+  const v = $('logview'); v.hidden = false; v.textContent = 'loading...';
+  try{
+    const d = await (await fetch('/api/logs/' + $('logsel').value)).json();
+    v.textContent = (d.lines||[]).join('\n') || '(empty)';
+    v.scrollTop = v.scrollHeight;
+  }catch(e){ v.textContent = 'failed: ' + e.message; }
+};
+$('invbtn').onclick = async () => {
+  $('invbtn').textContent = 'scanning...';
+  try{
+    const d = await (await fetch('/api/inventory')).json();
+    const tb = $('invtable').tBodies[0]; tb.innerHTML='';
+    (d.items||[]).forEach(i=>{
+      const tr = tb.insertRow();
+      const k = tr.insertCell(); k.innerHTML = `<span class="chip">${i.kind}</span>`;
+      tr.insertCell().textContent = i.what;
+    });
+    $('invbtn').textContent = (d.items||[]).length + ' items';
+  }catch{ $('invbtn').textContent = 'scan failed'; }
+};
 document.querySelectorAll('.btn[data-act]').forEach(b => {
   b.onclick = () => {
     const act = b.dataset.act;
