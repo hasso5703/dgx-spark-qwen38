@@ -161,12 +161,15 @@ def collect_units():
 
 @guard
 def collect_containers():
+    # docker stats errors out wholesale if ANY named container is absent, so
+    # ask for everything and filter (first real bug the cockpit caught itself).
     rows = {}
     fmt = "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}"
-    for line in run(["docker", "stats", "--no-stream", "--format", fmt,
-                     *CONTAINERS], timeout=8).splitlines():
+    for line in run(["docker", "stats", "--no-stream", "--format", fmt],
+                    timeout=8).splitlines():
         name, cpu, memu = (line.split("|") + ["", ""])[:3]
-        rows[name] = {"cpu": cpu, "mem": memu}
+        if name in CONTAINERS:
+            rows[name] = {"cpu": cpu, "mem": memu}
     return {"node_id": "local", "containers": rows}
 
 
@@ -259,6 +262,155 @@ def sampler(period: float, collectors: dict):
         time.sleep(max(0.2, period - (time.time() - t0)))
 
 
+# ── Actions: fixed argv registry + supervised jobs ───────────────────────────
+# Every mutating capability is a registry entry with a FIXED argv (or an argv
+# template whose every parameter is validated against a closed enum). The UI
+# renders from this registry; the backend never builds commands from free text.
+AUDIT_LOG = CONFIG_DIR / "cockpit-audit.log"
+
+SERVING_UNITS = {"qwen38-sglang.service", "qwen38-flash.service",
+                 "qwen38-keepalive.service"}
+UNIT_VERBS = {"start", "stop", "restart"}
+
+ACTIONS = {
+    # systemd control (privileged: requires the sudoers drop-in, see
+    # dashboard/sudoers-cockpit.template)
+    "unit": {
+        "danger": "medium",
+        "params": {"verb": sorted(UNIT_VERBS), "unit": sorted(SERVING_UNITS)},
+        "argv": lambda p: ["sudo", "-n", "/usr/bin/systemctl", p["verb"], p["unit"]],
+        "timeout": 90,
+    },
+    # model switch (repo script, itself never restarts anything)
+    "switch": {
+        "danger": "medium",
+        "params": {"target": ["stock", "uncensored", "flash"]},
+        "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"]],
+        "timeout": 1800,
+    },
+    # engine cache flush (harmless, engine-level)
+    "flush_cache": {
+        "danger": "low",
+        "params": {},
+        "argv": None,  # HTTP action, handled inline
+        "timeout": 10,
+    },
+    # supervised converging upgrade of the serving stack
+    "update_stack": {
+        "danger": "high",
+        "params": {},
+        "argv": lambda p: ["bash", str(REPO_DIR / "install.sh")],
+        "timeout": 3600,
+    },
+    # health smoke: one canary through the proxy
+    "smoke": {
+        "danger": "low",
+        "params": {},
+        "argv": None,
+        "timeout": 300,
+    },
+}
+
+
+class Job:
+    def __init__(self, action: str, argv: list[str], timeout: float):
+        self.id = secrets.token_hex(8)
+        self.action = action
+        self.argv = argv
+        self.timeout = timeout
+        self.lines: list[str] = []
+        self.status = "running"
+        self.rc: int | None = None
+        self.started = time.time()
+
+    def append(self, line: str):
+        self.lines.append(line[:500])
+        if len(self.lines) > 2000:  # bounded memory, always
+            del self.lines[:500]
+
+
+JOBS: dict[str, Job] = {}
+JOB_LOCK = threading.Lock()   # one mutating job at a time, ever
+
+
+def audit(entry: dict):
+    entry["ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(AUDIT_LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
+def run_job(job: Job):
+    try:
+        proc = subprocess.Popen(job.argv, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                cwd=str(REPO_DIR))
+        assert proc.stdout is not None
+        deadline = time.time() + job.timeout
+        for line in proc.stdout:
+            job.append(line.rstrip())
+            if time.time() > deadline:
+                proc.kill()
+                job.append("[cockpit] job timeout, killed")
+                break
+        job.rc = proc.wait(timeout=30)
+        job.status = "done" if job.rc == 0 else "failed"
+    except Exception as e:  # noqa: BLE001
+        job.status = "failed"
+        job.append(f"[cockpit] {type(e).__name__}: {e}")
+    finally:
+        audit({"kind": "job_end", "action": job.action, "rc": job.rc,
+               "status": job.status, "id": job.id})
+        JOB_LOCK.release()
+
+
+def start_action(name: str, params: dict) -> tuple[int, dict]:
+    spec = ACTIONS.get(name)
+    if not spec:
+        return 404, {"error": "unknown action"}
+    # closed-enum validation of every parameter
+    clean = {}
+    for key, allowed in spec["params"].items():
+        val = params.get(key)
+        if val not in allowed:
+            return 400, {"error": f"invalid {key}"}
+        clean[key] = val
+    if name == "flush_cache":
+        try:
+            req = urllib.request.Request(ENGINE_BASE + "/flush_cache",
+                                         method="POST", data=b"",
+                                         headers={"Authorization": f"Bearer {api_key()}"})
+            urllib.request.urlopen(req, timeout=8).read()
+            audit({"kind": "action", "action": name, "ok": True})
+            return 200, {"ok": True}
+        except Exception as e:  # noqa: BLE001
+            return 502, {"error": str(e)[:200]}
+    if name == "smoke":
+        try:
+            body = json.dumps({"model": "qwen3.8-flash-next", "max_tokens": 200,
+                               "messages": [{"role": "user",
+                                             "content": "Reply with exactly: COCKPIT-SMOKE-OK"}]}).encode()
+            req = urllib.request.Request(PROXY_BASE + "/v1/chat/completions", body,
+                                         {"Content-Type": "application/json",
+                                          "Authorization": f"Bearer {api_key()}"})
+            out = json.loads(urllib.request.urlopen(req, timeout=280).read())
+            txt = (out["choices"][0]["message"].get("content") or "").strip()
+            audit({"kind": "action", "action": name, "ok": "SMOKE-OK" in txt})
+            return 200, {"ok": "SMOKE-OK" in txt, "reply": txt[:80]}
+        except Exception as e:  # noqa: BLE001
+            return 502, {"error": str(e)[:200]}
+    if not JOB_LOCK.acquire(blocking=False):
+        return 409, {"error": "another job is already running"}
+    job = Job(name, spec["argv"](clean), spec["timeout"])
+    JOBS[job.id] = job
+    audit({"kind": "job_start", "action": name, "params": clean,
+           "argv": job.argv, "id": job.id})
+    threading.Thread(target=run_job, args=(job,), daemon=True).start()
+    return 202, {"job": job.id, "argv": job.argv}
+
+
 # ── Sessions / auth ──────────────────────────────────────────────────────────
 SESSION_SECRET = secrets.token_bytes(32)
 
@@ -319,6 +471,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/state":
             with STATE_LOCK:
                 return self.send_json(STATE)
+        if path == "/api/actions":
+            return self.send_json({n: {"danger": s["danger"],
+                                       "params": s["params"]}
+                                   for n, s in ACTIONS.items()})
+        if path.startswith("/api/jobs/"):
+            job = JOBS.get(path.rsplit("/", 1)[1])
+            if not job:
+                return self.send_json({"error": "no such job"}, 404)
+            return self.send_json({"id": job.id, "action": job.action,
+                                   "status": job.status, "rc": job.rc,
+                                   "started": job.started,
+                                   "lines": job.lines[-200:]})
         if path == "/api/stream":
             return self.stream()
         return self.send_json({"error": "not found"}, 404)
@@ -347,8 +511,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({"error": "bad key"}, 403)
         if not self.authed():
             return self.send_json({"error": "auth"}, 401)
-        # Action registry: present, intentionally inert in the read-only phase.
-        return self.send_json({"error": "actions land in the next phase"}, 501)
+        # CSRF: any mutating POST must echo the token bound to the session.
+        if path == "/api/csrf":
+            return self.send_json({"token": make_token("csrf")})
+        try:
+            payload = json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            return self.send_json({"error": "bad json"}, 400)
+        if not check_token(payload.get("csrf", ""), "csrf", max_age=3600):
+            return self.send_json({"error": "csrf"}, 403)
+        if path == "/api/action":
+            code, out = start_action(str(payload.get("name", "")),
+                                     payload.get("params") or {})
+            return self.send_json(out, code)
+        return self.send_json({"error": "not found"}, 404)
 
     # ---- helpers ----
     def serve_static(self, path: str):
