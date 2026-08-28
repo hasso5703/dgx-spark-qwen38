@@ -413,6 +413,7 @@ def start_action(name: str, params: dict) -> tuple[int, dict]:
 
 # ── Sessions / auth ──────────────────────────────────────────────────────────
 SESSION_SECRET = secrets.token_bytes(32)
+LOGIN_FAILS: dict[str, list] = {}
 
 
 def make_token(kind: str) -> str:
@@ -441,12 +442,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # quiet by default, errors still surface
         pass
 
+    def security_headers(self):
+        # Zero external origins by construction; say so to the browser too.
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; img-src 'self' data:; "
+                         "style-src 'self' 'unsafe-inline'; "
+                         "script-src 'self' 'unsafe-inline'; "
+                         "connect-src 'self'; frame-ancestors 'none'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+
     def send_json(self, obj, code=200):
         body = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -515,12 +527,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or 0)
         raw = self.rfile.read(min(length, 65536)) if length else b""
         if path == "/api/login":
+            # Rate limit: after 5 failures from one address, lock 60 s.
+            ip = self.client_address[0]
+            now = time.time()
+            fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 60]
+            if len(fails) >= 5:
+                LOGIN_FAILS[ip] = fails
+                return self.send_json({"error": "too many attempts, wait a minute"}, 429)
             try:
                 key = json.loads(raw or b"{}").get("key", "")
             except json.JSONDecodeError:
                 key = ""
             expected = api_key()
-            if expected and hmac.compare_digest(key, expected):
+            if not (expected and hmac.compare_digest(key, expected)):
+                fails.append(now)
+                LOGIN_FAILS[ip] = fails
+                audit({"kind": "login_fail", "ip": ip})
+                return self.send_json({"error": "bad key"}, 403)
+            if True:
                 tok = make_token("sess")
                 body = json.dumps({"ok": True}).encode()
                 self.send_response(200)
