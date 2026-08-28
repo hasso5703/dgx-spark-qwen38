@@ -93,3 +93,41 @@ vrai cycle stop avant push.
 
 Backlog court terme: persister le fil d'evenements (process-local
 aujourd'hui), page-iser les logs, refonte design (etape 2).
+
+## Etapes 2, 3 et 5 livrees (29/08, nuit, suite)
+
+Etape 2, refonte design totale (verdict precedent: esthetique rejetee):
+- Nouveau langage: fond encre a lueurs radiales, cartes verre en degrade,
+  chips lumineuses, jauges en degrade, entree en cascade des cartes, point
+  live qui bat, chiffres tabulaires. Sombre d'abord, clair via les memes
+  tokens, prefers-reduced-motion respecte.
+- Panneau moteurs promu en hero pleine largeur (la reponse au premier
+  coup d'oeil), actions pleine largeur en bas. Login accorde.
+- Methode: le bloc <script> est reste OCTET-IDENTIQUE (zero regression
+  logique possible); les deux themes rendus et verifies en navigateur.
+
+Etape 3, registre + veille upstream:
+- /api/registry: scan du cache HF (metadata seulement, blobs dedupliques
+  par inode), pins extraits generiquement des scripts du repo (le parseur
+  a decouvert DRAFT2_REV tout seul), chaque revision classee
+  pinned/stray/unmanaged, images moteurs docker. Cache 5 min.
+- /api/upstream: chaque pin compare au main HF + tag local vs derniere
+  release GitHub; cache 1 h; toute panne distante degrade en "offline"
+  ligne par ligne. Premier run: il a affiche tout seul nos deux TODO v1.6
+  (stock 27B "moved" = revert README connu; DSpark "moved" = la v2).
+- UI: panneau Registry pleine largeur (revisions, tailles logiques et
+  disque physique, chips de statut, images) + sous-panneau Upstream.
+
+Etape 5 (partiel, les morceaux testables ce soir):
+- Timeline d'evenements persistante (jsonl borne, rechargee au demarrage).
+- Suite smoke HTTP: 17 assertions vivantes en une commande
+  (dashboard/tests/smoke-http.sh): auth, CSRF, enums fermes, gate 409
+  anti-deux-moteurs, anti-traversal statique, en-tetes. 17/17 vert.
+
+Reste a construire (par choix, pas par oubli):
+- Moteur de recipes custom (etape 4): le prochain grand chantier; la base
+  (etats, gates, registre) est exactement ce qu'il lui fallait.
+- Auto-update atomique de l'app: bloque tant que la branche est locale
+  (il faut un remote pour verifier/telecharger des versions).
+- Exposition LAN + HTTPS; actions de reclaim (suppression des revisions
+  stray) avec double confirmation.
