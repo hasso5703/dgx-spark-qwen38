@@ -100,6 +100,36 @@
   .btn.ghost{border-color:var(--line); color:var(--mut)}
   .btn.mini{padding:3px 9px; font-size:11px}
   .btn:disabled{opacity:.45; pointer-events:none}
+  .blockedwhy{color:var(--mut); font-size:11px; flex-basis:100%; padding-left:2px}
+
+  .eng{padding:11px 0; border-top:1px solid var(--line)}
+  .eng:first-child{border-top:0}
+  .eng .top{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .eng .name{font-weight:600; font-size:13px}
+  .eng .since{color:var(--mut); font-size:11px; margin-left:auto}
+  .boot{margin-top:8px}
+  .boot .bbar{height:8px; border-radius:5px; background:var(--soft);
+              border:1px solid var(--line); overflow:hidden; position:relative}
+  .boot .bfill{height:100%; border-radius:5px; background:var(--acc);
+               transition:width 1s linear; position:relative; overflow:hidden}
+  .boot .bfill::after{content:''; position:absolute; inset:0;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);
+    animation:shimmer 1.4s infinite}
+  @keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+  .boot .stages{display:flex; gap:5px; margin-top:6px; flex-wrap:wrap}
+  .boot .stage{font-size:10px; padding:1px 7px; border-radius:999px;
+               border:1px solid var(--line); color:var(--mut)}
+  .boot .stage.done{color:var(--ok); border-color:var(--ok)}
+  .boot .stage.now{color:var(--acc); border-color:var(--acc);
+                   animation:pulse 1.2s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.45}}
+  .boot .blab{display:flex; justify-content:space-between; font-size:11px;
+              color:var(--mut); margin-top:5px}
+
+  .evt{display:flex; gap:10px; padding:6px 0; border-top:1px solid var(--line);
+       font-size:12px; align-items:baseline}
+  .evt:first-child{border-top:0}
+  .evt time{color:var(--mut); font-size:11px; white-space:nowrap}
   .joblog{margin-top:12px; background:var(--soft); border:1px solid var(--line);
           border-radius:10px; padding:12px; font:11.5px/1.5 ui-monospace,monospace;
           max-height:260px; overflow:auto; white-space:pre-wrap}
@@ -185,8 +215,14 @@
   </section>
 
   <section>
-    <h2>Services</h2>
+    <h2>Engines &amp; services</h2>
+    <div id="enginelist"></div>
     <div id="unitlist"></div>
+  </section>
+
+  <section>
+    <h2>Events <span class="chip" id="evtchip">live</span></h2>
+    <div id="evtlist"><p style="color:var(--mut);font-size:12px">no events yet in this cockpit session</p></div>
   </section>
 
   <section>
@@ -353,11 +389,14 @@ function rEngineFast(d){
   const l = (d.load||[])[0] || {};
   // A container burning CPU with health still down is a BOOT, not an outage
   // (weight loads are journal-silent for many minutes; field lesson).
+  const life = window._life || {};
+  const engs = Object.values(life.engines||{});
+  const boot = engs.find(e=>TRANSITIONAL.has(e.state));
   const c = window._containers || {};
   const busy = Object.values(c).some(x => parseFloat(x.cpu) > 15);
-  const state = d.healthy ? 'healthy' : busy ? 'booting' : 'down';
+  const state = d.healthy ? 'healthy' : boot ? boot.state : busy ? 'booting' : 'down';
   $('engchip').textContent = state;
-  $('engchip').className = 'chip '+(d.healthy?'ok':busy?'warn':'err');
+  $('engchip').className = 'chip '+(d.healthy?'ok':(boot||busy)?'warn':'err');
   $('reqrun').textContent = l.num_reqs ?? '...';
   $('reqwait').textContent = l.num_waiting_reqs ?? '...';
   $('reqtok').textContent = (l.num_tokens??0).toLocaleString('en');
@@ -371,9 +410,10 @@ function rDecode(d){
   $('kvusage').textContent = t ? (100*t.token_usage).toFixed(1)+' %' : '...';
 }
 function rUnits(d){
+  window._units = d.units || {};
   const box = $('unitlist'); box.innerHTML='';
   const lane = n => n.includes('flash') ? 'flash' : n.includes('sglang') ? 'lane27' : '';
-  Object.entries(d.units||{}).forEach(([name,u])=>{
+  Object.entries(d.units||{}).filter(([n])=>n.includes('keepalive')).forEach(([name,u])=>{
     const row = document.createElement('div'); row.className='unit';
     const on = u.active==='active';
     row.innerHTML =
@@ -410,9 +450,83 @@ function rRepo(d){
   $('repoline').textContent = `${d.tag||''} · ${d.branch||''}`;
 }
 
+const STAGE_LABEL = {'init':'init','loading-weights':'weights',
+  'loading-draft':'draft','allocating-kv':'KV','capturing-graphs':'graphs',
+  'warming-up':'warmup'};
+const ALL_STAGES = Object.keys(STAGE_LABEL);
+const TRANSITIONAL = new Set(['starting','loading-weights','loading-draft',
+  'allocating-kv','capturing-graphs','warming-up']);
+const STATE_CHIP = {ready:'ok', degraded:'warn', failed:'err', stopped:'',
+                    stopping:'warn'};
+const fmtDur = s => s==null ? '?' : s<90 ? Math.round(s)+' s'
+  : Math.floor(s/60)+' min '+String(Math.round(s%60)).padStart(2,'0');
+
+function rLifecycle(d){
+  window._life = d;
+  const box = $('enginelist'); box.innerHTML='';
+  const units = window._units || {};
+  Object.entries(d.engines||{}).forEach(([name, e])=>{
+    const lane = name.includes('flash') ? 'flash' : 'lane27';
+    const row = document.createElement('div'); row.className='eng';
+    const booting = TRANSITIONAL.has(e.state);
+    const chipCls = STATE_CHIP[e.state] ?? 'warn';
+    const top = document.createElement('div'); top.className='top';
+    top.innerHTML =
+      `<span class="chip ${chipCls}">${e.state}</span>`+
+      (e.rebuild?'<span class="chip warn">rebuilding PLE table</span>':'')+
+      (e.overdue?'<span class="chip err">overdue, check logs</span>':'')+
+      `<span class="name">${name.replace('.service','')}</span>`+
+      `<span class="chip ${lane}">${(units[name]||{}).enabled||''}</span>`+
+      `<span class="since">${e.state==='ready'&&e.elapsed?'up '+fmtDur(e.elapsed):''}</span>`;
+    const on = e.state !== 'stopped' && e.state !== 'failed';
+    const btn = document.createElement('button');
+    btn.className = 'btn mini'+(on?' danger':'');
+    btn.textContent = on ? 'stop' : 'start';
+    const blockKey = `unit:start:${name}`;
+    const blocked = !on && (d.blocked||{})[blockKey];
+    if (blocked) btn.disabled = true;
+    btn.onclick = () => askAction('unit',
+      {verb: on?'stop':'start', unit: name},
+      ['sudo','-n','/usr/bin/systemctl', on?'stop':'start', name],
+      on && booting && name.includes('flash')
+        ? ['stopping mid-boot marks the PLE table dirty: the NEXT boot rebuilds it (~12 min)'] : []);
+    top.appendChild(btn);
+    row.appendChild(top);
+    if (blocked){
+      const why = document.createElement('div'); why.className='blockedwhy';
+      why.textContent = 'start blocked: ' + blocked[0];
+      row.appendChild(why);
+    }
+    if (booting){
+      const doneN = (e.stage_done||[]).length;
+      const stage = ALL_STAGES[doneN] || 'init';
+      const pct = e.eta && e.elapsed ? Math.min(97, 100*e.elapsed/e.eta)
+                : Math.min(95, 8 + doneN*(84/ALL_STAGES.length));
+      const eta = e.eta && e.elapsed ? Math.max(0, e.eta - e.elapsed) : null;
+      const boot = document.createElement('div'); boot.className='boot';
+      boot.innerHTML =
+        `<div class="bbar"><div class="bfill" style="width:${pct.toFixed(1)}%"></div></div>`+
+        `<div class="stages">`+ALL_STAGES.map((st,i)=>
+          `<span class="stage ${i<doneN?'done':st===stage?'now':''}">${STAGE_LABEL[st]}</span>`).join('')+`</div>`+
+        `<div class="blab"><span>${stage} · ${fmtDur(e.elapsed)} elapsed</span>`+
+        `<span>${eta!=null?'~'+fmtDur(eta)+' left':'first boot: learning duration'}</span></div>`;
+      row.appendChild(boot);
+    }
+    box.appendChild(row);
+  });
+  const el = $('evtlist');
+  const evs = (d.events||[]).slice().reverse();
+  if (evs.length){
+    el.innerHTML = evs.slice(0,12).map(ev=>{
+      const t = new Date(ev.ts*1000).toLocaleTimeString();
+      return `<div class="evt"><time>${t}</time><span>${ev.msg}</span></div>`;
+    }).join('');
+  }
+}
+
 const RENDER = {machine:rMachine, gpu:rGpu, engine_info:rEngineInfo,
                 engine_fast:rEngineFast, decode:rDecode, units:rUnits,
-                containers:rContainers, repo:rRepo};
+                containers:rContainers, repo:rRepo, lifecycle:rLifecycle};
 
 function apply(state){
   for (const [name, wrap] of Object.entries(state)){
@@ -452,9 +566,11 @@ fetch('/api/state').then(r=>{ if(r.status===401){location.href='/login';return;}
 
 // ── actions: confirm modal with the exact command, CSRF, one job at a time ──
 let pendingRun = null;
-function askAction(name, params, argv){
+function askAction(name, params, argv, warns){
   $('mtitle').textContent = 'Confirm: ' + name;
-  $('mwhat').textContent = Object.entries(params||{}).map(([k,v])=>k+' = '+v).join('   ') || 'no parameters';
+  const what = Object.entries(params||{}).map(([k,v])=>k+' = '+v).join('   ') || 'no parameters';
+  $('mwhat').textContent = what + ((warns&&warns.length)?'\n\u26a0 '+warns.join('\n\u26a0 '):'');
+  $('mwhat').style.whiteSpace = 'pre-line';
   $('margv').textContent = argv.join(' ');
   $('modal').hidden = false;
   pendingRun = () => runAction(name, params);
@@ -473,7 +589,13 @@ async function runAction(name, params){
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({name, params, csrf: t.token})});
     const out = await r.json();
+    if (r.status === 409 && out.reasons){
+      log.textContent += 'BLOCKED: ' + out.reasons.join('; ') + '\n';
+      chip.textContent = 'blocked'; chip.className = 'chip warn';
+      return;
+    }
     if (r.status === 202 && out.job){
+      (out.warnings||[]).forEach(w => log.textContent += 'warning: ' + w + '\n');
       log.textContent += out.argv.join(' ') + '\n';
       return pollJob(out.job);
     }
