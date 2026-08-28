@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.1 (2026-08-28)
+
+Flash lane robustness hotfix: poisoned PLE table self-healing.
+
+- A flash boot interrupted while the 48 GB PLE mmap backing file is being
+  written (power cut, manual stop, kill) left a stale table that wedged every
+  later boot in a silent scheduler spin (100% of one core, empty journal, no
+  IO). Root-caused and reproduced live; regenerating the table fixed it in
+  one boot. The launcher now sets a `.loading` marker at start and a detached
+  waiter removes it once `/health` answers; finding the marker at launch
+  means the previous boot never got there, so the table is wiped and rebuilt
+  automatically (one ~11 min boot instead of a wedged lane).
+- No flag, image, or checkpoint changes; 27B lanes untouched.
+
 ## v1.5 (2026-08-28)
 
 The flash lane moves to SGLang: working prefix caching, tool-loop fix, vision on.

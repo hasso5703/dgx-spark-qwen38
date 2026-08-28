@@ -7,6 +7,30 @@
 # sm_121. Every serving flag here is validated on the reference box; see
 # flash-sglang/ATTRIBUTION.md for why each GB10-specific one exists.
 set -euo pipefail
+
+# Poisoned-table guard. The 48 GiB PLE mmap backing file is written during
+# boot; a boot interrupted mid-write leaves a stale table that wedges every
+# later boot in a silent scheduler spin (root-caused live: regenerating the
+# table fixed it in one boot). Protocol: a .loading marker is set here and
+# removed by a detached waiter once /health answers; finding it at launch
+# means the previous boot never got there, so the table is wiped and rebuilt
+# (costs one longer boot, ~11 min, instead of a wedged lane).
+PLE_DIR=__PLE_DIR__
+if [ -f "$PLE_DIR/.loading" ]; then
+  echo "qwen38-flash: previous boot never reached health; rebuilding the PLE table"
+  rm -f "$PLE_DIR"/ple_table_*.bin
+fi
+touch "$PLE_DIR/.loading"
+(
+  for _ in $(seq 1 270); do
+    sleep 10
+    if curl -s -m 3 "http://127.0.0.1:__PORT__/health" >/dev/null 2>&1; then
+      rm -f "$PLE_DIR/.loading"
+      exit 0
+    fi
+  done
+) </dev/null >/dev/null 2>&1 &
+
 exec /usr/bin/docker run --rm --name qwen38-flash --gpus all \
   --memory 110g --memory-swap 110g --shm-size 16g --network host --ipc=host \
   -v __HF_CACHE__:/root/.cache/huggingface \
