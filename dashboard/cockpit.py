@@ -26,6 +26,9 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+from collections import deque
+
+import lifecycle as lc
 
 # ── Configuration (env-overridable, safe defaults) ──────────────────────────
 HERE = Path(__file__).resolve().parent
@@ -43,6 +46,36 @@ MASKED_FIELDS = {"api_key", "admin_api_key"}
 
 UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-keepalive.service")
 CONTAINERS = ("qwen38-sglang", "qwen38-flash")
+
+UNIT2CONT = {"qwen38-sglang.service": "qwen38-sglang",
+             "qwen38-flash.service": "qwen38-flash"}
+HISTORY_FILE_NAME = "cockpit-history.json"
+
+EVENTS: deque = deque(maxlen=200)
+EVENTS_LOCK = threading.Lock()
+LIFE: dict = {"states": {}, "enter": {}, "witnessed": {}}
+LIFE_LOCK = threading.Lock()
+
+
+def add_event(kind: str, msg: str):
+    with EVENTS_LOCK:
+        EVENTS.append({"ts": time.time(), "kind": kind, "msg": msg[:300]})
+
+
+def load_history() -> dict:
+    try:
+        return json.loads((CONFIG_DIR / HISTORY_FILE_NAME).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_history(h: dict):
+    try:
+        tmp = CONFIG_DIR / (HISTORY_FILE_NAME + ".tmp")
+        tmp.write_text(json.dumps(h))
+        tmp.replace(CONFIG_DIR / HISTORY_FILE_NAME)
+    except OSError:
+        pass
 
 
 def api_key() -> str:
@@ -237,6 +270,100 @@ def collect_repo():
             "dirty": bool(g("status", "--porcelain"))}
 
 
+def monotonic_now() -> float:
+    return float(Path("/proc/uptime").read_text().split()[0])
+
+
+@guard
+def collect_lifecycle():
+    """Explicit per-engine state + progress + ETA + action gates (2s tier)."""
+    with STATE_LOCK:
+        healthy = bool((STATE.get("engine_fast") or {})
+                       .get("data", {}).get("healthy"))
+    history = load_history()
+    engines = {}
+    prev = dict(LIFE.get("states", {}))
+    states = {}
+    for unit in lc.ENGINE_UNITS + ("qwen38-keepalive.service",):
+        raw = run(["systemctl", "show", unit, "-p",
+                   "ActiveState,SubState,ActiveEnterTimestampMonotonic"])
+        d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
+        active = d.get("ActiveState", "?")
+        if unit not in lc.ENGINE_UNITS:
+            states[unit] = "ready" if active == "active" else "stopped"
+            continue
+        cont = UNIT2CONT[unit]
+        running = bool(run(["docker", "ps", "-q", "-f",
+                            f"name=^{cont}$"]).strip())
+        boot = {"stage": None, "fired_up": False}
+        rebuild = False
+        if running:
+            tail = run(["docker", "logs", "--tail", "300", cont],
+                       timeout=6).splitlines()
+            boot = lc.parse_boot_log(tail)
+        st = lc.derive_state(unit_active=active, unit_sub=d.get("SubState", "?"),
+                             container_running=running,
+                             healthy=healthy and running, boot=boot,
+                             rebuild=False)
+        if st["state"] in lc.TRANSITIONAL and running:
+            jl = run(["journalctl", "-u", unit, "-n", "40", "--no-pager",
+                      "-o", "cat"], timeout=6).splitlines()
+            rebuild = lc.journal_flags(jl)["rebuild"]
+            st["rebuild"] = rebuild
+        elapsed = None
+        try:
+            mono_us = int(d.get("ActiveEnterTimestampMonotonic", "0"))
+            if mono_us > 0 and active == "active":
+                elapsed = max(0.0, monotonic_now() - mono_us / 1e6)
+        except ValueError:
+            pass
+        # Learning guard: only record a boot we actually witnessed from its
+        # start. A cockpit (re)start facing an already-warm engine must not
+        # mistake 'first time I see it' for 'it just booted'.
+        enter_key = d.get("ActiveEnterTimestampMonotonic", "0")
+        with LIFE_LOCK:
+            prev_enter = LIFE["enter"].get(unit)
+            LIFE["enter"][unit] = enter_key
+            if prev_enter is not None and enter_key != prev_enter \
+                    and enter_key != "0":
+                LIFE["witnessed"][unit] = True
+            witnessed = LIFE["witnessed"].get(unit, False)
+        eta = lc.eta_for(history, unit, rebuild)
+        overdue = bool(eta and elapsed and st["state"] in lc.TRANSITIONAL
+                       and elapsed > 2 * eta)
+        engines[unit] = {"state": st["state"], "rebuild": st.get("rebuild", False),
+                         "stage_done": boot.get("done", []),
+                         "elapsed": round(elapsed, 1) if elapsed else None,
+                         "eta": eta, "overdue": overdue}
+        states[unit] = st["state"]
+        # transitions: events + boot-duration learning
+        was = prev.get(unit)
+        if was and was != st["state"]:
+            add_event("state", f"{unit}: {was} -> {st['state']}")
+            if st["state"] == "ready" and elapsed and witnessed \
+                    and was in lc.TRANSITIONAL:
+                save_history(lc.record_boot(history, unit, elapsed, rebuild))
+                with LIFE_LOCK:
+                    LIFE["witnessed"][unit] = False
+    with LIFE_LOCK:
+        LIFE["states"] = states
+    blocked = {}
+    for unit in lc.ENGINE_UNITS:
+        r = lc.blocked_reasons("unit", {"unit": unit, "verb": "start"}, states)
+        if r:
+            blocked[f"unit:start:{unit}"] = r
+            blocked[f"unit:restart:{unit}"] = r
+    for act in ("switch", "update_stack"):
+        r = lc.blocked_reasons(act, {}, states)
+        if r:
+            blocked[act] = r
+    with EVENTS_LOCK:
+        ev = list(EVENTS)[-30:]
+    return {"node_id": "local", "engines": engines,
+            "keepalive": states.get("qwen38-keepalive.service", "stopped"),
+            "blocked": blocked, "events": ev}
+
+
 # ── Snapshot store + background sampling ────────────────────────────────────
 STATE: dict[str, dict] = {}
 STATE_LOCK = threading.Lock()
@@ -244,6 +371,7 @@ EVENT = threading.Condition()
 
 TIERS = [
     (1.0, {"machine": collect_machine, "engine_fast": collect_engine_fast}),
+    (2.0, {"lifecycle": collect_lifecycle}),
     (3.0, {"gpu": collect_gpu, "decode": collect_decode_telemetry}),
     (5.0, {"units": collect_units, "containers": collect_containers}),
     (30.0, {"engine_info": collect_engine_info, "repo": collect_repo}),
@@ -363,6 +491,7 @@ def run_job(job: Job):
     finally:
         audit({"kind": "job_end", "action": job.action, "rc": job.rc,
                "status": job.status, "id": job.id})
+        add_event("job", f"{job.action} {job.status} (rc={job.rc})")
         JOB_LOCK.release()
 
 
@@ -377,6 +506,18 @@ def start_action(name: str, params: dict) -> tuple[int, dict]:
         if val not in allowed:
             return 400, {"error": f"invalid {key}"}
         clean[key] = val
+    # lifecycle gates: the server refuses what the UI also disables
+    if name in ("unit", "switch", "update_stack"):
+        with LIFE_LOCK:
+            states = dict(LIFE.get("states", {}))
+        reasons = lc.blocked_reasons(name, clean, states)
+        if reasons:
+            audit({"kind": "action_blocked", "action": name,
+                   "params": clean, "reasons": reasons})
+            return 409, {"error": "blocked", "reasons": reasons}
+        warnings = lc.warn_reasons(name, clean, states)
+    else:
+        warnings = []
     if name == "flush_cache":
         try:
             req = urllib.request.Request(ENGINE_BASE + "/flush_cache",
@@ -407,8 +548,9 @@ def start_action(name: str, params: dict) -> tuple[int, dict]:
     JOBS[job.id] = job
     audit({"kind": "job_start", "action": name, "params": clean,
            "argv": job.argv, "id": job.id})
+    add_event("job", f"{name} started ({job.id})")
     threading.Thread(target=run_job, args=(job,), daemon=True).start()
-    return 202, {"job": job.id, "argv": job.argv}
+    return 202, {"job": job.id, "argv": job.argv, "warnings": warnings}
 
 
 # ── Sessions / auth ──────────────────────────────────────────────────────────
