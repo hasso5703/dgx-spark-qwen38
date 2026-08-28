@@ -191,3 +191,68 @@ class NoMarkerTail(unittest.TestCase):
         b = lc.parse_boot_log(tail)
         self.assertIsNone(b["stage"])
         self.assertEqual(b["done"], [])   # regression: used to claim ALL stages
+
+
+import registry as rg  # noqa: E402
+
+
+class RegistryParsers(unittest.TestCase):
+    PINS_FIXTURE = '''
+STOCK_REV="52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"
+UNC_REV="21565d389fe573a32c1c425e0c7ade204ddb2263"
+FLASH_REV="7b719225242aacd3dbd3f9407468c2ee9a9d2594"
+DRAFT_REV="${DRAFT_REV:-85ef153be924f17ce4bf62726954eeaa4a73e854}"
+DRAFT2_REV="50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
+'''
+
+    def test_parse_pins_real_shapes(self):
+        pins = rg.parse_pins(self.PINS_FIXTURE)
+        self.assertEqual(pins["STOCK_REV"],
+                         "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854")
+        self.assertEqual(pins["DRAFT_REV"],
+                         "85ef153be924f17ce4bf62726954eeaa4a73e854")
+        self.assertEqual(pins["DRAFT2_REV"],
+                         "50307d4c4cde6860d4eee73e2547cd786fe8e8a4")
+        self.assertEqual(len(pins), 5)
+
+    def test_parse_docker_images(self):
+        rows = rg.parse_docker_images([
+            "qwen38-flash:v1.5 30.2GB 7f2a4c0a1885",
+            "lmsysorg/sglang:qwen38-27b 38.6GB 0076dffa60b7",
+            "node:24 1.13GB d975b5c585b1"])
+        self.assertTrue(rows[0]["engine"] and rows[1]["engine"])
+        self.assertFalse(rows[2]["engine"])
+
+    def test_classify_pinned_vs_stray(self):
+        models = [{"repo_id": "RadixArk/Qwen3.8-27B-NVFP4",
+                   "disk_bytes": 100,
+                   "revisions": [
+                       {"rev": "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854", "bytes": 90},
+                       {"rev": "319f741cce68d7914884900c138a1fbb70a42f30", "bytes": 90},
+                   ]},
+                  {"repo_id": "unsloth/Llama-OuteTTS-1.0-1B",
+                   "disk_bytes": 5,
+                   "revisions": [{"rev": "52b90117" + "0"*32, "bytes": 5}]}]
+        pins = rg.parse_pins(self.PINS_FIXTURE)
+        got = rg.classify(models, pins)
+        r = {x["rev"][:7]: x["status"] for x in got[0]["revisions"]}
+        self.assertEqual(r["52d1adc"], "pinned")
+        self.assertEqual(r["319f741"], "stray")
+        self.assertTrue(got[0]["managed"])
+        self.assertEqual(got[1]["revisions"][0]["status"], "unmanaged")
+        self.assertFalse(got[1]["managed"])
+
+    def test_scan_on_synthetic_cache(self):
+        import tempfile, pathlib
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            m = root / "models--Acme--Tiny" / "blobs"
+            m.mkdir(parents=True)
+            (m / "aaa").write_bytes(b"x" * 10)
+            snap = root / "models--Acme--Tiny" / "snapshots" / "deadbeef"
+            snap.mkdir(parents=True)
+            (snap / "w.bin").symlink_to(m / "aaa")
+            got = rg.scan_hf_cache(root)
+            self.assertEqual(got[0]["repo_id"], "Acme/Tiny")
+            self.assertEqual(got[0]["disk_bytes"], 10)
+            self.assertEqual(got[0]["revisions"][0]["bytes"], 10)
