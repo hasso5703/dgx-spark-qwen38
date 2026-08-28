@@ -7,45 +7,58 @@
 <link rel="icon" href="/static/favicon.svg">
 <style>
   :root{
-    --paper:#f6f7fb; --card:#ffffff; --line:#e3e6ef;
-    --txt:#1a2033; --mut:#6b7280; --acc:#5b8cff; --err:#e5484d;
+    --paper:#070b16; --card:#0d1424; --line:#1b2742;
+    --txt:#e9eefb; --mut:#8fa0c2; --soft:#0a1120; --glow:rgba(91,140,255,.10);
+    --acc:#5b8cff; --err:#ff5d68; --flash:#a78bfa;
   }
-  @media (prefers-color-scheme: dark){
-    :root{ --paper:#0b1020; --card:#121a30; --line:#232c4a;
-           --txt:#e8ecf8; --mut:#93a0bd; }
+  @media (prefers-color-scheme: light){
+    :root{ --paper:#eef1f8; --card:#ffffff; --line:#dde3f0;
+           --txt:#111730; --mut:#5d6a8a; --soft:#eef2fb;
+           --glow:rgba(91,140,255,.08); --acc:#3b6ef6; --err:#d93848;
+           --flash:#7c5cf0; }
   }
   *{box-sizing:border-box; margin:0}
   body{
     min-height:100vh; display:grid; place-items:center;
-    background:var(--paper); color:var(--txt);
-    font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background:
+      radial-gradient(900px 480px at 50% -12%, var(--glow), transparent 60%),
+      var(--paper);
+    color:var(--txt);
+    font:15px/1.5 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   .card{
-    width:min(380px, 92vw); background:var(--card);
-    border:1px solid var(--line); border-radius:16px; padding:32px;
-    box-shadow:0 12px 40px rgba(11,16,32,.12);
+    width:min(390px, 92vw); background:var(--card);
+    border:1px solid var(--line); border-radius:18px; padding:34px;
+    box-shadow:0 24px 70px rgba(2,6,18,.45);
+    animation:rise .4s ease-out both;
   }
+  @keyframes rise{from{opacity:0; transform:translateY(8px)}}
   .logo{display:flex; align-items:center; gap:12px; margin-bottom:6px}
-  .logo img{width:40px; height:40px}
-  h1{font-size:20px; letter-spacing:.2px}
-  .beta{font-size:10px; font-weight:700; letter-spacing:.12em;
-        color:var(--acc); border:1px solid var(--acc); border-radius:6px;
-        padding:2px 6px; vertical-align:middle}
-  p{color:var(--mut); font-size:13px; margin:10px 0 22px}
-  code{background:var(--paper); border:1px solid var(--line);
+  .logo img{width:42px; height:42px; filter:drop-shadow(0 0 12px var(--glow))}
+  h1{font-size:20px; letter-spacing:.01em}
+  .beta{font-size:9.5px; font-weight:800; letter-spacing:.14em; color:var(--flash);
+        border:1px solid color-mix(in srgb, var(--flash) 55%, transparent);
+        background:color-mix(in srgb, var(--flash) 12%, transparent);
+        border-radius:6px; padding:2.5px 7px; vertical-align:middle}
+  p{color:var(--mut); font-size:13px; margin:10px 0 24px}
+  code{background:var(--soft); border:1px solid var(--line);
        border-radius:6px; padding:1px 6px; font-size:12px}
   input{
-    width:100%; padding:12px 14px; border-radius:10px;
-    border:1px solid var(--line); background:var(--paper);
+    width:100%; padding:13px 15px; border-radius:11px;
+    border:1px solid var(--line); background:var(--soft);
     color:var(--txt); font-size:15px; outline:none;
+    transition:border-color .2s, box-shadow .2s;
   }
-  input:focus{border-color:var(--acc); box-shadow:0 0 0 3px rgba(91,140,255,.18)}
+  input:focus{border-color:var(--acc);
+              box-shadow:0 0 0 3px color-mix(in srgb, var(--acc) 22%, transparent)}
   button{
-    width:100%; margin-top:14px; padding:12px; border:0; border-radius:10px;
-    background:var(--acc); color:#fff; font-size:15px; font-weight:600;
-    cursor:pointer; transition:filter .15s ease-out;
+    width:100%; margin-top:15px; padding:13px; border:0; border-radius:11px;
+    background:linear-gradient(135deg, var(--acc), var(--flash));
+    color:#fff; font-size:15px; font-weight:650; cursor:pointer;
+    transition:filter .18s, box-shadow .18s;
   }
-  button:hover{filter:brightness(1.08)}
+  button:hover{filter:brightness(1.1);
+               box-shadow:0 8px 26px color-mix(in srgb, var(--acc) 35%, transparent)}
   .err{color:var(--err); font-size:13px; margin-top:12px; min-height:18px}
 </style>
 </head>
@@ -73,7 +86,9 @@ document.getElementById('f').addEventListener('submit', async ev => {
       body: JSON.stringify({key: document.getElementById('k').value.trim()})
     });
     if (r.ok) { location.href = '/'; return; }
-    e.textContent = r.status === 403 ? 'Wrong key.' : 'Login failed (' + r.status + ').';
+    e.textContent = r.status === 429 ? 'Too many attempts, wait a minute.'
+                  : r.status === 403 ? 'Wrong key.'
+                  : 'Login failed (' + r.status + ').';
   } catch { e.textContent = 'Cockpit unreachable.'; }
 });
 </script>
