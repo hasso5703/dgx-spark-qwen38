@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Qwen3.8 serving stack on DGX Spark (GB10): 27B (SGLang+DFlash2) or
-# Flash-Next 176B (vLLM+MTP, PLE table mmap-served from NVMe). Systemd, hardened.
+# Qwen3.8 serving stack on DGX Spark (GB10): 27B (SGLang+DFlash2) or Flash-Next
+# 176B (SGLang+NEXTN, PLE table mmap-served from NVMe). Systemd, hardened.
 # Idempotent: safe to re-run at any time (uses local caches when present).
 # Everything is PINNED to the versions validated on 2026-08-15; override with
 # env vars if you want to try newer builds (see --help).
@@ -13,6 +13,7 @@ trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-ru
 _ENV_MODEL_CHOICE="${MODEL_CHOICE:-}"; _ENV_MODEL_REV="${MODEL_REV:-}"
 _ENV_PORT="${PORT:-}"; _ENV_HF_CACHE="${HF_CACHE:-}"
 _ENV_CONTEXT_MODE="${CONTEXT_MODE:-}"; _ENV_PROXY_PORT="${PROXY_PORT:-}"
+_ENV_PLE_DIR="${PLE_DIR:-}"
 
 # ── Pinned, validated versions (override via env if you know what you do) ──
 IMAGE="${IMAGE:-lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1}"  # = lmsysorg/sglang:qwen38-27b, 2026-08-15
@@ -23,15 +24,20 @@ STOCK_REPO="RadixArk/Qwen3.8-27B-NVFP4"
 STOCK_REV="52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"
 UNC_REPO="edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4"
 UNC_REV="21565d389fe573a32c1c425e0c7ade204ddb2263"
-# Third target, different engine: Qwen3.8-Flash-Next (176B hybrid MoE, 6B active)
-# in NVFP4 on vLLM, single box. The official vLLM image cannot fit it on a GB10;
-# the locally built overlay serves the 51B N-gram (PLE) table from NVMe via mmap
-# (see flash/ATTRIBUTION.md). Same service surface: port, API key, keepalive
-# proxy, opencode wiring. Serving flags validated on the reference box 2026-08-27.
+# Third target: Qwen3.8-Flash-Next (176B hybrid MoE, 6B active) in NVFP4 on
+# SGLang (same engine as the 27B pair), single box. The official image cannot
+# fit it on a GB10 as shipped; the locally built two-file overlay mmaps the 51B
+# N-gram (PLE) table from NVMe and unblocks QSA decode on sm_121 (see
+# flash-sglang/ATTRIBUTION.md). Same service surface: port, API key, keepalive
+# proxy, opencode wiring, and (v1.5) working prefix caching, vision and the
+# Anthropic endpoint. Serving flags validated on the reference box 2026-08-28.
 FLASH_REPO="RadixArk/Qwen3.8-Flash-Next-NVFP4"
 FLASH_REV="7b719225242aacd3dbd3f9407468c2ee9a9d2594"
-FLASH_IMAGE="${FLASH_IMAGE:-vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8}"  # = vllm/vllm-openai:qwen38-flash-next, 2026-08-27
-FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-qwen38-flash:v1.4}"
+FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"  # = lmsysorg/sglang:qwen38flashnext, 2026-08-26
+FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-qwen38-flash:v1.5}"
+# Backing store for the flash target's mmap-served 51B PLE table (~48 GiB,
+# written once at first boot, reused afterwards; delete it to reclaim).
+PLE_DIR="${PLE_DIR:-$HOME/flashnext-ple}"
 MODEL_CHOICE="${MODEL_CHOICE:-stock}"
 case "$MODEL_CHOICE" in
   stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
@@ -56,10 +62,11 @@ if [ "$MODEL_CHOICE" = "flash" ] && [ "$CONTEXT_MODE" = "1m" ]; then
   printf '       by default; a validated long-context mode for it may come in a later release.\n' >&2
   exit 1
 fi
-# Engine implied by the target model: the 27B pair serves on SGLang, Flash-Next
-# on vLLM. One unit per engine, both on the same port (never enabled together).
-ENGINE=sglang; UNIT_NAME="qwen38-sglang.service"
-[ "$MODEL_CHOICE" = "flash" ] && { ENGINE=vllm; UNIT_NAME="qwen38-flash.service"; }
+# Lane implied by the target model: the 27B pair and Flash-Next each have
+# their own unit and serving image (both SGLang since v1.5), same port,
+# never enabled together.
+LANE=27b; UNIT_NAME="qwen38-sglang.service"
+[ "$MODEL_CHOICE" = "flash" ] && { LANE=flash; UNIT_NAME="qwen38-flash.service"; }
 # Served image = pinned base + the 5 sha256-verified DFlash2 files (dflash2/, built locally,
 # offline). Replaced by an official image digest the day one ships DFLASH2.
 SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2.2}"
@@ -98,8 +105,11 @@ Env overrides (defaults are pinned to the validated 2026-08-15 versions):
   MODEL_CHOICE=uncensored            serve the huihui-abliterated model
                                      (edp1096 NVFP4) instead of the stock base
   MODEL_CHOICE=flash                 serve Qwen3.8-Flash-Next (176B hybrid MoE,
-                                     NVFP4, vLLM engine, ~136 GB download; the
-                                     51B N-gram table is mmap-served from NVMe)
+                                     NVFP4, SGLang engine, ~136 GB download; the
+                                     51B N-gram table is mmap-served from NVMe,
+                                     with working prefix caching and vision)
+  PLE_DIR=~/flashnext-ple            flash only: where the ~48 GB mmap backing
+                                     file of the N-gram table lives
   CONTEXT_MODE=1m                    1,010,000-token context via YaRN static
                                      scaling, 27B targets only (README, "The 1M context mode")
   PROXY_PORT=30001                   keepalive proxy port (default: PORT+1)
@@ -161,12 +171,29 @@ if [ "$INSTALLED_CHOICE" = "flash" ]; then
   CUR_REV=""; CUR_PORT=""; CUR_HF=""
   if [ -r "$FLASH_LAUNCH" ]; then
     CUR_REV="$(grep -oE -- '--revision [^ ]+' "$FLASH_LAUNCH" | head -1 | cut -d' ' -f2 || true)"
-    CUR_PORT="$(grep -oE -- '-p [0-9]+:8000' "$FLASH_LAUNCH" | head -1 | grep -oE '[0-9]+' | head -1 || true)"
-    CUR_HF="$(grep -oE -- '-v [^ :]+:/hf' "$FLASH_LAUNCH" | head -1 | sed -e 's/^-v //' -e 's|:/hf$||' || true)"
+    if grep -q 'sglang.launch_server' "$FLASH_LAUNCH"; then
+      # v1.5+ shape (SGLang, host networking): --port IS the host port.
+      CUR_PORT="$(grep -oE -- '--port [0-9]+' "$FLASH_LAUNCH" | head -1 | tr -dc '0-9' || true)"
+      CUR_HF="$(grep -oE -- '-v [^ :]+:/root/\.cache/huggingface' "$FLASH_LAUNCH" | head -1 | sed -e 's/^-v //' -e 's|:/root/\.cache/huggingface$||' || true)"
+    else
+      # v1.4 shape (vLLM, bridge networking): the host port is the -p mapping;
+      # its in-container --port 8000 must NOT be read as a host port. The
+      # upgrade regenerates the launcher on the new engine, keeping only
+      # port/HF/model choices.
+      CUR_PORT="$(grep -oE -- '-p [0-9]+:8000' "$FLASH_LAUNCH" | head -1 | grep -oE '^-p [0-9]+' | tr -dc '0-9' || true)"
+      CUR_HF="$(grep -oE -- '-v [^ :]+:/hf' "$FLASH_LAUNCH" | head -1 | sed -e 's/^-v //' -e 's|:/hf$||' || true)"
+      echo "NOTE: the installed flash lane is the v1.4 vLLM engine; this upgrade moves it to SGLang"
+      echo "      (working prefix caching; see CHANGELOG v1.5). Port/cache/model choices are kept."
+    fi
+    CUR_PLE="$(grep -oE -- '-v [^ :]+:/ple' "$FLASH_LAUNCH" | head -1 | sed -e 's/^-v //' -e 's|:/ple$||' || true)"
+    if [ -z "${_ENV_PLE_DIR:-}" ] && [ -n "$CUR_PLE" ] && [ "$CUR_PLE" != "$PLE_DIR" ]; then
+      PLE_DIR="$CUR_PLE"
+      echo "Keeping the installed PLE table location: $PLE_DIR. Pass PLE_DIR= to change."
+    fi
   fi
   if [ -z "$_ENV_MODEL_CHOICE" ] && [ "$MODEL_CHOICE" != "flash" ]; then
     MODEL_CHOICE=flash; MODEL_REPO="$FLASH_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$FLASH_REV}"
-    ENGINE=vllm; UNIT_NAME="qwen38-flash.service"
+    LANE=flash; UNIT_NAME="qwen38-flash.service"
     echo "Keeping the installed target model: flash ($FLASH_REPO). Pass MODEL_CHOICE= to change."
   fi
 elif [ "$INSTALLED_CHOICE" = "27b" ]; then
@@ -183,7 +210,7 @@ elif [ "$INSTALLED_CHOICE" = "27b" ]; then
       "$UNC_REPO")   MODEL_CHOICE=uncensored; MODEL_REPO="$UNC_REPO";   MODEL_REV="${_ENV_MODEL_REV:-$UNC_REV}" ;;
       *) KEEP_MODEL_VERBATIM=1; MODEL_CHOICE=custom; MODEL_REPO="$CUR_MODEL" ;;
     esac
-    ENGINE=sglang; UNIT_NAME="qwen38-sglang.service"
+    LANE=27b; UNIT_NAME="qwen38-sglang.service"
     if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
       echo "NOTE: keeping the custom --model-path already installed ($CUR_MODEL)."
       echo "      Its download and template steps are skipped (it is already serving from cache)."
@@ -246,9 +273,13 @@ FREE_DISK_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
 # only need working room.
 NEED_GB=45; DOCKER_NEED_GB=45; IMG_LABEL="39 GB Docker image"
 if [ "$MODEL_CHOICE" = "flash" ]; then
-  NEED_GB=145; DOCKER_NEED_GB=25; IMG_LABEL="21 GB Docker image"
+  NEED_GB=195; DOCKER_NEED_GB=35; IMG_LABEL="30 GB Docker image"
 fi
 ls -d "$HF_CACHE/hub/models--${MODEL_REPO//\//--}/snapshots/"*/ >/dev/null 2>&1 && NEED_GB=10
+if [ "$MODEL_CHOICE" = "flash" ] && ! ls "$PLE_DIR"/ple_table_*.bin >/dev/null 2>&1; then
+  # The ~48 GiB mmap backing file is written at first boot.
+  NEED_GB=$((NEED_GB + 50))
+fi
 [ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free under \$HOME for the checkpoints and caches; found ${FREE_DISK_GB} GB. Free some space or set HF_CACHE to another disk."
 DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
 DOCKER_FREE_GB=$(df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')
@@ -257,9 +288,10 @@ if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   # The port may be held by either of OUR engines: same-engine reinstall
   # (converge) or a cross-engine switch (the old engine is stopped at step 9).
   if docker inspect qwen38-sglang --format '{{join .Args " "}}' 2>/dev/null | grep -qE -- "--port ${PORT}(\s|$)"; then
-    echo "Note: qwen38-sglang is already running on :$PORT, installing over it ($([ "$ENGINE" = vllm ] && echo 'engine switch at the final step' || echo 'converging config'))."
-  elif docker inspect qwen38-flash --format '{{json .HostConfig.PortBindings}}' 2>/dev/null | grep -q "\"${PORT}\""; then
-    echo "Note: qwen38-flash is already running on :$PORT, installing over it ($([ "$ENGINE" = sglang ] && echo 'engine switch at the final step' || echo 'converging config'))."
+    echo "Note: qwen38-sglang is already running on :$PORT, installing over it ($([ "$LANE" = flash ] && echo 'lane switch at the final step' || echo 'converging config'))."
+  elif docker inspect qwen38-flash --format '{{join .Args " "}}' 2>/dev/null | grep -qE -- "--port ${PORT}(\s|$)" \
+       || docker inspect qwen38-flash --format '{{json .HostConfig.PortBindings}}' 2>/dev/null | grep -q "\"${PORT}\""; then
+    echo "Note: qwen38-flash is already running on :$PORT, installing over it ($([ "$LANE" = 27b ] && echo 'lane switch at the final step' || echo 'converging config'))."
   else
     die "Port $PORT is already in use by another program (see: ss -tlnp | grep :$PORT). Free it, or install with PORT=<other> ./install.sh"
   fi
@@ -273,9 +305,9 @@ if [ "$NO_SERVICE" -eq 0 ] && ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q 
 fi
 echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
 
-if [ "$ENGINE" = "vllm" ]; then
-  step "2/9 Pulling the official vLLM Flash-Next image (~21 GB, one-time, resumable)"
-  docker pull "$FLASH_IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try FLASH_IMAGE=vllm/vllm-openai:qwen38-flash-next ./install.sh"
+if [ "$LANE" = "flash" ]; then
+  step "2/9 Pulling the official SGLang Flash-Next image (~30 GB, one-time, resumable)"
+  docker pull "$FLASH_IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try FLASH_IMAGE=lmsysorg/sglang:qwen38flashnext ./install.sh"
   PULLED_IMAGE="$FLASH_IMAGE"
 else
   step "2/9 Pulling the SGLang image (~39 GB, one-time, resumable)"
@@ -291,7 +323,7 @@ GPU_SEEN="$(docker run --rm --gpus all --entrypoint nvidia-smi "$PULLED_IMAGE" -
   || die "'docker run --gpus all' cannot see the GPU (no GPU line from nvidia-smi -L in the container). The NVIDIA Container Toolkit is missing or unconfigured. Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
 echo "OK, container sees: $GPU_SEEN"
 
-if [ "$ENGINE" = "vllm" ]; then
+if [ "$LANE" = "flash" ]; then
   step "4/9 Downloading the Flash-Next checkpoint (~136 GB, one-time, reuses/resumes any local copy)"
   echo "This is the big one: at 100 MB/s it takes ~25 min. Interrupting is safe, re-running resumes."
 else
@@ -304,7 +336,7 @@ DL_MODEL_REPO="$MODEL_REPO"
 # Flash has no separate draft checkpoints: its MTP head ships inside the
 # target checkpoint itself. Empty repo vars are skipped by the downloader.
 DL_DRAFT_REPO="$DRAFT_REPO"; DL_DRAFT2_REPO="$DRAFT2_REPO"
-if [ "$ENGINE" = "vllm" ]; then DL_DRAFT_REPO=""; DL_DRAFT2_REPO=""; fi
+if [ "$LANE" = "flash" ]; then DL_DRAFT_REPO=""; DL_DRAFT2_REPO=""; fi
 # Unauthenticated downloads get throttled by the Hub (measured: a fresh-cache
 # pull stalled at 3.3 GB). A token in $HF_CACHE/token is picked up through the
 # mount; HF_TOKEN in the environment is passed through as well.
@@ -354,10 +386,10 @@ for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
 print("checkpoints ready", flush=True)
 PYEOF
 
-if [ "$ENGINE" = "vllm" ]; then
-  step "5/9 Building the Flash-Next serving image (pinned base + 2 verified files + gather test, offline, ~2 min)"
-  BASE_IMAGE="$FLASH_IMAGE" TAG="$FLASH_SERVE_IMAGE" "$REPO_DIR/flash/build-image.sh" \
-    || die "Flash overlay image build failed: see flash/ATTRIBUTION.md; the checksums and the in-image gather test run before tagging, so a failure means a corrupted checkout (git status) or an upstream image layout change."
+if [ "$LANE" = "flash" ]; then
+  step "5/9 Building the Flash-Next serving image (pinned base + 2 verified files + gate checks, offline, ~2 min)"
+  BASE_IMAGE="$FLASH_IMAGE" TAG="$FLASH_SERVE_IMAGE" "$REPO_DIR/flash-sglang/build-image.sh" \
+    || die "Flash overlay image build failed: see flash-sglang/ATTRIBUTION.md; the checksums and in-image checks run before tagging, so a failure means a corrupted checkout (git status) or an upstream image layout change."
 else
   step "5/9 Building the DFlash2 serving image (pinned base + 5 verified files, offline, ~1 min)"
   BASE_IMAGE="$IMAGE" TAG="$SERVE_IMAGE" "$REPO_DIR/dflash2/build-image.sh" \
@@ -377,7 +409,7 @@ KEY="$(cat "$CONFIG_DIR/api-key")"   # used by the step-9 smoke test
 # the served model (both fixes: reasoning_effort normalization + mid-conversation
 # system messages as <system-reminder> blocks; see patch-template.py).
 TEMPLATE_OUT="$CONFIG_DIR/chat-template-sglang.jinja"
-[ "$ENGINE" = "vllm" ] && TEMPLATE_OUT="$CONFIG_DIR/chat-template-flashnext.jinja"
+[ "$LANE" = "flash" ] && TEMPLATE_OUT="$CONFIG_DIR/chat-template-flashnext.jinja"
 if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
   [ -s "$TEMPLATE_OUT" ] \
     || die "custom model kept, but no patched template at $TEMPLATE_OUT. Pass MODEL_CHOICE=stock or MODEL_CHOICE=uncensored to regenerate it."
@@ -410,7 +442,7 @@ step "7/9 opencode provider config + oc launcher"
 # silent streams. --no-service has no proxy: direct server port for ./run.sh.
 # The key is referenced via {file:...}: no secret in the file.
 # opencode limits per context mode
-if [ "${ENGINE:-sglang}" = "vllm" ]; then
+if [ "${LANE:-27b}" = "flash" ]; then
   OC_CTX=226000; OC_OUT=32000;  OC_LABEL="local"   # 226000+32000 = 258000 <= 262144-4096
 elif [ "$CONTEXT_MODE" = "1m" ]; then
   OC_CTX=700000; OC_OUT=200000; OC_LABEL="local, 1M"
@@ -425,18 +457,18 @@ OC_PORT="$PROXY_PORT"
 # installed right now always appears. The default model is the one being
 # installed. json.dump writes the file: no hand-escaping.
 OC_27B=0; OC_FLASH=0
-{ [ "$ENGINE" = "sglang" ] || [ -f "$SGL_UNIT_PATH" ]; } && OC_27B=1
-{ [ "$ENGINE" = "vllm" ]   || [ -f "$FLASH_UNIT_PATH" ]; } && OC_FLASH=1
+{ [ "$LANE" = "27b" ] || [ -f "$SGL_UNIT_PATH" ]; } && OC_27B=1
+{ [ "$LANE" = "flash" ] || [ -f "$FLASH_UNIT_PATH" ]; } && OC_FLASH=1
 # The other engine's limits, for when both providers are present: the 27B block
 # keeps its context-mode limits, flash always serves its native window.
-OC_ENGINE="$ENGINE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
+OC_LANE="$LANE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
 OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$CONTEXT_MODE" \
 OC_CONFIG_DIR="$CONFIG_DIR" python3 - <<'PYEOF' || die "could not write the opencode provider config"
 import json
 import os
 
 cfg_dir = os.environ["OC_CONFIG_DIR"]
-engine = os.environ["OC_ENGINE"]
+lane = os.environ["OC_LANE"]
 variants = {lvl: {"chat_template_kwargs": {"reasoning_effort": lvl}}
             for lvl in ("low", "medium", "xhigh")}
 key_ref = f"{{file:{cfg_dir}/api-key}}"
@@ -458,7 +490,7 @@ def prov(name, model_id, model_name, ctx, out):
 
 providers = {}
 if os.environ["OC_27B"] == "1":
-    if engine == "sglang":
+    if lane == "27b":
         ctx, out, label = int(os.environ["OC_CTX"]), int(os.environ["OC_OUT"]), os.environ["OC_LABEL"]
     else:  # flash install on a box that also has the 27B unit: keep its own limits
         one_m = os.environ["OC_CONTEXT_MODE"] == "1m"
@@ -469,7 +501,7 @@ if os.environ["OC_FLASH"] == "1":
     providers["flashnext"] = prov("Qwen3.8-Flash-Next (DGX Spark)", "qwen3.8-flash-next",
                                   "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)", 226000, 32000)
 
-default = "flashnext/qwen3.8-flash-next" if engine == "vllm" else "qwen38/qwen3.8-27b"
+default = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8-27b"
 doc = {"$schema": "https://opencode.ai/config.json", "provider": providers,
        "model": default, "small_model": default}
 with open(f"{cfg_dir}/opencode.json", "w") as f:
@@ -528,7 +560,7 @@ if [ -f "$UNIT_PATH" ]; then
   sudo chown "$(id -u):$(id -g)" "$CONFIG_DIR/$UNIT_NAME.bak-preupdate"
   echo "previous unit backed up at $CONFIG_DIR/$UNIT_NAME.bak-preupdate"
 fi
-if [ "$ENGINE" = "vllm" ]; then
+if [ "$LANE" = "flash" ]; then
   UNIT_TPL="$REPO_DIR/qwen38-flash.service.template"
   SERVE_IMAGE_FINAL="$FLASH_SERVE_IMAGE"
 else
@@ -556,9 +588,11 @@ render_tpl() {  # $1 template file; substituted result on stdout
       -e "s|__DRAFT2_REV__|$DRAFT2_REV|g" \
       -e "s|__MODEL_REV_ARGS__|$MODEL_REV_ARGS|g" \
       -e "s|__MODEL__|$MODEL_REPO|g" \
+      -e "s|__PLE_DIR__|$PLE_DIR|g" \
       "$1"
 }
-if [ "$ENGINE" = "vllm" ]; then
+if [ "$LANE" = "flash" ]; then
+  mkdir -p "$PLE_DIR"
   # The docker-run command lives in a plain launch script, not in ExecStart:
   # systemd applies its own C-style unescaping before bash would, and the JSON
   # arguments (--speculative-config, splitting_ops) do not survive two rounds.
@@ -575,7 +609,7 @@ sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME"; rm -f "$TMP_UN
 # engine's unit (if present) is disabled now and stopped at step 9, right
 # before this one starts; its unit file is kept for a fast switch back.
 OTHER_UNIT=""
-if [ "$ENGINE" = "vllm" ]; then
+if [ "$LANE" = "flash" ]; then
   [ -f "$SGL_UNIT_PATH" ] && OTHER_UNIT="qwen38-sglang.service"
 else
   [ -f "$FLASH_UNIT_PATH" ] && OTHER_UNIT="qwen38-flash.service"
@@ -620,8 +654,8 @@ if [ "$NO_START" -eq 1 ]; then
   exit 0
 fi
 
-if [ "$ENGINE" = "vllm" ]; then
-  step "9/9 Starting (first boot ≈ 10 min: weight load + PLE prewarm + CUDA graph capture)"
+if [ "$LANE" = "flash" ]; then
+  step "9/9 Starting (first boot ≈ 15 min: weight load writes the 48 GiB PLE file, then CUDA graph capture; later boots ≈ 10 min)"
 else
   step "9/9 Starting (first boot ≈ 9 min: torch.compile + CUDA graph capture; later boots are faster)"
 fi
@@ -630,7 +664,7 @@ if [ -n "$OTHER_UNIT" ] && systemctl is-active --quiet "$OTHER_UNIT" 2>/dev/null
   sudo systemctl stop "$OTHER_UNIT"
 fi
 SMOKE_MODEL="qwen3.8-27b"
-[ "$ENGINE" = "vllm" ] && SMOKE_MODEL="qwen3.8-flash-next"
+[ "$LANE" = "flash" ] && SMOKE_MODEL="qwen3.8-flash-next"
 sudo systemctl restart "$UNIT_NAME"
 for i in $(seq 1 150); do
   if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
@@ -653,13 +687,30 @@ except Exception as e:
     done
     [ "$PROXY_OK" = 1 ] || die "the keepalive proxy did not come up on :$PROXY_PORT. Check: journalctl -u $KEEPALIVE_UNIT -n 30"
     echo "keepalive proxy OK on :$PROXY_PORT (agent clients use this port)"
+    # Superseded artifacts from earlier versions of THIS repo, if any: detect
+    # and say how to reclaim them; never delete data on the operator's behalf.
+    LEFTOVER_NOTES=""
+    if [ "$LANE" = "flash" ]; then
+      for ref in "vllm/vllm-openai:qwen38-flash-next" "vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8" "qwen38-flash:v1.4"; do
+        docker image inspect "$ref" >/dev/null 2>&1 && LEFTOVER_NOTES="${LEFTOVER_NOTES}      docker rmi '$ref'\n"
+      done
+    fi
+    while IFS= read -r tagref; do
+      [ -n "$tagref" ] && [ "$tagref" != "$SERVE_IMAGE" ] && [ "$tagref" != "$FLASH_SERVE_IMAGE" ] \
+        && case "$LEFTOVER_NOTES" in *"'$tagref'"*) ;; *) LEFTOVER_NOTES="${LEFTOVER_NOTES}      docker rmi '$tagref'\n" ;; esac
+    done < <({ docker images --format '{{.Repository}}:{{.Tag}}' qwen38-dflash2 2>/dev/null; docker images --format '{{.Repository}}:{{.Tag}}' qwen38-flash 2>/dev/null; } || true)
+    if [ -n "$LEFTOVER_NOTES" ]; then
+      echo "  Note: earlier versions of this repo left superseded images; reclaim when you like:"
+      printf '%b' "$LEFTOVER_NOTES"
+      echo "      (full inventory anytime: ./uninstall.sh --list)"
+    fi
     printf '\n\033[1;32m✅ Installed, verified, and enabled at boot.\033[0m\n'
     echo "  OpenAI     : http://<host>:$PORT/v1/chat/completions"
-    [ "$ENGINE" = "sglang" ] && echo "  Anthropic  : http://<host>:$PORT/v1/messages   (Bearer auth only)"
+    echo "  Anthropic  : http://<host>:$PORT/v1/messages   (Bearer auth only)"
     echo "  Agent CLIs : http://<host>:$PROXY_PORT (keepalive proxy, use THIS for opencode)"
     echo "  API key    : $CONFIG_DIR/api-key"
     echo "  opencode   : provider config ready at $CONFIG_DIR/opencode.json (README, \"opencode integration\")"
-    [ "$ENGINE" = "sglang" ] && echo "  Benchmark  : ./bench.sh"
+    [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh"
     exit 0
   fi
   ST="$(systemctl is-active "$UNIT_NAME" || true)"

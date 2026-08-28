@@ -139,7 +139,29 @@ Caveat on cross-reading: that harness generates synthetic tokens (`tg128` at a s
 
 Read it carefully before concluding "vLLM is faster": the prose floor is identical (the drafter's low-acceptance signature, quant and drafter being the same), and the structured cells sit +15-25 % above this repo's reference numbers, measured on an **idle, freshly rebooted box**, where this repo's reference cells are measured on a box that concurrently runs the very agent sessions it serves. Independent reproducers on the NVIDIA forum thread (pontostroy, Schnabulator) report the same +8-30 % offset on quiet boxes with this exact config. The honest conclusion: **on identical hardware, quant and drafter, eugr's vLLM path and SGLang land in the same band; engine choice is not the lever, box load and content are.** A controlled idle-box re-baseline of this repo's config (benched from a second machine, zero local sessions) is on the list and will get its own column.
 
-## The flash target: Qwen3.8-Flash-Next 176B, measured (2026-08-27)
+## The flash target on SGLang (v1.5), measured (2026-08-28)
+
+Same box, same two-call instrument. Serving config: official SGLang image +
+the `flash-sglang/` overlay, NVFP4, NEXTN 3/1/4, 262,144 context, mem-fraction
+0.79, chunked prefill 1024, radix cache `extra_buffer`, PLE mmap on NVMe.
+
+| probe | measured |
+|---|---|
+| prefix caching, 30K identical re-serve | 18.4 s -> 0.5 s (x36) |
+| known 30K prefix, fresh question | 3.2 s (x5.8) |
+| decode, reasoning | 34.2 tok/s |
+| decode, free prose | 20.3 tok/s |
+| frozen battery, code EN (long-ctx profile) | 31.7 tok/s |
+| cold prefill | ~1,480-1,930 tok/s |
+| vision (two-color probe, alone and with an 8K prompt) | exact both times |
+| needle at 100K, fresh content | found (92K tok ingested in 58 s) |
+| quality canaries | 4/4 |
+| NEXTN acceptance | 2.0-2.7 tokens/step (up to 3.95-4.0 reported with the full resolver fix) |
+
+Short-context profiles (32K, mem-fraction 0.85) measure up to 41.5-42.2 tok/s
+on code upstream; this repo ships the full-context profile.
+
+## The flash target on vLLM (v1.4, historical), measured (2026-08-27)
 
 Same box, same instruments (two-call wall-clock delta for decode, single-shot
 usage/wall for prefill). Serving config: vLLM official image + the PLE-mmap

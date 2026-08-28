@@ -1,25 +1,39 @@
 #!/usr/bin/env bash
 # Launch script for qwen38-flash.service, rendered by install.sh (a plain file
-# so no systemd-vs-bash double escaping can ever corrupt the JSON arguments;
+# so no systemd-vs-bash double escaping can ever corrupt an argument;
 # regenerated on every install; the serve revision is refreshed by switch-model.sh).
-# Serving flags: see flash/ATTRIBUTION.md for why each GB10-specific one exists.
+# Engine since v1.5: SGLang (same engine as the 27B pair), with the two-file
+# overlay that mmaps the 51B PLE table from NVMe and unblocks QSA decode on
+# sm_121. Every serving flag here is validated on the reference box; see
+# flash-sglang/ATTRIBUTION.md for why each GB10-specific one exists.
 set -euo pipefail
 exec /usr/bin/docker run --rm --name qwen38-flash --gpus all \
-  --memory 110g --memory-swap 110g --shm-size 16g --ipc=host \
-  -p __PORT__:8000 \
-  -v __HF_CACHE__:/hf -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 \
+  --memory 110g --memory-swap 110g --shm-size 16g --network host --ipc=host \
+  -v __HF_CACHE__:/root/.cache/huggingface \
   -v __HOME__/.config/qwen38:/out \
-  -e VLLM_PLE_MMAP=1 -e VLLM_PLE_MMAP_WORKERS=32 -e VLLM_PLE_MMAP_PREWARM=1 \
-  -e VLLM_USE_FLASHINFER_SAMPLER=1 \
+  -v __PLE_DIR__:/ple \
+  -e SGLANG_QWEN4_PLE_MMAP_DIR=/ple \
+  -e HF_HUB_OFFLINE=1 \
   __IMAGE__ \
-  __MODEL__ __MODEL_REV_ARGS__ --served-model-name qwen3.8-flash-next \
-    --host 0.0.0.0 --port 8000 --load-format safetensors \
-    --max-model-len 262144 --max-num-seqs 2 --gpu-memory-utilization 0.78 \
-    --no-enable-prefix-caching --enable-chunked-prefill --max-num-batched-tokens 8192 \
-    -cc.cudagraph_mode=PIECEWISE \
-    '-cc.splitting_ops=["vllm::unified_attention_with_output","vllm::unified_mla_attention_with_output","vllm::mamba_mixer2","vllm::mamba_mixer","vllm::short_conv","vllm::qwen3_8_flash_next_ple_short_conv","vllm::qwen3_8_flash_next_qsa_with_output","vllm::linear_attention","vllm::qwen_gdn_attention_core","vllm::qwen_gdn_attention_core_fused_norm_packed","vllm::sparse_attn_indexer","vllm::ple_mmap_lookup"]' \
-    --no-enable-flashinfer-autotune \
-    --speculative-config '{"method":"mtp","num_speculative_tokens":2}' \
-    --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3 \
+  python3 -m sglang.launch_server \
+    --model-path __MODEL__ __MODEL_REV_ARGS__ --tp-size 1 \
+    --served-model-name qwen3.8-flash-next \
+    --quantization modelopt_fp4 \
+    --prefill-attention-backend triton \
+    --decode-attention-backend trtllm_mha \
+    --ple-offload-embedding \
+    --mamba-radix-cache-strategy extra_buffer \
+    --mem-fraction-static 0.79 \
+    --context-length 262144 \
+    --chunked-prefill-size 1024 \
+    --max-running-requests 4 \
+    --allow-auto-truncate \
+    --speculative-algorithm NEXTN \
+    --speculative-num-steps 3 \
+    --speculative-eagle-topk 1 \
+    --speculative-num-draft-tokens 4 \
+    --speculative-draft-model-quantization unquant \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
     --chat-template /out/chat-template-flashnext.jinja \
-    --api-key "$(cat __HOME__/.config/qwen38/api-key)"
+    --api-key "$(cat __HOME__/.config/qwen38/api-key)" \
+    --host 0.0.0.0 --port __PORT__

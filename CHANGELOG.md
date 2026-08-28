@@ -1,5 +1,58 @@
 # Changelog
 
+## v1.5 (2026-08-28)
+
+The flash lane moves to SGLang: working prefix caching, tool-loop fix, vision on.
+
+- **Flash target now serves on SGLang** (`lmsysorg/sglang:qwen38flashnext`,
+  digest-pinned), same engine family as the 27B pair. The reason: **prefix
+  caching works there** and vLLM's is blocked by a GB10 GDN bug (tracked
+  upstream as vllm#54173, filed with this box's exact environment). Measured on
+  the reference box: a 30K-token conversation re-served in 0.5 s instead of
+  18.4 s (x36); a fresh question on a known 30K prefix in ~3 s (x5.8); decode
+  34-42 tok/s (vLLM lane: 31); vision validated including with large prompts;
+  canaries 4/4; needle at 100K passing.
+- **`flash-sglang/` vendored overlay** (MIT, by hashd1ve, over Apache-2.0
+  SGLang sources): patch 1 mmaps the 51B PLE table from NVMe
+  (`SGLANG_QWEN4_PLE_MMAP_DIR`, ~48 GB backing file written once at first
+  boot, `PLE_DIR` env, default `~/flashnext-ple`); patch 2 fixes the QSA
+  resolvers on sm_121 (+32% decode). Patch 2 is the same fix as upstream
+  PR #36556, which independent reports confirm also fixes the token-ID-0
+  tool-call loop (#36537); this repo carries **both** of that PR's resolver
+  edits (the hashd1ve tree had one) after verifying the FA4 dispatcher module
+  exists in the pinned image. Provenance is proven at vendor time: each file
+  diffs against the module extracted from the pinned image in exactly the
+  patched region.
+- **The lane authenticates** (`--api-key`, like everything else here); early
+  public recipes for this model ran open.
+- The v1.4 vLLM lane is retired (git history keeps it: `git checkout v1.4`).
+  Upgrades from v1.4 keep port/cache/model choices and regenerate the launch
+  script on the new engine. The flash lane now also serves the Anthropic
+  protocol, like the 27B lane.
+- **27B: known upstream reports, not reproduced here.** sglang#36548 (DFlash2
+  can attach a message to the wrong context under concurrent load) and
+  sglang#35150 (speculative verify diverges from plain decode in the SSM
+  transition) affect DFlash2 builds newer than this repo's pins. Reproduction
+  on this repo's exact pinned build: 100 greedy ordering prompts, serial AND
+  at concurrency 8, zero wrong answers. The pins stay; documented options if
+  you serve many concurrent correctness-critical streams: the
+  `RadixArk/Qwen3.8-27B-NVFP4-BF16-LMHead` target (`009632f`), DSpark v2, or
+  `--max-running-requests 1`.
+- Known upstream behavior documented and reproduced on this lane
+  (sglang#35537): with chunked prefill, a long-decoding request can starve new
+  requests until it completes. Single-agent use is unaffected.
+- **`./uninstall.sh --list`**: read-only inventory of every artifact any
+  version of this repo (v1.0 through v1.5) may have left on the box: units,
+  drop-ins, unit backups, config, the oc launcher, local AND base docker
+  images (matched by tag or digest: a digest pull leaves no tag), the five
+  checkpoints, the PLE backing file, each with its size. The uninstall itself
+  now prints reclaim commands only for what is actually present, and the
+  installer points out superseded engine images after an upgrade (e.g. the
+  ~40 GB of v1.4 vLLM images) without ever deleting data on its own.
+- CI: flash guards moved to the SGLang launcher (radix cache, NEXTN, split
+  attention backends, api-key, PLE mmap dir, no `--language-only`, revision
+  lock), vendored-file gate greps, generator executed on all three shapes.
+
 ## v1.4 (2026-08-27)
 
 Qwen3.8-Flash-Next 176B as a third switchable target, on one box.

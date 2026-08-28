@@ -29,17 +29,26 @@ PREP="./install.sh --no-service"
 # ── Everything prepared? ──
 [ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key. Run: $PREP"
 [ -s "$CONFIG_DIR/chat-template-sglang.jinja" ] || die "no patched template in $CONFIG_DIR. Run: $PREP"
-for REPO in "$MODEL_REPO" "$DRAFT_REPO" "$DRAFT2_REPO"; do
+# Checkpoints: validate the snapshot of the PINNED revision, never
+# "the first snapshot dir": a cache can hold several revisions (an old
+# MODEL_REV=main attempt, an upstream bump), and `ls | head -1` picks
+# alphabetically, failing a healthy install on a stale partial dir (issue #5).
+for PAIR in "$MODEL_REPO=$MODEL_REV" "$DRAFT_REPO=$DRAFT_REV" "$DRAFT2_REPO=$DRAFT2_REV"; do
+  REPO="${PAIR%%=*}"; REV="${PAIR#*=}"
   DIR="$HF_CACHE/hub/models--${REPO//\//--}"
-  SNAP="$(ls -d "$DIR"/snapshots/*/ 2>/dev/null | head -1 || true)"
-  [ -n "$SNAP" ] || die "checkpoint $REPO not found in $HF_CACHE. Run: $PREP"
+  [ -d "$DIR/snapshots" ] || die "checkpoint $REPO not found in $HF_CACHE. Run: $PREP"
+  # A ref name (e.g. 'main') resolves through refs/, a sha is used as-is.
+  REV_SHA="$REV"
+  [ -f "$DIR/refs/$REV" ] && REV_SHA="$(cat "$DIR/refs/$REV")"
+  SNAP="$DIR/snapshots/$REV_SHA/"
+  [ -d "$SNAP" ] || die "checkpoint $REPO is cached, but not at the pinned revision ${REV_SHA:0:12} (cached: $(ls "$DIR/snapshots" 2>/dev/null | cut -c1-12 | paste -sd' ')). Re-run: $PREP"
   # An interrupted download leaves snapshots/ in place with only the small
   # files, so also require finished blobs and actual weights (credit: helge).
   if compgen -G "$DIR/blobs/*.incomplete" >/dev/null 2>&1; then
     die "checkpoint $REPO download is incomplete (blobs/*.incomplete). Re-run: $PREP (it resumes)"
   fi
   compgen -G "${SNAP}*.safetensors" >/dev/null 2>&1 \
-    || die "checkpoint $REPO has no weight files in its snapshot. Re-run: $PREP"
+    || die "checkpoint $REPO has no weight files in its pinned snapshot ${REV_SHA:0:12}. Re-run: $PREP"
 done
 docker image inspect "$SERVE_IMAGE" >/dev/null 2>&1 || die "serving image $SERVE_IMAGE not built. Run: $PREP"
 
