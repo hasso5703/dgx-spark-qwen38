@@ -320,6 +320,12 @@ def collect_lifecycle():
                              container_running=running,
                              healthy=healthy and running, boot=boot,
                              rebuild=False)
+        # degraded means "WAS serving, lost health", not "health probe has
+        # not caught up yet": right after fired-up, stay warming-up unless
+        # we had already reached ready in this activation.
+        if st["state"] == "degraded" and prev.get(unit) not in ("ready",
+                                                                "degraded"):
+            st["state"] = "warming-up"
         if st["state"] in lc.TRANSITIONAL and running:
             jl = run(["journalctl", "-u", unit, "-n", "40", "--no-pager",
                       "-o", "cat"], timeout=6).splitlines()
