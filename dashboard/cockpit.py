@@ -569,7 +569,32 @@ def start_action(name: str, params: dict) -> tuple[int, dict]:
 
 
 # ── Sessions / auth ──────────────────────────────────────────────────────────
-SESSION_SECRET = secrets.token_bytes(32)
+def _session_secret() -> bytes:
+    """Persist the HMAC secret (0600) so a cockpit restart keeps sessions.
+
+    Field lesson: an in-memory secret logged every browser out at each
+    service restart. Falls back to an ephemeral secret if the config dir
+    is unwritable (degraded, never broken).
+    """
+    f = CONFIG_DIR / "cockpit-secret"
+    try:
+        raw = f.read_bytes()
+        if len(raw) >= 32:
+            return raw[:32]
+    except OSError:
+        pass
+    raw = secrets.token_bytes(32)
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
+    except OSError:
+        pass
+    return raw
+
+
+SESSION_SECRET = _session_secret()
 LOGIN_FAILS: dict[str, list] = {}
 
 
