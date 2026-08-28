@@ -58,9 +58,31 @@ LIFE: dict = {"states": {}, "enter": {}, "witnessed": {}}
 LIFE_LOCK = threading.Lock()
 
 
+EVENTS_FILE_NAME = "cockpit-events.jsonl"
+
+
 def add_event(kind: str, msg: str):
+    ev = {"ts": time.time(), "kind": kind, "msg": msg[:300]}
     with EVENTS_LOCK:
-        EVENTS.append({"ts": time.time(), "kind": kind, "msg": msg[:300]})
+        EVENTS.append(ev)
+    try:  # the timeline survives cockpit restarts (append-only, bounded read)
+        with open(CONFIG_DIR / EVENTS_FILE_NAME, "a") as f:
+            f.write(json.dumps(ev) + "\n")
+    except OSError:
+        pass
+
+
+def load_events():
+    try:
+        lines = (CONFIG_DIR / EVENTS_FILE_NAME).read_text().splitlines()[-100:]
+    except OSError:
+        return
+    with EVENTS_LOCK:
+        for ln in lines:
+            try:
+                EVENTS.append(json.loads(ln))
+            except json.JSONDecodeError:
+                pass
 
 
 def load_history() -> dict:
@@ -904,6 +926,7 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 def main():
+    load_events()
     if not shutil.which("nvidia-smi"):
         print("note: nvidia-smi not found, GPU panel will degrade")
     for period, cols in TIERS:
