@@ -513,6 +513,17 @@ PYEOF
 echo "opencode limits: context $OC_CTX, output $OC_OUT, port $OC_PORT"
 echo "  no opencode config yet:  mkdir -p ~/.config/opencode && cp $CONFIG_DIR/opencode.json ~/.config/opencode/opencode.json"
 echo "  existing config:         merge the \"qwen38\" provider block into it (README, \"opencode integration\")"
+# An existing opencode.json keeps the user's other providers, but its limits for
+# THIS lane must follow the served engine (v1.5.2: a flash conversation allowed
+# to grow to 226000 tokens outgrew the 159k KV pool and wedged the scheduler).
+OC_USER_CFG="$HOME/.config/opencode/opencode.json"
+if [ -f "$OC_USER_CFG" ]; then
+  if [ "${LANE:-27b}" = "flash" ]; then
+    python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" flashnext qwen3.8-flash-next "$OC_CTX" "$OC_OUT" || true
+  else
+    python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" qwen38 qwen3.8-27b "$OC_CTX" "$OC_OUT" || true
+  fi
+fi
 # oc: launcher that lifts opencode's hidden 32000 max_tokens cap to the
 # declared output limit (without it, long thinking is cut at 32000 and the
 # turn ends silently). Never clobbers a foreign oc binary (e.g. OpenShift).

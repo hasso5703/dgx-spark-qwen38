@@ -175,7 +175,7 @@ Back to native: `CONTEXT_MODE=native ./install.sh` (removes the proxy service; t
 
 Qwen's official validation environment for this model is a dual GB300 node;
 on Sparks, the public recipes run it on **two** boxes (TP2). This target runs
-it on **one**, at full 262K native context and full NVFP4 quality, on SGLang
+it on **one**, with the model's full 262K window and full NVFP4 quality, on SGLang
 (since v1.5; the same engine as the 27B pair), because of one structural trick
 and two kernel-resolver fixes, all vendored, sha256-verified and pinned in
 `flash-sglang/`:
@@ -185,11 +185,15 @@ and two kernel-resolver fixes, all vendored, sha256-verified and pinned in
   `madvise(MADV_RANDOM)` so a cold row costs one 4K page instead of a
   readahead window. On GB10's coherent memory the gather kernel dereferences
   the pageable pointer directly. Measured overhead: under 3%.
-- **QSA decode unblocked on sm_121** (the resolver gates exclude GB10 upstream,
-  landing decode on a kernel that does not compile there): +32% decode, and
-  the same two edits fix the token-ID-0 tool-call loop tracked upstream
-  ([#36537](https://github.com/sgl-project/sglang/issues/36537) /
-  [PR #36556](https://github.com/sgl-project/sglang/pull/36556)).
+- **QSA decode on sm_121 runs a dedicated Triton kernel.** Upstream gates GB10
+  out of the trtllm sparse-decode path and the generic fallback does not compile
+  there; the v1.5 workaround (widening that gate) silently corrupted long
+  contexts (see the warning above). Since v1.5.2 the resolver routes sm_121 to
+  the packed varlen kernel of
+  [PR #36845](https://github.com/sgl-project/sglang/pull/36845), validated by
+  exact needle retrieval at 120k/190k/210k by its independent reviewer, which
+  also removes the token-ID-0 tool-call loop of
+  [#36537](https://github.com/sgl-project/sglang/issues/36537).
 
 Measured on the reference box (two-call wall-clock, quality canaries 4/4,
 needle-in-haystack passing at 100K with fresh content):
@@ -200,26 +204,46 @@ needle-in-haystack passing at 100K with fresh content):
 | **known 30K prefix + fresh question** | **~3 s (x5.8)**: the agentic turn shape |
 | decode, reasoning | 34.2 tok/s (up to ~42 reported on short-context profiles) |
 | decode, free prose | 20.3 tok/s |
+| long-context retrieval (`./needle.sh`) | exact passphrase retrieval, 4 trials per depth; the probe reports the real prompt token count |
 | prefill, cold | ~1,500-2,000 tok/s (real QSA sparse kernels) |
 | vision (image input) | works, including combined with large prompts |
-| context | 262,144 native, no YaRN |
+| context window | 262,144 native, no YaRN |
+| **context that fits** | **the KV pool at these memory settings holds 159,552 tokens** (`max_total_num_tokens`); in practice keep one prompt under ~100K for now: ~120K prompts wedged the scheduler on the reference box (v1.5.2 CHANGELOG), fix in progress and one giant context runs at a time (`--max-running-requests 1`); a true-262K preset (language-only, higher fraction) is planned and will be measured before it is recommended |
+| decode at depth | slows with context: field reports put it near 28-31 tok/s around 100K, ~22 tok/s at 240K (hashd1ve) |
 | memory | fraction 0.79 + docker cap 110g, ~23 GB host headroom |
 
 The NEXTN speculative head is the model's own next-token module (its 31
 tensors ship in the checkpoint in BF16, hence `unquant` for the draft): drafts
 are verified by the target, so output quality is exactly the target's.
 
+**Two ways the scheduler can hang under pool pressure (reproduced here twice
+on 2026-08-29, same family as [sglang #30314](https://github.com/sgl-project/sglang/issues/30314)):**
+a second giant request admitted while the pool sits at 98 %, or a new ~90k
+prompt after several large prompts left cached in the radix cache (prefill
+completes at 89 % usage, decode never starts). The frontend keeps answering
+`/health` while nothing is served, so a health probe is not enough. What this
+repo does about it: v1.5.2 serves one giant context at a time; `needle.sh`
+flushes the cache before each probe; the cockpit (branch `webapp`) runs a real
+generation probe, restarts a wedged engine, and flushes the cache when the
+engine idles with a mostly-held pool. Without the cockpit, `curl -X POST
+127.0.0.1:30000/flush_cache -H "Authorization: Bearer $(cat
+~/.config/qwen38/api-key)"` between very large prompts avoids the eviction path.
+
 Known upstream behavior, reproduced here
 ([sglang #35537](https://github.com/sgl-project/sglang/issues/35537)): with
 chunked prefill, while one request is decoding a long answer, NEW requests can
 starve until it finishes, even with room in every pool. A single agent client
 (opencode sends one request at a time) never notices; concurrent clients see
-bursty latency. The keepalive proxy cleans up after dead clients either way. Prefix
-caching is why this lane exists: an agent client resends the whole
+bursty latency. When a client disappears the keepalive proxy closes the
+upstream; an explicit server-side abort of the orphaned generation is coming
+with proxy v6.7 (until then an abandoned request decodes to its max_tokens).
+Prefix caching is why this lane exists: an agent client resends the whole
 conversation every turn, and the radix cache turns that from a full recompute
-into an incremental one. Note `--max-running-requests 4` is the validated
-shape, and the 48 GB mmap backing file (`PLE_DIR`, default `~/flashnext-ple`)
-is written once at first boot.
+into an incremental one. The lane runs `--max-running-requests 1` since v1.5.2;
+the boot log shows the default mamba state cache (9 slots, 5 per running
+request) caps it to one running request anyway. The 48 GB mmap backing file
+(`PLE_DIR`, default `~/flashnext-ple`) is rewritten on every boot up to v1.5.2
+(issue #7); v1.5.3 reuses it.
 
 ## The three targets, and switching between them
 
