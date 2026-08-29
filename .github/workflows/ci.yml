@@ -30,7 +30,7 @@ jobs:
         run: |
           pip install 'ruff==0.5.0'
           ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py tests/*.py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py
 
       - name: Pin contracts (run.sh expects 15, switch-model.sh expects 8)
         run: |
@@ -178,8 +178,9 @@ jobs:
         run: |
           cd flash-sglang && sha256sum -c MANIFEST.sha256
           # the two upstream-fix edits can never silently vanish
-          grep -q 'is_sm100_supported() or is_sm120_supported()' qwen_sparse_attn_backend.py
-          grep -q 'flash_attention_v4' qwen_sparse_attn_backend.py
+          ! grep -q 'is_sm100_supported() or is_sm120_supported()' qwen_sparse_attn_backend.py
+          grep -q 'qsa.sm121_varlen' qwen_sparse_attn_backend.py
+          test -f sm121_varlen.py
           grep -q 'SGLANG_QWEN4_PLE_MMAP_DIR' qwen4_exp.py
 
       - name: House typography (no em/en dashes in tracked files)

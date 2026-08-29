@@ -53,13 +53,9 @@ def _resolve_trtllm_sparse_decode():
     at decode row counts; the trtllm-gen decode kernel over a page-aligned
     scratch measures ~35% faster for the gather+attention pair.
     """
-    from sglang.srt.utils import is_sm100_supported, is_sm120_supported
+    from sglang.srt.utils import is_sm100_supported
 
-    # sm_120/121 (consumer Blackwell: GB10 / RTX 50-series) is Blackwell too and
-    # flashinfer ships the trtllm-gen decode kernel for it. The original gate
-    # excludes it, which forces the FA4-cute varlen fallback -- and that one
-    # fails to compile on SM120.
-    if not (is_sm100_supported() or is_sm120_supported()):
+    if not is_sm100_supported():
         return None
     try:
         from flashinfer.decode import trtllm_batch_decode_with_kv_cache
@@ -72,17 +68,17 @@ def _resolve_trtllm_sparse_decode():
 def _resolve_flash_attn_varlen_func():
     """The dense varlen kernel behind the packed sparse-decode fallback.
 
-    SM120 uses SGLang's architecture-owned FA4 dispatcher. Other platforms
-    prefer classic flash_attn (FA2) before flash-attn-4's cute interface.
+    Classic flash_attn (FA2, Ampere/Hopper) is preferred when installed;
+    flash-attn-4's cute interface serves the same call shape on Blackwell.
     """
-    from sglang.srt.utils import is_sm120_supported
+    from sglang.srt.utils import is_sm121
 
-    if is_sm120_supported():
-        from sglang.kernels.ops.attention.flash_attention_v4 import (
-            flash_attn_varlen_func,
+    if is_sm121():
+        from sglang.srt.layers.attention.qsa.sm121_varlen import (
+            qsa_sm121_varlen_attention,
         )
 
-        return flash_attn_varlen_func
+        return qsa_sm121_varlen_attention
     try:
         from flash_attn import flash_attn_varlen_func
 
@@ -628,7 +624,7 @@ class QwenSparseAttnBackend(AttentionBackend):
             # DP attention runs IDLE dummy forwards on ranks without work, and
             # the MTP multi-step wrapper forwards them as zero-row DECODE
             # steps.  Model layers skip attention for these batches, but
-            # metadata init is still invoked : return zero-row metadata instead
+            # metadata init is still invoked — return zero-row metadata instead
             # of falling into the extend/decode paths on empty tensors.
             return self._empty_metadata(forward_batch)
         original_mode = getattr(forward_batch, "_original_forward_mode", None)
@@ -1141,7 +1137,7 @@ class QwenSparseAttnBackend(AttentionBackend):
 
         Compressed slots are arithmetic over req_to_token; the recorded kernels
         then rebuild every per-row graph buffer on-GPU from lengths plus
-        the sidecar : no allocation, no reserve, no copy-on-write.
+        the sidecar — no allocation, no reserve, no copy-on-write.
         """
 
         from sglang.srt.layers.attention.qsa.graph_metadata import (

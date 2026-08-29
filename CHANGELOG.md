@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.5.2 (2026-08-29): flash lane correctness hotfix
+
+**Fixes a silent long-context corruption in the v1.5 flash lane.** The v1.5
+overlay widened the QSA trtllm sparse-decode gate to sm_121; on GB10 that
+routes decode to FlashInfer's XQA kernel, which emits runs of token id 0 deep
+in long contexts (hashd1ve, 2026-08-29: 1 of 4 requests at 120k tokens, 4 of
+4 at 210k). The gate is back to upstream and sm_121 decode uses the packed
+Triton varlen kernel of sglang#36845 (vendored verbatim, sha256-pinned,
+attribution in flash-sglang/ATTRIBUTION.md). Serving image tag: qwen38-flash:v1.5.2.
+
+Also in this release, after a real scheduler wedge on this box (two ~109k-token
+requests admitted into a 159k-token KV pool, scheduler spinning at 100 % CPU
+with `/health` still answering):
+- flash lane: `--max-running-requests 1` (one giant context at a time; a second
+  request queues instead of fighting for the pool). Small concurrent requests
+  were never the use case of a single-user box.
+- opencode config for the flash lane: context 110000 (was 226000, which let a
+  conversation outgrow the pool before compaction).
+- `uninstall.sh --list` knows qwen38-flash:v1.5 as a superseded image.
+
 ## v1.5.1 (2026-08-28)
 
 Flash lane robustness hotfix: poisoned PLE table self-healing.
