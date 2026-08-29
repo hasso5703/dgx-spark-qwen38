@@ -186,3 +186,8 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
   systemd, 0 par defaut). Pool guard: se tait sur « pending requests » (400) et purge ses lectures.
 - Sessions: 12 h glissantes (le navigateur de test s'est retrouve sur /login a 13:50 apres un
   login a 00:53: comportement voulu, pas un bug).
+- Correctif critique (14:33): le patch « grace » avait place audit, dump et autoheal dans la branche
+  NON figee (dumps toutes les 2 s en service normal, aucun autoheal pendant le blocage de 14:15).
+  La decision est maintenant une fonction pure (`lifecycle.wedge_plan`, 5 tests) que le collecteur
+  applique. Evidence native du blocage (gdb): thread principal du scheduler dans zmq_msg_recv/poll,
+  boucle d'evenements qui spinne avec une requete en file jamais admise.
