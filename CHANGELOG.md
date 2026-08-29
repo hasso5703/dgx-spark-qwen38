@@ -24,6 +24,18 @@
   177k tokens (90, 93 and 96 percent of the pool) all served with exact needle
   retrieval in 112 to 123 s. The proxy's 8 percent margin is room for the answer,
   not a hang boundary.
+- The KV pool is not the ceiling, memory is. Measured on the reference box at
+  fraction 0.81 (fresh boot, 24 GiB available idle): the prefill of a long prompt
+  grows the engine's footprint by about 0.27 GiB per 1k tokens beyond ~90k
+  (120k prompt: +7.4 GiB; 135k: +11.4; 150k: +15.3 with the first GPU driver
+  allocation refusals in the kernel log; 177k: +22.8, MemAvailable down to
+  0.8 GiB and 15 `NVRM: NV_ERR_NO_MEMORY` lines, the livelock edge). The
+  process RSS does not move (unified CUDA allocations). The proxy therefore
+  enforces an absolute per-lane ceiling for one prompt, `PROMPT_CEILING_TOKENS`,
+  set by install.sh in the keepalive unit: 135,000 on the flash lane (the largest
+  clean point), none on the 27B lane (not measured). The v1.5.4 note "host
+  headroom unchanged at 23 GB" was an idle measurement and is corrected in the
+  README.
 - CHANGELOG cites the upstream PR behind `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK`
   (sgl-project/sglang#32228, merged 2026-07-29, off by default).
 
