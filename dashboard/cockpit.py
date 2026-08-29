@@ -288,7 +288,9 @@ def collect_canary():
     with STATE_LOCK:
         load = ((STATE.get("engine_fast") or {}).get("data", {}).get("load") or [{}])[0]
     busy = int(load.get("num_reqs") or 0) + int(load.get("num_waiting_reqs") or 0) > 0
-    if not ready or JOB_LOCK.locked() or busy:
+    # a request seen in the last 60 s means a client is active: stay out of its way
+    recent = LAST_PROGRESS["ts"] and time.time() - LAST_PROGRESS["ts"] < 60
+    if not ready or JOB_LOCK.locked() or busy or recent:
         # never queue a probe behind a user's request (max-running-requests 1)
         return {"node_id": "local", **CANARY, "skipped": True}
     body = json.dumps({"model": "canary", "max_tokens": 2, "temperature": 0,
