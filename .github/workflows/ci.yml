@@ -30,7 +30,7 @@ jobs:
         run: |
           pip install 'ruff==0.5.0'
           ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py tests/*.py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py
 
       - name: Pin contracts (run.sh expects 15, switch-model.sh expects 8)
         run: |
@@ -174,12 +174,29 @@ jobs:
       - name: uninstall inventory runs clean on a bare machine
         run: ./uninstall.sh --list
 
+      - name: opencode limits merge helper (JSONC fixture)
+        run: |
+          cat > /tmp/oc.json <<'EOF'
+          {
+            // user comment kept
+            "provider": {
+              "other": {"models": {"x": {"limit": {"context": 1, "input": 1, "output": 1}}}},
+              "flashnext": {"models": {"qwen3.8-flash-next": {"name": "f", "limit": {"context": 226000, "input": 226000, "output": 32000}}}}
+            }
+          }
+          EOF
+          python3 oc-merge-limits.py /tmp/oc.json flashnext qwen3.8-flash-next 110000 32000 | grep -q -- '-> 110000/32000'
+          grep -q '"context": 110000' /tmp/oc.json && grep -q 'user comment kept' /tmp/oc.json
+          grep -q '"other"' /tmp/oc.json && grep -c '"context": 1,' /tmp/oc.json | grep -q 1
+          python3 oc-merge-limits.py /tmp/oc.json flashnext qwen3.8-flash-next 110000 32000 | grep -q unchanged
+          python3 oc-merge-limits.py /tmp/oc.json nope m 1 1; test $? -eq 3
       - name: Vendored Flash overlay integrity
         run: |
           cd flash-sglang && sha256sum -c MANIFEST.sha256
           # the two upstream-fix edits can never silently vanish
-          grep -q 'is_sm100_supported() or is_sm120_supported()' qwen_sparse_attn_backend.py
-          grep -q 'flash_attention_v4' qwen_sparse_attn_backend.py
+          ! grep -q 'is_sm100_supported() or is_sm120_supported()' qwen_sparse_attn_backend.py
+          grep -q 'qsa.sm121_varlen' qwen_sparse_attn_backend.py
+          test -f sm121_varlen.py
           grep -q 'SGLANG_QWEN4_PLE_MMAP_DIR' qwen4_exp.py
 
       - name: House typography (no em/en dashes in tracked files)
