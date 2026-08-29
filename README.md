@@ -204,7 +204,7 @@ needle-in-haystack passing at 100K with fresh content):
 | **known 30K prefix + fresh question** | **~3 s (x5.8)**: the agentic turn shape |
 | decode, reasoning | 34.2 tok/s (up to ~42 reported on short-context profiles) |
 | decode, free prose | 20.3 tok/s |
-| long-context retrieval (`./needle.sh`) | exact passphrase retrieval, 4 trials per depth; the probe reports the real prompt token count |
+| long-context retrieval (`./needle.sh`) | exact passphrase retrieval, 4 trials per depth; the probe reports the real prompt token count and, with `--mem`, the host MemAvailable floor during each prompt (the flash lane's real ceiling, see the context row) |
 | prefill, cold | ~1,500-2,000 tok/s (real QSA sparse kernels) |
 | vision (image input) | works, including combined with large prompts |
 | context window | 262,144 native, no YaRN |
