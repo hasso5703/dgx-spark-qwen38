@@ -224,3 +224,19 @@ def decide_wedge(*, health_ok: bool, canary_fails: int, num_reqs: int,
     if num_reqs == 0:
         return canary_fails >= threshold
     return progress_age is not None and progress_age > stall_after
+
+
+def wedge_plan(*, decided: bool, prev_state: str | None, wedged_since: float | None,
+               now: float, grace: float, autoheal: bool, cooldown_ok: bool,
+               job_running: bool) -> dict:
+    """What to do this tick about a wedge decision. Pure, so it is testable:
+    the 29/08 regression had the forensics and the restart in the wrong branch.
+
+    Returns {"state": "wedged"|None, "first": bool, "since": float|None, "restart": bool}
+    """
+    if not decided:
+        return {"state": None, "first": False, "since": None, "restart": False}
+    since = wedged_since if wedged_since is not None else now
+    first = prev_state != "wedged"
+    restart = bool(autoheal and cooldown_ok and (now - since) >= grace and not job_running)
+    return {"state": "wedged", "first": first, "since": since, "restart": restart}

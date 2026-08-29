@@ -289,3 +289,34 @@ class WedgeDecision(unittest.TestCase):
         r = lc.blocked_reasons("unit", {"unit": "qwen38-sglang.service", "verb": "start"},
                                {"qwen38-flash.service": "wedged"})
         self.assertEqual(len(r), 1)
+
+
+class WedgePlan(unittest.TestCase):
+    def test_not_decided_does_nothing(self):
+        p = lc.wedge_plan(decided=False, prev_state="ready", wedged_since=None, now=100,
+                          grace=600, autoheal=True, cooldown_ok=True, job_running=False)
+        self.assertEqual(p, {"state": None, "first": False, "since": None, "restart": False})
+
+    def test_first_tick_marks_first_and_starts_the_clock(self):
+        p = lc.wedge_plan(decided=True, prev_state="ready", wedged_since=None, now=100,
+                          grace=600, autoheal=True, cooldown_ok=True, job_running=False)
+        self.assertEqual((p["state"], p["first"], p["since"], p["restart"]), ("wedged", True, 100, False))
+
+    def test_second_tick_is_not_first(self):
+        p = lc.wedge_plan(decided=True, prev_state="wedged", wedged_since=100, now=102,
+                          grace=600, autoheal=True, cooldown_ok=True, job_running=False)
+        self.assertFalse(p["first"]); self.assertEqual(p["since"], 100)
+
+    def test_restart_after_grace_only(self):
+        early = lc.wedge_plan(decided=True, prev_state="wedged", wedged_since=100, now=500,
+                              grace=600, autoheal=True, cooldown_ok=True, job_running=False)
+        late = lc.wedge_plan(decided=True, prev_state="wedged", wedged_since=100, now=701,
+                             grace=600, autoheal=True, cooldown_ok=True, job_running=False)
+        self.assertFalse(early["restart"]); self.assertTrue(late["restart"])
+
+    def test_no_restart_when_disabled_cooling_or_busy(self):
+        for kw in (dict(autoheal=False), dict(cooldown_ok=False), dict(job_running=True)):
+            base = dict(decided=True, prev_state="wedged", wedged_since=0, now=10_000,
+                        grace=0, autoheal=True, cooldown_ok=True, job_running=False)
+            base.update(kw)
+            self.assertFalse(lc.wedge_plan(**base)["restart"], kw)

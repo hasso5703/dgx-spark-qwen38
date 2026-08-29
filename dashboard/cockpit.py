@@ -490,12 +490,17 @@ def collect_lifecycle():
                 LAST_USAGE["mamba"] = 0.0
                 LAST_FLUSH["ts"] = time.time()
             age = (time.time() - LAST_PROGRESS["ts"]) if LAST_PROGRESS["ts"] else None
-            if lc.decide_wedge(health_ok=True, canary_fails=CANARY["fails"],
-                               num_reqs=num_reqs, progress_age=age):
+            decided = lc.decide_wedge(health_ok=True, canary_fails=CANARY["fails"],
+                                      num_reqs=num_reqs, progress_age=age)
+            plan = lc.wedge_plan(decided=decided, prev_state=prev.get(unit),
+                                 wedged_since=WEDGED_SINCE.get(unit), now=time.time(),
+                                 grace=AUTOHEAL_GRACE, autoheal=AUTOHEAL,
+                                 cooldown_ok=time.time() - LAST_HEAL["ts"] > AUTOHEAL_COOLDOWN,
+                                 job_running=JOB_LOCK.locked())
+            if plan["state"] == "wedged":
                 st["state"] = "wedged"
-            else:
-                WEDGED_SINCE.pop(unit, None)
-                if prev.get(unit) != "wedged":
+                WEDGED_SINCE[unit] = plan["since"]
+                if plan["first"]:
                     audit({"kind": "wedge", "unit": unit, "canary_fails": CANARY["fails"],
                            "num_reqs": num_reqs, "progress_age": age})
                     # forensics before any restart: the scheduler's Python stacks
@@ -508,15 +513,14 @@ def collect_lifecycle():
                             add_event("forensics", f"scheduler stacks saved: {f.name}")
                         except OSError:
                             pass
-                WEDGED_SINCE.setdefault(unit, time.time())
-                if AUTOHEAL and time.time() - LAST_HEAL["ts"] > AUTOHEAL_COOLDOWN \
-                        and time.time() - WEDGED_SINCE[unit] >= AUTOHEAL_GRACE \
-                        and not JOB_LOCK.locked():
+                if plan["restart"]:
                     LAST_HEAL["ts"] = time.time()
                     add_event("autoheal", f"{unit} wedged (health ok, {CANARY['fails']} "
                               f"probes failed, {num_reqs} req): restarting it")
                     code, out = start_action("unit", {"verb": "restart", "unit": unit})
                     audit({"kind": "autoheal", "unit": unit, "code": code, "out": out})
+            else:
+                WEDGED_SINCE.pop(unit, None)
         if st["state"] in lc.TRANSITIONAL and running:
             jl = run(["journalctl", "-u", unit, "-n", "40", "--no-pager",
                       "-o", "cat"], timeout=6).splitlines()
