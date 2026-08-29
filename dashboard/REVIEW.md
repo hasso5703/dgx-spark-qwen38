@@ -168,3 +168,7 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
 
 - Lighthouse (snapshot desktop, 29/08 13:06): accessibilite 100, bonnes pratiques 100, SEO 100, agentic browsing 100, 36 audits passes, 0 echec. CSP: script-src 'self' (scripts servis en fichiers).
 - Action « diagnostics bundle »: tar.gz dans ~ avec journaux, logs conteneurs, nvidia-smi, unites, server-info (cle masquee), launcher (cle masquee), etat cockpit; pour les rapports d'issue.
+- Hysteresis « ready » mesuree: 25 battements ready/starting entre 12:50 et 12:52 sous
+  prefill 140k avant le correctif, 0 depuis 13:00 sous la meme charge (aiguilles).
+- Sonde de generation: uniquement si 0 requete ET aucune ligne de progression depuis 60 s
+  (entre deux requetes consecutives la charge lisait brievement zero).
