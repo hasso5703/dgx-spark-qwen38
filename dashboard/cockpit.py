@@ -480,7 +480,9 @@ def collect_lifecycle():
         engines[unit] = {"state": st["state"], "rebuild": st.get("rebuild", False),
                          "stage_done": boot.get("done", []),
                          "elapsed": round(elapsed, 1) if elapsed else None,
-                         "eta": eta, "overdue": overdue}
+                         "eta": eta, "overdue": overdue,
+                         "boots": history.get(unit, [])[-5:],
+                         "boots_rebuild": history.get(f"{unit}:rebuild", [])[-3:]}
         states[unit] = st["state"]
         # transitions: events + boot-duration learning
         was = prev.get(unit)

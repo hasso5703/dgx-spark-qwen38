@@ -681,6 +681,12 @@ function rLifecycle(d){
         ? ['stopping mid-boot marks the PLE table dirty: the NEXT boot rebuilds it (~12 min)'] : []);
     top.appendChild(btn);
     row.appendChild(top);
+    if (!booting && (e.boots||[]).length){
+      const hist = document.createElement('div'); hist.className='blockedwhy';
+      hist.textContent = 'last boots: ' + e.boots.slice().reverse().map(fmtDur).join(', ')
+        + ((e.boots_rebuild||[]).length ? '  (with table rebuild: ' + e.boots_rebuild.slice().reverse().map(fmtDur).join(', ') + ')' : '');
+      row.appendChild(hist);
+    }
     if (blocked){
       const why = document.createElement('div'); why.className='blockedwhy';
       why.textContent = 'start blocked: ' + blocked[0];
