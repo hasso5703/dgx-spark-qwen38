@@ -275,6 +275,8 @@ AUTOHEAL = os.environ.get("COCKPIT_AUTOHEAL", "1") == "1"
 AUTOHEAL_COOLDOWN = 1800.0
 AUTOHEAL_GRACE = float(os.environ.get("COCKPIT_AUTOHEAL_GRACE", "0"))   # seconds to leave a wedged engine up for forensics
 WEDGED_SINCE: dict = {}
+READY_SINCE: dict = {}          # per unit: when this activation first reached ready
+WEDGE_MIN_READY_S = float(os.environ.get("COCKPIT_WEDGE_MIN_READY_S", "180"))
 LAST_HEAL: dict = {"ts": 0.0}
 LAST_PROGRESS: dict = {"ts": None}
 UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
@@ -490,8 +492,10 @@ def collect_lifecycle():
                 LAST_USAGE["mamba"] = 0.0
                 LAST_FLUSH["ts"] = time.time()
             age = (time.time() - LAST_PROGRESS["ts"]) if LAST_PROGRESS["ts"] else None
-            decided = lc.decide_wedge(health_ok=True, canary_fails=CANARY["fails"],
-                                      num_reqs=num_reqs, progress_age=age)
+            READY_SINCE.setdefault(unit, time.time())
+            settled = time.time() - READY_SINCE[unit] >= WEDGE_MIN_READY_S
+            decided = settled and lc.decide_wedge(health_ok=True, canary_fails=CANARY["fails"],
+                                                  num_reqs=num_reqs, progress_age=age)
             plan = lc.wedge_plan(decided=decided, prev_state=prev.get(unit),
                                  wedged_since=WEDGED_SINCE.get(unit), now=time.time(),
                                  grace=AUTOHEAL_GRACE, autoheal=AUTOHEAL,
@@ -543,6 +547,11 @@ def collect_lifecycle():
             if prev_enter is not None and enter_key != prev_enter \
                     and enter_key != "0":
                 LIFE["witnessed"][unit] = True
+                # a new life: nothing from the previous one may count against it
+                CANARY.update(fails=0, last_err="")
+                WEDGED_SINCE.pop(unit, None)
+                LAST_PROGRESS["ts"] = None
+                READY_SINCE.pop(unit, None)
             witnessed = LIFE["witnessed"].get(unit, False)
         eta = lc.eta_for(history, unit, rebuild)
         overdue = bool(eta and elapsed and st["state"] in lc.TRANSITIONAL
