@@ -131,3 +131,20 @@ Reste a construire (par choix, pas par oubli):
   (il faut un remote pour verifier/telecharger des versions).
 - Exposition LAN + HTTPS; actions de reclaim (suppression des revisions
   stray) avec double confirmation.
+
+## Ceintures anti-blocage (29/08, journee autonome)
+
+Cas de terrain du matin: ordonnanceur SGLang en boucle (R, 100 % CPU) pendant 9 h
+avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
+
+- Sonde de vraie generation (2 tokens, thinking off) toutes les 90 s, UNIQUEMENT
+  quand un moteur se dit pret, qu'aucun job ne tourne et qu'AUCUNE requete n'est
+  en cours ou en attente (sinon la sonde ferait la queue derriere une longue
+  generation legitime; vu en vrai pendant un prefill de 140k tokens).
+- Deux routes de decision (lifecycle.decide_wedge, pure, testee):
+  idle = 0 requete et 3 sondes consecutives en echec; occupee = requetes en
+  cours mais aucune ligne Prefill/Decode depuis 300 s. Jamais melangees.
+- Etat « wedged » (rouge), compte comme occupe pour les gates; audit; autoheal
+  (COCKPIT_AUTOHEAL=1 par defaut, refroidissement 30 min) qui redemarre l'unite
+  via le chemin d'action audite.
+- 43 tests unitaires verts, smoke HTTP 17/17.
