@@ -587,6 +587,13 @@ ACTIONS = {
         "argv": None,
         "timeout": 10,
     },
+    # diagnostics bundle for issue reports (logs, state, versions; key masked)
+    "diag_bundle": {
+        "danger": "low",
+        "params": {},
+        "argv": None,
+        "timeout": 60,
+    },
     # health smoke: one canary through the proxy
     "smoke": {
         "danger": "low",
@@ -685,6 +692,49 @@ def start_action(name: str, params: dict) -> tuple[int, dict]:
             return 200, {"ok": True}
         except Exception as e:  # noqa: BLE001
             return 502, {"error": str(e)[:200]}
+    if name == "diag_bundle":
+        try:
+            import tarfile
+            import tempfile
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            out = Path.home() / f"qwen38-diag-{ts}.tar.gz"
+            with tempfile.TemporaryDirectory() as td:
+                tdp = Path(td)
+                (tdp / "cockpit-state.json").write_text(json.dumps(STATE, default=str, indent=1))
+                (tdp / "journal-flash.txt").write_text(run(["journalctl", "-u", "qwen38-flash.service", "-n", "400", "--no-pager", "-o", "short-iso"], timeout=15))
+                (tdp / "journal-sglang.txt").write_text(run(["journalctl", "-u", "qwen38-sglang.service", "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
+                (tdp / "journal-keepalive.txt").write_text(run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
+                for cont in CONTAINERS:
+                    (tdp / f"docker-{cont}.txt").write_text(run(["docker", "logs", "--tail", "600", cont], timeout=15, merge_err=True))
+                (tdp / "nvidia-smi.txt").write_text(run(["nvidia-smi"], timeout=10))
+                (tdp / "system.txt").write_text(run(["uname", "-a"]) + run(["free", "-g"]) + run(["df", "-h", str(Path.home())]) + run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}} {{.ID}}"], timeout=10))
+                (tdp / "units.txt").write_text("".join(run(["systemctl", "show", u, "--no-pager"], timeout=5) + "\n" for u in UNITS))
+                try:
+                    info = http_json(ENGINE_BASE + "/get_server_info", timeout=6)
+                    for f in MASKED_FIELDS:
+                        info.pop(f, None)
+                    (tdp / "server-info.json").write_text(json.dumps(info, default=str, indent=1))
+                except Exception as e:  # noqa: BLE001
+                    (tdp / "server-info.json").write_text(json.dumps({"error": str(e)[:200]}))
+                launch = CONFIG_DIR / "launch-flash.sh"
+                if launch.exists():
+                    txt = re.sub(r'--api-key "\$\(cat [^)]*\)"', '--api-key <masked>', launch.read_text())
+                    (tdp / "launch-flash.sh").write_text(txt)
+                # scrub the key VALUE everywhere: SGLang prints api_key=... in its
+                # ServerArgs banner, which lands in docker logs and the journal
+                key = api_key()
+                for f in tdp.iterdir():
+                    txt = f.read_text(errors="replace")
+                    if key and key in txt:
+                        f.write_text(txt.replace(key, "<masked>"))
+                with tarfile.open(out, "w:gz") as tar:
+                    for f in sorted(tdp.iterdir()):
+                        tar.add(f, arcname=f"qwen38-diag-{ts}/{f.name}")
+            audit({"kind": "action", "action": name, "ok": True, "path": str(out)})
+            add_event("action", f"diagnostics bundle written: {out.name}")
+            return 200, {"ok": True, "path": str(out), "bytes": out.stat().st_size}
+        except Exception as e:  # noqa: BLE001
+            return 500, {"error": str(e)[:200]}
     if name == "abort_all":
         try:
             req = urllib.request.Request(ENGINE_BASE + "/abort_request", method="POST",

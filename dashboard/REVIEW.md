@@ -165,3 +165,6 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
 - Plancher qualite: focus visible, Escape ferme la modale, mobile 390 px sans
   defilement horizontal (mesure: scrollWidth == clientWidth), squelettes sur
   tous les « ... », regions aria-live pour le journal d'evenements.
+
+- Lighthouse (snapshot desktop, 29/08 13:06): accessibilite 100, bonnes pratiques 100, SEO 100, agentic browsing 100, 36 audits passes, 0 echec. CSP: script-src 'self' (scripts servis en fichiers).
+- Action « diagnostics bundle »: tar.gz dans ~ avec journaux, logs conteneurs, nvidia-smi, unites, server-info (cle masquee), launcher (cle masquee), etat cockpit; pour les rapports d'issue.
