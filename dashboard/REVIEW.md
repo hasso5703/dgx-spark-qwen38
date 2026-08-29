@@ -191,3 +191,8 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
   La decision est maintenant une fonction pure (`lifecycle.wedge_plan`, 5 tests) que le collecteur
   applique. Evidence native du blocage (gdb): thread principal du scheduler dans zmq_msg_recv/poll,
   boucle d'evenements qui spinne avec une requete en file jamais admise.
+- 15:50: etat de wedge PAR ACTIVATION. Des echecs de sonde herites d'une vie precedente avaient
+  declare « wedged » un moteur sain 40 s apres son retour et l'autoheal l'a arrete en pleine
+  requete. Remise a zero (compteurs, horloge, marqueur de progression) a chaque changement
+  d'activation systemd, et aucune decision de wedge avant 180 s de « ready »
+  (COCKPIT_WEDGE_MIN_READY_S).
