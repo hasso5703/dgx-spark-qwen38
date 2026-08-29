@@ -222,6 +222,13 @@ the page cache state rather than a clean threshold (0 at 135K in one run, 11 at 
 another); the host floor is the hard limit. This is why v1.5.6 caps one prompt at 128K on
 the flash lane (about 14 GiB left at the peak) and why the README no longer says 262K fits.
 
+Repeated use under the ceiling (same evening, v1.5.6 deployed, through the proxy, no cache
+flush): 24 consecutive prompts cycling 100K, 120K and 125K tokens, 40 minutes, every one
+with exact needle retrieval, prefill 60 / 73 / 77 s (no prefix reuse between them), zero
+driver refusals. MemAvailable went 23.1 GiB idle to 21.4, 19.6, 18.6 after the first three
+prompts and then stayed at 18.4 to 18.5 for the remaining 21: the retained footprint
+plateaus at the largest prompt's peak, it does not accumulate.
+
 The 27B lane does not have this problem. Same method on the installed 1M unit (fraction
 0.70, pool 1,008,429 tokens, 18.0 GiB available idle), same evening:
 
