@@ -180,3 +180,53 @@ memory settings. It is the picture of every incident of the day (scheduler
 wedge on two giant contexts, a user's OOM at 230K, opencode limits). The card
 cascade animation was removed: one accessory less; motion is kept only where it
 carries information (boot shimmer, level transition, live pulse).
+
+## Etape 4 (design): recipes, moteurs et versions pilotes depuis le cockpit
+
+Objectif de Hasan: choisir un moteur, sa version, un modele et sa revision, un drafter et ses
+parametres, depuis l'interface, avec les memes garanties que le repo (tout epingle, tout
+verifie, rien de destructif sans confirmation), et voir en direct ce qui est installe et ce
+qui est disponible.
+
+Modele de donnees (une recipe = un fichier YAML, validee par schema, jamais d'argv libre):
+
+    id: flash                      # identifiant stable, enum ferme cote actions
+    lane: flash                    # 27b | flash (decide l'unite systemd et le launcher)
+    engine:
+      family: sglang               # sglang | vllm | llamacpp (extensible, un adaptateur par famille)
+      image: lmsysorg/sglang@sha256:...   # digest epingle (jamais un tag mouvant)
+      overlay: flash-sglang        # dossier vendore verifie par MANIFEST.sha256, ou null
+    model: {repo: RadixArk/Qwen3.8-Flash-Next-NVFP4, revision: 7b71922...}
+    drafter: {algorithm: NEXTN, repo: null, revision: null, params: {steps: 3, draft_tokens: 4}}
+    serve:                         # uniquement des cles connues, mappees vers des flags par l'adaptateur
+      context_length: 262144
+      mem_fraction: 0.81
+      max_running_requests: 1
+      chunked_prefill: 1024
+      attention: {prefill: triton, decode: trtllm_mha}
+      env: {SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK: "1"}
+    validation:                    # ce qui prouve qu'une recipe sert correctement
+      needle_depths: [60000, 120000]
+      canaries: 4
+      bench: bench-matrix
+
+Les trois cibles actuelles (stock, uncensored, flash) deviennent trois recipes generees
+depuis les pins d'install.sh (source de verite inchangee); une recipe custom est un
+fichier de plus dans ~/.config/qwen38/recipes/.
+
+Operations (toutes via le registre d'actions du cockpit, enums fermes, audit, une a la fois):
+- list: recipes integrees + custom, avec pour chacune: image presente ? revision en cache ?
+  overlay verifie ? (le registre local repond deja a ces trois questions)
+- validate: schema, digest/revision resolus, adaptateur connu, cles serve autorisees
+- render (dry-run): unite + launcher rendus a partir des templates du repo, diff contre
+  l'installe, affiche AVANT toute application
+- apply: sauvegarde de l'unite/launcher installes, rendu, daemon-reload, restart, attente
+  health + canaris + needle de la recipe; ECHEC => restauration automatique de la
+  sauvegarde (le meme contrat que l'auto-update atomique)
+- available: veille upstream etendue aux images (tags/digests recents des familles connues)
+  et aux revisions HF des modeles/drafters, avec « nouveau depuis » et un bouton
+  « creer une recipe a partir de cette version » qui pre-remplit le YAML
+
+Ce qui n'est PAS fait tant que le contrat n'est pas ecrit: l'adaptateur vllm/llamacpp
+(la famille sglang couvre les deux lanes du repo), et l'application d'une recipe custom
+sans validation needle (interdit par design).
