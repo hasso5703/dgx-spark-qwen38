@@ -116,6 +116,8 @@
      text-transform:uppercase; letter-spacing:.09em; padding:3px 6px}
   td{padding:6px; border-top:1px solid var(--line)}
   td.r{text-align:right}
+  td .chip{white-space:normal}
+  .tablewrap{overflow-x:auto; max-width:100%}
 
   .btn{border:1px solid color-mix(in srgb, var(--acc) 60%, transparent);
        color:var(--acc); background:color-mix(in srgb, var(--acc) 8%, transparent);
@@ -321,7 +323,7 @@
 
   <section class="wide">
     <h2>Request feed <span class="chip" id="feedchip">proxy :30001</span></h2>
-    <table id="feedtable"><thead><tr><th>Time</th><th>Client</th><th>Path</th><th class="r">Body</th><th class="r">Duration</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+    <div class="tablewrap"><table id="feedtable"><thead><tr><th>Time</th><th>Client</th><th>Path</th><th class="r">Body</th><th class="r">Duration</th><th>Outcome</th></tr></thead><tbody></tbody></table></div>
   </section>
 
   <section>
@@ -359,8 +361,8 @@
     <h2>Registry <button class="chip" id="regbtn" style="margin-left:auto;cursor:pointer">scan</button></h2>
     <p style="color:var(--mut);font-size:12px;margin-bottom:8px">
       Models, revisions and engine images on this box; pinned means a repo script serves exactly this revision.</p>
-    <table id="regmodels"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">Disk</th><th>Status</th></tr></thead><tbody></tbody></table>
-    <table id="regimages" style="margin-top:14px"><thead><tr><th>Engine image</th><th class="r">Size</th><th class="r">Id</th></tr></thead><tbody></tbody></table>
+    <div class="tablewrap"><table id="regmodels"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">Disk</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+    <div class="tablewrap"><table id="regimages" style="margin-top:14px"><thead><tr><th>Engine image</th><th class="r">Size</th><th class="r">Id</th></tr></thead><tbody></tbody></table></div>
     <h2 style="margin-top:16px">Upstream watch <button class="chip" id="upbtn" style="margin-left:auto;cursor:pointer">check</button></h2>
     <table id="uptable"><thead><tr><th>Model</th><th>Pinned</th><th>Upstream main</th><th>Status</th></tr></thead><tbody></tbody></table>
     <p id="upline" style="color:var(--mut);font-size:12px;margin-top:8px"></p>
