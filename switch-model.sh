@@ -154,6 +154,22 @@ if [ -f "$OTHER_UNIT" ] && systemctl is-enabled --quiet "$OTHER_UNIT_NAME" 2>/de
 fi
 sudo systemctl enable "$TARGET_UNIT_NAME" >/dev/null 2>&1 || sudo systemctl enable "$TARGET_UNIT_NAME"
 sudo systemctl daemon-reload
+# 4b) the keepalive proxy's one-prompt ceiling follows the lane (v1.5.6 contract, see
+#     install.sh: flash 128000 tokens by default, the 27B lane none), applied now so the
+#     proxy matches the lane that serves after the restart below.
+KA_UNIT="/etc/systemd/system/qwen38-keepalive.service"
+if [ -f "$KA_UNIT" ]; then
+  CEIL=0
+  [ "$TARGET_LANE" = "flash" ] && CEIL="${PROMPT_CEILING_TOKENS:-128000}"
+  if grep -q '^Environment=PROMPT_CEILING_TOKENS=' "$KA_UNIT"; then
+    sudo sed -i "s/^Environment=PROMPT_CEILING_TOKENS=.*/Environment=PROMPT_CEILING_TOKENS=$CEIL/" "$KA_UNIT"
+  else
+    sudo sed -i "/^Environment=UPSTREAM=/a Environment=PROMPT_CEILING_TOKENS=$CEIL" "$KA_UNIT"
+  fi
+  sudo systemctl daemon-reload
+  sudo systemctl restart qwen38-keepalive.service
+  echo "keepalive proxy: one-prompt ceiling ${CEIL} tokens for the $TARGET_LANE lane"
+fi
 OC_JSON="$CONFIG_DIR/opencode.json"
 if [ -f "$OC_JSON" ]; then
   TARGET_LANE="$TARGET_LANE" OC_JSON="$OC_JSON" python3 - <<'PYEOF' || echo "NOTE: could not update $OC_JSON (hand-edited?); set its \"model\" field yourself"
