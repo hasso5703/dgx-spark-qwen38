@@ -45,6 +45,14 @@
         background:color-mix(in srgb, var(--flash) 12%, transparent);
         border-radius:6px; padding:2.5px 7px}
   .repoline{color:var(--mut); font-size:12px}
+  .hero{display:flex; align-items:center; gap:8px; margin-left:14px; font-size:12.5px;
+        color:var(--txt); padding:4px 10px; border:1px solid var(--line); border-radius:999px;
+        background:color-mix(in srgb, var(--card) 60%, transparent)}
+  .hero:empty{display:none}
+  .hero b{font-weight:650}
+  .skel{color:transparent !important; background:linear-gradient(90deg, var(--soft), var(--line), var(--soft));
+        background-size:200% 100%; animation:skel 1.2s linear infinite; border-radius:6px}
+  @keyframes skel{to{background-position:-200% 0}}
   .spacer{flex:1}
   .conn{display:flex; align-items:center; gap:8px; color:var(--mut);
         font-size:11.5px; letter-spacing:.05em; text-transform:uppercase}
@@ -193,6 +201,7 @@
   <img src="/static/favicon.svg" alt="">
   <h1>Spark Cockpit</h1><span class="beta">BETA</span>
   <span class="repoline" id="repoline">repo ...</span>
+  <span class="hero" id="hero" aria-live="polite"></span>
   <div class="spacer"></div>
   <div class="conn"><span id="connlabel">connecting</span><span class="dot" id="conndot"></span></div>
 </header>
@@ -241,6 +250,11 @@
       <dt>Accept length</dt><dd class="num" id="acclen">...</dd>
       <dt>KV usage</dt><dd class="num" id="kvusage">...</dd>
     </dl>
+    <div class="gauge" id="poolgauge" style="margin-top:10px">
+      <div class="lab"><span>KV pool held</span><span class="num" id="poollab">...</span></div>
+      <div class="bar"><div class="fill" id="poolfill" style="width:0%"></div></div>
+    </div>
+    <p id="poolnote" style="color:var(--mut);font-size:11px;margin-top:6px"></p>
     <canvas class="spark" id="reqspark" width="600" height="92"></canvas>
   </section>
 
@@ -265,7 +279,7 @@
 
   <section>
     <h2>Events <span class="chip" id="evtchip">live</span></h2>
-    <div id="evtlist"><p style="color:var(--mut);font-size:12px">no events yet in this cockpit session</p></div>
+    <div id="evtlist" role="log" aria-live="polite" aria-relevant="additions"><p style="color:var(--mut);font-size:12px">no events yet in this cockpit session</p></div>
   </section>
 
   <section>
@@ -438,9 +452,32 @@ function rEngineInfo(d){
       ? `${i.prefill_attention_backend} / ${i.decode_attention_backend}` : (i.attention_backend??'...');
   $('engradix').textContent = i.mamba_radix_cache_strategy ?? '...';
   $('engver').textContent = i.version ?? '...';
+  if (i.max_total_num_tokens) POOL = i.max_total_num_tokens;
+}
+let POOL = null;   // max_total_num_tokens from engine info
+function rPool(l){
+  if (!POOL) { $('poollab').textContent = '...'; return; }
+  const held = l.num_tokens || 0, pct = 100*held/POOL;
+  $('poollab').textContent = held.toLocaleString('en') + ' / ' + POOL.toLocaleString('en') + ' tokens';
+  $('poolfill').style.width = Math.min(100, pct).toFixed(1) + '%';
+  $('poolgauge').className = 'gauge' + (pct>90 ? ' crit' : pct>70 ? ' warn' : '');
+  $('poolnote').textContent = pct>70
+    ? 'one more large context will not fit: the scheduler queues it (max-running-requests 1)'
+    : 'a single prompt tops out near ' + Math.round(POOL*0.94/1000) + 'K tokens on this pool';
+}
+function rHero(){
+  const life = window._life || {}; const eng = life.engines || {};
+  const serving = Object.entries(eng).find(([n,e]) => e.state !== 'stopped' && e.state !== 'failed');
+  if (!serving) { $('hero').textContent = ''; return; }
+  const [name, e] = serving; const lane = name.includes('flash') ? 'flash 176B' : '27B';
+  const l = window._load || {}; const pct = POOL ? Math.round(100*(l.num_tokens||0)/POOL) : null;
+  $('hero').innerHTML = `<b>${lane}</b> <span class="chip ${STATE_CHIP[e.state] ?? 'warn'}">${e.state}</span>`
+    + (pct!=null ? ` <span class="num">pool ${pct}%</span>` : '')
+    + ((l.num_reqs||0) ? ` <span class="num">${l.num_reqs} running</span>` : '');
 }
 function rEngineFast(d){
   const l = (d.load||[])[0] || {};
+  window._load = l; rPool(l); rHero();
   // A container burning CPU with health still down is a BOOT, not an outage
   // (weight loads are journal-silent for many minutes; field lesson).
   const life = window._life || {};
@@ -516,7 +553,7 @@ const fmtDur = s => s==null ? '?' : s<90 ? Math.round(s)+' s'
   : Math.floor(s/60)+' min '+String(Math.round(s%60)).padStart(2,'0');
 
 function rLifecycle(d){
-  window._life = d;
+  window._life = d; rHero();
   const box = $('enginelist'); box.innerHTML='';
   const units = window._units || {};
   Object.entries(d.engines||{}).forEach(([name, e])=>{
@@ -582,6 +619,10 @@ const RENDER = {machine:rMachine, gpu:rGpu, engine_info:rEngineInfo,
                 engine_fast:rEngineFast, decode:rDecode, units:rUnits,
                 containers:rContainers, repo:rRepo, lifecycle:rLifecycle};
 
+// skeleton placeholders: every '...' shimmers until real data lands
+document.querySelectorAll('dd, .chip, .num').forEach(el => {
+  if (el.textContent.trim() === '...') el.classList.add('skel');
+});
 function apply(state){
   for (const [name, wrap] of Object.entries(state)){
     const fn = RENDER[name]; if(!fn) continue;
@@ -590,6 +631,9 @@ function apply(state){
       fn(wrap.data||{});
     }catch(e){ /* isolated: leave last good render, log once */ console.warn(name, e.message); }
   }
+  document.querySelectorAll('.skel').forEach(el => {
+    if (el.textContent.trim() !== '...') el.classList.remove('skel');
+  });
 }
 
 // ── SSE with reconnect + polling fallback ──────────────────────────────────
