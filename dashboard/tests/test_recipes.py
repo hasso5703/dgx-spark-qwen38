@@ -1,0 +1,217 @@
+"""Offline tests for recipes.py, built on the REAL repo files (install.sh and
+the two lane templates) plus synthetic registry snapshots."""
+import copy
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve()
+sys.path.insert(0, str(HERE.parents[1]))
+import recipes as rc  # noqa: E402
+
+REPO = HERE.parents[2]
+ASSIGNS = rc.parse_assignments((REPO / "install.sh").read_text())
+TEMPLATES = rc.load_templates(REPO)
+
+
+class ParseAssignments(unittest.TestCase):
+    def test_literal_default_and_comment(self):
+        text = ('STOCK_REV="52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"\n'
+                'FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:' + "a" * 64 + '}"  # = tag, date\n'
+                'SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2.2}"\n'
+                'MODEL_CHOICE="${MODEL_CHOICE:-stock}"\n'
+                '  INDENTED="no"  # inside a function is fine too\n'
+                'MODEL_REPO="$STOCK_REPO"\n')
+        a = rc.parse_assignments(text)
+        self.assertEqual(a["STOCK_REV"], "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854")
+        self.assertEqual(a["FLASH_IMAGE"], "lmsysorg/sglang@sha256:" + "a" * 64)
+        self.assertEqual(a["SERVE_IMAGE"], "qwen38-dflash2:v1.2.2")
+        self.assertEqual(a["MODEL_CHOICE"], "stock")
+        self.assertEqual(a["INDENTED"], "no")
+        self.assertNotIn("MODEL_REPO", a)  # a reference, not a literal
+
+    def test_real_install_pins(self):
+        for k in ("STOCK_REPO", "STOCK_REV", "UNC_REPO", "UNC_REV", "FLASH_REPO",
+                  "FLASH_REV", "FLASH_SERVE_IMAGE", "FLASH_IMAGE", "SERVE_IMAGE", "DRAFT2_REV"):
+            self.assertIn(k, ASSIGNS, k)
+        self.assertRegex(ASSIGNS["FLASH_REV"], r"^[0-9a-f]{40}$")
+        self.assertTrue(ASSIGNS["FLASH_IMAGE"].startswith("lmsysorg/sglang@sha256:"))
+
+
+class ProfileFromText(unittest.TestCase):
+    def test_flash_template(self):
+        p = rc.profile_from_text(TEMPLATES["qwen38-flash-launch.sh.template"])
+        self.assertEqual(p["engine"]["image"], "__IMAGE__")
+        self.assertEqual(p["model"]["repo"], "__MODEL__")
+        self.assertEqual(p["serve"]["mem_fraction"], 0.81)
+        self.assertEqual(p["serve"]["context_length"], 262144)
+        self.assertEqual(p["serve"]["max_running_requests"], 1)
+        self.assertEqual(p["serve"]["chunked_prefill"], 1024)
+        self.assertEqual(p["serve"]["prefill_attention"], "triton")
+        self.assertEqual(p["serve"]["decode_attention"], "trtllm_mha")
+        self.assertEqual(p["drafter"]["algorithm"], "NEXTN")
+        self.assertEqual(p["drafter"]["steps"], 3)
+        self.assertEqual(p["drafter"]["draft_tokens"], 4)
+        self.assertEqual(p["env"]["SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK"], "1")
+        self.assertEqual(p["env"]["SGLANG_QWEN4_PLE_TAG"], "__MODEL_REV__")
+
+    def test_27b_template(self):
+        p = rc.profile_from_text(TEMPLATES["qwen38-sglang.service.template"])
+        self.assertEqual(p["serve"]["mem_fraction"], 0.50)
+        self.assertEqual(p["serve"]["max_running_requests"], 8)
+        self.assertEqual(p["serve"]["attention_backend"], "flashinfer")
+        self.assertEqual(p["serve"]["max_mamba_cache_size"], 96)
+        self.assertEqual(p["drafter"]["algorithm"], "DFLASH")
+        self.assertEqual(p["drafter"]["repo"], "z-lab/Qwen3.8-27B-DFlash2")
+        self.assertEqual(p["drafter"]["revision"], "__DRAFT2_REV__")
+        self.assertEqual(p["drafter"]["draft_tokens"], 8)
+        self.assertNotIn("context_length", p["serve"])  # native default, no flag
+
+
+class Builtins(unittest.TestCase):
+    def test_three_valid_recipes(self):
+        recs = rc.builtins(ASSIGNS, TEMPLATES)
+        self.assertEqual([r["id"] for r in recs], ["stock", "uncensored", "flash"])
+        for r in recs:
+            errs = rc.validate(r) if r["lane"] == "flash" else rc.validate(
+                {**r, "serve": {**r["serve"], "context_length": 262144}})
+            self.assertEqual(errs, [], r["id"])
+
+    def test_flash_pins_substituted(self):
+        f = rc.builtin("flash", ASSIGNS, TEMPLATES)
+        self.assertEqual(f["model"]["repo"], ASSIGNS["FLASH_REPO"])
+        self.assertEqual(f["model"]["revision"], ASSIGNS["FLASH_REV"])
+        self.assertEqual(f["engine"]["image"], ASSIGNS["FLASH_SERVE_IMAGE"])
+        self.assertEqual(f["engine"]["base_image"], ASSIGNS["FLASH_IMAGE"])
+        self.assertEqual(f["env"]["SGLANG_QWEN4_PLE_TAG"], ASSIGNS["FLASH_REV"])
+        self.assertEqual(f["serve"]["mem_fraction"], 0.81)
+
+    def test_stock_vs_uncensored_differ_only_by_model(self):
+        s, u = rc.builtin("stock", ASSIGNS, TEMPLATES), rc.builtin("uncensored", ASSIGNS, TEMPLATES)
+        self.assertNotEqual(s["model"], u["model"])
+        self.assertEqual(s["drafter"]["revision"], ASSIGNS["DRAFT2_REV"])
+        for k in ("engine", "drafter", "serve", "env"):
+            self.assertEqual(s[k], u[k], k)
+
+    def test_unknown_id(self):
+        with self.assertRaises(KeyError):
+            rc.builtin("banana", ASSIGNS, TEMPLATES)
+
+
+def good():
+    return {
+        "id": "my-flash", "lane": "flash",
+        "engine": {"family": "sglang", "image": "qwen38-flash:v1.5.3"},
+        "model": {"repo": "RadixArk/Qwen3.8-Flash-Next-NVFP4", "revision": "7" * 40},
+        "drafter": {"algorithm": "NEXTN", "repo": None, "revision": None, "steps": 3, "draft_tokens": 4},
+        "serve": {"context_length": 262144, "mem_fraction": 0.81, "max_running_requests": 1},
+        "env": {"SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK": "1"},
+    }
+
+
+class Validate(unittest.TestCase):
+    def test_good(self):
+        self.assertEqual(rc.validate(good()), [])
+
+    def check(self, mutate, needle):
+        r = good()
+        mutate(r)
+        errs = rc.validate(r, reserved_ids=rc.BUILTIN_IDS)
+        self.assertTrue(any(needle in e for e in errs), (needle, errs))
+
+    def test_rejections(self):
+        self.check(lambda r: r.update(id="Flash!"), "id:")
+        self.check(lambda r: r.update(id="flash"), "reserved")
+        self.check(lambda r: r.update(lane="vllm"), "lane:")
+        self.check(lambda r: r["engine"].update(family="vllm"), "engine.family")
+        self.check(lambda r: r["engine"].update(image="qwen38-flash:latest"), "moving tag")
+        self.check(lambda r: r["engine"].update(image="qwen38-flash"), "engine.image")
+        self.check(lambda r: r["model"].update(revision="main"), "model.revision")
+        self.check(lambda r: r["model"].update(repo="no-owner"), "model.repo")
+        self.check(lambda r: r["drafter"].update(algorithm="EAGLE9"), "drafter.algorithm")
+        self.check(lambda r: r["drafter"].update(repo="z-lab/x"), "own head")
+        self.check(lambda r: r["drafter"].update(algorithm="DFLASH"), "drafter.repo")
+        self.check(lambda r: r["drafter"].update(draft_tokens=99), "drafter.draft_tokens")
+        self.check(lambda r: r["serve"].update(mem_fraction=0.99), "0.3 to 0.95")
+        self.check(lambda r: r["serve"].update(mem_fraction=True), "number expected")
+        self.check(lambda r: r["serve"].update(extra_flag=1), "unknown key")
+        self.check(lambda r: r["serve"].pop("context_length"), "serve.context_length")
+        self.check(lambda r: r["serve"].update(attention_backend="magic"), "serve.attention_backend")
+        self.check(lambda r: r.update(env={"lower": "1"}), "NAME must be")
+        self.check(lambda r: r.update(env={"X": "a b"}), "without whitespace")
+        self.check(lambda r: r.update(env="X=1"), "env:")
+
+    def test_not_a_dict(self):
+        self.assertEqual(rc.validate([]), ["recipe must be an object"])
+
+
+class Drift(unittest.TestCase):
+    def test_no_drift_against_own_template_render(self):
+        f = rc.builtin("flash", ASSIGNS, TEMPLATES)
+        rendered = TEMPLATES["qwen38-flash-launch.sh.template"]
+        for k, v in {"__IMAGE__": f["engine"]["image"], "__MODEL__": f["model"]["repo"],
+                     "__MODEL_REV_ARGS__": "--revision " + f["model"]["revision"],
+                     "__MODEL_REV__": f["model"]["revision"]}.items():
+            rendered = rendered.replace(k, v)
+        self.assertEqual(rc.drift(f, rc.profile_from_text(rendered)), [])
+
+    def test_changed_flag_and_env_reported(self):
+        f = rc.builtin("flash", ASSIGNS, TEMPLATES)
+        text = TEMPLATES["qwen38-flash-launch.sh.template"]
+        text = text.replace("--mem-fraction-static 0.81", "--mem-fraction-static 0.70")
+        text = text.replace("-e SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1 \\\n", "")
+        rows = {r["key"]: r for r in rc.drift(f, rc.profile_from_text(text))}
+        self.assertEqual(rows["serve.mem_fraction"]["installed"], 0.70)
+        self.assertIsNone(rows["env.SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK"]["installed"])
+        self.assertNotIn("engine.image", rows)  # placeholder side skipped
+
+    def test_1m_unit_vs_stock_recipe(self):
+        s = rc.builtin("stock", ASSIGNS, TEMPLATES)
+        unit = (REPO / "qwen38-sglang-1m.service.template").read_text()
+        keys = {r["key"] for r in rc.drift(s, rc.profile_from_text(unit))}
+        self.assertIn("serve.context_length", keys)
+        self.assertIn("serve.mem_fraction", keys)
+
+
+class Presence(unittest.TestCase):
+    REG = {"images": [{"ref": "qwen38-flash:v1.5.3"}],
+           "models": [{"repo_id": "RadixArk/Qwen3.8-Flash-Next-NVFP4",
+                       "revisions": [{"rev": "7" * 40}]},
+                      {"repo_id": "z-lab/Qwen3.8-27B-DFlash2", "revisions": []}]}
+
+    def test_present(self):
+        p = rc.presence(good(), self.REG)
+        self.assertEqual(p, {"image": True, "model": True, "drafter": None})
+
+    def test_missing_and_unknown(self):
+        r = good()
+        r["engine"]["image"] = "qwen38-flash:v9"
+        r["model"]["revision"] = "8" * 40
+        r["drafter"] = {"algorithm": "DFLASH", "repo": "z-lab/Qwen3.8-27B-DFlash2", "revision": "9" * 40}
+        self.assertEqual(rc.presence(r, self.REG), {"image": False, "model": False, "drafter": False})
+        r["model"]["repo"] = "someone/else"
+        self.assertIsNone(rc.presence(r, self.REG)["model"])
+
+
+class LoadCustom(unittest.TestCase):
+    def test_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            (p / "ok.json").write_text(json.dumps(good()))
+            bad = good(); bad["id"] = "stock"
+            (p / "bad.json").write_text(json.dumps(bad))
+            (p / "broken.json").write_text("{not json")
+            (p / "notes.txt").write_text("ignored")
+            items = {i["file"]: i for i in rc.load_custom(p)}
+            self.assertEqual(set(items), {"ok.json", "bad.json", "broken.json"})
+            self.assertEqual(items["ok.json"]["errors"], [])
+            self.assertFalse(items["ok.json"]["recipe"]["builtin"])
+            self.assertTrue(any("reserved" in e for e in items["bad.json"]["errors"]))
+            self.assertIsNone(items["broken.json"]["recipe"])
+        self.assertEqual(rc.load_custom(Path("/nonexistent/dir")), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
