@@ -12,6 +12,9 @@ ExecStartPre=-/usr/bin/docker rm -f qwen38-flash
 ExecStart=/bin/bash __HOME__/.config/qwen38/launch-flash.sh
 ExecStop=-/usr/bin/docker stop -t 20 qwen38-flash
 Restart=always
+# docker kills SGLang with SIGKILL (137) or SIGTERM (143) on a plain stop; that is
+# a clean stop, not a failure (v1.5.5: the cockpit showed 'failed' after every stop)
+SuccessExitStatus=137 143
 RestartSec=15
 
 [Install]

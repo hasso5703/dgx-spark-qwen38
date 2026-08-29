@@ -36,6 +36,9 @@ ExecStart=/bin/bash -c 'exec /usr/bin/docker run --rm --name qwen38-sglang --gpu
     --host 0.0.0.0 --port __PORT__'
 ExecStop=-/usr/bin/docker stop -t 20 qwen38-sglang
 Restart=always
+# docker kills SGLang with SIGKILL (137) or SIGTERM (143) on a plain stop; that is
+# a clean stop, not a failure (v1.5.5: the cockpit showed 'failed' after every stop)
+SuccessExitStatus=137 143
 RestartSec=15
 
 [Install]
