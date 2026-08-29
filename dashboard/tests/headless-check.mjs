@@ -26,7 +26,8 @@ const ev = await send('Runtime.evaluate', { returnByValue: true, expression: `JS
   url: location.pathname, title: document.title,
   rows: [...document.querySelectorAll('#rcptable tbody tr')].map(tr => tr.innerText.replace(/\\s+/g, ' ').slice(0, 220)),
   line: document.getElementById('rcpline')?.textContent, dir: document.getElementById('rcpdir')?.textContent,
-  hero: document.getElementById('hero')?.textContent, conn: document.getElementById('connlabel')?.textContent })` }, sessionId);
+  hero: document.getElementById('hero')?.textContent, conn: document.getElementById('connlabel')?.textContent,
+  legend: document.getElementById('reslegend')?.textContent.replace(/\s+/g, ' ').trim() })` }, sessionId);
 const errors = events.filter(m => m.method === 'Runtime.exceptionThrown').map(m => m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
 const cons = events.filter(m => m.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(m.params.type)).map(m => m.params.args.map(a => a.value || a.description).join(' '));
 console.log(JSON.stringify({ page: JSON.parse(ev.result.result.value), exceptions: errors, consoleErrors: cons }, null, 1));
