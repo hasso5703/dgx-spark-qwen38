@@ -16,6 +16,21 @@ passed through MODEL_REV=main) disables reuse, so a moving upstream can never be
 served from a stale table; `switch-model.sh` rewrites the tag with the revision.
 Serving image tag: qwen38-flash:v1.5.3.
 
+Measured on the reference box: rebuild boot about 12 minutes (55 GB written,
+sequential readahead), reuse boot 500 s with 352 MB of block writes for the
+whole boot and the table untouched, exact needle retrieval at 60k and 120k real
+prompt tokens on the reuse boot.
+
+Known and under investigation (unchanged by this release): with the default
+mamba state cache of this build (9 to 15 slots depending on the memory left at
+boot, 5 per running request), a large prompt that needs a slot only an eviction
+can free, or a prompt longer than the KV pool, makes the scheduler busy-loop
+forever instead of refusing the request (`/health` keeps answering; gdb and
+py-spy show the event loop spinning in recv_requests with the request queued).
+Four occurrences on 2026-08-29. Mitigations shipped so far live in the cockpit
+branch (generation probe, wedged state, autoheal, cache flush when idle); a
+proxy-level refusal of oversize prompts and an explicit cache size follow.
+
 ## v1.5.2 (2026-08-29): flash lane correctness hotfix
 
 **Fixes a silent long-context corruption in the v1.5 flash lane.** The v1.5
