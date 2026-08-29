@@ -15,7 +15,35 @@
   cannot count. Image, audio and document parts (OpenAI parts or Anthropic
   blocks) are counted as a fixed budget of 4096 tokens each
   (`TOKENS_PER_MEDIA`), never as their base64 text. 8 offline tests (fake
-  `/tokenize`) run in CI.
+  `/tokenize`) run in CI. Live on the reference box after deployment: the 140k
+  needle passes through the proxy (140,111 tokens counted, 92 s), a 1.24 MB body
+  is refused in 0.6 s as 230,533 prompt tokens against 169,633 usable, a 300 KB
+  Anthropic-shaped body is served, a 600 KB image body is counted as 4,153
+  tokens and reaches the engine.
+- Measured ceiling for one prompt (direct, 29/08, pool 184,384): 166k, 171k and
+  177k tokens (90, 93 and 96 percent of the pool) all served with exact needle
+  retrieval in 112 to 123 s. The proxy's 8 percent margin is room for the answer,
+  not a hang boundary.
+- The KV pool is not the ceiling, memory is. Measured on the reference box at
+  fraction 0.81 (fresh boot, 24 GiB available idle): the prefill of a long prompt
+  grows the engine's footprint by about 0.27 GiB per 1k tokens beyond ~90k
+  (120k prompt: +7.4 GiB; 135k: +11.4; 150k: +15.3; 177k: +22.8, MemAvailable
+  down to 0.8 GiB and 15 `NVRM: NV_ERR_NO_MEMORY` kernel lines, the livelock
+  edge). The process RSS does not move (unified CUDA allocations). Two effects,
+  not one: GPU driver allocation refusals, which torch recovers from by freeing
+  its cache and retrying, showed up between 125k and 150k depending on the run
+  (0 at 135k in one run, 11 at 125k in another: they follow the page cache state,
+  not a clean threshold, and every prompt still answered correctly); and the host
+  memory floor, the hard limit, which the curve puts near 170k. The proxy
+  therefore enforces an absolute per-lane ceiling for one prompt,
+  `PROMPT_CEILING_TOKENS`, set by install.sh in the keepalive unit: 128,000 on
+  the flash lane, which keeps about 14 GiB available at the prompt's peak on a
+  128 GB box (override with `PROMPT_CEILING_TOKENS=`), none on the 27B lane (not
+  measured). Deployed on the reference box through `install.sh`: 140k and 130k
+  prompts refused with the engine's count, 125k served in 81 s. A smaller prefill chunk (512) was tested and
+  rejected: 30 percent slower cold prefill and a worse floor at 150k (6.7 GiB,
+  13 driver refusals). The v1.5.4 note "host headroom unchanged at 23 GB" was an
+  idle measurement and is corrected in the README.
 - CHANGELOG cites the upstream PR behind `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK`
   (sgl-project/sglang#32228, merged 2026-07-29, off by default).
 

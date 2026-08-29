@@ -208,9 +208,9 @@ needle-in-haystack passing at 100K with fresh content):
 | prefill, cold | ~1,500-2,000 tok/s (real QSA sparse kernels) |
 | vision (image input) | works, including combined with large prompts |
 | context window | 262,144 native, no YaRN |
-| **context that fits** | **the KV pool holds 178,560 tokens** since v1.5.4 (`max_total_num_tokens`; 159,552 before), so a single prompt tops out near 165K; the v1.5.2/v1.5.3 scheduler hangs on large prompts are fixed in v1.5.4 (CHANGELOG) and one giant context runs at a time (`--max-running-requests 1`); a true-262K preset (language-only, higher fraction) is planned and will be measured before it is recommended |
+| **context that fits** | **one prompt tops out at 128K tokens** on a 128 GB box, enforced by the proxy (`PROMPT_CEILING_TOKENS`, v1.5.6): that keeps about 14 GiB of host memory available at the prompt's peak. The limit is memory, not the KV pool (184K tokens at fraction 0.81): the prefill of a long prompt grows the engine's footprint by ~0.27 GiB per 1k tokens beyond ~90K (measured 29/08: 120K prompt +7.4 GiB, 135K +11.4, 150K +15.3, 177K +22.8 with 0.8 GiB left on the host; recoverable GPU driver allocation refusals appear from ~125K depending on the run, the cockpit counts them). Prompts above the ceiling get a clear 400 (`context_too_long`) instead of pushing the box to the memory edge (a 512 prefill chunk was tested and rejected: slower, and no better at 150K); one giant context runs at a time (`--max-running-requests 1`). The v1.5.2/v1.5.3 scheduler hangs are fixed since v1.5.4 (CHANGELOG). A true-262K preset needs an engine-side fix for that growth and is not promised |
 | decode at depth | slows with context: field reports put it near 28-31 tok/s around 100K, ~22 tok/s at 240K (hashd1ve) |
-| memory | fraction 0.81 (since v1.5.4, host headroom measured unchanged at ~23 GB) + docker cap 110g |
+| memory | fraction 0.81 + docker cap 110g (the cap does not see CUDA unified allocations). Host MemAvailable: ~24 GiB idle after boot, 16.6 GiB during a 120K prompt, 12.6 GiB at 135K (measured 29/08); the earlier "headroom unchanged at ~23 GB" note was an idle measurement |
 
 The NEXTN speculative head is the model's own next-token module (its 31
 tensors ship in the checkpoint in BF16, hence `unquant` for the draft): drafts
@@ -225,7 +225,7 @@ completes at 89 % usage, decode never starts). The frontend keeps answering
 repo does about it: v1.5.2 serves one giant context at a time; `needle.sh`
 flushes the cache before each probe; the cockpit (branch `webapp`) runs a real
 generation probe, restarts a wedged engine, and flushes the cache when the
-engine idles with a mostly-held pool. Since v1.5.4 the keepalive proxy refuses prompts longer than the KV pool and aborts
+engine idles with a mostly-held pool. Since v1.5.4 the keepalive proxy refuses prompts the lane cannot serve (v1.5.6: counted by the engine's tokenizer, capped by the per-lane ceiling) and aborts
 the generation of a client that disappeared; between very large prompts, `curl -X POST
 127.0.0.1:30000/flush_cache -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)"`
 still avoids the eviction path on 9-slot boots.
