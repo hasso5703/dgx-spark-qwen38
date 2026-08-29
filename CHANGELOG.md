@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.5 (2026-08-29): clean stops, A/B verdict on DSpark v2
+
+- The three unit templates declare `SuccessExitStatus=137 143`: docker ends the
+  foreground engine with SIGKILL or SIGTERM on a plain `systemctl stop`, which
+  systemd reported as `failed` after every intentional stop.
+- BENCHMARKS: DFlash2 vs the new DSpark v2 drafter on this box, same battery,
+  both native at 262144 on the SGLang image this repo ships. A tie on the median
+  (29.4 to 30.4 vs 29.5) with DSpark v2 behind on the cells that are stable
+  across runs (reasoning FR, prose), so DFlash2 stays the 27B drafter.
+- `needle.sh` exits 2 with a clear message when the calibration request fails.
+
 ## v1.5.4 (2026-08-29): the proxy stops two ways of wedging the flash scheduler
 
 Root cause work on the four hangs of 2026-08-29 (gdb and py-spy on the spinning
