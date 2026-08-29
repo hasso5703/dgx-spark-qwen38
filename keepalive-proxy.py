@@ -18,6 +18,7 @@ Three roles, nothing else:
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
    cold cache), hence the 3600 s default.
 
+v6.8: oversize guard counts with the engine tokenizer (size only nominates), 8 percent margin.
 v6.7: abort_request on client loss. v6.6: upstream reads via read1() and TCP_NODELAY on the client side.
 resp.read(8192) on chunked HTTP BLOCKS until 8 KB (~30 SSE events) accumulate
 before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
@@ -36,6 +37,90 @@ CLIENT_IO_S   = float(os.environ.get("CLIENT_IO_S", "900"))   # write blocked to
 # pool size from /get_server_info once the upstream is healthy and refuses, with a
 # clear 400, bodies whose most optimistic token estimate still exceeds it.
 CHARS_PER_TOKEN_MIN = float(os.environ.get("CHARS_PER_TOKEN_MIN", "2.5"))
+# Usable share of the pool for one prompt: the rest is room for the answer and the
+# scheduler's own buffers (README: with a 178,560-token pool a single prompt tops out
+# near 165K, that is 92 percent).
+OVERSIZE_MARGIN_FRAC = float(os.environ.get("OVERSIZE_MARGIN_FRAC", "0.08"))
+
+
+MEDIA_BLOCKS = ("image", "image_url", "input_audio", "video_url", "document", "audio_url")
+TOKENS_PER_MEDIA = int(os.environ.get("TOKENS_PER_MEDIA", "4096"))   # generous per image/audio part
+
+
+def _anthropic_as_openai(j, media):
+    """Anthropic /v1/messages body -> OpenAI-shaped messages for /tokenize.
+    Text blocks are kept, media blocks are counted in media[0] (their base64 is
+    not prompt text), other blocks (tool_use, tool_result) go through their JSON,
+    close enough for a guard that keeps an 8 percent margin."""
+    def flat(content):
+        if isinstance(content, str):
+            return content
+        parts = []
+        for b in content or []:
+            if not isinstance(b, dict):
+                parts.append(str(b))
+            elif b.get("type") == "text":
+                parts.append(str(b.get("text", "")))
+            elif b.get("type") in MEDIA_BLOCKS:
+                media[0] += 1          # counted as a fixed token budget, never as base64 text
+            else:
+                parts.append(json.dumps(b, ensure_ascii=False))
+        return "\n".join(parts)
+    msgs = []
+    if j.get("system"):
+        msgs.append({"role": "system", "content": flat(j["system"])})
+    for m in j.get("messages") or []:
+        role = m.get("role") if m.get("role") in ("user", "assistant", "system") else "user"
+        msgs.append({"role": role, "content": flat(m.get("content"))})
+    return msgs
+
+
+def _strip_media(messages, media):
+    """OpenAI messages with content parts: keep text parts, count media parts."""
+    out = []
+    for m in messages:
+        if not isinstance(m, dict) or not isinstance(m.get("content"), list):
+            out.append(m)
+            continue
+        parts = []
+        for part in m["content"]:
+            if isinstance(part, dict) and part.get("type") in MEDIA_BLOCKS:
+                media[0] += 1
+            else:
+                parts.append(part)
+        out.append({**m, "content": parts or ""})
+    return out
+
+
+def tokenize_count(body, path):
+    """Exact prompt length from the engine's /tokenize endpoint (chat template
+    applied to messages). None when nothing exact is possible: malformed body,
+    unknown shape, endpoint missing or slow; the caller then refuses on size."""
+    try:
+        j = json.loads(body)
+        if not isinstance(j, dict):
+            return None
+        req = {"model": j.get("model") or "default"}
+        media = [0]
+        if path.startswith("/v1/messages"):
+            req["messages"] = _anthropic_as_openai(j, media)
+        elif isinstance(j.get("messages"), list):
+            req["messages"] = _strip_media(j["messages"], media)
+            if j.get("tools"):
+                req["tools"] = j["tools"]
+        elif isinstance(j.get("prompt"), (str, list)):
+            req["prompt"] = j["prompt"]
+        else:
+            return None
+        key = open(os.path.expanduser("~/.config/qwen38/api-key")).read().strip()
+        r = urllib.request.Request(UPSTREAM + "/tokenize", data=json.dumps(req).encode(),
+                                   headers={"Authorization": f"Bearer {key}",
+                                            "Content-Type": "application/json"})
+        out = json.loads(urllib.request.urlopen(r, timeout=20).read().decode())
+        n = int(out.get("count", -1))
+        return n + media[0] * TOKENS_PER_MEDIA if n >= 0 else None
+    except Exception:
+        return None
 _POOL = {"tokens": None, "ts": 0.0}
 
 
@@ -294,13 +379,26 @@ class H(BaseHTTPRequestHandler):
             pool = pool_tokens()
             est = len(body) / CHARS_PER_TOKEN_MIN     # optimistic: fewest tokens the body could be
             if pool and est > pool:
-                msg = (f"keepalive-proxy: request body of {len(body)} bytes is at least ~{int(est)} tokens, "
-                       f"more than this lane's KV pool ({pool} tokens); the engine would hang instead of "
-                       f"refusing it. Shorten the context (compaction) or serve a larger pool.")
-                log(f"{self._peer} REFUSED oversize body ({len(body)}b > pool {pool} tokens)")
-                self._plain(400, {"Content-Type": "application/json"},
-                            json.dumps({"error": {"type": "context_too_long", "message": msg}}).encode())
-                self._done("400 oversize refused"); return
+                # v6.8: the size estimate only nominates; the engine's tokenizer decides
+                # (a 140k-token English prompt is 479 KB, which the 2.5 chars/token bound
+                # called 192k tokens and refused although the pool served it).
+                limit = int(pool * (1.0 - OVERSIZE_MARGIN_FRAC))
+                count = tokenize_count(body, self.path)
+                if count is None:
+                    reason = f"at least ~{int(est)} tokens by size (the engine could not count it)"
+                elif count > limit:
+                    reason = f"{count} prompt tokens (counted by the engine)"
+                else:
+                    reason = None
+                    log(f"{self._peer} oversize check: {count} tokens fit ({limit} usable of pool {pool})")
+                if reason:
+                    msg = (f"keepalive-proxy: this request is {reason}, more than this lane can serve "
+                           f"({limit} usable of a {pool}-token KV pool); the engine would hang instead of "
+                           f"refusing it. Shorten the context (compaction) or serve a larger pool.")
+                    log(f"{self._peer} REFUSED oversize ({len(body)}b, {reason}, limit {limit})")
+                    self._plain(400, {"Content-Type": "application/json"},
+                                json.dumps({"error": {"type": "context_too_long", "message": msg}}).encode())
+                    self._done("400 oversize refused"); return
         resp, herr, cerr = self._open(body)
         if cerr is not None: self._bad_gateway(cerr); self._done("502 upstream unreachable"); return
         if herr is not None:
@@ -339,5 +437,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.7 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.8 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     Server(("0.0.0.0", port), H).serve_forever()

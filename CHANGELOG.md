@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.5.6 (unreleased): the oversize guard counts instead of guessing
+
+- keepalive proxy v6.8: the v6.7 guard refused every body whose size divided by
+  2.5 chars per token exceeded the KV pool. English prose runs 3.4 to 4.6 chars
+  per token, so a 140k-token prompt (479 KB) was refused as "192k tokens" while
+  the pool served it (soak of 29/08: 60k, 100k and 120k prompts looped without a
+  flush, 140k got a 400 every time). Now the size only nominates a body; the
+  engine's own `/tokenize` (present in both images this repo ships; 644 ms for
+  474k chars, measured) gives the exact prompt length, chat template applied,
+  Anthropic-shaped bodies converted. Refusal when the count exceeds 92 percent
+  of the pool (`OVERSIZE_MARGIN_FRAC=0.08`, the same ceiling the README states:
+  165K of 178,560); the size-based refusal remains the fallback when the engine
+  cannot count. Image, audio and document parts (OpenAI parts or Anthropic
+  blocks) are counted as a fixed budget of 4096 tokens each
+  (`TOKENS_PER_MEDIA`), never as their base64 text. 8 offline tests (fake
+  `/tokenize`) run in CI.
+- CHANGELOG cites the upstream PR behind `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK`
+  (sgl-project/sglang#32228, merged 2026-07-29, off by default).
+
 ## v1.5.5 (2026-08-29): clean stops, A/B verdict on DSpark v2
 
 - The three unit templates declare `SuccessExitStatus=137 143`: docker ends the
