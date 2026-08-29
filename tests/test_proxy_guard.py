@@ -8,6 +8,8 @@ import os
 import sys
 import threading
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
@@ -25,6 +27,8 @@ class FakeTokenize(http.server.BaseHTTPRequestHandler):
         FakeTokenize.seen.append((self.path, body))
         if self.path != "/tokenize":
             self.send_response(404); self.end_headers(); return
+        if body.get("model") in ("__503__", "__400__"):     # engine loading / body rejected
+            self.send_response(int(body["model"].strip("_"))); self.end_headers(); return
         def flat(c):
             if isinstance(c, list):
                 return " ".join(str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in c)
@@ -85,13 +89,22 @@ class ProxyGuard(unittest.TestCase):
         self.assertIsNone(self.mod.tokenize_count(json.dumps([1, 2]).encode(), "/v1/chat/completions"))
         self.assertIsNone(self.mod.tokenize_count(json.dumps({"model": "m", "input": "embeddings"}).encode(), "/v1/embeddings"))
 
-    def test_engine_unreachable_returns_none(self):
+    def test_engine_unreachable_raises(self):
+        # no engine at all (stopped, crashed, restarting): not a size problem, so not None
         saved = self.mod.UPSTREAM
         self.mod.UPSTREAM = "http://127.0.0.1:1"
         try:
-            self.assertIsNone(self.mod.tokenize_count(json.dumps({"messages": [{"role": "user", "content": "x"}]}).encode(), "/v1/chat/completions"))
+            with self.assertRaises(self.mod.EngineUnreachable):
+                self.mod.tokenize_count(json.dumps({"messages": [{"role": "user", "content": "x"}]}).encode(), "/v1/chat/completions")
         finally:
             self.mod.UPSTREAM = saved
+
+    def test_engine_5xx_raises_4xx_counts_by_size(self):
+        body = {"model": "__503__", "messages": [{"role": "user", "content": "x"}]}
+        with self.assertRaises(self.mod.EngineUnreachable):      # engine still loading
+            self.mod.tokenize_count(json.dumps(body).encode(), "/v1/chat/completions")
+        body["model"] = "__400__"                                  # engine rejected this body
+        self.assertIsNone(self.mod.tokenize_count(json.dumps(body).encode(), "/v1/chat/completions"))
 
     def test_openai_image_parts_counted_not_tokenized(self):
         big = "A" * 400_000  # a base64 image is body size, not prompt text
@@ -127,6 +140,75 @@ class ProxyGuard(unittest.TestCase):
         self.assertAlmostEqual(self.mod.OVERSIZE_MARGIN_FRAC, 0.08)
         self.assertEqual(int(178560 * (1 - self.mod.OVERSIZE_MARGIN_FRAC)), 164275)
 
+
+
+class LoadingEngine(http.server.BaseHTTPRequestHandler):
+    """Answers /get_server_info (so the proxy knows the pool) but is still loading:
+    503 on /tokenize and on generations, like SGLang between 'Started' and 'ready'."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path == "/get_server_info":
+            out = json.dumps({"max_total_num_tokens": 200000}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(out)))
+            self.end_headers(); self.wfile.write(out); return
+        self.send_response(503); self.end_headers()
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.send_response(503); self.end_headers()
+
+
+class ProxyInFrontOfLoadingEngine(unittest.TestCase):
+    """v6.9: a body the size guard nominates must come back 503 engine_unavailable while the
+    engine is down, never 400 context_too_long (live on 2026-08-30 01:15: '~409k tokens' for a
+    68,626-token request during an engine restart)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import socket, subprocess, sys, time
+        cls.eng = http.server.HTTPServer(("127.0.0.1", 0), LoadingEngine)
+        threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}")
+        cls.proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
+                                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", cls.port), timeout=0.2).close(); break
+            except OSError:
+                time.sleep(0.05)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate(); cls.proc.wait(timeout=5); cls.eng.shutdown()
+
+    def _post(self, body):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read()
+
+    def test_big_body_is_503_engine_unavailable_not_400(self):
+        body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "word " * 300000}]}).encode()
+        self.assertGreater(len(body), 1_000_000)
+        status, headers, raw = self._post(body)
+        self.assertEqual(status, 503)
+        err = json.loads(raw)["error"]
+        self.assertEqual(err["type"], "engine_unavailable")
+        self.assertIn("NOT refused for its size", err["message"])
+        self.assertEqual(headers.get("Retry-After"), "30")
+
+    def test_small_body_is_503_too(self):
+        status, _headers, raw = self._post(json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode())
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(raw)["error"]["type"], "engine_unavailable")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.6). No content logging, no rewriting.
+"""Keepalive proxy in front of SGLang (v6.9). No content logging, no rewriting.
 
 Three roles, nothing else:
 1. fill the silences of the SSE stream (SGLang's tool-call parser buffers the
@@ -18,6 +18,10 @@ Three roles, nothing else:
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
    cold cache), hence the 3600 s default.
 
+v6.9: an engine that does not answer (stopped, crashed, restarting, loading) gets a 503
+      engine_unavailable with Retry-After on EVERY path, never a false context_too_long:
+      on 30/08 the size fallback refused a 68k-token request as "~409k tokens" while the
+      engine was restarting after a GPU fault. Unknown request shapes still refuse on size.
 v6.8: oversize guard counts with the engine tokenizer (size only nominates), 8 percent margin,
       absolute per-lane prompt ceiling (PROMPT_CEILING_TOKENS).
 v6.7: abort_request on client loss. v6.6: upstream reads via read1() and TCP_NODELAY on the client side.
@@ -28,6 +32,10 @@ soon as bytes are available, so the stream stays token by token.
 """
 import json, os, queue, socket, sys, threading, time, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class EngineUnreachable(Exception):
+    """The engine did not answer /tokenize: stopped, crashed, restarting or still loading."""
 
 UPSTREAM      = os.environ.get("UPSTREAM", "http://127.0.0.1:30000")
 KEEPALIVE_S   = float(os.environ.get("KEEPALIVE_S", "10"))
@@ -108,8 +116,11 @@ def _strip_media(messages, media):
 
 def tokenize_count(body, path):
     """Exact prompt length from the engine's /tokenize endpoint (chat template
-    applied to messages). None when nothing exact is possible: malformed body,
-    unknown shape, endpoint missing or slow; the caller then refuses on size."""
+    applied to messages). None when nothing exact is possible for THIS body
+    (malformed, unknown shape, rejected by the engine with a 4xx): the caller
+    then refuses on size. Raises EngineUnreachable when the engine itself does
+    not answer (connection refused, reset, timeout, 5xx): that is not a size
+    problem and the caller must say so instead of refusing."""
     try:
         j = json.loads(body)
         if not isinstance(j, dict):
@@ -126,15 +137,30 @@ def tokenize_count(body, path):
             req["prompt"] = j["prompt"]
         else:
             return None
+        payload = json.dumps(req).encode()
         key = open(os.path.expanduser("~/.config/qwen38/api-key")).read().strip()
-        r = urllib.request.Request(UPSTREAM + "/tokenize", data=json.dumps(req).encode(),
-                                   headers={"Authorization": f"Bearer {key}",
-                                            "Content-Type": "application/json"})
-        out = json.loads(urllib.request.urlopen(r, timeout=20).read().decode())
-        n = int(out.get("count", -1))
-        return n + media[0] * TOKENS_PER_MEDIA if n >= 0 else None
     except Exception:
         return None
+    try:
+        r = urllib.request.Request(UPSTREAM + "/tokenize", data=payload,
+                                   headers={"Authorization": f"Bearer {key}",
+                                            "Content-Type": "application/json"})
+        raw = urllib.request.urlopen(r, timeout=20).read()
+    except urllib.error.HTTPError as e:
+        if e.code >= 500:
+            raise EngineUnreachable(f"/tokenize answered HTTP {e.code}") from e
+        return None                       # 4xx: this body cannot be counted, size decides
+    except (urllib.error.URLError, OSError) as e:   # refused, reset, timeout: no engine there
+        raise EngineUnreachable(str(getattr(e, "reason", None) or e)) from e
+    except Exception:
+        return None
+    try:
+        n = int(json.loads(raw.decode()).get("count", -1))
+    except Exception:
+        return None
+    return n + media[0] * TOKENS_PER_MEDIA if n >= 0 else None
+
+
 _POOL = {"tokens": None, "ts": 0.0}
 
 
@@ -209,12 +235,31 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _bad_gateway(self, exc):
-        log(f"upstream unreachable: {exc}")
-        body = json.dumps({"type": "error", "error": {"type": "api_error",
-                "message": f"keepalive-proxy: upstream {UPSTREAM} unreachable ({exc})"}}).encode()
-        try: self._plain(502, {"Content-Type": "application/json"}, body)
+    def _unavailable(self, exc):
+        """The engine is not there (stopped, crashed, restarting, loading): say exactly that,
+        503 with Retry-After, never a size refusal (30/08: a restarting engine made the size
+        fallback call a 68k-token request "~409k tokens")."""
+        log(f"engine unreachable: {exc}")
+        msg = (f"keepalive-proxy: the engine behind {UPSTREAM} is not answering ({exc}). It is stopped, "
+               f"restarting or still loading (a restart takes minutes, about 9 on a DGX Spark); this "
+               f"request was NOT refused for its size. Retry it unchanged once GET {UPSTREAM}/health "
+               f"answers 200.")
+        body = json.dumps({"type": "error", "error": {"type": "engine_unavailable", "message": msg}}).encode()
+        try: self._plain(503, {"Content-Type": "application/json", "Retry-After": "30"}, body)
         except Exception: pass
+
+    def _upstream_error(self, herr):
+        """Relay the engine's own error, except its 5xx: SGLang answers 503 with an empty
+        body while starting or shutting down, which a client cannot read. Say it instead."""
+        raw = herr.read()
+        try: herr.close()
+        except Exception: pass
+        if herr.code in (502, 503, 504):
+            self._unavailable(f"it answered HTTP {herr.code}, as it does while starting or shutting down")
+            self._done(f"503 engine unreachable (upstream {herr.code})"); return
+        try: self._plain(herr.code, dict(herr.headers), raw)
+        except Exception: pass
+        self._done(f"{herr.code} upstream")
 
     def _begin(self, status, headers):
         self.close_connection = True
@@ -397,31 +442,31 @@ class H(BaseHTTPRequestHandler):
                 # (a 140k-token English prompt is 479 KB, which the 2.5 chars/token bound
                 # called 192k tokens and refused although the pool served it).
                 limit = prompt_limit(pool)
-                count = tokenize_count(body, self.path)
+                try:
+                    count = tokenize_count(body, self.path)
+                except EngineUnreachable as e:
+                    self._unavailable(e); self._done("503 engine unreachable"); return
                 if count is None:
-                    reason = f"at least ~{int(est)} tokens by size (the engine could not count it)"
+                    reason = (f"at least ~{int(est)} tokens by size (a shape the engine's tokenizer "
+                              f"cannot count, so the size decides)")
                 elif count > limit:
                     reason = f"{count} prompt tokens (counted by the engine)"
                 else:
                     reason = None
                     log(f"{self._peer} oversize check: {count} tokens fit ({limit} usable of pool {pool})")
                 if reason:
-                    msg = (f"keepalive-proxy: this request is {reason}, more than this lane can serve "
-                           f"({limit} usable of a {pool}-token KV pool); the engine would hang instead of "
-                           f"refusing it. Shorten the context (compaction) or serve a larger pool.")
+                    ceil = f", one-prompt ceiling {PROMPT_CEILING_TOKENS}" if PROMPT_CEILING_TOKENS > 0 else ""
+                    msg = (f"keepalive-proxy: this request is {reason}; this lane serves at most {limit} "
+                           f"prompt tokens (KV pool {pool} tokens{ceil}) and the engine would hang instead "
+                           f"of refusing it. The engine itself is up: shorten the context (compaction) "
+                           f"or serve a larger pool.")
                     log(f"{self._peer} REFUSED oversize ({len(body)}b, {reason}, limit {limit})")
                     self._plain(400, {"Content-Type": "application/json"},
                                 json.dumps({"error": {"type": "context_too_long", "message": msg}}).encode())
                     self._done("400 oversize refused"); return
         resp, herr, cerr = self._open(body)
-        if cerr is not None: self._bad_gateway(cerr); self._done("502 upstream unreachable"); return
-        if herr is not None:
-            raw = herr.read()
-            try: herr.close()
-            except Exception: pass
-            try: self._plain(herr.code, dict(herr.headers), raw)
-            except Exception: pass
-            self._done(f"{herr.code} upstream"); return
+        if cerr is not None: self._unavailable(cerr); self._done("503 engine unreachable"); return
+        if herr is not None: self._upstream_error(herr); return
         self._relay(resp)
 
     def do_POST(self):   self._handle(True)
@@ -434,14 +479,8 @@ class H(BaseHTTPRequestHandler):
         self._peer = f"{self.client_address[0]}:{self.client_address[1]}"
         self._bytes = 0; self._first = None; self._last = None
         resp, herr, cerr = self._open(None)
-        if cerr is not None: self._bad_gateway(cerr); self._done("502 upstream unreachable"); return
-        if herr is not None:
-            raw = herr.read()
-            try: herr.close()
-            except Exception: pass
-            try: self._plain(herr.code, dict(herr.headers), raw)
-            except Exception: pass
-            self._done(f"{herr.code} upstream"); return
+        if cerr is not None: self._unavailable(cerr); self._done("503 engine unreachable"); return
+        if herr is not None: self._upstream_error(herr); return
         try: data = resp.read()
         finally:
             try: resp.close()
@@ -451,5 +490,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.8 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.9 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     Server(("0.0.0.0", port), H).serve_forever()

@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.5.8 (2026-08-30): an engine that is down is reported as down
+
+- keepalive proxy v6.9: when the engine does not answer (stopped, crashed, restarting, still
+  loading), every path answers `503 engine_unavailable` with `Retry-After: 30` and a message
+  that says the request was NOT refused for its size and can be retried unchanged once
+  `/health` answers 200. Before, a body over 200 KB met the oversize guard first, `/tokenize`
+  failed because the engine was gone, and the size fallback refused it as `400 context_too_long`
+  ("at least ~408841 tokens by size" for a 68,626-token request, live on 2026-08-30 at 01:15
+  while the flash engine was restarting). Unknown request shapes still refuse on size, and the
+  message now says that the engine itself is up.
+- The field case behind it: the flash engine (SGLang dev build `d91c3682b`) hit `NVRM: Xid 31`
+  (GPU MMU fault, `FAULT_PTE` read) and `CUDA error: an illegal memory access was encountered`
+  in the QSA indexer prefill path (`qsa_indexer.py forward_cuda -> get_prefill_mqa_inputs`),
+  one second after a 68k-token request had finished, inside the one-token generation that
+  `GET /health` performs in this build when the engine is idle. First Xid in 60 days of kernel
+  logs, 30 GiB of host memory free, no `NV_ERR_NO_MEMORY`. systemd restarted the unit
+  (`Restart=always`, 15 s) and it served again 8 min 39 s later with the PLE table reused.
+- Tests: `tests/test_proxy_guard.py` now covers connection refused, `5xx` and `4xx` from
+  `/tokenize`, and runs the real proxy process in front of a fake engine that knows its pool
+  but is still loading: a 1 MB body gets `503 engine_unavailable`, never `400 context_too_long`.
+
 ## v1.5.7 (2026-08-29): the ceiling follows the lane
 
 - `switch-model.sh` now sets the keepalive proxy's one-prompt ceiling for the target

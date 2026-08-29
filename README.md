@@ -225,7 +225,7 @@ completes at 89 % usage, decode never starts). The frontend keeps answering
 repo does about it: v1.5.2 serves one giant context at a time; `needle.sh`
 flushes the cache before each probe; the cockpit (branch `webapp`) runs a real
 generation probe, restarts a wedged engine, and flushes the cache when the
-engine idles with a mostly-held pool. Since v1.5.4 the keepalive proxy refuses prompts the lane cannot serve (v1.5.6: counted by the engine's tokenizer, capped by the per-lane ceiling) and aborts
+engine idles with a mostly-held pool. Since v1.5.4 the keepalive proxy refuses prompts the lane cannot serve (v1.5.6: counted by the engine's tokenizer, capped by the per-lane ceiling; v1.5.8: an engine that is down answers `503 engine_unavailable`, never a size refusal) and aborts
 the generation of a client that disappeared; between very large prompts, `curl -X POST
 127.0.0.1:30000/flush_cache -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)"`
 still avoids the eviction path on 9-slot boots.
