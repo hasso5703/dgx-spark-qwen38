@@ -207,17 +207,20 @@ def record_boot(history: dict, unit: str, seconds: float,
 
 # ── Wedge detection: health says yes, generation says no ────────────────────
 def decide_wedge(*, health_ok: bool, canary_fails: int, num_reqs: int,
-                 decode_age: float | None, threshold: int = 3,
-                 stale_after: float = 180.0) -> bool:
+                 progress_age: float | None, threshold: int = 3,
+                 stall_after: float = 300.0) -> bool:
     """True when the frontend answers but nothing is being generated.
 
-    Field case (2026-08-29): scheduler spinning at 100 % CPU, /health 200,
-    /get_load reporting 0 requests while every completion hung for 9 hours.
-    Guard against false positives during legitimate long generations: if
-    requests are running AND decode lines are still flowing, never wedge.
+    Two routes, never mixed:
+    - idle route: no request running, yet threshold consecutive generation
+      probes failed (field case 29/08: scheduler spinning, /get_load 0 requests);
+    - busy route: requests running but no prefill/decode progress line for
+      stall_after seconds. Probes are never sent while requests run (they
+      would just queue behind a legitimate long generation), so a slow user
+      request can never be mistaken for a wedge.
     """
-    if not health_ok or canary_fails < threshold:
+    if not health_ok:
         return False
-    if num_reqs > 0 and decode_age is not None and decode_age < stale_after:
-        return False
-    return True
+    if num_reqs == 0:
+        return canary_fails >= threshold
+    return progress_age is not None and progress_age > stall_after

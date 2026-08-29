@@ -273,7 +273,8 @@ CANARY: dict = {"fails": 0, "last_ok": None, "last_err": "", "latency": None}
 AUTOHEAL = os.environ.get("COCKPIT_AUTOHEAL", "1") == "1"
 AUTOHEAL_COOLDOWN = 1800.0
 LAST_HEAL: dict = {"ts": 0.0}
-LAST_DECODE: dict = {"ts": None}
+LAST_PROGRESS: dict = {"ts": None}
+PROGRESS_RE = re.compile(r"(Prefill|Decode) batch")
 
 
 @guard
@@ -283,7 +284,11 @@ def collect_canary():
     with LIFE_LOCK:
         states = dict(LIFE.get("states", {}))
     ready = [u for u in lc.ENGINE_UNITS if states.get(u) in ("ready", "wedged")]
-    if not ready or JOB_LOCK.locked():
+    with STATE_LOCK:
+        load = ((STATE.get("engine_fast") or {}).get("data", {}).get("load") or [{}])[0]
+    busy = int(load.get("num_reqs") or 0) + int(load.get("num_waiting_reqs") or 0) > 0
+    if not ready or JOB_LOCK.locked() or busy:
+        # never queue a probe behind a user's request (max-running-requests 1)
         return {"node_id": "local", **CANARY, "skipped": True}
     body = json.dumps({"model": "canary", "max_tokens": 2, "temperature": 0,
                        "messages": [{"role": "user", "content": "Say OK"}],
@@ -322,9 +327,10 @@ def collect_decode_telemetry():
                merge_err=True)[-8000:]
     last = None
     for line in tail.splitlines():
+        if PROGRESS_RE.search(line):
+            LAST_PROGRESS["ts"] = time.time()
         m = DECODE_RE.search(line)
         if m:
-            LAST_DECODE["ts"] = time.time()
             last = {"running": int(m.group(1)),
                     "token_usage": float(m.group(2)),
                     "accept_len": float(m.group(3))}
@@ -390,13 +396,13 @@ def collect_lifecycle():
                 load = ((STATE.get("engine_fast") or {}).get("data", {})
                         .get("load") or [{}])[0]
             num_reqs = int(load.get("num_reqs") or 0)
-            age = (time.time() - LAST_DECODE["ts"]) if LAST_DECODE["ts"] else None
+            age = (time.time() - LAST_PROGRESS["ts"]) if LAST_PROGRESS["ts"] else None
             if lc.decide_wedge(health_ok=True, canary_fails=CANARY["fails"],
-                               num_reqs=num_reqs, decode_age=age):
+                               num_reqs=num_reqs, progress_age=age):
                 st["state"] = "wedged"
                 if prev.get(unit) != "wedged":
                     audit({"kind": "wedge", "unit": unit, "canary_fails": CANARY["fails"],
-                           "num_reqs": num_reqs, "decode_age": age})
+                           "num_reqs": num_reqs, "progress_age": age})
                 if AUTOHEAL and time.time() - LAST_HEAL["ts"] > AUTOHEAL_COOLDOWN \
                         and not JOB_LOCK.locked():
                     LAST_HEAL["ts"] = time.time()
