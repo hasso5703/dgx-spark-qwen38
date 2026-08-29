@@ -208,9 +208,9 @@ needle-in-haystack passing at 100K with fresh content):
 | prefill, cold | ~1,500-2,000 tok/s (real QSA sparse kernels) |
 | vision (image input) | works, including combined with large prompts |
 | context window | 262,144 native, no YaRN |
-| **context that fits** | **the KV pool at these memory settings holds 159,552 tokens** (`max_total_num_tokens`); in practice keep one prompt under ~100K for now: ~120K prompts wedged the scheduler on the reference box (v1.5.2 CHANGELOG), fix in progress and one giant context runs at a time (`--max-running-requests 1`); a true-262K preset (language-only, higher fraction) is planned and will be measured before it is recommended |
+| **context that fits** | **the KV pool holds 178,560 tokens** since v1.5.4 (`max_total_num_tokens`; 159,552 before), so a single prompt tops out near 165K; the v1.5.2/v1.5.3 scheduler hangs on large prompts are fixed in v1.5.4 (CHANGELOG) and one giant context runs at a time (`--max-running-requests 1`); a true-262K preset (language-only, higher fraction) is planned and will be measured before it is recommended |
 | decode at depth | slows with context: field reports put it near 28-31 tok/s around 100K, ~22 tok/s at 240K (hashd1ve) |
-| memory | fraction 0.79 + docker cap 110g, ~23 GB host headroom |
+| memory | fraction 0.81 (since v1.5.4, host headroom measured unchanged at ~23 GB) + docker cap 110g |
 
 The NEXTN speculative head is the model's own next-token module (its 31
 tensors ship in the checkpoint in BF16, hence `unquant` for the draft): drafts
@@ -225,9 +225,10 @@ completes at 89 % usage, decode never starts). The frontend keeps answering
 repo does about it: v1.5.2 serves one giant context at a time; `needle.sh`
 flushes the cache before each probe; the cockpit (branch `webapp`) runs a real
 generation probe, restarts a wedged engine, and flushes the cache when the
-engine idles with a mostly-held pool. Without the cockpit, `curl -X POST
-127.0.0.1:30000/flush_cache -H "Authorization: Bearer $(cat
-~/.config/qwen38/api-key)"` between very large prompts avoids the eviction path.
+engine idles with a mostly-held pool. Since v1.5.4 the keepalive proxy refuses prompts longer than the KV pool and aborts
+the generation of a client that disappeared; between very large prompts, `curl -X POST
+127.0.0.1:30000/flush_cache -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)"`
+still avoids the eviction path on 9-slot boots.
 
 Known upstream behavior, reproduced here
 ([sglang #35537](https://github.com/sgl-project/sglang/issues/35537)): with

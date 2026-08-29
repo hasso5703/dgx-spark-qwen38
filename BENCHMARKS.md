@@ -163,6 +163,9 @@ the `flash-sglang/` overlay, NVFP4, NEXTN 3/1/4, 262,144 context, mem-fraction
 Short-context profiles (32K, mem-fraction 0.85) measure up to 41.5-42.2 tok/s
 on code upstream; this repo ships the full-context profile.
 
+
+Independent reproduction (helge, NVIDIA forum thread 381228, 2026-08-29, own installer variant without systemd, `bench.sh` from this repo): about 37 tok/s on coding tasks and about 24 tok/s on prose, in line with the reference box.
+
 ## The flash target on vLLM (v1.4, historical), measured (2026-08-27)
 
 Same box, same instruments (two-call wall-clock delta for decode, single-shot

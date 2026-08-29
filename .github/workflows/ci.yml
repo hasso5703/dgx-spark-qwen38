@@ -52,7 +52,7 @@ jobs:
             sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" \
                 -e "s|__PORT__|30000|g" -e "s|__PROXY_PORT__|30001|g" -e "s|__IMAGE__|img:v|g" \
                 -e "s|__HF_CACHE__|/hf|g" -e "s|__DRAFT2_REV__|deadbeef|g" -e "s|__PLE_DIR__|/ple|g" \
-                -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL__|org/repo|g" "$1"
+                -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL_REV__|cafe|g" -e "s|__MODEL__|org/repo|g" "$1"
           }
           for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template qwen38-flash.service.template qwen38-keepalive.service.template; do
             render "$t" > /tmp/unit.rendered
@@ -72,6 +72,7 @@ jobs:
           grep -q 'Restart=always' /tmp/flash-unit.rendered
           grep -q 'launch-flash.sh' /tmp/flash-unit.rendered
           render qwen38-flash-launch.sh.template > /tmp/flash.rendered
+          if grep -q '__[A-Z_]*__' /tmp/flash.rendered; then echo "unsubstituted placeholder in the flash launcher:"; grep '__[A-Z_]*__' /tmp/flash.rendered; exit 1; fi
           bash -n /tmp/flash.rendered
           grep -q -- '--ple-offload-embedding' /tmp/flash.rendered
           grep -q 'SGLANG_QWEN4_PLE_MMAP_DIR=/ple' /tmp/flash.rendered
@@ -81,7 +82,7 @@ jobs:
           grep -q -- '--speculative-algorithm NEXTN' /tmp/flash.rendered
           grep -q -- '--speculative-eagle-topk 1' /tmp/flash.rendered
           grep -q -- '--chunked-prefill-size 1024' /tmp/flash.rendered
-          grep -q -- '--mem-fraction-static 0.79' /tmp/flash.rendered
+          grep -q -- '--mem-fraction-static 0.81' /tmp/flash.rendered   # v1.5.4: measured, host headroom unchanged
           grep -q -- '--api-key' /tmp/flash.rendered
           grep -q 'chat-template-flashnext.jinja' /tmp/flash.rendered
           grep -q 'HF_HUB_OFFLINE=1' /tmp/flash.rendered
@@ -92,7 +93,7 @@ jobs:
           # poisoned-table guard must stay (a boot interrupted mid table write
           # wedges every later boot; root-caused live on the reference box)
           grep -q '.loading' /tmp/flash.rendered
-          grep -q 'ple_table_\*' /tmp/flash.rendered && grep -q 'SGLANG_QWEN4_PLE_TAG=' /tmp/flash.rendered
+          grep -q 'ple_table_\*' /tmp/flash.rendered && grep -q 'SGLANG_QWEN4_PLE_TAG=' /tmp/flash.rendered && grep -q 'SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1' /tmp/flash.rendered
 
 
       - name: opencode limits block (both modes and both install paths, from install.sh itself)

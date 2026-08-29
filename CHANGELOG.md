@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.5.4 (2026-08-29): the proxy stops two ways of wedging the flash scheduler
+
+Root cause work on the four hangs of 2026-08-29 (gdb and py-spy on the spinning
+scheduler, a controlled campaign of launcher variants): the scheduler of this
+build busy-loops forever, with `/health` still answering, when a queued request
+can never be admitted. Two triggers reproduced: a prompt longer than the KV pool,
+and a large prompt that needs a mamba state slot only an eviction can free (the
+default cache is 9 to 15 slots depending on the memory left at boot, 5 per running
+request; 9-slot boots hang on the second large prompt, 15-slot boots served six
+in a row). No launcher flag fixes it without amputating the KV pool (explicit
+sizes, memory ratio and max-running-requests were all measured), so the fix
+lives in the keepalive proxy (v6.7), which every service install already fronts:
+
+- a request whose most optimistic token estimate exceeds the engine's KV pool is
+  refused with a clear 400 (`context_too_long`) instead of wedging the engine;
+- when a client disappears mid-stream, the proxy now posts `/abort_request` for
+  that request id (closing the socket alone left orphan generations decoding to
+  their max_tokens; measured 29/08).
+
+The launcher also sets `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1`, an option of this
+build that stops locking a request's cached mamba state during decode (the
+request already works on its own copy-on-write slot). Measured: with the lock,
+9-slot boots hang on the second large prompt; without it, four and then five
+consecutive large prompts were served with the evictions the lock used to
+block. The state cache becomes 12 slots of 4 per request, and with
+`--mem-fraction-static 0.81` (host headroom measured unchanged at 23 GB) the KV
+pool grows to 178560 tokens, from 159,552.
+
+`needle.sh` exits cleanly when the engine is unreachable. The cockpit branch adds
+the generation probe, the wedged state with autoheal and a cache flush when the
+engine idles with a mostly-held pool. Upstream report: sglang #30314 (comment).
+
 ## v1.5.3 (2026-08-29): PLE table reused across boots
 
 Every flash boot rewrote the 48 GB PLE table through a random-access mapping

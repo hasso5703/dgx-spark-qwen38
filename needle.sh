@@ -71,7 +71,11 @@ def filler(rng, n_sentences):
 # every trial so each depth lands within a few percent of its target
 rng = random.Random(1)
 sample = filler(rng, 3500)
-out, _ = chat([{"role": "user", "content": sample + "\nReply with the single word OK."}], 5)
+try:
+    out, _ = chat([{"role": "user", "content": sample + "\nReply with the single word OK."}], 5)
+except Exception as e:  # noqa: BLE001
+    print(f"needle: calibration request failed ({str(e)[:100]}); engine down, booting or refusing")
+    raise SystemExit(2)
 cpt = len(sample) / max(1, out["usage"]["prompt_tokens"] - 40)
 cps = len(sample) / 3500                      # measured chars per filler sentence
 print(f"calibration: {cpt:.2f} chars/token, {cps:.1f} chars/sentence, on {out['usage']['prompt_tokens']} tokens")

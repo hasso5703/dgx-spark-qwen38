@@ -9,14 +9,16 @@ Three roles, nothing else:
    measured 2026-08-23, client death 10-20 s after the first comment) and an
    authentic empty chunk on the OpenAI dialect (opencode/AI SDK stall detectors
    ignore comments and drop the stream after ~140-180 s without a real chunk);
-2. close the upstream as soon as the client goes away, so SGLang aborts the
+2. close the upstream as soon as the client goes away AND explicitly POST
+   /abort_request for the request id (v6.7: closing the socket alone left
+   orphan generations decoding to max_tokens, measured 29/08), so SGLang aborts the
    generation instead of running a zombie;
 3. never lull a client on a dead upstream: past MAX_SILENCE_S an EXPLICIT SSE
    error event is sent, then the stream is closed. MAX_SILENCE_S must stay
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
    cold cache), hence the 3600 s default.
 
-v6.6: upstream reads via read1() and TCP_NODELAY on the client side.
+v6.7: abort_request on client loss. v6.6: upstream reads via read1() and TCP_NODELAY on the client side.
 resp.read(8192) on chunked HTTP BLOCKS until 8 KB (~30 SSE events) accumulate
 before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
 / max 1307 ms through the proxy vs a steady 118 ms direct. read1() returns as
@@ -29,6 +31,27 @@ UPSTREAM      = os.environ.get("UPSTREAM", "http://127.0.0.1:30000")
 KEEPALIVE_S   = float(os.environ.get("KEEPALIVE_S", "10"))
 MAX_SILENCE_S = float(os.environ.get("MAX_SILENCE_S", "3600"))
 CLIENT_IO_S   = float(os.environ.get("CLIENT_IO_S", "900"))   # write blocked toward a frozen client
+# Oversize guard (v6.7): a prompt longer than the engine's KV pool is not rejected by
+# this SGLang build, it wedges the scheduler (measured 29/08). The proxy learns the
+# pool size from /get_server_info once the upstream is healthy and refuses, with a
+# clear 400, bodies whose most optimistic token estimate still exceeds it.
+CHARS_PER_TOKEN_MIN = float(os.environ.get("CHARS_PER_TOKEN_MIN", "2.5"))
+_POOL = {"tokens": None, "ts": 0.0}
+
+
+def pool_tokens():
+    if _POOL["tokens"] and time.time() - _POOL["ts"] < 600:
+        return _POOL["tokens"]
+    try:
+        key = open(os.path.expanduser("~/.config/qwen38/api-key")).read().strip()
+        req = urllib.request.Request(UPSTREAM + "/get_server_info", headers={"Authorization": f"Bearer {key}"})
+        info = json.loads(urllib.request.urlopen(req, timeout=4).read().decode())
+        n = int(info.get("max_total_num_tokens") or 0)
+        if n > 0:
+            _POOL.update(tokens=n, ts=time.time())
+    except Exception:
+        pass
+    return _POOL["tokens"]
 HOP = {"host", "content-length", "connection", "keep-alive", "transfer-encoding"}
 
 def log(msg):
@@ -123,6 +146,39 @@ class H(BaseHTTPRequestHandler):
             st = f" [{self._bytes}b relayed, first event at {f}, last at {l}]"
         log(f"{getattr(self, '_peer', '?')} {self.command} {self.path.split('?')[0]} {outcome} in {time.time()-self._t0:.1f}s{st}")
 
+    def _note_rid(self, rec: bytes):
+        """First SSE event carries the request id in both dialects."""
+        if getattr(self, "_rid", None) is not None:
+            return
+        try:
+            for line in rec.split(b"\n"):
+                if line.startswith(b"data:"):
+                    j = json.loads(line[5:].strip() or b"{}")
+                    rid = j.get("id") or (j.get("message") or {}).get("id")
+                    if rid and rid != "keepalive":
+                        self._rid = rid
+                    return
+        except Exception:
+            return
+
+    def _abort_upstream(self, why: str):
+        """Tell SGLang to stop generating for a client that is gone."""
+        rid = getattr(self, "_rid", None)
+        if not rid:
+            return
+        def go():
+            try:
+                hdrs = {"Content-Type": "application/json"}
+                auth = self.headers.get("Authorization")
+                if auth: hdrs["Authorization"] = auth
+                req = urllib.request.Request(UPSTREAM + "/abort_request",
+                                             json.dumps({"rid": rid}).encode(), hdrs)
+                urllib.request.urlopen(req, timeout=5).read()
+                log(f"aborted upstream rid={rid} ({why})")
+            except Exception as e:
+                log(f"abort_request failed for rid={rid}: {e}")
+        threading.Thread(target=go, daemon=True).start()
+
     def _relay(self, resp):
         sse = "text/event-stream" in (resp.headers.get("Content-Type") or "")
         self._begin(resp.status, resp.headers)
@@ -177,7 +233,8 @@ class H(BaseHTTPRequestHandler):
                         if stop.is_set(): break
         threading.Thread(target=pump, daemon=True).start()
 
-        def drop_upstream():
+        def drop_upstream(why="client gone"):
+            self._abort_upstream(why)
             stop.set()
             try: resp.close()
             except Exception: pass
@@ -197,7 +254,7 @@ class H(BaseHTTPRequestHandler):
                 silence += KEEPALIVE_S
                 if silence >= MAX_SILENCE_S:
                     log(f"upstream silent for {silence:.0f}s, dropping the request")
-                    drop_upstream()
+                    drop_upstream("upstream silent")
                     if anthropic:
                         try: self._chunk(sse_error(f"upstream silent for {silence:.0f}s, request dropped"))
                         except Exception: pass
@@ -217,6 +274,7 @@ class H(BaseHTTPRequestHandler):
             now = time.time() - self._t0
             if self._first is None: self._first = now
             self._last = now; self._bytes += len(val)
+            self._note_rid(val)
             try: self._chunk(val)
             except Exception:
                 drop_upstream(); self._done("CLIENT GONE on write"); return
@@ -232,6 +290,17 @@ class H(BaseHTTPRequestHandler):
         log(f"{self._peer} -> {self.command} {self.path.split('?')[0]} body={n0}b")
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if (with_body and n) else None
+        if body and self.path.startswith("/v1/") and len(body) > 200_000:
+            pool = pool_tokens()
+            est = len(body) / CHARS_PER_TOKEN_MIN     # optimistic: fewest tokens the body could be
+            if pool and est > pool:
+                msg = (f"keepalive-proxy: request body of {len(body)} bytes is at least ~{int(est)} tokens, "
+                       f"more than this lane's KV pool ({pool} tokens); the engine would hang instead of "
+                       f"refusing it. Shorten the context (compaction) or serve a larger pool.")
+                log(f"{self._peer} REFUSED oversize body ({len(body)}b > pool {pool} tokens)")
+                self._plain(400, {"Content-Type": "application/json"},
+                            json.dumps({"error": {"type": "context_too_long", "message": msg}}).encode())
+                self._done("400 oversize refused"); return
         resp, herr, cerr = self._open(body)
         if cerr is not None: self._bad_gateway(cerr); self._done("502 upstream unreachable"); return
         if herr is not None:
@@ -270,5 +339,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.6 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.7 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     Server(("0.0.0.0", port), H).serve_forever()
