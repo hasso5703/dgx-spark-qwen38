@@ -32,7 +32,8 @@ lives in the keepalive proxy (v6.7), which every service install already fronts:
 
 The launcher also sets `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1`, an option of this
 build that stops locking a request's cached mamba state during decode (the
-request already works on its own copy-on-write slot). Measured: with the lock,
+request already works on its own copy-on-write slot; upstream PR
+sgl-project/sglang#32228, merged 2026-07-29, off by default). Measured: with the lock,
 9-slot boots hang on the second large prompt; without it, four and then five
 consecutive large prompts were served with the evictions the lock used to
 block. The state cache becomes 12 slots of 4 per request, and with
