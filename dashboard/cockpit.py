@@ -24,6 +24,7 @@ import socketserver
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from collections import deque
@@ -475,10 +476,16 @@ def collect_lifecycle():
                     add_event("guard", f"pool guard: cache flushed (tokens {LAST_USAGE['value']:.0%}, "
                                        f"mamba slots {LAST_USAGE['mamba']:.0%}), engine idle")
                     audit({"kind": "pool_guard", "usage": LAST_USAGE["value"], "mamba": LAST_USAGE["mamba"]})
-                    LAST_USAGE["value"] = 0.0
-                    LAST_USAGE["mamba"] = 0.0
+                except urllib.error.HTTPError as e:
+                    # 400 = "pending requests": the engine is not idle after all
+                    # (a queued request the load endpoint does not show); stand down.
+                    if e.code != 400:
+                        add_event("guard", f"pool guard flush failed: HTTP {e.code}")
+                    IDLE_SINCE["ts"] = None
                 except Exception as e:  # noqa: BLE001
                     add_event("guard", f"pool guard flush failed: {str(e)[:80]}")
+                LAST_USAGE["value"] = 0.0
+                LAST_USAGE["mamba"] = 0.0
                 LAST_FLUSH["ts"] = time.time()
             age = (time.time() - LAST_PROGRESS["ts"]) if LAST_PROGRESS["ts"] else None
             if lc.decide_wedge(health_ok=True, canary_fails=CANARY["fails"],
