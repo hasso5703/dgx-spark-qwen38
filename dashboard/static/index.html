@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Live control room for the Qwen3.8 serving stack on a DGX Spark: engine lifecycle, KV pool, requests, registry, actions.">
 <title>Spark Cockpit</title>
 <link rel="icon" href="/static/favicon.svg">
 <style>
@@ -340,7 +341,7 @@
 
   <section>
     <h2>Live logs
-      <select id="logsel" style="margin-left:auto">
+      <select id="logsel" aria-label="Log source" style="margin-left:auto">
         <option value="qwen38-flash">qwen38-flash (container)</option>
         <option value="qwen38-sglang">qwen38-sglang (container)</option>
         <option value="qwen38-keepalive.service">keepalive (journal)</option>
@@ -351,19 +352,19 @@
   </section>
 
   <section>
-    <h2>Inventory <button class="chip" id="invbtn" style="margin-left:auto;cursor:pointer">scan</button></h2>
+    <h2>Inventory <button class="chip" id="invbtn" aria-label="Scan the inventory" style="margin-left:auto;cursor:pointer">scan</button></h2>
     <p style="color:var(--mut);font-size:12px;margin-bottom:8px">
       Everything any version of this repo left on this box (read-only scan).</p>
     <table id="invtable"><thead><tr><th>Kind</th><th>What</th></tr></thead><tbody></tbody></table>
   </section>
 
   <section class="wide">
-    <h2>Registry <button class="chip" id="regbtn" style="margin-left:auto;cursor:pointer">scan</button></h2>
+    <h2>Registry <button class="chip" id="regbtn" aria-label="Scan the model and image registry" style="margin-left:auto;cursor:pointer">scan</button></h2>
     <p style="color:var(--mut);font-size:12px;margin-bottom:8px">
       Models, revisions and engine images on this box; pinned means a repo script serves exactly this revision.</p>
     <div class="tablewrap"><table id="regmodels"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">Disk</th><th>Status</th></tr></thead><tbody></tbody></table></div>
     <div class="tablewrap"><table id="regimages" style="margin-top:14px"><thead><tr><th>Engine image</th><th class="r">Size</th><th class="r">Id</th></tr></thead><tbody></tbody></table></div>
-    <h2 style="margin-top:16px">Upstream watch <button class="chip" id="upbtn" style="margin-left:auto;cursor:pointer">check</button></h2>
+    <h2 style="margin-top:16px">Upstream watch <button class="chip" id="upbtn" aria-label="Check upstream revisions" style="margin-left:auto;cursor:pointer">check</button></h2>
     <table id="uptable"><thead><tr><th>Model</th><th>Pinned</th><th>Upstream main</th><th>Status</th></tr></thead><tbody></tbody></table>
     <p id="upline" style="color:var(--mut);font-size:12px;margin-top:8px"></p>
   </section>
@@ -394,7 +395,7 @@
     <div class="actions">
       <div class="arow">
         <span>Switch target model</span>
-        <select id="switchsel">
+        <select id="switchsel" aria-label="Target model to switch to">
           <option value="stock">stock (27B)</option>
           <option value="uncensored">uncensored (27B)</option>
           <option value="flash">flash (176B)</option>
