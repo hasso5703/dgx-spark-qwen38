@@ -240,3 +240,22 @@ def wedge_plan(*, decided: bool, prev_state: str | None, wedged_since: float | N
     first = prev_state != "wedged"
     restart = bool(autoheal and cooldown_ok and (now - since) >= grace and not job_running)
     return {"state": "wedged", "first": first, "since": since, "restart": restart}
+
+
+def decide_mem_floor(*, avail_gib: float | None, floor_gib: float, num_reqs: int,
+                     last_abort_ts: float | None, now: float,
+                     cooldown_s: float = 60.0) -> tuple[bool, str]:
+    """Memory-floor belt: abort every in-flight generation when host MemAvailable
+    drops under the floor while requests run (unified memory: a prefill's
+    activations can take the box to the livelock edge, measured 29/08 at 0.8 GiB
+    after a 177k prompt). Pure decision: (abort?, reason). Never aborts twice
+    within the cooldown, never when nothing runs, never on a missing reading."""
+    if avail_gib is None:
+        return False, "no reading"
+    if avail_gib >= floor_gib:
+        return False, "above floor"
+    if num_reqs <= 0:
+        return False, f"below floor ({avail_gib:.1f} GiB) but nothing running"
+    if last_abort_ts is not None and now - last_abort_ts < cooldown_s:
+        return False, "cooldown"
+    return True, f"MemAvailable {avail_gib:.1f} GiB under the {floor_gib:.1f} GiB floor with {num_reqs} running"

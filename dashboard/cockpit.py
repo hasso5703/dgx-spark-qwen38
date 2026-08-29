@@ -243,6 +243,28 @@ def collect_containers():
     return {"node_id": "local", "containers": rows}
 
 
+MEM_FLOOR_GIB = float(os.environ.get("COCKPIT_MEM_FLOOR_GIB", "3.0"))
+MEM_FLOOR = {"last_abort": None, "aborts": 0, "last_reason": ""}
+
+
+def mem_available_gib() -> float | None:
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 1048576
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def engine_abort_all(timeout: float = 8.0):
+    req = urllib.request.Request(ENGINE_BASE + "/abort_request", method="POST",
+                                 data=json.dumps({"abort_all": True}).encode(),
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": f"Bearer {api_key()}"})
+    urllib.request.urlopen(req, timeout=timeout).read()
+
+
 @guard
 def collect_engine_fast():
     load = http_json(ENGINE_BASE + "/get_load", timeout=3)
@@ -251,7 +273,29 @@ def collect_engine_fast():
         urllib.request.urlopen(ENGINE_BASE + "/health", timeout=2).read()
     except Exception:  # noqa: BLE001
         healthy = False
-    return {"node_id": "local", "load": load, "healthy": healthy}
+    # memory-floor belt (1 s tier): the unified pool is the livelock surface
+    num_reqs = 0
+    try:
+        num_reqs = int((load or [{}])[0].get("num_reqs", 0))
+    except (TypeError, ValueError, AttributeError, IndexError):
+        pass
+    avail = mem_available_gib()
+    abort, reason = lc.decide_mem_floor(avail_gib=avail, floor_gib=MEM_FLOOR_GIB, num_reqs=num_reqs,
+                                        last_abort_ts=MEM_FLOOR["last_abort"], now=time.time())
+    if abort:
+        MEM_FLOOR["last_abort"] = time.time()
+        MEM_FLOOR["aborts"] += 1
+        MEM_FLOOR["last_reason"] = reason
+        try:
+            engine_abort_all()
+            audit({"kind": "mem_floor", "avail_gib": avail, "num_reqs": num_reqs, "ok": True})
+            add_event("mem_floor", f"memory floor: {reason}; every generation aborted")
+        except Exception as e:  # noqa: BLE001
+            audit({"kind": "mem_floor", "avail_gib": avail, "num_reqs": num_reqs, "ok": False, "err": str(e)[:120]})
+            add_event("mem_floor", f"memory floor: {reason}; abort failed: {str(e)[:80]}")
+    return {"node_id": "local", "load": load, "healthy": healthy,
+            "mem_floor": {"gib": MEM_FLOOR_GIB, "avail_gib": avail, "aborts": MEM_FLOOR["aborts"],
+                          "last_abort": MEM_FLOOR["last_abort"]}}
 
 
 @guard
@@ -833,11 +877,7 @@ def start_action(name: str, params: dict) -> tuple[int, dict]:
             return 500, {"error": str(e)[:200]}
     if name == "abort_all":
         try:
-            req = urllib.request.Request(ENGINE_BASE + "/abort_request", method="POST",
-                                         data=json.dumps({"abort_all": True}).encode(),
-                                         headers={"Content-Type": "application/json",
-                                                  "Authorization": f"Bearer {api_key()}"})
-            urllib.request.urlopen(req, timeout=8).read()
+            engine_abort_all()
             audit({"kind": "action", "action": name, "ok": True})
             add_event("action", "abort_all: every in-flight generation aborted")
             return 200, {"ok": True}

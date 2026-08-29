@@ -320,3 +320,26 @@ class WedgePlan(unittest.TestCase):
                         grace=0, autoheal=True, cooldown_ok=True, job_running=False)
             base.update(kw)
             self.assertFalse(lc.wedge_plan(**base)["restart"], kw)
+
+class MemFloor(unittest.TestCase):
+    def d(self, **kw):
+        base = dict(avail_gib=1.9, floor_gib=3.0, num_reqs=1, last_abort_ts=None, now=1000.0)
+        base.update(kw)
+        return lc.decide_mem_floor(**base)
+
+    def test_aborts_under_floor_with_running_request(self):
+        ok, why = self.d()
+        self.assertTrue(ok); self.assertIn("1.9 GiB under the 3.0 GiB floor", why)
+
+    def test_quiet_above_floor(self):
+        self.assertEqual(self.d(avail_gib=3.0), (False, "above floor"))
+        self.assertFalse(self.d(avail_gib=18.6)[0])
+
+    def test_never_without_running_requests(self):
+        ok, why = self.d(num_reqs=0)
+        self.assertFalse(ok); self.assertIn("nothing running", why)
+
+    def test_cooldown_and_missing_reading(self):
+        self.assertEqual(self.d(last_abort_ts=970.0), (False, "cooldown"))
+        self.assertTrue(self.d(last_abort_ts=900.0)[0])
+        self.assertEqual(self.d(avail_gib=None), (False, "no reading"))

@@ -121,6 +121,11 @@ function rHero(){
     + ((l.num_reqs||0) ? ` <span class="num">${l.num_reqs} running</span>` : '');
 }
 function rEngineFast(d){
+  if (d.mem_floor){
+    const f = d.mem_floor;
+    $('memfloor').textContent = `abort under ${f.gib} GiB` + (f.aborts ? ` · ${f.aborts} fired` : ' · quiet');
+    $('memfloor').style.color = f.aborts ? 'var(--warn)' : '';
+  }
   const l = (d.load||[])[0] || {};
   window._load = l; rPool(l); rReservoir(l); rHero();
   // A container burning CPU with health still down is a BOOT, not an outage
