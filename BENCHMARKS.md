@@ -222,6 +222,19 @@ the page cache state rather than a clean threshold (0 at 135K in one run, 11 at 
 another); the host floor is the hard limit. This is why v1.5.6 caps one prompt at 128K on
 the flash lane (about 14 GiB left at the peak) and why the README no longer says 262K fits.
 
+The 27B lane does not have this problem. Same method on the installed 1M unit (fraction
+0.70, pool 1,008,429 tokens, 18.0 GiB available idle), same evening:
+
+| prompt (tokens) | MemAvailable floor | growth over idle | driver refusals | prefill time |
+|---|---|---|---|---|
+| 100K | 15.3 GiB | +2.9 | 1 (boot or prompt) | 85.6 s |
+| 200K | 14.7 GiB | +3.5 | 0 | 249 s |
+| 300K | 14.5 GiB | +3.3 | 0 | 488 s |
+
+Flat from 100K to 300K: the growth is specific to the flash lane's prefill path (QSA sparse
+attention layers), and the 27B lane's long-context limit stays the KV pool. Prefill
+throughput on the 27B at depth: 1,170 tok/s at 100K, 800 at 200K, 615 at 300K.
+
 Tested and rejected: `--chunked-prefill-size 512` (120K floor 20.4 GiB, better; 150K floor
 6.7 GiB with 13 refusals, worse; cold prefill 30 percent slower: 96 s vs 74 s at 120K).
 

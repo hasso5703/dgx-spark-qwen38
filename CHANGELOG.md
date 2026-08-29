@@ -39,8 +39,10 @@
   `PROMPT_CEILING_TOKENS`, set by install.sh in the keepalive unit: 128,000 on
   the flash lane, which keeps about 14 GiB available at the prompt's peak on a
   128 GB box (override with `PROMPT_CEILING_TOKENS=`), none on the 27B lane (not
-  measured). Deployed on the reference box through `install.sh`: 140k and 130k
-  prompts refused with the engine's count, 125k served in 81 s. A smaller prefill chunk (512) was tested and
+  measured, then measured the same evening: flat, +3 GiB from 100k to 300k on the
+  1M unit, so its limit stays the pool). Deployed on the reference box through
+  `install.sh`: 140k and 130k prompts refused with the engine's count, 125k served
+  in 81 s. A smaller prefill chunk (512) was tested and
   rejected: 30 percent slower cold prefill and a worse floor at 150k (6.7 GiB,
   13 driver refusals). The v1.5.4 note "host headroom unchanged at 23 GB" was an
   idle measurement and is corrected in the README.
