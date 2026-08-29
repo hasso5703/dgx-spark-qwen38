@@ -453,6 +453,12 @@ $('regbtn').onclick = async () => {
       const a2 = tr.insertCell(); a2.textContent = im.size; a2.className='r num';
       const b2 = tr.insertCell(); b2.textContent = im.id; b2.className='r num';
     });
+    const to = $('othertable').tBodies[0]; to.innerHTML='';
+    const others = (d.other_models||[]).slice().sort((a,b)=>b.disk_bytes-a.disk_bytes);
+    others.forEach(m => { const tr = to.insertRow(); tr.insertCell().textContent = m.repo_id;
+      const c = tr.insertCell(); c.textContent = fmtGiB(m.disk_bytes); c.className='r num'; });
+    const otherTotal = others.reduce((a,m)=>a+m.disk_bytes,0);
+    $('otherchip').textContent = others.length ? fmtGiB(otherTotal) + ' in ' + others.length + ' models' : 'none';
     const strays = (d.models||[]).flatMap(m=>m.revisions).filter(r=>r.status==='stray');
     $('regbtn').textContent = strays.length ? strays.length+' stray rev' : 'clean';
   }catch{ $('regbtn').textContent = 'scan failed'; }
