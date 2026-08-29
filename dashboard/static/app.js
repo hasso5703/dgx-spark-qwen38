@@ -76,6 +76,7 @@ function rEngineInfo(d){
   if (i.max_total_num_tokens) POOL = i.max_total_num_tokens;
 }
 let POOL = null;   // max_total_num_tokens from engine info
+let USABLE = 0.92; // share of the pool one prompt can use (server: usable_frac, same knob as the proxy guard)
 function rPool(l){
   if (!POOL) { $('poollab').textContent = '...'; return; }
   const held = l.num_tokens || 0, pct = 100*held/POOL;
@@ -84,7 +85,7 @@ function rPool(l){
   $('poolgauge').className = 'gauge' + (pct>90 ? ' crit' : pct>70 ? ' warn' : '');
   $('poolnote').textContent = pct>70
     ? 'one more large context will not fit: the scheduler queues it (max-running-requests 1)'
-    : 'a single prompt tops out near ' + Math.round(POOL*0.94/1000) + 'K tokens on this pool';
+    : 'a single prompt tops out near ' + Math.round(POOL*USABLE/1000) + 'K tokens on this pool';
 }
 const WINDOW = 262144;
 function rReservoir(l){
@@ -94,7 +95,7 @@ function rReservoir(l){
     return;
   }
   $('restick').style.display = '';
-  const held = l.num_tokens || 0, single = Math.round(POOL*0.94);
+  const held = l.num_tokens || 0, single = Math.round(POOL*USABLE);
   const scale = Math.max(WINDOW, POOL);
   const pct = 100*held/POOL;
   $('resbig').innerHTML = held.toLocaleString('en') + `<small id="rescap">of ${POOL.toLocaleString('en')} tokens</small>`;
@@ -299,6 +300,7 @@ document.querySelectorAll('dd, .chip, .num').forEach(el => {
   if (el.textContent.trim() === '...') el.classList.add('skel');
 });
 function apply(state){
+  if (state.config && state.config.data && state.config.data.usable_frac) USABLE = state.config.data.usable_frac;
   for (const [name, wrap] of Object.entries(state)){
     const fn = RENDER[name]; if(!fn) continue;
     try{

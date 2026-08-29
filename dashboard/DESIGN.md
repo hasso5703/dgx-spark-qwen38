@@ -230,3 +230,19 @@ Operations (toutes via le registre d'actions du cockpit, enums fermes, audit, un
 Ce qui n'est PAS fait tant que le contrat n'est pas ecrit: l'adaptateur vllm/llamacpp
 (la famille sglang couvre les deux lanes du repo), et l'application d'une recipe custom
 sans validation needle (interdit par design).
+
+### Etape 4, avancement 29/08 (soir)
+
+Fait: `recipes.py` (pur, 11 tests sur les vrais fichiers du repo), `/api/recipes`
+(lecture seule, cache 60 s), panneau Recipes (recette integree ou custom, image,
+modele et revision, drafter, cles de service, presence sur la box, derive contre
+l'unite ou le launcher installes), `tests/headless-check.mjs` (chromium headless
+pilote par CDP, cookie de session injecte, 0 exception console). Verifie live:
+launcher flash = 0 derive, unite 27B = variante 1M (contexte, fraction, env).
+
+Suivant, dans l'ordre: (1) `validate` + `render` (dry-run) comme actions du
+registre, diff affiche avant toute application ; (2) `apply` avec sauvegarde,
+attente health + canaris + needle de la recette, restauration automatique en cas
+d'echec ; (3) veille upstream etendue aux images et aux drafters ; (4) creation
+d'une recette custom depuis l'interface (formulaire a enums fermes, ecrit le JSON,
+jamais d'argv libre).

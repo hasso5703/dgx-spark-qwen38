@@ -595,6 +595,11 @@ def collect_lifecycle():
 # ── Snapshot store + background sampling ────────────────────────────────────
 STATE: dict[str, dict] = {}
 STATE_LOCK = threading.Lock()
+# Share of the KV pool one prompt may use: the same knob and default as the keepalive
+# proxy's oversize guard (OVERSIZE_MARGIN_FRAC), so the reservoir tick and the proxy's
+# refusals tell one story.
+USABLE_FRAC = round(1.0 - float(os.environ.get("OVERSIZE_MARGIN_FRAC", "0.08")), 3)
+STATE["config"] = {"data": {"usable_frac": USABLE_FRAC, "version": VERSION}, "ts": time.time()}
 EVENT = threading.Condition()
 
 TIERS = [
