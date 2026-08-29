@@ -33,6 +33,13 @@
     min-height:100vh;
   }
   .num{font-variant-numeric:tabular-nums; letter-spacing:.01em}
+  :focus-visible{outline:2px solid var(--acc); outline-offset:2px; border-radius:6px}
+  @media (max-width:720px){
+    header{padding:10px 14px; gap:9px} .hero{display:none} .repoline{display:none}
+    main{padding:12px 12px 36px; gap:12px}
+    .res{grid-template-columns:1fr} .res .big{font-size:26px}
+    th:first-child, td:first-child{width:auto}
+  }
 
   /* ── header ── */
   header{display:flex; align-items:center; gap:13px; padding:13px 26px;
@@ -759,6 +766,7 @@ function askAction(name, params, argv, warns){
 $('mcancel').onclick = () => { $('modal').hidden = true; pendingRun = null; };
 $('mgo').onclick = () => { $('modal').hidden = true; const f = pendingRun; pendingRun = null; if (f) f(); };
 $('modal').addEventListener('click', e => { if (e.target === $('modal')) $('mcancel').onclick(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('modal').hidden) $('mcancel').onclick(); });
 
 async function runAction(name, params){
   const chip = $('jobchip'), log = $('joblog');
