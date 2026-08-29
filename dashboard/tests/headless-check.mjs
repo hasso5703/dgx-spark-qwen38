@@ -20,7 +20,8 @@ const { result: { targetId } } = await send('Target.createTarget', { url: 'about
 const { result: { sessionId } } = await send('Target.attachToTarget', { targetId, flatten: true });
 await send('Network.enable', {}, sessionId); await send('Runtime.enable', {}, sessionId); await send('Page.enable', {}, sessionId);
 await send('Network.setCookie', { name: 'cockpit', value: cookie, url: BASE, httpOnly: true, sameSite: 'Strict' }, sessionId);
-await send('Page.navigate', { url: BASE + (process.argv[4] || '/') }, sessionId);
+const target = process.argv[4] || '/';
+await send('Page.navigate', { url: /^(https?|file):/.test(target) ? target : BASE + target }, sessionId);
 await new Promise(r => setTimeout(r, 5000));
 const ev = await send('Runtime.evaluate', { returnByValue: true, expression: `JSON.stringify({
   url: location.pathname, title: document.title,

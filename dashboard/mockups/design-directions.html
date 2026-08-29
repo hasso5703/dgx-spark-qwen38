@@ -1,0 +1,151 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Spark Cockpit: two design directions (mockup, static)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* Static mockup for review: two directions side by side, real data shapes from the box on 29/08.
+     No JS, no external assets (the cockpit's CSP forbids them anyway). */
+  body{margin:0;font:14px/1.45 -apple-system,"Segoe UI",Inter,Roboto,sans-serif;background:#2a2c31;color:#ddd}
+  .intro{padding:22px 28px;max-width:1100px}
+  .intro h1{font-size:18px;margin:0 0 6px}
+  .intro p{margin:0 0 6px;color:#bbb}
+  .dir{margin:18px 28px 36px;border-radius:14px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+  .dir .note{padding:10px 16px;font-size:12px;background:#1a1b1f;color:#aaa;border-bottom:1px solid #333}
+  .dir .note b{color:#eee}
+
+  /* ── Direction A: Instrument (dark, telemetry) ─────────────────────────── */
+  .A{--bg:#0b0d10;--card:#111419;--line:#1f242c;--ink:#e6e4dc;--mut:#8a9098;--amber:#ffb454;--ok:#57d69b;--bad:#ff5c5c;--flash:#b89cff;--l27:#5cc3ff;
+     background:var(--bg);color:var(--ink);font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;padding:18px 22px 26px}
+  .A .top{display:flex;align-items:baseline;gap:18px;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:16px}
+  .A .top .name{font-size:13px;letter-spacing:.18em;text-transform:uppercase}
+  .A .top .st{margin-left:auto;font-size:12px;color:var(--mut)}
+  .A .st i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;box-shadow:0 0 10px var(--ok)}
+  .A .inst{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:16px 18px 14px}
+  .A .inst .lab{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut)}
+  .A .big{font-size:56px;line-height:1;font-weight:500;letter-spacing:-.02em;margin:6px 0 4px;font-variant-numeric:tabular-nums}
+  .A .big small{font-size:14px;color:var(--mut);letter-spacing:0;margin-left:10px}
+  .A .scale{position:relative;height:34px;margin-top:10px;background:
+      repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px 5%) 0 100%/100% 8px no-repeat,
+      repeating-linear-gradient(90deg,var(--mut) 0 1px,transparent 1px 25%) 0 100%/100% 14px no-repeat}
+  .A .scale .fill{position:absolute;left:0;bottom:16px;height:8px;width:17%;background:linear-gradient(90deg,var(--amber),#ffd08a)}
+  .A .scale .cap{position:absolute;left:70.4%;bottom:14px;width:1px;height:26px;background:var(--ink)}
+  .A .scale .cap::after{content:"one prompt 170K";position:absolute;left:6px;top:-2px;font-size:10px;color:var(--mut);white-space:nowrap}
+  .A .scale .win{position:absolute;left:0;bottom:16px;height:8px;width:100%;border:1px dashed #3a3f48;box-sizing:border-box}
+  .A .ticks{display:flex;justify-content:space-between;font-size:10px;color:var(--mut);margin-top:6px}
+  .A .grid{display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:12px;margin-top:12px}
+  .A .card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+  .A .card h3{margin:0 0 8px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);font-weight:500}
+  .A .lane{display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line);font-size:12.5px}
+  .A .lane:first-of-type{border-top:0}
+  .A .tag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:2px 7px;border-radius:3px;border:1px solid currentColor}
+  .A .tag.flash{color:var(--flash)} .A .tag.l27{color:var(--l27)} .A .tag.ok{color:var(--ok)} .A .tag.off{color:var(--mut)}
+  .A .lane .r{margin-left:auto;color:var(--mut);font-size:11px}
+  .A .stages{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-top:6px}
+  .A .stages div{height:6px;background:var(--ok);border-radius:1px} .A .stages div.cur{background:var(--amber)} .A .stages div.todo{background:var(--line)}
+  .A .stagelab{display:flex;justify-content:space-between;font-size:9.5px;color:var(--mut);margin-top:4px}
+  .A table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+  .A td{padding:5px 0;border-top:1px solid var(--line);font-variant-numeric:tabular-nums} .A td.r{text-align:right}
+  .A .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px} .A .kv dt{color:var(--mut)} .A .kv dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+  .A .spark{height:38px;margin-top:8px;background:linear-gradient(180deg,transparent 60%,rgba(87,214,155,.08));position:relative;overflow:hidden}
+  .A .spark::before{content:"";position:absolute;inset:0;background:
+      linear-gradient(90deg,transparent 0 10%,var(--ok) 10% 10.4%,transparent 10.4% 22%,var(--ok) 22% 22.4%,transparent 22.4% 41%,var(--ok) 41% 41.4%,transparent 41.4% 63%,var(--ok) 63% 63.4%,transparent 63.4% 80%,var(--ok) 80% 80.4%,transparent 80.4%);opacity:.55}
+
+  /* ── Direction B: Ledger (light, measurement notebook) ─────────────────── */
+  .B{--paper:#f5f2ea;--ink:#1b1c20;--mut:#6b6e74;--rule:#d8d2c3;--blue:#1e4fa3;--ok:#25784b;--bad:#b3262d;--flash:#6a48c9;--l27:#0b6fa0;
+     background:var(--paper);color:var(--ink);font-family:-apple-system,"Segoe UI",Inter,Roboto,sans-serif;padding:20px 26px 28px}
+  .B .head{display:flex;align-items:baseline;gap:14px;border-bottom:2px solid var(--ink);padding-bottom:8px}
+  .B .head h2{margin:0;font:600 22px/1 Georgia,"Iowan Old Style","Times New Roman",serif;letter-spacing:-.01em}
+  .B .head .meta{color:var(--mut);font-size:12px} .B .head .live{margin-left:auto;font-size:12px;color:var(--ok)}
+  .B .row{display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:26px;margin-top:16px}
+  .B h4{margin:0 0 6px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--mut);font-weight:600}
+  .B .num{font:500 54px/1 Georgia,"Iowan Old Style",serif;font-variant-numeric:tabular-nums oldstyle-nums;letter-spacing:-.02em}
+  .B .num small{font:13px/1 -apple-system,Inter,sans-serif;color:var(--mut);margin-left:8px}
+  .B .ruler{margin-top:12px;height:14px;background:linear-gradient(90deg,var(--blue) 0 17%,transparent 17%),repeating-linear-gradient(90deg,var(--rule) 0 1px,transparent 1px 10%);border-bottom:1px solid var(--ink);position:relative}
+  .B .ruler::after{content:"170K";position:absolute;left:70.4%;top:-16px;font-size:10px;color:var(--ink);border-left:1px solid var(--ink);padding-left:4px;height:32px}
+  .B .lines{border-top:1px solid var(--rule)} .B .lines div{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--rule);font-size:13px}
+  .B .lines .r{margin-left:auto;color:var(--mut);font-variant-numeric:tabular-nums}
+  .B .lane{font-weight:600} .B .lane.flash{color:var(--flash)} .B .lane.l27{color:var(--l27)}
+  .B .pill{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--rule);color:var(--mut)} .B .pill.ok{color:var(--ok);border-color:var(--ok)}
+  .B table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:2px}
+  .B th{text-align:left;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--mut);font-weight:600;padding:0 0 5px;border-bottom:1px solid var(--ink)}
+  .B td{padding:6px 0;border-bottom:1px solid var(--rule);font-variant-numeric:tabular-nums} .B td.r{text-align:right}
+  .B .fail{color:var(--bad);font-weight:600}
+  .B .tl{border-left:2px solid var(--ink);margin:6px 0 0 4px;padding-left:12px;font-size:12.5px}
+  .B .tl div{position:relative;padding:3px 0 9px} .B .tl div::before{content:"";position:absolute;left:-17px;top:9px;width:8px;height:8px;border-radius:50%;background:var(--paper);border:2px solid var(--ink)}
+  .B .tl time{display:inline-block;width:52px;color:var(--mut);font-variant-numeric:tabular-nums}
+  .B .tl .now::before{background:var(--blue);border-color:var(--blue)}
+</style>
+
+<div class="intro">
+  <h1>Spark Cockpit: two design directions to choose from</h1>
+  <p>Static mockup, real shapes from the box (29/08 evening). Same content in both: the KV pool as the hero instrument, the two lanes, live requests, the boot timeline. Nothing here is wired; it is a conversation piece for tomorrow.</p>
+  <p>Current app: graphite, gold, NVIDIA green, cards. Both directions below drop the card grid for one strong instrument and a stricter type system, and each takes one deliberate risk.</p>
+</div>
+
+<div class="dir">
+  <div class="note"><b>Direction A: Instrument.</b> A telemetry console: one monospace family for everything, uppercase tracked labels, a ruled scale as the hero (held tokens, the one-prompt cap as a needle, the 262K window dashed), lanes as a switchboard, boot stages as segment lights. Risk taken: monospace for all text, not only numbers. For long sessions in a dark room.</div>
+  <div class="A">
+    <div class="top"><span class="name">Spark Cockpit</span><span style="color:var(--mut);font-size:12px">gx10 · flash lane · v1.5.5</span><span class="st"><i></i>live · 3 s tier</span></div>
+    <div class="inst">
+      <div class="lab">KV pool held</div>
+      <div class="big">31,744<small>of 184,384 tokens · 17 %</small></div>
+      <div class="scale"><div class="win"></div><div class="fill"></div><div class="cap"></div></div>
+      <div class="ticks"><span>0</span><span>65K</span><span>131K</span><span>196K</span><span>262K window</span></div>
+    </div>
+    <div class="grid">
+      <div class="card"><h3>Lanes</h3>
+        <div class="lane"><span class="tag flash">flash</span> Qwen3.8-Flash-Next 176B NVFP4 <span class="tag ok">ready</span><span class="r">up 24 min · boot 10:58</span></div>
+        <div class="lane"><span class="tag l27">27B</span> Qwen3.8-27B NVFP4 + DFlash2 <span class="tag off">stopped</span><span class="r">blocked: one engine at a time</span></div>
+        <div class="lane"><span class="tag off">proxy</span> keepalive :30001 <span class="tag ok">active</span><span class="r">v6.8 · guard exact</span></div>
+        <h3 style="margin-top:12px">Boot stages (last: 10 min 58)</h3>
+        <div class="stages"><div></div><div></div><div></div><div></div><div></div><div></div></div>
+        <div class="stagelab"><span>weights</span><span>draft</span><span>kv</span><span>graphs</span><span>warm</span><span>ready</span></div>
+      </div>
+      <div class="card"><h3>Live requests</h3>
+        <dl class="kv"><dt>running</dt><dd>1</dd><dt>waiting</dt><dd>0</dd><dt>accept length</dt><dd>2.35</dd><dt>decode</dt><dd>34.2 tok/s</dd><dt>mamba slots</dt><dd>3 / 12</dd></dl>
+        <div class="spark"></div>
+        <table><tr><td>18:44:49</td><td>chat/completions</td><td class="r">201 KB</td><td class="r" style="color:var(--amber)">in flight</td></tr>
+        <tr><td>18:43:48</td><td>chat/completions</td><td class="r">334 KB</td><td class="r">60.1 s</td></tr>
+        <tr><td>18:42:36</td><td>chat/completions</td><td class="r">468 KB</td><td class="r" style="color:var(--bad)">400 oversize</td></tr></table>
+      </div>
+      <div class="card"><h3>Machine</h3>
+        <dl class="kv"><dt>unified memory</dt><dd>103.1 / 121.6 GB</dd><dt>available</dt><dd>18.6 GB</dd><dt>page cache (PLE)</dt><dd>17.4 GB</dd><dt>GPU power</dt><dd>58.1 W</dd><dt>GPU temp</dt><dd>84 °C</dd><dt>load</dt><dd>1.76 · 1.79 · 1.79</dd></dl>
+        <h3 style="margin-top:12px">Belts</h3>
+        <dl class="kv"><dt>canary</dt><dd style="color:var(--ok)">ok 90 s ago</dd><dt>wedge watch</dt><dd>armed · grace 600 s</dd><dt>pool guard</dt><dd>idle</dd><dt>autoheal</dt><dd>2 today</dd></dl>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="dir">
+  <div class="note"><b>Direction B: Ledger.</b> A measurement notebook: warm paper, a serif for the numbers only, ink rules instead of cards, the pool as a ruler, the request feed as a ledger table and the boot as a timeline. One ink blue for "now", red only for failures. Risk taken: a light theme for a monitoring tool (readable in daylight next to the box; the current app already ships a light variant nobody chose).</div>
+  <div class="B">
+    <div class="head"><h2>Spark Cockpit</h2><span class="meta">gx10 · 29 Aug 2026 · flash lane</span><span class="live">● live</span></div>
+    <div class="row">
+      <div><h4>KV pool held</h4><div class="num">31,744<small>of 184,384 tokens</small></div><div class="ruler"></div>
+        <div class="lines" style="margin-top:14px">
+          <div><span class="lane flash">flash</span> Qwen3.8-Flash-Next 176B <span class="pill ok">ready</span><span class="r">up 24 min</span></div>
+          <div><span class="lane l27">27B</span> Qwen3.8-27B + DFlash2 <span class="pill">stopped</span><span class="r">one engine at a time</span></div>
+          <div><span class="lane">proxy</span> keepalive :30001 <span class="pill ok">active</span><span class="r">guard: exact count</span></div>
+        </div>
+      </div>
+      <div><h4>Requests</h4>
+        <table><tr><th>time</th><th>route</th><th class="r">body</th><th class="r">outcome</th></tr>
+          <tr><td>18:44:49</td><td>chat</td><td class="r">201 KB</td><td class="r">in flight</td></tr>
+          <tr><td>18:43:48</td><td>chat</td><td class="r">334 KB</td><td class="r">60.1 s</td></tr>
+          <tr><td>18:43:13</td><td>chat</td><td class="r">172 B</td><td class="r">0.3 s</td></tr>
+          <tr><td>18:42:36</td><td>chat</td><td class="r">468 KB</td><td class="r fail">400 oversize</td></tr></table>
+        <h4 style="margin-top:16px">Decode</h4>
+        <div class="lines"><div>accept length <span class="r">2.35</span></div><div>tok/s (last) <span class="r">34.2</span></div><div>mamba slots <span class="r">3 of 12</span></div></div>
+      </div>
+      <div><h4>Boot timeline</h4>
+        <div class="tl">
+          <div><time>18:21</time> starting</div><div><time>18:21</time> loading weights · 8 min 21</div><div><time>18:29</time> loading draft · 1 min 22</div>
+          <div><time>18:31</time> allocating KV · 184,384 tokens</div><div><time>18:31</time> capturing graphs</div><div class="now"><time>18:32</time> ready · 10 min 58 total</div>
+        </div>
+        <h4 style="margin-top:12px">Machine</h4>
+        <div class="lines"><div>unified memory <span class="r">103.1 / 121.6 GB</span></div><div>available <span class="r">18.6 GB</span></div><div>GPU <span class="r">58 W · 84 °C</span></div></div>
+      </div>
+    </div>
+  </div>
+</div>

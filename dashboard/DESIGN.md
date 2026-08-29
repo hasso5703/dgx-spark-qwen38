@@ -246,3 +246,14 @@ attente health + canaris + needle de la recette, restauration automatique en cas
 d'echec ; (3) veille upstream etendue aux images et aux drafters ; (4) creation
 d'une recette custom depuis l'interface (formulaire a enums fermes, ecrit le JSON,
 jamais d'argv libre).
+
+### Deux directions pour la refonte visuelle (a discuter avec Hasan)
+
+`dashboard/mockups/design-directions.html` (statique, aucun script) montre, avec les vraies
+formes de donnees du 29/08 : A « Instrument » (console telemetrie, monospace partout,
+echelle graduee en hero, lanes en tableau de bord, etapes de boot en segments) et B
+« Ledger » (carnet de mesures, papier chaud, serif pour les chiffres seulement, regles
+d'encre au lieu de cartes, boot en chronologie). Les deux abandonnent la grille de
+cartes actuelle pour un seul instrument fort et un systeme typographique strict. Capture :
+`~/flashnext-work/design-directions.png`. La direction choisie sera appliquee a l'app
+entiere en une passe, tokens d'abord, puis composants.
