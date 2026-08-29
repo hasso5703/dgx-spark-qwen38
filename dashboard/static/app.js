@@ -140,9 +140,10 @@ function rEngineFast(d){
   push('req', l.num_reqs||0); drawSpark($('reqspark'),'req',css('--flash'),4);
 }
 function rDecode(d){
-  const t = d.decode;
+  const t = d.decode, u = d.usage || {};
   $('acclen').textContent = t ? t.accept_len.toFixed(2) : 'idle';
-  $('kvusage').textContent = t ? (100*t.token_usage).toFixed(1)+' %' : '...';
+  $('kvusage').textContent = t ? (100*t.token_usage).toFixed(1)+' %' : (u.tokens ? (100*u.tokens).toFixed(0)+' % (last seen)' : '...');
+  $('mambausage').textContent = u.mamba ? (100*u.mamba).toFixed(0)+' %' + (u.mamba>=0.5 ? ' (guard flushes when idle)' : '') : '...';
 }
 function fmtSince(s){
   // systemd: 'Sat 2026-08-29 01:34:33 CEST' -> 'since 01:34' today, else 'since 08-29 01:34'

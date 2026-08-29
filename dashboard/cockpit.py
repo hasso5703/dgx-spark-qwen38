@@ -351,7 +351,9 @@ def collect_decode_telemetry():
             last = {"running": int(m.group(1)),
                     "token_usage": float(m.group(2)),
                     "accept_len": float(m.group(3))}
-    return {"node_id": "local", "lane": active, "decode": last}
+    return {"node_id": "local", "lane": active, "decode": last,
+            "usage": {"tokens": LAST_USAGE["value"], "mamba": LAST_USAGE["mamba"],
+                      "age": round(time.time() - LAST_USAGE["ts"], 1) if LAST_USAGE["ts"] else None}}
 
 
 FEED_START = re.compile(r"\[proxy\] (\S+) -> (POST|GET) (\S+) body=(\d+)b")
