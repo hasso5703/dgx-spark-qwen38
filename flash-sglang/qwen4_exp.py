@@ -748,6 +748,58 @@ def _gather_ple_embedding_from_pinned_kernel(
 
 
 _PLE_MMAP_DIR = None
+# Table reuse across boots (v1.5.3). The table is a deterministic function of
+# the checkpoint, so once every row landed and reached disk it never has to be
+# copied again. A sidecar marker records what the file holds; a boot whose
+# expectation matches maps the file and skips the copies (issue #7: every
+# boot used to rewrite ~48 GB through a random-access mapping).
+_PLE_REUSE = {"skip": False, "marker": None, "tag": None,
+              "ptr": None, "nbytes": 0, "rows_total": 0, "rows_done": 0}
+
+
+def _ple_madvise(ptr, nbytes, advice, label):
+    import ctypes
+    import logging
+
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        rc = libc.madvise(ctypes.c_void_p(ptr), ctypes.c_size_t(nbytes),
+                          ctypes.c_int(advice))
+        logging.getLogger(__name__).info(
+            "PLE table: madvise(%s) %s", label, "ok" if rc == 0 else "failed")
+    except Exception as exc:  # I/O policy only, never correctness
+        logging.getLogger(__name__).warning("PLE table: madvise not applied (%s)", exc)
+
+
+def _ple_table_complete():
+    """All rows copied: make them durable, then publish the marker and switch
+    the mapping to its serving access pattern."""
+    import ctypes
+    import logging
+    import os
+
+    st = _PLE_REUSE
+    if st["marker"] is None or st["skip"]:
+        return
+    log = logging.getLogger(__name__)
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        MS_SYNC = 4
+        rc = libc.msync(ctypes.c_void_p(st["ptr"]), ctypes.c_size_t(st["nbytes"]),
+                        ctypes.c_int(MS_SYNC))
+        if rc != 0:
+            log.warning("PLE table: msync failed, marker withheld")
+            return
+        tmp = st["marker"] + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(st["tag"])
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, st["marker"])
+        log.info("PLE table: complete, marker written (%s)", st["tag"])
+    except Exception as exc:
+        log.warning("PLE table: could not publish completion marker (%s)", exc)
+    _ple_madvise(st["ptr"], st["nbytes"], 1, "MADV_RANDOM")
 
 
 def _alloc_ple_table(shape, dtype):
@@ -781,25 +833,43 @@ def _alloc_ple_table(shape, dtype):
     )
     storage = torch.from_file(path, shared=True, size=nbytes, dtype=torch.uint8)
 
-    # MADV_RANDOM: the table is purely random access (16 rows of 160 B per
-    # token). Without it the kernel reads its whole readahead window around each
-    # row. Measured cold: 1.4 MB of disk per token, ~560x more than is used.
-    # Cheap in decode; a prefill chunk touches tens of thousands of rows.
-    try:
-        import ctypes
-
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        MADV_RANDOM = 1
-        rc = libc.madvise(
-            ctypes.c_void_p(storage.data_ptr()),
-            ctypes.c_size_t(nbytes),
-            ctypes.c_int(MADV_RANDOM),
-        )
+    # Reuse decision. The marker must name the checkpoint (revision tag handed
+    # in by the launcher), the geometry and the dtype; anything else rebuilds.
+    tag_env = os.environ.get("SGLANG_QWEN4_PLE_TAG", "").strip()
+    import re as _re
+    if tag_env and not _re.fullmatch(r"[0-9a-f]{7,64}", tag_env):
+        # a branch name ("main") can move under the table: never reuse on it
         logging.getLogger(__name__).info(
-            "PLE table: madvise(MADV_RANDOM) %s", "ok" if rc == 0 else "failed"
-        )
-    except Exception as exc:  # not critical: affects I/O only, never correctness
-        logging.getLogger(__name__).warning("PLE table: madvise not applied (%s)", exc)
+            "PLE table: tag %r is not a commit sha, table rebuilt every boot", tag_env)
+        tag_env = ""
+    tag = "%s|%d|%d|%s" % (tag_env, numel, nbytes, dtype) if tag_env else None
+    marker = path + ".complete"
+    have = None
+    try:
+        with open(marker) as f:
+            have = f.read().strip()
+    except OSError:
+        pass
+    skip = bool(tag) and have == tag
+    if have is not None and not skip:
+        try:
+            os.remove(marker)   # stale: different checkpoint/shape/dtype
+        except OSError:
+            pass
+    _PLE_REUSE.update(skip=skip, marker=marker if tag else None, tag=tag,
+                      ptr=storage.data_ptr(), nbytes=nbytes,
+                      rows_total=int(shape[0]), rows_done=0)
+    log = logging.getLogger(__name__)
+    if skip:
+        log.info("PLE table: complete marker matches (%s), reusing without copy", tag)
+        # serving pattern: 16 rows of 160 B per token, purely random access
+        _ple_madvise(storage.data_ptr(), nbytes, 1, "MADV_RANDOM")
+    else:
+        if not tag:
+            log.info("PLE table: no SGLANG_QWEN4_PLE_TAG, table rebuilt every boot")
+        # population pattern: rows land in order, let readahead work
+        # (issue #7: MADV_RANDOM during population meant ~4 KB faults for 48 GB)
+        _ple_madvise(storage.data_ptr(), nbytes, 2, "MADV_SEQUENTIAL")
 
     return storage.view(dtype).view(*shape)
 
@@ -1973,8 +2043,16 @@ class Qwen4ExpForConditionalGeneration(Qwen3VLForConditionalGeneration):
             shard_start = shard_idx * shard_size
             actual_rows = loaded_weight.shape[0]
             shard_end = shard_start + actual_rows
+            if _PLE_REUSE["skip"] and isinstance(emb, Qwen4ExpPinnedHostEmbedding):
+                # table already complete on disk for this checkpoint: no copy
+                loaded_shard_params.add(f"{mod_prefix}.ngram_embedding.weight")
+                return True
             copy_ple_rows_to_tp_embedding(emb, loaded_weight, shard_start, shard_end)
             loaded_shard_params.add(f"{mod_prefix}.ngram_embedding.weight")
+            if _PLE_REUSE["marker"] is not None:
+                _PLE_REUSE["rows_done"] += int(actual_rows)
+                if _PLE_REUSE["rows_done"] >= _PLE_REUSE["rows_total"]:
+                    _ple_table_complete()
             return True
 
         params_dict = dict(self.named_parameters(remove_duplicate=False))

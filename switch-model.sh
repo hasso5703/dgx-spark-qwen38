@@ -137,7 +137,8 @@ else
   # points at it. Refresh --revision there.
   FLASH_LAUNCH="$CONFIG_DIR/launch-flash.sh"
   [ -f "$FLASH_LAUNCH" ] || die "flash launch script missing ($FLASH_LAUNCH): re-run MODEL_CHOICE=flash ./install.sh"
-  sed -E -e "s|(--revision )[A-Za-z0-9]+|\1$TARGET_REV|" "$FLASH_LAUNCH" > "$TMP_UNIT"
+  sed -E -e "s|(--revision )[A-Za-z0-9]+|\1$TARGET_REV|" \
+         -e "s|(SGLANG_QWEN4_PLE_TAG=)[A-Za-z0-9]+|\1$TARGET_REV|" "$FLASH_LAUNCH" > "$TMP_UNIT"
   grep -q -- " $TARGET_REPO " "$TMP_UNIT" || die "the flash launch script does not serve $TARGET_REPO (hand-edited?); re-run MODEL_CHOICE=flash ./install.sh"
   grep -q -- "--revision $TARGET_REV" "$TMP_UNIT" || die "launch script revision rewrite failed"
   bash -n "$TMP_UNIT" || die "rewritten launch script does not parse"

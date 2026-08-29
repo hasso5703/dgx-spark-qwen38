@@ -92,7 +92,7 @@ jobs:
           # poisoned-table guard must stay (a boot interrupted mid table write
           # wedges every later boot; root-caused live on the reference box)
           grep -q '.loading' /tmp/flash.rendered
-          grep -q 'ple_table_\*.bin' /tmp/flash.rendered
+          grep -q 'ple_table_\*' /tmp/flash.rendered && grep -q 'SGLANG_QWEN4_PLE_TAG=' /tmp/flash.rendered
 
 
       - name: opencode limits block (both modes and both install paths, from install.sh itself)

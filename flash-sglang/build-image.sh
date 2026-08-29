@@ -37,7 +37,9 @@ assert "is_sm100_supported() or is_sm120_supported()" not in qsa, \
 assert "qsa.sm121_varlen" in qsa, "QSA sm_121 Triton varlen route missing"
 ast.parse(open(f"{sgl}/srt/layers/attention/qsa/sm121_varlen.py").read())
 from sglang.srt.utils import is_sm121  # noqa: F401 (the route's gate must exist)
-assert "SGLANG_QWEN4_PLE_MMAP_DIR" in open(f"{sgl}/srt/models/qwen4_exp.py").read(), "PLE mmap hook missing"
+q4 = open(f"{sgl}/srt/models/qwen4_exp.py").read()
+assert "SGLANG_QWEN4_PLE_MMAP_DIR" in q4, "PLE mmap hook missing"
+assert "_ple_table_complete" in q4 and "SGLANG_QWEN4_PLE_TAG" in q4, "PLE table reuse missing"
 print("flash-sglang overlay verified in image")
 PYEOF
 DEOF
