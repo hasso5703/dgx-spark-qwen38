@@ -624,7 +624,7 @@ class QwenSparseAttnBackend(AttentionBackend):
             # DP attention runs IDLE dummy forwards on ranks without work, and
             # the MTP multi-step wrapper forwards them as zero-row DECODE
             # steps.  Model layers skip attention for these batches, but
-            # metadata init is still invoked — return zero-row metadata instead
+            # metadata init is still invoked: return zero-row metadata instead
             # of falling into the extend/decode paths on empty tensors.
             return self._empty_metadata(forward_batch)
         original_mode = getattr(forward_batch, "_original_forward_mode", None)
@@ -1137,7 +1137,7 @@ class QwenSparseAttnBackend(AttentionBackend):
 
         Compressed slots are arithmetic over req_to_token; the recorded kernels
         then rebuild every per-row graph buffer on-GPU from lengths plus
-        the sidecar — no allocation, no reserve, no copy-on-write.
+        the sidecar: no allocation, no reserve, no copy-on-write.
         """
 
         from sglang.srt.layers.attention.qsa.graph_metadata import (
