@@ -212,3 +212,13 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
 - Ligne keepalive : version du proxy deploye et derive vs la copie du repo.
 Limites connues : la ceinture memoire ne voit que MemAvailable (pas la pression de reclaim) ; le compteur NVRM
 depend de sudoers ; le fil ne couvre que les 200 dernieres lignes du journal.
+
+## 2026-08-30: health probe cadence
+
+`GET /health` on both lane images is `/health_generate`: when the engine is idle it runs a
+one-token generation. Polled at 1 Hz it produced 2,394 generations in the last hour of the
+2026-08-30 flash instance, and the 01:15 GPU fault (Xid 31, illegal memory access in the QSA
+indexer prefill) happened inside one of them. The 1 s tier now derives liveness from
+`/get_load` (a lost HTTP layer is seen within a second) and asks `/health` every 2 s only
+until it answers 200, then every 30 s (`COCKPIT_HEALTH_RECHECK_S`). The 90 s canary is
+unchanged and remains the probe that tells a wedged scheduler from a healthy one.

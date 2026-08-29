@@ -265,14 +265,33 @@ def engine_abort_all(timeout: float = 8.0):
     urllib.request.urlopen(req, timeout=timeout).read()
 
 
+HEALTH = {"ts": 0.0, "ok": False}
+HEALTH_RECHECK_S = float(os.environ.get("COCKPIT_HEALTH_RECHECK_S", "30"))
+
+
 @guard
 def collect_engine_fast():
-    load = http_json(ENGINE_BASE + "/get_load", timeout=3)
-    healthy = True
     try:
-        urllib.request.urlopen(ENGINE_BASE + "/health", timeout=2).read()
+        load = http_json(ENGINE_BASE + "/get_load", timeout=3)
     except Exception:  # noqa: BLE001
-        healthy = False
+        load = None
+    now = time.time()
+    if load is None:
+        # no HTTP layer at all (stopped, crashed, restarting): unhealthy within the second
+        HEALTH["ok"], HEALTH["ts"] = False, now
+    elif now - HEALTH["ts"] >= (HEALTH_RECHECK_S if HEALTH["ok"] else 2.0):
+        # In these SGLang builds GET /health is /health_generate: it runs a one-token
+        # generation whenever the engine is idle (2,394 generations in the last hour of the
+        # 30/08 instance at 1 Hz, and the 01:15 GPU fault happened inside one of them). So
+        # it is asked every 2 s only until it answers 200, then every 30 s; the 90 s canary
+        # remains the probe that tells a wedged scheduler from a healthy one.
+        try:
+            urllib.request.urlopen(ENGINE_BASE + "/health", timeout=2).read()
+            HEALTH["ok"] = True
+        except Exception:  # noqa: BLE001
+            HEALTH["ok"] = False
+        HEALTH["ts"] = now
+    healthy = HEALTH["ok"]
     # memory-floor belt (1 s tier): the unified pool is the livelock surface
     num_reqs = 0
     try:
