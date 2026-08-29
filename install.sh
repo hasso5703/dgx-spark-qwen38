@@ -34,7 +34,7 @@ UNC_REV="21565d389fe573a32c1c425e0c7ade204ddb2263"
 FLASH_REPO="RadixArk/Qwen3.8-Flash-Next-NVFP4"
 FLASH_REV="7b719225242aacd3dbd3f9407468c2ee9a9d2594"
 FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"  # = lmsysorg/sglang:qwen38flashnext, 2026-08-26
-FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-qwen38-flash:v1.5}"
+FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-qwen38-flash:v1.5.2}"
 # Backing store for the flash target's mmap-served 51B PLE table (~48 GiB,
 # written once at first boot, reused afterwards; delete it to reclaim).
 PLE_DIR="${PLE_DIR:-$HOME/flashnext-ple}"
@@ -443,7 +443,7 @@ step "7/9 opencode provider config + oc launcher"
 # The key is referenced via {file:...}: no secret in the file.
 # opencode limits per context mode
 if [ "${LANE:-27b}" = "flash" ]; then
-  OC_CTX=226000; OC_OUT=32000;  OC_LABEL="local"   # 226000+32000 = 258000 <= 262144-4096
+  OC_CTX=110000; OC_OUT=32000;  OC_LABEL="local"   # 110000+32000 = 142000 <= the 159,552-token KV pool (v1.5.2: one giant context at a time)
 elif [ "$CONTEXT_MODE" = "1m" ]; then
   OC_CTX=700000; OC_OUT=200000; OC_LABEL="local, 1M"
 else
@@ -499,7 +499,7 @@ if os.environ["OC_27B"] == "1":
                                f"Qwen3.8-27B NVFP4+DFlash2 ({label})", ctx, out)
 if os.environ["OC_FLASH"] == "1":
     providers["flashnext"] = prov("Qwen3.8-Flash-Next (DGX Spark)", "qwen3.8-flash-next",
-                                  "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)", 226000, 32000)
+                                  "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)", 110000, 32000)
 
 default = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8-27b"
 doc = {"$schema": "https://opencode.ai/config.json", "provider": providers,
@@ -691,7 +691,7 @@ except Exception as e:
     # and say how to reclaim them; never delete data on the operator's behalf.
     LEFTOVER_NOTES=""
     if [ "$LANE" = "flash" ]; then
-      for ref in "vllm/vllm-openai:qwen38-flash-next" "vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8" "qwen38-flash:v1.4"; do
+      for ref in "vllm/vllm-openai:qwen38-flash-next" "vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8" "qwen38-flash:v1.4" "qwen38-flash:v1.5"; do
         docker image inspect "$ref" >/dev/null 2>&1 && LEFTOVER_NOTES="${LEFTOVER_NOTES}      docker rmi '$ref'\n"
       done
     fi

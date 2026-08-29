@@ -165,6 +165,14 @@ Back to native: `CONTEXT_MODE=native ./install.sh` (removes the proxy service; t
 
 ## The flash target: Qwen3.8-Flash-Next 176B on one Spark
 
+> **v1.5 users: upgrade to v1.5.2.** The v1.5 flash overlay routed GB10 decode
+> through a kernel that silently corrupts long-context output (runs of token
+> id 0, 1 request in 4 at 120k tokens, 4 in 4 at 210k; found by hashd1ve on
+> 2026-08-29). v1.5.2 replaces that route with a dedicated Triton kernel from
+> upstream PR sglang#36845, re-validated here by exact needle retrieval at
+> 120k, 190k and 210k. Re-run the one-liner (or `git pull && ./install.sh`):
+> the converging install rebuilds the serving image and restarts the lane.
+
 Qwen's official validation environment for this model is a dual GB300 node;
 on Sparks, the public recipes run it on **two** boxes (TP2). This target runs
 it on **one**, at full 262K native context and full NVFP4 quality, on SGLang

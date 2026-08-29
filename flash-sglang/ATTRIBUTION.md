@@ -66,3 +66,23 @@ Why the serving flags look the way they do (carried in
 
 Upstream model: [RadixArk/Qwen3.8-Flash-Next-NVFP4](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4),
 served with the same serve-time `--revision` lock as every other checkpoint here.
+
+
+## v1.5.2 correction (2026-08-29)
+
+The v1.5 overlay widened the QSA trtllm sparse-decode gate to sm_120/121.
+hashd1ve established on 2026-08-29 (commit bd16dce, "Patch 2 was wrong on
+GB10") that this gate routes GB10 decode to FlashInfer's XQA kernel, which
+silently corrupts long-context output (runs of token id 0: 1 of 4 requests at
+120k tokens, 4 of 4 at 210k). The gate is back to upstream (sm100 only) and
+sm_121 decode now uses a dedicated Triton packed-varlen kernel:
+
+- `qwen_sparse_attn_backend.py`: pristine file from the pinned image plus the
+  `patches/qsa_sm121_triton.py` patcher of
+  https://github.com/hashd1ve/qwen38-flash-next-one-dgx-spark (MIT), which
+  adds the `is_sm121()` route to `qsa.sm121_varlen`.
+- `sm121_varlen.py`: verbatim `patches/qsa_sm121_varlen.py` from the same repo,
+  itself a verbatim copy of `sglang/srt/layers/attention/qsa/sm121_varlen.py`
+  from upstream PR sgl-project/sglang#36845 (BBuf, 2026-08-28, open at the time
+  of vendoring). Validated there by exact needle retrieval 4/4 at 120k, 190k and
+  210k tokens; re-validated on this repo's box before release (CHANGELOG v1.5.2).
