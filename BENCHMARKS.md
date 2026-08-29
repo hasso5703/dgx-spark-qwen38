@@ -207,6 +207,7 @@ engine, kernel log watched for GPU driver allocation refusals (`NVRM: NV_ERR_NO_
 | idle after boot | 23.6 to 24.2 GiB | 0 | 0 | |
 | 30K / 60K | 23.0 / 23.1 GiB | +0.9 | 0 | yes |
 | 120K | 16.6 GiB | +7.4 | 0 | no (16.5 after 60 s) |
+| 125K (after the v1.5.6 install, pool 197K) | 14.8 GiB | +8.0 | 11 | not measured |
 | 135K | 12.6 GiB | +11.4 | 0 | no |
 | 150K | 8.9 GiB | +15.3 | 3 | yes (24.0) |
 | 150K, second run | 6.7 GiB | +17.1 | 13 | no (5.8) |
@@ -216,8 +217,10 @@ About 0.27 GiB per 1k tokens beyond ~90K, linear. The process RSS stays at 5.7 G
 whole time (unified CUDA allocations do not show in RSS or in the docker cgroup: the
 `--memory 110g` cap does not see them). The 177K prompt still answered the needle
 correctly; the box was one allocation away from the livelock class documented in the
-README. This is why v1.5.6 caps one prompt at 128K on the flash lane (135K served clean,
-the two 150K runs show the variance) and why the README no longer says 262K fits.
+README. The driver refusals are recoverable (torch frees its cache and retries) and follow
+the page cache state rather than a clean threshold (0 at 135K in one run, 11 at 125K in
+another); the host floor is the hard limit. This is why v1.5.6 caps one prompt at 128K on
+the flash lane (about 14 GiB left at the peak) and why the README no longer says 262K fits.
 
 Tested and rejected: `--chunked-prefill-size 512` (120K floor 20.4 GiB, better; 150K floor
 6.7 GiB with 13 refusals, worse; cold prefill 30 percent slower: 96 s vs 74 s at 120K).

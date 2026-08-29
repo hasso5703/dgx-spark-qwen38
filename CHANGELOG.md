@@ -27,15 +27,20 @@
 - The KV pool is not the ceiling, memory is. Measured on the reference box at
   fraction 0.81 (fresh boot, 24 GiB available idle): the prefill of a long prompt
   grows the engine's footprint by about 0.27 GiB per 1k tokens beyond ~90k
-  (120k prompt: +7.4 GiB; 135k: +11.4; 150k: +15.3 with the first GPU driver
-  allocation refusals in the kernel log; 177k: +22.8, MemAvailable down to
-  0.8 GiB and 15 `NVRM: NV_ERR_NO_MEMORY` lines, the livelock edge). The
-  process RSS does not move (unified CUDA allocations). The proxy therefore
-  enforces an absolute per-lane ceiling for one prompt, `PROMPT_CEILING_TOKENS`,
-  set by install.sh in the keepalive unit: 128,000 on the flash lane (135k was
-  served clean on the reference box; two identical 150k runs landed 2 GiB apart,
-  so the default keeps a margin; override with `PROMPT_CEILING_TOKENS=`), none on
-  the 27B lane (not measured). A smaller prefill chunk (512) was tested and
+  (120k prompt: +7.4 GiB; 135k: +11.4; 150k: +15.3; 177k: +22.8, MemAvailable
+  down to 0.8 GiB and 15 `NVRM: NV_ERR_NO_MEMORY` kernel lines, the livelock
+  edge). The process RSS does not move (unified CUDA allocations). Two effects,
+  not one: GPU driver allocation refusals, which torch recovers from by freeing
+  its cache and retrying, showed up between 125k and 150k depending on the run
+  (0 at 135k in one run, 11 at 125k in another: they follow the page cache state,
+  not a clean threshold, and every prompt still answered correctly); and the host
+  memory floor, the hard limit, which the curve puts near 170k. The proxy
+  therefore enforces an absolute per-lane ceiling for one prompt,
+  `PROMPT_CEILING_TOKENS`, set by install.sh in the keepalive unit: 128,000 on
+  the flash lane, which keeps about 14 GiB available at the prompt's peak on a
+  128 GB box (override with `PROMPT_CEILING_TOKENS=`), none on the 27B lane (not
+  measured). Deployed on the reference box through `install.sh`: 140k and 130k
+  prompts refused with the engine's count, 125k served in 81 s. A smaller prefill chunk (512) was tested and
   rejected: 30 percent slower cold prefill and a worse floor at 150k (6.7 GiB,
   13 driver refusals). The v1.5.4 note "host headroom unchanged at 23 GB" was an
   idle measurement and is corrected in the README.
