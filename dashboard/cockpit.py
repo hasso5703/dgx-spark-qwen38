@@ -396,11 +396,22 @@ def collect_feed():
 def collect_repo():
     def g(*args):
         return run(["git", "-C", str(REPO_DIR), *args]).strip()
+    # keepalive proxy: version of the deployed file and whether it is the repo's copy
+    proxy = {"version": None, "same_as_repo": None}
+    try:
+        deployed = (CONFIG_DIR / "keepalive-proxy.py").read_bytes()
+        m = re.search(rb"\nv(\d+\.\d+):", deployed[:4000])
+        proxy["version"] = "v" + m.group(1).decode() if m else None
+        repo_copy = (REPO_DIR / "keepalive-proxy.py").read_bytes()
+        proxy["same_as_repo"] = hashlib.sha256(deployed).hexdigest() == hashlib.sha256(repo_copy).hexdigest()
+    except OSError:
+        pass
     return {"node_id": "local",
             "head": g("log", "-1", "--format=%h %s"),
             "branch": g("branch", "--show-current"),
             "tag": g("describe", "--tags", "--abbrev=0"),
-            "dirty": bool(g("status", "--porcelain"))}
+            "dirty": bool(g("status", "--porcelain")),
+            "proxy": proxy}
 
 
 def monotonic_now() -> float:

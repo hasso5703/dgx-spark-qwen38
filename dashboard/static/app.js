@@ -163,6 +163,7 @@ function rUnits(d){
       `<span class="chip ${on?'ok':u.active==='failed'?'err':''}">${u.active}</span>`+
       `<span class="name">${name.replace('.service','')}</span>`+
       `<span class="chip ${lane(name)}">${u.enabled}</span>`+
+      (window._proxy && window._proxy.version ? `<span class="chip ${window._proxy.same_as_repo===false?'warn':''}" title="deployed keepalive-proxy.py${window._proxy.same_as_repo===false?' differs from the repo copy':''}">${window._proxy.version}${window._proxy.same_as_repo===false?' · behind repo':''}</span>` : '')+
       `<span class="since">${fmtSince(u.since)}</span>`;
     const btn = document.createElement('button');
     btn.className = 'btn mini'+(on?' danger':'');
@@ -204,6 +205,7 @@ function rFeed(d){
   if(!rows.length){const tr=tb.insertRow();const c=tr.insertCell();c.colSpan=6;c.textContent='no request seen yet';c.style.color='var(--mut)';}
 }
 function rRepo(d){
+  window._proxy = d.proxy || null;
   $('repotag').textContent = d.tag||'...';
   $('repobranch').textContent = d.branch||'...';
   $('repohead').textContent = (d.head||'').slice(0,46);
