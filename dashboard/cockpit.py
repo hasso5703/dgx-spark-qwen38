@@ -274,6 +274,7 @@ AUTOHEAL = os.environ.get("COCKPIT_AUTOHEAL", "1") == "1"
 AUTOHEAL_COOLDOWN = 1800.0
 LAST_HEAL: dict = {"ts": 0.0}
 LAST_PROGRESS: dict = {"ts": None}
+UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
 PROGRESS_RE = re.compile(r"(Prefill|Decode) batch")
 
 
@@ -337,6 +338,36 @@ def collect_decode_telemetry():
     return {"node_id": "local", "lane": active, "decode": last}
 
 
+FEED_START = re.compile(r"\[proxy\] (\S+) -> (POST|GET) (\S+) body=(\d+)b")
+FEED_END = re.compile(r"\[proxy\] (\S+) (POST|GET) (\S+) (.+?) in ([\d.]+)s")
+
+
+@guard
+def collect_feed():
+    """Last requests seen by the keepalive proxy: client, path, size, outcome."""
+    raw = run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "160",
+               "--no-pager", "-o", "short-iso"], timeout=6)
+    reqs: dict[str, dict] = {}
+    order: list[str] = []
+    for ln in raw.splitlines():
+        ts = ln[:19]
+        m = FEED_START.search(ln)
+        if m:
+            peer = m.group(1)
+            reqs[peer] = {"ts": ts, "peer": peer, "path": m.group(3),
+                          "bytes": int(m.group(4)), "outcome": "in flight",
+                          "secs": None}
+            order.append(peer)
+            continue
+        m = FEED_END.search(ln)
+        if m and m.group(1) in reqs:
+            r = reqs[m.group(1)]
+            r["outcome"] = m.group(4)[:40]
+            r["secs"] = float(m.group(5))
+    rows = [reqs[p] for p in order[-25:]]
+    return {"node_id": "local", "rows": rows}
+
+
 @guard
 def collect_repo():
     def g(*args):
@@ -381,9 +412,19 @@ def collect_lifecycle():
             tail = run(["docker", "logs", "--tail", "300", cont],
                        timeout=6, merge_err=True).splitlines()
             boot = lc.parse_boot_log(tail)
+        # Hysteresis: a 2 s health probe times out under a heavy prefill.
+        # Leaving ready needs 3 consecutive misses AND no fresh progress line;
+        # a single 200 restores it at once.
+        if healthy:
+            UNHEALTHY_TICKS[unit] = 0
+        else:
+            UNHEALTHY_TICKS[unit] = UNHEALTHY_TICKS.get(unit, 0) + 1
+        progressing = LAST_PROGRESS["ts"] and time.time() - LAST_PROGRESS["ts"] < 30
+        sticky_ready = (prev.get(unit) in ("ready", "wedged") and running and not healthy
+                        and (UNHEALTHY_TICKS[unit] < 3 or progressing))
         st = lc.derive_state(unit_active=active, unit_sub=d.get("SubState", "?"),
                              container_running=running,
-                             healthy=healthy and running, boot=boot,
+                             healthy=(healthy or sticky_ready) and running, boot=boot,
                              rebuild=False)
         # degraded means "WAS serving, lost health", not "health probe has
         # not caught up yet": right after fired-up, stay warming-up unless
@@ -479,7 +520,8 @@ TIERS = [
     (2.0, {"lifecycle": collect_lifecycle}),
     (90.0, {"canary": collect_canary}),
     (3.0, {"gpu": collect_gpu, "decode": collect_decode_telemetry}),
-    (5.0, {"units": collect_units, "containers": collect_containers}),
+    (5.0, {"units": collect_units, "containers": collect_containers,
+           "feed": collect_feed}),
     (30.0, {"engine_info": collect_engine_info, "repo": collect_repo}),
 ]
 
@@ -535,6 +577,13 @@ ACTIONS = {
         "params": {},
         "argv": lambda p: ["bash", str(REPO_DIR / "install.sh")],
         "timeout": 3600,
+    },
+    # abort every in-flight generation (orphans left by vanished clients)
+    "abort_all": {
+        "danger": "medium",
+        "params": {},
+        "argv": None,
+        "timeout": 10,
     },
     # health smoke: one canary through the proxy
     "smoke": {
@@ -631,6 +680,18 @@ def start_action(name: str, params: dict) -> tuple[int, dict]:
                                          headers={"Authorization": f"Bearer {api_key()}"})
             urllib.request.urlopen(req, timeout=8).read()
             audit({"kind": "action", "action": name, "ok": True})
+            return 200, {"ok": True}
+        except Exception as e:  # noqa: BLE001
+            return 502, {"error": str(e)[:200]}
+    if name == "abort_all":
+        try:
+            req = urllib.request.Request(ENGINE_BASE + "/abort_request", method="POST",
+                                         data=json.dumps({"abort_all": True}).encode(),
+                                         headers={"Content-Type": "application/json",
+                                                  "Authorization": f"Bearer {api_key()}"})
+            urllib.request.urlopen(req, timeout=8).read()
+            audit({"kind": "action", "action": name, "ok": True})
+            add_event("action", "abort_all: every in-flight generation aborted")
             return 200, {"ok": True}
         except Exception as e:  # noqa: BLE001
             return 502, {"error": str(e)[:200]}

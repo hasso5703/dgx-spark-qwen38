@@ -277,6 +277,11 @@
     </dl>
   </section>
 
+  <section class="wide">
+    <h2>Request feed <span class="chip" id="feedchip">proxy :30001</span></h2>
+    <table id="feedtable"><thead><tr><th>Time</th><th>Client</th><th>Path</th><th class="r">Body</th><th class="r">Duration</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+  </section>
+
   <section>
     <h2>Events <span class="chip" id="evtchip">live</span></h2>
     <div id="evtlist" role="log" aria-live="polite" aria-relevant="additions"><p style="color:var(--mut);font-size:12px">no events yet in this cockpit session</p></div>
@@ -352,6 +357,8 @@
         </select>
         <button class="btn" data-act="switch">Queue switch</button>
       </div>
+      <div class="arow"><span>Abort every in-flight generation (orphans left by vanished clients)</span>
+        <button class="btn danger" data-act="abort_all">Abort all</button></div>
       <div class="arow"><span>Health smoke (canary via proxy)</span>
         <button class="btn low" data-act="smoke">Run smoke</button></div>
       <div class="arow"><span>Flush engine cache</span>
@@ -533,6 +540,24 @@ function rContainers(d){
   });
   if(!tb.rows.length){const tr=tb.insertRow();const c=tr.insertCell();c.colSpan=3;c.textContent='no serving container running';c.style.color='var(--mut)';}
 }
+function rFeed(d){
+  const tb = $('feedtable').tBodies[0]; tb.innerHTML='';
+  const rows = (d.rows||[]).slice().reverse();
+  rows.forEach(r => {
+    const tr = tb.insertRow();
+    tr.insertCell().textContent = (r.ts||'').slice(11,19);
+    const c1 = tr.insertCell(); c1.textContent = r.peer; c1.className='num';
+    tr.insertCell().textContent = r.path;
+    const c2 = tr.insertCell(); c2.textContent = r.bytes>=1024 ? (r.bytes/1024).toFixed(0)+' KB' : r.bytes+' B'; c2.className='r num';
+    const c3 = tr.insertCell(); c3.textContent = r.secs!=null ? r.secs.toFixed(1)+' s' : ''; c3.className='r num';
+    const cls = r.outcome.startsWith('ok') ? 'ok' : r.outcome==='in flight' ? 'flash' : 'err';
+    tr.insertCell().innerHTML = `<span class="chip ${cls}">${r.outcome}</span>`;
+  });
+  const inflight = rows.filter(r=>r.outcome==='in flight').length;
+  $('feedchip').textContent = inflight ? inflight+' in flight' : 'idle';
+  $('feedchip').className = 'chip ' + (inflight ? 'flash' : '');
+  if(!rows.length){const tr=tb.insertRow();const c=tr.insertCell();c.colSpan=6;c.textContent='no request seen yet';c.style.color='var(--mut)';}
+}
 function rRepo(d){
   $('repotag').textContent = d.tag||'...';
   $('repobranch').textContent = d.branch||'...';
@@ -617,7 +642,7 @@ function rLifecycle(d){
 
 const RENDER = {machine:rMachine, gpu:rGpu, engine_info:rEngineInfo,
                 engine_fast:rEngineFast, decode:rDecode, units:rUnits,
-                containers:rContainers, repo:rRepo, lifecycle:rLifecycle};
+                containers:rContainers, repo:rRepo, lifecycle:rLifecycle, feed:rFeed};
 
 // skeleton placeholders: every '...' shimmers until real data lands
 document.querySelectorAll('dd, .chip, .num').forEach(el => {
