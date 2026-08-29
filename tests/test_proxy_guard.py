@@ -112,6 +112,17 @@ class ProxyGuard(unittest.TestCase):
         self.assertNotIn("BBBB", json.dumps(sent))
         self.assertEqual(n, 2 + self.mod.TOKENS_PER_MEDIA)
 
+    def test_prompt_limit_pool_share_and_ceiling(self):
+        saved = self.mod.PROMPT_CEILING_TOKENS
+        try:
+            self.mod.PROMPT_CEILING_TOKENS = 0
+            self.assertEqual(self.mod.prompt_limit(184384), 169633)
+            self.mod.PROMPT_CEILING_TOKENS = 135000
+            self.assertEqual(self.mod.prompt_limit(184384), 135000)
+            self.assertEqual(self.mod.prompt_limit(100000), 92000)   # ceiling above the share: share wins
+        finally:
+            self.mod.PROMPT_CEILING_TOKENS = saved
+
     def test_margin_default(self):
         self.assertAlmostEqual(self.mod.OVERSIZE_MARGIN_FRAC, 0.08)
         self.assertEqual(int(178560 * (1 - self.mod.OVERSIZE_MARGIN_FRAC)), 164275)

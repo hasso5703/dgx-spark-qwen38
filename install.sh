@@ -634,6 +634,11 @@ if [ -n "$OTHER_UNIT" ] && systemctl is-enabled --quiet "$OTHER_UNIT" 2>/dev/nul
   sudo systemctl disable "$OTHER_UNIT"
 fi
 KEEPALIVE_UNIT="qwen38-keepalive.service"
+# One-prompt ceiling enforced by the proxy (tokens; 0 = pool share only). Flash lane: the
+# prefill of a long prompt grows the engine's memory by ~0.27 GiB per 1k tokens beyond ~90k
+# on a 128 GB box (measured 29/08: 135k clean, driver allocation refusals from ~150k).
+PROMPT_CEILING=0
+[ "$LANE" = "flash" ] && PROMPT_CEILING="${PROMPT_CEILING_TOKENS:-135000}"
 # Every service install gets the keepalive proxy: SGLang buffers tool-call
 # arguments while they stream (127 s of measured silence on a 400-line write,
 # at native context) and agent CLIs abort a silent stream (~140-180 s for
@@ -645,6 +650,7 @@ sed -e "s|__HOME__|$HOME|g" \
     -e "s|__GROUP__|$(id -gn)|g" \
     -e "s|__PORT__|$PORT|g" \
     -e "s|__PROXY_PORT__|$PROXY_PORT|g" \
+    -e "s|__PROMPT_CEILING__|$PROMPT_CEILING|g" \
     "$REPO_DIR/qwen38-keepalive.service.template" > "$TMP_KA"
 sudo install -m 644 "$TMP_KA" "/etc/systemd/system/$KEEPALIVE_UNIT"; rm -f "$TMP_KA"
 sudo systemctl enable "$KEEPALIVE_UNIT"

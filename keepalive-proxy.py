@@ -18,7 +18,8 @@ Three roles, nothing else:
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
    cold cache), hence the 3600 s default.
 
-v6.8: oversize guard counts with the engine tokenizer (size only nominates), 8 percent margin.
+v6.8: oversize guard counts with the engine tokenizer (size only nominates), 8 percent margin,
+      absolute per-lane prompt ceiling (PROMPT_CEILING_TOKENS).
 v6.7: abort_request on client loss. v6.6: upstream reads via read1() and TCP_NODELAY on the client side.
 resp.read(8192) on chunked HTTP BLOCKS until 8 KB (~30 SSE events) accumulate
 before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
@@ -41,6 +42,19 @@ CHARS_PER_TOKEN_MIN = float(os.environ.get("CHARS_PER_TOKEN_MIN", "2.5"))
 # scheduler's own buffers (README: with a 178,560-token pool a single prompt tops out
 # near 165K, that is 92 percent).
 OVERSIZE_MARGIN_FRAC = float(os.environ.get("OVERSIZE_MARGIN_FRAC", "0.08"))
+# Absolute ceiling for one prompt, in tokens (0 = none). The KV pool is not the only limit:
+# on the flash lane the prefill of a long prompt grows the engine's footprint by ~0.27 GiB
+# per 1k tokens beyond ~90k (measured 29/08), so the ceiling that keeps the box away from
+# the memory edge is a token count set per lane by install.sh, not a share of the pool.
+PROMPT_CEILING_TOKENS = int(os.environ.get("PROMPT_CEILING_TOKENS", "0") or 0)
+
+
+def prompt_limit(pool):
+    """Usable prompt tokens: the pool share, capped by the absolute ceiling when set."""
+    limit = int(pool * (1.0 - OVERSIZE_MARGIN_FRAC))
+    if PROMPT_CEILING_TOKENS > 0:
+        limit = min(limit, PROMPT_CEILING_TOKENS)
+    return limit
 
 
 MEDIA_BLOCKS = ("image", "image_url", "input_audio", "video_url", "document", "audio_url")
@@ -378,11 +392,11 @@ class H(BaseHTTPRequestHandler):
         if body and self.path.startswith("/v1/") and len(body) > 200_000:
             pool = pool_tokens()
             est = len(body) / CHARS_PER_TOKEN_MIN     # optimistic: fewest tokens the body could be
-            if pool and est > pool:
+            if pool and est > prompt_limit(pool):
                 # v6.8: the size estimate only nominates; the engine's tokenizer decides
                 # (a 140k-token English prompt is 479 KB, which the 2.5 chars/token bound
                 # called 192k tokens and refused although the pool served it).
-                limit = int(pool * (1.0 - OVERSIZE_MARGIN_FRAC))
+                limit = prompt_limit(pool)
                 count = tokenize_count(body, self.path)
                 if count is None:
                     reason = f"at least ~{int(est)} tokens by size (the engine could not count it)"

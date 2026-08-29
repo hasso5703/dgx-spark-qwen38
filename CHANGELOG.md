@@ -15,7 +15,15 @@
   cannot count. Image, audio and document parts (OpenAI parts or Anthropic
   blocks) are counted as a fixed budget of 4096 tokens each
   (`TOKENS_PER_MEDIA`), never as their base64 text. 8 offline tests (fake
-  `/tokenize`) run in CI.
+  `/tokenize`) run in CI. Live on the reference box after deployment: the 140k
+  needle passes through the proxy (140,111 tokens counted, 92 s), a 1.24 MB body
+  is refused in 0.6 s as 230,533 prompt tokens against 169,633 usable, a 300 KB
+  Anthropic-shaped body is served, a 600 KB image body is counted as 4,153
+  tokens and reaches the engine.
+- Measured ceiling for one prompt (direct, 29/08, pool 184,384): 166k, 171k and
+  177k tokens (90, 93 and 96 percent of the pool) all served with exact needle
+  retrieval in 112 to 123 s. The proxy's 8 percent margin is room for the answer,
+  not a hang boundary.
 - CHANGELOG cites the upstream PR behind `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK`
   (sgl-project/sglang#32228, merged 2026-07-29, off by default).
 
