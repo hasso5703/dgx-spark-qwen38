@@ -172,3 +172,9 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
   prefill 140k avant le correctif, 0 depuis 13:00 sous la meme charge (aiguilles).
 - Sonde de generation: uniquement si 0 requete ET aucune ligne de progression depuis 60 s
   (entre deux requetes consecutives la charge lisait brievement zero).
+- Pool guard (13:25): 2e blocage du moteur reproduit en conditions controlees (prefill d'un prompt
+  ~93k termine a 89 % de pool apres 4 prompts 80k caches, aucun decode ensuite) et ATTRAPE par
+  l'autoheal en 5 min (audit: wedge progress_age 302 s -> restart). Le cockpit flush maintenant le
+  radix cache quand le moteur est idle depuis 3 s et que la derniere lecture du pool depasse 60 %
+  (ou 50 % des slots mamba). Meme famille qu'upstream sglang #30314. Ligne « Mamba state slots »
+  ajoutee a Live requests. COCKPIT_POOL_GUARD=0 pour desactiver.
