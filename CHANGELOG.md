@@ -32,10 +32,13 @@
   0.8 GiB and 15 `NVRM: NV_ERR_NO_MEMORY` lines, the livelock edge). The
   process RSS does not move (unified CUDA allocations). The proxy therefore
   enforces an absolute per-lane ceiling for one prompt, `PROMPT_CEILING_TOKENS`,
-  set by install.sh in the keepalive unit: 135,000 on the flash lane (the largest
-  clean point), none on the 27B lane (not measured). The v1.5.4 note "host
-  headroom unchanged at 23 GB" was an idle measurement and is corrected in the
-  README.
+  set by install.sh in the keepalive unit: 128,000 on the flash lane (135k was
+  served clean on the reference box; two identical 150k runs landed 2 GiB apart,
+  so the default keeps a margin; override with `PROMPT_CEILING_TOKENS=`), none on
+  the 27B lane (not measured). A smaller prefill chunk (512) was tested and
+  rejected: 30 percent slower cold prefill and a worse floor at 150k (6.7 GiB,
+  13 driver refusals). The v1.5.4 note "host headroom unchanged at 23 GB" was an
+  idle measurement and is corrected in the README.
 - CHANGELOG cites the upstream PR behind `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK`
   (sgl-project/sglang#32228, merged 2026-07-29, off by default).
 
