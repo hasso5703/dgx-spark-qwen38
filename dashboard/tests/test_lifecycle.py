@@ -256,3 +256,33 @@ DRAFT2_REV="50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
             self.assertEqual(got[0]["repo_id"], "Acme/Tiny")
             self.assertEqual(got[0]["disk_bytes"], 10)
             self.assertEqual(got[0]["revisions"][0]["bytes"], 10)
+
+
+class WedgeDecision(unittest.TestCase):
+    def test_field_case_zero_requests(self):
+        # 29/08: health 200, get_load 0 requests, every completion hung
+        self.assertTrue(lc.decide_wedge(health_ok=True, canary_fails=3,
+                                        num_reqs=0, decode_age=None))
+
+    def test_needs_three_failures(self):
+        self.assertFalse(lc.decide_wedge(health_ok=True, canary_fails=2,
+                                         num_reqs=0, decode_age=None))
+
+    def test_health_down_is_not_a_wedge(self):
+        self.assertFalse(lc.decide_wedge(health_ok=False, canary_fails=9,
+                                         num_reqs=0, decode_age=None))
+
+    def test_busy_but_progressing_never_wedges(self):
+        # a legit long generation makes the canary time out: decode lines flow
+        self.assertFalse(lc.decide_wedge(health_ok=True, canary_fails=5,
+                                         num_reqs=2, decode_age=12.0))
+
+    def test_busy_and_stalled_wedges(self):
+        self.assertTrue(lc.decide_wedge(health_ok=True, canary_fails=3,
+                                        num_reqs=2, decode_age=400.0))
+
+    def test_wedged_counts_as_busy_for_gates(self):
+        self.assertIn("wedged", lc.BUSY_STATES)
+        r = lc.blocked_reasons("unit", {"unit": "qwen38-sglang.service", "verb": "start"},
+                               {"qwen38-flash.service": "wedged"})
+        self.assertEqual(len(r), 1)

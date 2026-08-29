@@ -511,7 +511,7 @@ const ALL_STAGES = Object.keys(STAGE_LABEL);
 const TRANSITIONAL = new Set(['starting','loading-weights','loading-draft',
   'allocating-kv','capturing-graphs','warming-up']);
 const STATE_CHIP = {ready:'ok', degraded:'warn', failed:'err', stopped:'',
-                    stopping:'warn'};
+                    stopping:'warn', wedged:'err'};
 const fmtDur = s => s==null ? '?' : s<90 ? Math.round(s)+' s'
   : Math.floor(s/60)+' min '+String(Math.round(s%60)).padStart(2,'0');
 

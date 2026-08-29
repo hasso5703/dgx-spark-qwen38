@@ -269,6 +269,41 @@ def collect_engine_info():
     return {"node_id": "local", "info": slim}
 
 
+CANARY: dict = {"fails": 0, "last_ok": None, "last_err": "", "latency": None}
+AUTOHEAL = os.environ.get("COCKPIT_AUTOHEAL", "1") == "1"
+AUTOHEAL_COOLDOWN = 1800.0
+LAST_HEAL: dict = {"ts": 0.0}
+LAST_DECODE: dict = {"ts": None}
+
+
+@guard
+def collect_canary():
+    """A real 2-token generation, only when an engine claims ready and no job
+    runs: the only probe that tells a wedged scheduler from a healthy one."""
+    with LIFE_LOCK:
+        states = dict(LIFE.get("states", {}))
+    ready = [u for u in lc.ENGINE_UNITS if states.get(u) in ("ready", "wedged")]
+    if not ready or JOB_LOCK.locked():
+        return {"node_id": "local", **CANARY, "skipped": True}
+    body = json.dumps({"model": "canary", "max_tokens": 2, "temperature": 0,
+                       "messages": [{"role": "user", "content": "Say OK"}],
+                       "chat_template_kwargs": {"enable_thinking": False}}).encode()
+    req = urllib.request.Request(ENGINE_BASE + "/v1/chat/completions", body,
+                                 {"Content-Type": "application/json",
+                                  "Authorization": f"Bearer {api_key()}"})
+    t0 = time.time()
+    try:
+        urllib.request.urlopen(req, timeout=25).read()
+        CANARY.update(fails=0, last_ok=time.time(), last_err="",
+                      latency=round(time.time() - t0, 2))
+    except Exception as e:  # noqa: BLE001
+        CANARY["fails"] += 1
+        CANARY["last_err"] = f"{type(e).__name__}: {str(e)[:80]}"
+        if CANARY["fails"] == 1:
+            add_event("canary", f"generation probe failed: {CANARY['last_err']}")
+    return {"node_id": "local", **CANARY, "skipped": False}
+
+
 DECODE_RE = re.compile(
     r"#running-req: (\d+).*?token usage: ([\d.]+).*?accept len: ([\d.]+)")
 
@@ -289,6 +324,7 @@ def collect_decode_telemetry():
     for line in tail.splitlines():
         m = DECODE_RE.search(line)
         if m:
+            LAST_DECODE["ts"] = time.time()
             last = {"running": int(m.group(1)),
                     "token_usage": float(m.group(2)),
                     "accept_len": float(m.group(3))}
@@ -349,6 +385,25 @@ def collect_lifecycle():
         if st["state"] == "degraded" and prev.get(unit) not in ("ready",
                                                                 "degraded"):
             st["state"] = "warming-up"
+        if st["state"] == "ready":
+            with STATE_LOCK:
+                load = ((STATE.get("engine_fast") or {}).get("data", {})
+                        .get("load") or [{}])[0]
+            num_reqs = int(load.get("num_reqs") or 0)
+            age = (time.time() - LAST_DECODE["ts"]) if LAST_DECODE["ts"] else None
+            if lc.decide_wedge(health_ok=True, canary_fails=CANARY["fails"],
+                               num_reqs=num_reqs, decode_age=age):
+                st["state"] = "wedged"
+                if prev.get(unit) != "wedged":
+                    audit({"kind": "wedge", "unit": unit, "canary_fails": CANARY["fails"],
+                           "num_reqs": num_reqs, "decode_age": age})
+                if AUTOHEAL and time.time() - LAST_HEAL["ts"] > AUTOHEAL_COOLDOWN \
+                        and not JOB_LOCK.locked():
+                    LAST_HEAL["ts"] = time.time()
+                    add_event("autoheal", f"{unit} wedged (health ok, {CANARY['fails']} "
+                              f"probes failed, {num_reqs} req): restarting it")
+                    code, out = start_action("unit", {"verb": "restart", "unit": unit})
+                    audit({"kind": "autoheal", "unit": unit, "code": code, "out": out})
         if st["state"] in lc.TRANSITIONAL and running:
             jl = run(["journalctl", "-u", unit, "-n", "40", "--no-pager",
                       "-o", "cat"], timeout=6).splitlines()
@@ -416,6 +471,7 @@ EVENT = threading.Condition()
 TIERS = [
     (1.0, {"machine": collect_machine, "engine_fast": collect_engine_fast}),
     (2.0, {"lifecycle": collect_lifecycle}),
+    (90.0, {"canary": collect_canary}),
     (3.0, {"gpu": collect_gpu, "decode": collect_decode_telemetry}),
     (5.0, {"units": collect_units, "containers": collect_containers}),
     (30.0, {"engine_info": collect_engine_info, "repo": collect_repo}),

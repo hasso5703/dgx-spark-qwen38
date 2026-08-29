@@ -136,7 +136,7 @@ def derive_state(*, unit_active: str, unit_sub: str, container_running: bool,
 # States during which an engine occupies (or is about to occupy) the GPU pool.
 BUSY_STATES = {"starting", "loading-weights", "loading-draft", "allocating-kv",
                "capturing-graphs", "warming-up", "ready", "degraded",
-               "stopping"}
+               "stopping", "wedged"}
 TRANSITIONAL = BUSY_STATES - {"ready", "degraded"}
 ENGINE_UNITS = ("qwen38-sglang.service", "qwen38-flash.service")
 
@@ -203,3 +203,21 @@ def record_boot(history: dict, unit: str, seconds: float,
     lst.append(round(float(seconds), 1))
     history[key] = lst[-keep:]
     return history
+
+
+# ── Wedge detection: health says yes, generation says no ────────────────────
+def decide_wedge(*, health_ok: bool, canary_fails: int, num_reqs: int,
+                 decode_age: float | None, threshold: int = 3,
+                 stale_after: float = 180.0) -> bool:
+    """True when the frontend answers but nothing is being generated.
+
+    Field case (2026-08-29): scheduler spinning at 100 % CPU, /health 200,
+    /get_load reporting 0 requests while every completion hung for 9 hours.
+    Guard against false positives during legitimate long generations: if
+    requests are running AND decode lines are still flowing, never wedge.
+    """
+    if not health_ok or canary_fails < threshold:
+        return False
+    if num_reqs > 0 and decode_age is not None and decode_age < stale_after:
+        return False
+    return True
