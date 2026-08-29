@@ -112,7 +112,8 @@
 
   table{width:100%; border-collapse:collapse; font-size:12.5px; table-layout:fixed}
   td{overflow-wrap:anywhere}
-  th:first-child, td:first-child{width:92px}
+  #gpuprocs th:first-child, #gpuprocs td:first-child, #invtable th:first-child, #invtable td:first-child{width:92px}
+  #regmodels td:first-child, #othertable td:first-child, #feedtable td:nth-child(3){overflow-wrap:normal}
   th{color:var(--mut); text-align:left; font-weight:600; font-size:10px;
      text-transform:uppercase; letter-spacing:.09em; padding:3px 6px}
   td{padding:6px; border-top:1px solid var(--line)}
@@ -219,7 +220,7 @@
     header{padding:10px 14px; gap:9px} header .hero{display:none} .repoline{display:none}
     main{padding:12px 12px 36px; gap:12px}
     .res{grid-template-columns:1fr} .res .big{font-size:26px}
-    th:first-child, td:first-child{width:auto}
+    #gpuprocs th:first-child, #gpuprocs td:first-child, #invtable th:first-child, #invtable td:first-child{width:auto}
   }
 </style>
 </head>
