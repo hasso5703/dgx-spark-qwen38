@@ -31,6 +31,7 @@ from collections import deque
 
 import lifecycle as lc
 import registry as rg
+import recipes as rp
 
 # ── Configuration (env-overridable, safe defaults) ──────────────────────────
 HERE = Path(__file__).resolve().parent
@@ -932,6 +933,51 @@ def upstream_snapshot(max_age: float = 3600.0) -> dict:
         return data
 
 
+RECIPES_CACHE: dict = {"ts": 0.0, "data": None}
+RECIPES_LOCK = threading.Lock()
+INSTALLED_INVOCATION = {"27b": Path("/etc/systemd/system/qwen38-sglang.service"),
+                        "flash": CONFIG_DIR / "launch-flash.sh"}
+
+
+def recipes_snapshot(max_age: float = 60.0) -> dict:
+    """Built-in recipes (from the repo's own pins and templates), custom ones
+    (JSON files), and for each: what is on the box and where the installed
+    invocation drifts from it. Read-only; cached briefly."""
+    with RECIPES_LOCK:
+        if RECIPES_CACHE["data"] and time.time() - RECIPES_CACHE["ts"] < max_age:
+            return RECIPES_CACHE["data"]
+        assigns = rp.parse_assignments((REPO_DIR / "install.sh").read_text())
+        templates = rp.load_templates(REPO_DIR)
+        installed = {}
+        for lane, path in INSTALLED_INVOCATION.items():
+            try:
+                installed[lane] = rp.profile_from_text(path.read_text())
+            except OSError:
+                installed[lane] = None
+        reg = registry_snapshot()
+
+        def enrich(rec):
+            inst = installed.get(rec["lane"])
+            return {"recipe": rec, "presence": rp.presence(rec, reg),
+                    "drift": rp.drift(rec, inst) if inst else None,
+                    "installed": bool(inst) and inst["model"].get("revision") == rec["model"]["revision"]
+                    and inst["model"].get("repo") == rec["model"]["repo"]}
+
+        builtin = [enrich(r) for r in rp.builtins(assigns, templates)]
+        custom = []
+        for item in rp.load_custom(CONFIG_DIR / "recipes"):
+            row = {"file": item["file"], "errors": item["errors"]}
+            if item["recipe"] and not item["errors"]:
+                row.update(enrich(item["recipe"]))
+            else:
+                row["recipe"] = item["recipe"]
+            custom.append(row)
+        data = {"builtin": builtin, "custom": custom, "installed": installed,
+                "custom_dir": str(CONFIG_DIR / "recipes"), "ts": time.time()}
+        RECIPES_CACHE.update(ts=time.time(), data=data)
+        return data
+
+
 REGISTRY_CACHE: dict = {"ts": 0.0, "data": None}
 REGISTRY_LOCK = threading.Lock()
 
@@ -1047,6 +1093,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/registry":
             try:
                 return self.send_json(registry_snapshot())
+            except Exception as e:  # noqa: BLE001 (isolated endpoint)
+                return self.send_json({"error": str(e)[:200]}, 500)
+        if path == "/api/recipes":
+            try:
+                return self.send_json(recipes_snapshot())
             except Exception as e:  # noqa: BLE001 (isolated endpoint)
                 return self.send_json({"error": str(e)[:200]}, 500)
         if path == "/api/inventory":

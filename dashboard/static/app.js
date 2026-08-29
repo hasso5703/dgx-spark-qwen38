@@ -433,6 +433,76 @@ $('upbtn').onclick = async () => {
     $('upbtn').textContent = moved ? moved+' moved' : 'all same';
   }catch{ $('upbtn').textContent = 'check failed'; }
 };
+function chip(text, cls){ const s = document.createElement('span'); s.className = 'chip' + (cls ? ' ' + cls : ''); s.textContent = text; return s; }
+function cellChips(tr, items){ const td = tr.insertCell(); items.forEach((it, i) => { if (i) td.append(' '); td.append(chip(it[0], it[1])); }); return td; }
+function fmtServe(sv){
+  const parts = [];
+  if (sv.context_length) parts.push('ctx ' + sv.context_length.toLocaleString('en-US'));
+  if (sv.mem_fraction != null) parts.push('mem ' + sv.mem_fraction);
+  if (sv.max_running_requests) parts.push('run ' + sv.max_running_requests);
+  if (sv.chunked_prefill) parts.push('chunk ' + sv.chunked_prefill);
+  const attn = sv.attention_backend || [sv.prefill_attention, sv.decode_attention].filter(Boolean).join('/');
+  if (attn) parts.push(attn);
+  return parts.join(' · ');
+}
+function recipeRow(tb, row){
+  const r = row.recipe, tr = tb.insertRow();
+  const c0 = tr.insertCell();
+  if (r){
+    c0.append(chip(r.lane === 'flash' ? 'flash' : '27B', r.lane === 'flash' ? 'flash' : 'lane27'), ' ');
+    const name = document.createElement('strong'); name.textContent = r.id; c0.append(name);
+    if (row.installed) c0.append(' ', chip('installed', 'ok'));
+    if (!r.builtin) c0.append(' ', chip(row.file || 'custom'));
+  } else { c0.append(chip(row.file || '?', 'err')); }
+  if (row.errors && row.errors.length){
+    const td = tr.insertCell(); td.colSpan = 6; td.append(chip('invalid', 'err'), ' ');
+    td.append(row.errors.join('; ')); return;
+  }
+  const c1 = tr.insertCell(); c1.textContent = r.engine.image; c1.className = 'num';
+  const c2 = tr.insertCell(); c2.textContent = r.model.repo.split('/').pop() + ' ';
+  const rev = document.createElement('span'); rev.className = 'num'; rev.textContent = r.model.revision.slice(0, 10); c2.append(rev);
+  const d = r.drafter || {};
+  tr.insertCell().textContent = d.algorithm === 'none' || !d.algorithm ? 'none'
+    : d.algorithm + (d.repo ? ' ' + d.repo.split('/').pop() : ' (own head)') + (d.draft_tokens ? ' ×' + d.draft_tokens : '');
+  tr.insertCell().textContent = fmtServe(r.serve || {});
+  const p = row.presence || {};
+  const pres = [['image', p.image === true ? 'ok' : p.image === false ? 'err' : ''],
+                ['model', p.model === true ? 'ok' : p.model === false ? 'err' : ''],
+                ['drafter', p.drafter === true ? 'ok' : p.drafter === false ? 'err' : '']]
+    .map(([k, cls]) => [cls === 'err' ? k + ' missing' : cls === 'ok' ? k : k + ' n/a', cls]);
+  cellChips(tr, pres);
+  const cd = tr.insertCell();
+  if (row.drift === null || row.drift === undefined){ cd.append(chip('lane not installed')); }
+  else if (!row.drift.length){ cd.append(chip('matches installed', 'ok')); }
+  else {
+    const det = document.createElement('details');
+    const sum = document.createElement('summary'); sum.style.cursor = 'pointer';
+    sum.append(chip(row.drift.length + ' differ', row.installed ? 'warn' : '')); det.append(sum);
+    const ul = document.createElement('ul'); ul.style.cssText = 'margin:6px 0 0 14px;padding:0;font-size:11.5px';
+    row.drift.forEach(x => { const li = document.createElement('li'); li.className = 'num';
+      li.textContent = x.key + ': recipe ' + JSON.stringify(x.recipe) + ', installed ' + JSON.stringify(x.installed); ul.append(li); });
+    det.append(ul); cd.append(det);
+  }
+}
+async function loadRecipes(){
+  $('rcpbtn').textContent = 'loading...';
+  try{
+    const r = await fetch('/api/recipes'); if (r.status === 401) return;
+    const d = await r.json();
+    const tb = $('rcptable').tBodies[0]; tb.innerHTML = '';
+    (d.builtin || []).forEach(row => recipeRow(tb, row));
+    (d.custom || []).forEach(row => recipeRow(tb, row));
+    $('rcpdir').textContent = d.custom_dir || '';
+    const installed = (d.builtin || []).concat(d.custom || []).filter(x => x.installed).map(x => x.recipe.id);
+    const drifting = (d.builtin || []).filter(x => x.installed && x.drift && x.drift.length).length;
+    $('rcpline').textContent = (installed.length ? 'installed: ' + installed.join(', ') : 'no lane matches a recipe')
+      + (drifting ? '; ' + drifting + ' installed lane differs from its recipe (see drift)' : '')
+      + ((d.custom || []).length ? '; ' + d.custom.length + ' custom' : '; no custom recipe yet');
+    $('rcpbtn').textContent = 'reload';
+  }catch{ $('rcpbtn').textContent = 'load failed'; }
+}
+$('rcpbtn').onclick = loadRecipes;
+loadRecipes();
 $('regbtn').onclick = async () => {
   $('regbtn').textContent = 'scanning...';
   try{

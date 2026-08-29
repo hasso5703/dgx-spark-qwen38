@@ -360,6 +360,14 @@
     <table id="invtable"><thead><tr><th>Kind</th><th>What</th></tr></thead><tbody></tbody></table>
   </section>
 
+  <section class="wide" id="recipes">
+    <h2>Recipes <button class="chip" id="rcpbtn" aria-label="Reload the recipes" style="margin-left:auto;cursor:pointer">reload</button></h2>
+    <p style="color:var(--mut);font-size:12px;margin-bottom:8px">
+      What each lane serves, as data. Built-in recipes are read from the repo's own pins and templates; a custom recipe is a JSON file in <code id="rcpdir" class="num"></code>. Drift lists where the installed unit or launcher differs from the recipe.</p>
+    <div class="tablewrap"><table id="rcptable"><thead><tr><th>Recipe</th><th>Engine image</th><th>Model</th><th>Drafter</th><th>Serving</th><th>On this box</th><th>Drift</th></tr></thead><tbody></tbody></table></div>
+    <p id="rcpline" style="color:var(--mut);font-size:12px;margin-top:8px"></p>
+  </section>
+
   <section class="wide">
     <h2>Registry <button class="chip" id="regbtn" aria-label="Scan the model and image registry" style="margin-left:auto;cursor:pointer">scan</button></h2>
     <p style="color:var(--mut);font-size:12px;margin-bottom:8px">

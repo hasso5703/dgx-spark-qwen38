@@ -23,6 +23,8 @@ ck "login bonne cle"      200 "$(code -c "$J" -X POST "$BASE/api/login" -H 'Cont
 ck "state avec session"   200 "$(code -b "$J" "$BASE/api/state")"
 ck "registry"             200 "$(code -b "$J" "$BASE/api/registry")"
 ck "upstream (cache)"     200 "$(code -b "$J" "$BASE/api/upstream")"
+ck "recipes"              200 "$(code -b "$J" "$BASE/api/recipes")"
+ck "recipes: 3 builtin, flash sans derive" "3 0" "$(curl -s -b "$J" "$BASE/api/recipes" | python3 -c 'import json,sys; d=json.load(sys.stdin); f=[b for b in d["builtin"] if b["recipe"]["id"]=="flash"][0]; print(len(d["builtin"]), len(f["drift"] or []))')"
 ck "inventory"            200 "$(code -b "$J" "$BASE/api/inventory")"
 ck "logs allowlist"       404 "$(code -b "$J" "$BASE/api/logs/etc-passwd")"
 ck "static traversal"     404 "$(code -b "$J" "$BASE/static/../cockpit.py")"
