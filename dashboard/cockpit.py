@@ -298,6 +298,24 @@ def collect_engine_fast():
                           "last_abort": MEM_FLOOR["last_abort"]}}
 
 
+KERNEL_LAST = {"count": None}
+
+
+@guard
+def collect_kernel():
+    """GPU driver allocation refusals (NVRM NV_ERR_NO_MEMORY) in the kernel log, last
+    hour: measured 29/08 to precede the livelock edge (prefill of a 150k+ prompt at
+    fraction 0.81). Read-only via the sudoers line for journalctl -k."""
+    out = run(["sudo", "-n", "/usr/bin/journalctl", "-k", "--since", "-1h", "--no-pager", "-o", "short-iso"], timeout=8)
+    lines = [ln for ln in out.splitlines() if "NV_ERR_NO_MEMORY" in ln]
+    last = lines[-1].split()[0] if lines else None
+    count = len(lines)
+    if KERNEL_LAST["count"] is not None and count > KERNEL_LAST["count"]:
+        add_event("kernel", f"GPU driver refused {count - KERNEL_LAST['count']} allocation(s): memory edge during a prefill")
+    KERNEL_LAST["count"] = count
+    return {"node_id": "local", "nvrm_oom_1h": count, "nvrm_last": last}
+
+
 @guard
 def collect_engine_info():
     info = http_json(ENGINE_BASE + "/get_server_info", timeout=6)
@@ -664,7 +682,7 @@ TIERS = [
     (3.0, {"gpu": collect_gpu, "decode": collect_decode_telemetry}),
     (5.0, {"units": collect_units, "containers": collect_containers,
            "feed": collect_feed}),
-    (30.0, {"engine_info": collect_engine_info, "repo": collect_repo}),
+    (30.0, {"engine_info": collect_engine_info, "repo": collect_repo, "kernel": collect_kernel}),
 ]
 
 

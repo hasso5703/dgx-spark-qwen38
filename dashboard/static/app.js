@@ -307,6 +307,11 @@ document.querySelectorAll('dd, .chip, .num').forEach(el => {
   if (el.textContent.trim() === '...') el.classList.add('skel');
 });
 function apply(state){
+  if (state.kernel && state.kernel.data && state.kernel.data.nvrm_oom_1h != null){
+    const k = state.kernel.data;
+    $('nvrm').textContent = k.nvrm_oom_1h ? `${k.nvrm_oom_1h} (last ${(k.nvrm_last||'').slice(11,19)})` : 'none';
+    $('nvrm').style.color = k.nvrm_oom_1h ? 'var(--err)' : '';
+  }
   if (state.config && state.config.data && state.config.data.usable_frac) USABLE = state.config.data.usable_frac;
   for (const [name, wrap] of Object.entries(state)){
     const fn = RENDER[name]; if(!fn) continue;
