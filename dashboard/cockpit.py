@@ -275,7 +275,13 @@ AUTOHEAL_COOLDOWN = 1800.0
 LAST_HEAL: dict = {"ts": 0.0}
 LAST_PROGRESS: dict = {"ts": None}
 UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
+POOL_GUARD = os.environ.get("COCKPIT_POOL_GUARD", "1") == "1"
+POOL_GUARD_THRESHOLD = float(os.environ.get("COCKPIT_POOL_GUARD_THRESHOLD", "0.6"))
+LAST_USAGE: dict = {"value": 0.0, "ts": 0.0}   # pool usage from the engine's own log lines
+IDLE_SINCE: dict = {"ts": None}
+LAST_FLUSH: dict = {"ts": 0.0}
 PROGRESS_RE = re.compile(r"(Prefill|Decode) batch")
+USAGE_RE = re.compile(r"token usage: ([\d.]+)")
 
 
 @guard
@@ -332,6 +338,9 @@ def collect_decode_telemetry():
     for line in tail.splitlines():
         if PROGRESS_RE.search(line):
             LAST_PROGRESS["ts"] = time.time()
+        um = USAGE_RE.search(line)
+        if um:
+            LAST_USAGE.update(value=float(um.group(1)), ts=time.time())
         m = DECODE_RE.search(line)
         if m:
             last = {"running": int(m.group(1)),
@@ -439,6 +448,28 @@ def collect_lifecycle():
                 load = ((STATE.get("engine_fast") or {}).get("data", {})
                         .get("load") or [{}])[0]
             num_reqs = int(load.get("num_reqs") or 0)
+            # Pool guard (field cases 29/08, twice): the scheduler hangs when it
+            # must evict cached prefixes to make room (pool at 0.89 and 0.98).
+            # When the engine goes idle with the pool still mostly held by
+            # cache, flush it so the next giant prompt never needs eviction.
+            waiting = int(load.get("num_waiting_reqs") or 0)
+            if num_reqs + waiting == 0:
+                IDLE_SINCE["ts"] = IDLE_SINCE["ts"] or time.time()
+            else:
+                IDLE_SINCE["ts"] = None
+            if (POOL_GUARD and IDLE_SINCE["ts"] and time.time() - IDLE_SINCE["ts"] > 3
+                    and LAST_USAGE["value"] > POOL_GUARD_THRESHOLD
+                    and time.time() - LAST_FLUSH["ts"] > 30):
+                try:
+                    req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST",
+                                                 data=b"", headers={"Authorization": f"Bearer {api_key()}"})
+                    urllib.request.urlopen(req, timeout=8).read()
+                    add_event("guard", f"pool guard: cache flushed at {LAST_USAGE['value']:.0%} held, engine idle")
+                    audit({"kind": "pool_guard", "usage": LAST_USAGE["value"]})
+                    LAST_USAGE["value"] = 0.0
+                except Exception as e:  # noqa: BLE001
+                    add_event("guard", f"pool guard flush failed: {str(e)[:80]}")
+                LAST_FLUSH["ts"] = time.time()
             age = (time.time() - LAST_PROGRESS["ts"]) if LAST_PROGRESS["ts"] else None
             if lc.decide_wedge(health_ok=True, canary_fails=CANARY["fails"],
                                num_reqs=num_reqs, progress_age=age):
