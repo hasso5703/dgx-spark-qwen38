@@ -498,6 +498,16 @@ def collect_lifecycle():
                 if prev.get(unit) != "wedged":
                     audit({"kind": "wedge", "unit": unit, "canary_fails": CANARY["fails"],
                            "num_reqs": num_reqs, "progress_age": age})
+                    # forensics before any restart: the scheduler's Python stacks
+                    dump = run(["sudo", "-n", "/usr/local/bin/qwen38-pyspy-scheduler"],
+                               timeout=40, merge_err=True)
+                    if dump.strip():
+                        f = CONFIG_DIR / f"wedge-{time.strftime('%Y%m%d-%H%M%S')}.txt"
+                        try:
+                            f.write_text(dump)
+                            add_event("forensics", f"scheduler stacks saved: {f.name}")
+                        except OSError:
+                            pass
                 WEDGED_SINCE.setdefault(unit, time.time())
                 if AUTOHEAL and time.time() - LAST_HEAL["ts"] > AUTOHEAL_COOLDOWN \
                         and time.time() - WEDGED_SINCE[unit] >= AUTOHEAL_GRACE \

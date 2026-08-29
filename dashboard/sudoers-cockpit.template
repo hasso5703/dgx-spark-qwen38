@@ -2,7 +2,8 @@
 # Rendered by the dashboard installer to /etc/sudoers.d/qwen38-cockpit
 # (validated with visudo -c before install; removed by uninstall).
 # The cockpit runs unprivileged; these six argv lines are the entire
-# privileged surface, and each one names a fixed unit of this repo.
+# privileged surface, and each one names a fixed unit of this repo,
+# plus one read-only forensics wrapper (no arguments accepted).
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-sglang.service
@@ -12,3 +13,4 @@ __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-flash.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start qwen38-keepalive.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop qwen38-keepalive.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-keepalive.service
+__USER__ ALL=(root) NOPASSWD: /usr/local/bin/qwen38-pyspy-scheduler
