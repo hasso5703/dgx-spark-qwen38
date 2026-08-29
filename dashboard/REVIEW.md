@@ -178,3 +178,11 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
   radix cache quand le moteur est idle depuis 3 s et que la derniere lecture du pool depasse 60 %
   (ou 50 % des slots mamba). Meme famille qu'upstream sglang #30314. Ligne « Mamba state slots »
   ajoutee a Live requests. COCKPIT_POOL_GUARD=0 pour desactiver.
+- Forensique au blocage (13:50): wrapper root sans argument `/usr/local/bin/qwen38-pyspy-scheduler`
+  (installe par install-dashboard.sh, ligne sudoers dediee) que le cockpit lance des qu'il declare
+  un moteur « wedged »: piles Python du scheduler (py-spy, non bloquant) dans
+  ~/.config/qwen38/wedge-<ts>.txt AVANT tout restart. `COCKPIT_AUTOHEAL_GRACE` (s) retarde le
+  restart pour laisser le temps d'une autopsie manuelle (600 s sur la box de reference via drop-in
+  systemd, 0 par defaut). Pool guard: se tait sur « pending requests » (400) et purge ses lectures.
+- Sessions: 12 h glissantes (le navigateur de test s'est retrouve sur /login a 13:50 apres un
+  login a 00:53: comportement voulu, pas un bug).
