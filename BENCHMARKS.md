@@ -141,6 +141,35 @@ The v2 column (RadixArk DSpark v2 weights, same box and battery, erikvullings 20
 
 Read it carefully before concluding "vLLM is faster": the prose floor is identical (the drafter's low-acceptance signature, quant and drafter being the same), and the structured cells sit +15-25 % above this repo's reference numbers, measured on an **idle, freshly rebooted box**, where this repo's reference cells are measured on a box that concurrently runs the very agent sessions it serves. Independent reproducers on the NVIDIA forum thread (pontostroy, Schnabulator) report the same +8-30 % offset on quiet boxes with this exact config. The honest conclusion: **on identical hardware, quant and drafter, eugr's vLLM path and SGLang land in the same band; engine choice is not the lever, box load and content are.** A controlled idle-box re-baseline of this repo's config (benched from a second machine, zero local sessions) is on the list and will get its own column.
 
+## DFlash2 vs DSpark v2 on this box, same battery (2026-08-29)
+
+RadixArk republished the DSpark drafter as v2 on 2026-08-28 (commit `d0755f9`;
+acceptance up sharply on vLLM per issue #2). Measured here on the 27B lane, same
+day, same box, both drafters on the SGLang image this repo ships
+(`qwen38-dflash2:v1.2.2`), the native unit template plus an explicit
+`--context-length 262144` for both (the cached stock checkpoint is YaRN-patched
+by the 1M install and the DSpark draft refuses the 1010000 target length), idle
+box, `bench-matrix.sh` battery v1, one run per configuration:
+
+| Workload (battery v1, greedy) | DFlash2 run 1 | DFlash2 run 2 | DSpark v2 |
+|---|---|---|---|
+| Math word problems (EN) | 39.8 | 41.9 | 39.5 |
+| Code (EN) | 42.0 | 27.8 | 35.7 |
+| Code (DE) | 32.9 | 31.0 | 28.1 |
+| Technical explanation (FR) | 27.8 | 32.5 | 30.8 |
+| Reasoning (FR) | 46.1 | 46.7 | 38.2 |
+| Free prose (EN) | 21.5 | 21.8 | 19.6 |
+| Free prose (FR) | 20.3 | 20.3 | 16.9 |
+| Free prose (DE) | 19.7 | 18.8 | 17.7 |
+| **median** | **30.4** | **29.4** | **29.5** |
+
+Reading: a tie on the median, and DSpark v2 behind on the cells that are stable
+across the two DFlash2 runs (reasoning FR -18 %, prose -10 to -17 %). The two
+DFlash2 runs, 30 minutes apart, show the noise floor of single cells (code EN
+42.0 vs 27.8); only medians and cells that agree across runs are readable.
+DFlash2 stays this repo's 27B drafter, which also keeps the prompt-injection
+resistance scenario it won in the tool-eval reproduction (issue #6).
+
 ## The flash target on SGLang (v1.5), measured (2026-08-28)
 
 Same box, same two-call instrument. Serving config: official SGLang image +
