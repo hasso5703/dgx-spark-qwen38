@@ -196,3 +196,19 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
   requete. Remise a zero (compteurs, horloge, marqueur de progression) a chaque changement
   d'activation systemd, et aucune decision de wedge avant 180 s de « ready »
   (COCKPIT_WEDGE_MIN_READY_S).
+
+## Ajouts du 29/08 soir (revue rapide)
+- Ceinture « plancher memoire » : `lifecycle.decide_mem_floor` (pure, 4 tests), evaluee au tier 1 s ;
+  sous `COCKPIT_MEM_FLOOR_GIB` (3.0) avec des requetes en cours, `abort_all` + audit + evenement, cooldown 60 s.
+  Motif : 177k tokens a fraction 0.81 = 0.8 GiB disponibles et 15 refus noyau NVRM (bord du livelock).
+- Compteur des refus d'allocation du pilote (journalctl -k via une ligne sudoers lecture seule), tier 30 s,
+  evenement quand il augmente ; affiche dans « Unified memory ».
+- Le plafond « un prompt » du reservoir suit l'unite keepalive deployee (`PROMPT_CEILING_TOKENS`), a defaut
+  la part du pool (`OVERSIZE_MARGIN_FRAC`, le meme bouton que le proxy).
+- Fil des requetes : parseur pur `lifecycle.parse_feed` (tests sur les vraies lignes du journal), detail du
+  garde-fou (tokens comptes vs limite) sous le resultat.
+- Recipes (etape 4, lecture seule) : `recipes.py` + `/api/recipes` + panneau ; verification headless
+  `tests/headless-check.mjs` (cookie injecte par CDP, 0 exception) ; maquettes de deux directions design.
+- Ligne keepalive : version du proxy deploye et derive vs la copie du repo.
+Limites connues : la ceinture memoire ne voit que MemAvailable (pas la pression de reclaim) ; le compteur NVRM
+depend de sudoers ; le fil ne couvre que les 200 dernieres lignes du journal.
