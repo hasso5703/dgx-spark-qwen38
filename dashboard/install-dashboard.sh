@@ -2,8 +2,7 @@
 # Install Spark Cockpit as a systemd service (BETA, branch webapp).
 # Idempotent. Installs: qwen38-dashboard.service (127.0.0.1:__PORT__) and the
 # narrow sudoers allowlist for the unit start/stop/restart buttons.
-# The sudoers file is validated with sudo install -m 755 "$(dirname "$0")/pyspy-scheduler.sh" /usr/local/bin/qwen38-pyspy-scheduler
-visudo -c BEFORE it lands, from a temp
+# The sudoers file is validated with visudo -c BEFORE it lands, from a temp
 # path, so a broken render can never brick sudo.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +26,8 @@ grep -q '__[A-Z_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in unit"
 sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT"; rm -f "$TMP_UNIT"
 
 TMP_SUDO="$(mktemp)"
+# read-only forensics wrapper (scheduler stack dump), referenced by the sudoers line below
+sudo install -m 755 "$HERE/pyspy-scheduler.sh" /usr/local/bin/qwen38-pyspy-scheduler
 sed -e "s|__USER__|$(id -un)|g" "$HERE/sudoers-cockpit.template" > "$TMP_SUDO"
 sudo visudo -c -f "$TMP_SUDO" >/dev/null || die "sudoers render failed visudo check, NOT installed"
 sudo install -m 440 "$TMP_SUDO" /etc/sudoers.d/qwen38-cockpit; rm -f "$TMP_SUDO"
@@ -40,4 +41,4 @@ done
 curl -s -m 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 \
   || die "cockpit did not come up (journalctl -u $UNIT -n 30)"
 echo "Spark Cockpit: http://127.0.0.1:$PORT (login = the API key)"
-echo "Remove with: sudo systemctl disable --now $UNIT; sudo rm -f /etc/systemd/system/$UNIT /etc/sudoers.d/qwen38-cockpit"
+echo "Remove with: sudo systemctl disable --now $UNIT; sudo rm -f /etc/systemd/system/$UNIT /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler"
