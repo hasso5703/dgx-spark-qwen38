@@ -189,7 +189,7 @@ jobs:
           grep -q '"context": 110000' /tmp/oc.json && grep -q 'user comment kept' /tmp/oc.json
           grep -q '"other"' /tmp/oc.json && grep -c '"context": 1,' /tmp/oc.json | grep -q 1
           python3 oc-merge-limits.py /tmp/oc.json flashnext qwen3.8-flash-next 110000 32000 | grep -q unchanged
-          python3 oc-merge-limits.py /tmp/oc.json nope m 1 1; test $? -eq 3
+          rc=0; python3 oc-merge-limits.py /tmp/oc.json nope m 1 1 || rc=$?; test "$rc" -eq 3
       - name: Vendored Flash overlay integrity
         run: |
           cd flash-sglang && sha256sum -c MANIFEST.sha256
