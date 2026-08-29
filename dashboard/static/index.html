@@ -6,26 +6,27 @@
 <title>Spark Cockpit</title>
 <link rel="icon" href="/static/favicon.svg">
 <style>
+  /* Palette from the object itself: the Spark's graphite chassis and its
+     champagne-gold anodizing, NVIDIA green for good, warm white text. */
   :root{
-    --paper:#070b16; --card:#0d1424; --card2:#101a30; --line:#1b2742;
-    --txt:#e9eefb; --mut:#8fa0c2; --soft:#0a1120; --glow:rgba(91,140,255,.10);
-    --acc:#5b8cff; --ok:#2ee6a8; --warn:#f5b14c; --err:#ff5d68;
-    --flash:#a78bfa; --lane27:#38bdf8;
-    --shadow:0 10px 34px rgba(2,6,18,.5);
+    --paper:#0e1014; --card:#15181e; --card2:#191d24; --line:#272c35;
+    --txt:#ece9e1; --mut:#9a9d95; --soft:#0f1216; --glow:rgba(217,180,94,.10);
+    --acc:#d9b45e; --ok:#43d18d; --warn:#f0a13a; --err:#ef5b5b;
+    --flash:#c4a3f5; --lane27:#5cc8f2;
+    --shadow:0 10px 30px rgba(0,0,0,.45);
   }
   @media (prefers-color-scheme: light){
-    :root{ --paper:#eef1f8; --card:#ffffff; --card2:#f7f9ff; --line:#dde3f0;
-           --txt:#111730; --mut:#5d6a8a; --soft:#eef2fb; --glow:rgba(91,140,255,.08);
-           --acc:#3b6ef6; --ok:#0eaf7b; --warn:#c07f14; --err:#d93848;
-           --flash:#7c5cf0; --lane27:#0284c7;
-           --shadow:0 8px 26px rgba(23,36,80,.10); }
+    :root{ --paper:#f3f1eb; --card:#ffffff; --card2:#fbfaf6; --line:#e2ded4;
+           --txt:#1b1c1f; --mut:#6d6f68; --soft:#f1efe8; --glow:rgba(190,150,60,.10);
+           --acc:#a7852c; --ok:#178a5c; --warn:#b26f0d; --err:#c73f3f;
+           --flash:#7a55d6; --lane27:#0b7fae;
+           --shadow:0 8px 24px rgba(40,35,20,.10); }
   }
   *{box-sizing:border-box; margin:0}
   html{scrollbar-color:var(--line) transparent}
   body{
     background:
       radial-gradient(1100px 420px at 18% -10%, var(--glow), transparent 60%),
-      radial-gradient(900px 380px at 92% -14%, rgba(167,139,250,.07), transparent 55%),
       var(--paper);
     color:var(--txt);
     font:14px/1.5 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -68,11 +69,7 @@
        max-width:1760px; margin:0 auto}
   section{background:linear-gradient(180deg, var(--card2), var(--card));
           border:1px solid var(--line); border-radius:16px;
-          padding:16px 19px; min-width:0; box-shadow:var(--shadow);
-          animation:rise .45s ease-out both}
-  section:nth-child(2){animation-delay:.04s} section:nth-child(3){animation-delay:.08s}
-  section:nth-child(4){animation-delay:.12s} section:nth-child(5){animation-delay:.16s}
-  section:nth-child(n+6){animation-delay:.2s}
+          padding:16px 19px; min-width:0; box-shadow:var(--shadow)}
   @keyframes rise{from{opacity:0; transform:translateY(7px)}}
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important} }
   section.wide{grid-column:1 / -1}
@@ -135,6 +132,26 @@
   .btn:disabled{opacity:.4; pointer-events:none}
   select{background:var(--soft); color:var(--txt); border:1px solid var(--line);
          border-radius:9px; padding:6px 11px; font-size:12.5px}
+
+  /* ── the reservoir: KV pool held vs capacity vs model window ── */
+  .res{display:grid; grid-template-columns:auto 1fr; gap:6px 22px; align-items:end}
+  .res .big{font-size:34px; font-weight:700; letter-spacing:-.02em; line-height:1}
+  .res .big small{font-size:13px; font-weight:500; color:var(--mut); letter-spacing:0; margin-left:6px}
+  .res .eyebrow{font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut)}
+  .tank{position:relative; height:26px; border-radius:8px; background:var(--soft);
+        border:1px solid var(--line); overflow:hidden}
+  .tank .cap{position:absolute; inset:0 auto 0 0; background:
+        repeating-linear-gradient(135deg, transparent 0 7px, color-mix(in srgb, var(--line) 70%, transparent) 7px 8px);
+        border-right:1px dashed var(--mut)}
+  .tank .level{position:absolute; inset:0 auto 0 0; border-radius:7px 0 0 7px;
+        background:linear-gradient(90deg, color-mix(in srgb, var(--acc) 70%, var(--card)), var(--acc));
+        transition:width .8s cubic-bezier(.2,.8,.2,1)}
+  .tank .level.hot{background:linear-gradient(90deg, var(--warn), var(--err))}
+  .tank .tick{position:absolute; top:0; bottom:0; width:1px; background:var(--txt); opacity:.55}
+  .tank .ghost{position:absolute; inset:0 0 0 auto; background:
+        repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--err) 25%, transparent) 6px 7px)}
+  .res .legend{display:flex; gap:16px; font-size:11px; color:var(--mut); margin-top:6px; flex-wrap:wrap}
+  .res .legend b{color:var(--txt); font-weight:600}
 
   /* ── engines panel ── */
   .eng{padding:13px 2px; border-top:1px solid var(--line)}
@@ -207,6 +224,24 @@
 </header>
 
 <main>
+  <section class="wide" id="reservoir" aria-label="KV pool reservoir">
+    <div class="res">
+      <div>
+        <div class="eyebrow">KV pool held</div>
+        <div class="big num" id="resbig">...<small id="rescap"></small></div>
+      </div>
+      <div>
+        <div class="tank">
+          <div class="cap" id="rescapzone"></div>
+          <div class="level" id="reslevel" style="width:0%"></div>
+          <div class="tick" id="restick" style="left:0"></div>
+          <div class="ghost" id="resghost" style="width:0%"></div>
+        </div>
+        <div class="legend" id="reslegend"></div>
+      </div>
+    </div>
+  </section>
+
   <section class="wide">
     <h2>Engines &amp; services</h2>
     <div id="enginelist"></div>
@@ -472,6 +507,29 @@ function rPool(l){
     ? 'one more large context will not fit: the scheduler queues it (max-running-requests 1)'
     : 'a single prompt tops out near ' + Math.round(POOL*0.94/1000) + 'K tokens on this pool';
 }
+const WINDOW = 262144;
+function rReservoir(l){
+  if (!POOL){
+    $('resbig').textContent = '...'; $('restick').style.display = 'none';
+    $('reslegend').innerHTML = '<span>the pool size arrives with the engine (max_total_num_tokens at boot)</span>';
+    return;
+  }
+  $('restick').style.display = '';
+  const held = l.num_tokens || 0, single = Math.round(POOL*0.94);
+  const scale = Math.max(WINDOW, POOL);
+  const pct = 100*held/POOL;
+  $('resbig').innerHTML = held.toLocaleString('en') + `<small id="rescap">of ${POOL.toLocaleString('en')} tokens</small>`;
+  $('rescapzone').style.width = (100*POOL/scale).toFixed(2)+'%';
+  $('reslevel').style.width = (100*Math.min(held,POOL)/scale).toFixed(2)+'%';
+  $('reslevel').className = 'level' + (pct>70 ? ' hot' : '');
+  $('restick').style.left = (100*single/scale).toFixed(2)+'%';
+  $('resghost').style.width = (100*Math.max(0, WINDOW-POOL)/scale).toFixed(2)+'%';
+  $('reslegend').innerHTML =
+    `<span><b>${pct.toFixed(0)}%</b> held` + ((l.num_reqs||0) ? ` by ${l.num_reqs} request${l.num_reqs>1?'s':''}` : '') + `</span>`
+    + `<span>one prompt tops out near <b>${Math.round(single/1000)}K</b> (tick)</span>`
+    + `<span>capacity <b>${Math.round(POOL/1000)}K</b> at these memory settings</span>`
+    + `<span>model window <b>${Math.round(WINDOW/1000)}K</b>: the hatched red zone never fits</span>`;
+}
 function rHero(){
   const life = window._life || {}; const eng = life.engines || {};
   const serving = Object.entries(eng).find(([n,e]) => e.state !== 'stopped' && e.state !== 'failed');
@@ -484,7 +542,7 @@ function rHero(){
 }
 function rEngineFast(d){
   const l = (d.load||[])[0] || {};
-  window._load = l; rPool(l); rHero();
+  window._load = l; rPool(l); rReservoir(l); rHero();
   // A container burning CPU with health still down is a BOOT, not an outage
   // (weight loads are journal-silent for many minutes; field lesson).
   const life = window._life || {};

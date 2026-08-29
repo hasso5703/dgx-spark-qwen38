@@ -163,3 +163,20 @@ Principles adopted for the cockpit:
 - Version the layout as code (this repo), never browser-only edits.
 - Alerts lead browsing: the event feed and wedged/degraded chips are the entry
   points, panels are the drill-down.
+
+
+## Identity decision (29/08, modernization pass)
+
+Grounded in the object: the DGX Spark is a graphite chassis with champagne-gold
+anodizing and NVIDIA green status light. Tokens: graphite paper and cards, warm
+white text, spark gold as the single accent, NVIDIA green for good, lane colors
+kept (violet flash, cyan 27B) because they already carry meaning. Light theme
+is warm paper, not inverted dark.
+
+Signature: the reservoir. One full-width strip showing tokens held in the KV
+pool against the pool's real capacity, the tick where a single prompt tops out,
+and, hatched in red, the part of the model window that never fits at these
+memory settings. It is the picture of every incident of the day (scheduler
+wedge on two giant contexts, a user's OOM at 230K, opencode limits). The card
+cascade animation was removed: one accessory less; motion is kept only where it
+carries information (boot shimmer, level transition, live pulse).
