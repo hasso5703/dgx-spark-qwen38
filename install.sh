@@ -498,8 +498,11 @@ if os.environ["OC_27B"] == "1":
     providers["qwen38"] = prov("Qwen3.8-27B (DGX Spark)", "qwen3.8-27b",
                                f"Qwen3.8-27B NVFP4+DFlash2 ({label})", ctx, out)
 if os.environ["OC_FLASH"] == "1":
+    # the flash lane's limits follow the pool math above (OC_CTX/OC_OUT); a 27B
+    # install that also lists flash gets the same pool-safe constants
+    fctx, fout = (int(os.environ["OC_CTX"]), int(os.environ["OC_OUT"])) if lane == "flash" else (110000, 32000)
     providers["flashnext"] = prov("Qwen3.8-Flash-Next (DGX Spark)", "qwen3.8-flash-next",
-                                  "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)", 110000, 32000)
+                                  "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)", fctx, fout)
 
 default = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8-27b"
 doc = {"$schema": "https://opencode.ai/config.json", "provider": providers,
