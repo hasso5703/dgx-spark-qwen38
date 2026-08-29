@@ -836,6 +836,12 @@ def _alloc_ple_table(shape, dtype):
     # Reuse decision. The marker must name the checkpoint (revision tag handed
     # in by the launcher), the geometry and the dtype; anything else rebuilds.
     tag_env = os.environ.get("SGLANG_QWEN4_PLE_TAG", "").strip()
+    import re as _re
+    if tag_env and not _re.fullmatch(r"[0-9a-f]{7,64}", tag_env):
+        # a branch name ("main") can move under the table: never reuse on it
+        logging.getLogger(__name__).info(
+            "PLE table: tag %r is not a commit sha, table rebuilt every boot", tag_env)
+        tag_env = ""
     tag = "%s|%d|%d|%s" % (tag_env, numel, nbytes, dtype) if tag_env else None
     marker = path + ".complete"
     have = None

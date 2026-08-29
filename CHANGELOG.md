@@ -11,7 +11,10 @@ boot whose marker matches maps the file and skips the copies, and a real
 (re)build runs with sequential readahead before switching to MADV_RANDOM for
 serving. The launcher tags the table with the served revision
 (SGLANG_QWEN4_PLE_TAG) and wipes the marker together with the table after an
-interrupted boot. Serving image tag: qwen38-flash:v1.5.3.
+interrupted boot; a tag that is not a commit sha (for example a branch name
+passed through MODEL_REV=main) disables reuse, so a moving upstream can never be
+served from a stale table; `switch-model.sh` rewrites the tag with the revision.
+Serving image tag: qwen38-flash:v1.5.3.
 
 ## v1.5.2 (2026-08-29): flash lane correctness hotfix
 
