@@ -257,3 +257,10 @@ d'encre au lieu de cartes, boot en chronologie). Les deux abandonnent la grille 
 cartes actuelle pour un seul instrument fort et un systeme typographique strict. Capture :
 `~/flashnext-work/design-directions.png`. La direction choisie sera appliquee a l'app
 entiere en une passe, tokens d'abord, puis composants.
+
+Rendu dry-run, decision technique: `install.sh` rend ses templates avec une fonction `render_tpl`
+(11 placeholders, sed). Pour que le cockpit rende EXACTEMENT ce que l'installeur rendrait, cette
+fonction sera extraite dans `render-template.sh` (sourcee par install.sh, comportement inchange) et
+appelee par le cockpit avec les variables de la recette exportees. Pas de refactor du flux
+d'install.sh, pas de seconde table de substitution en Python. A faire avec l'etape « validate +
+render » (revue par Hasan d'abord, c'est le coeur du repo).
