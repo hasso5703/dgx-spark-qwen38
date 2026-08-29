@@ -195,6 +195,37 @@ on code upstream; this repo ships the full-context profile.
 
 Independent reproduction (helge, NVIDIA forum thread 381228, 2026-08-29, own installer variant without systemd, `bench.sh` from this repo): about 37 tok/s on coding tasks and about 24 tok/s on prose, in line with the reference box.
 
+## Host memory vs prompt length on the flash lane (2026-08-29)
+
+The KV pool says how many tokens the cache can hold (184K at fraction 0.81); it says
+nothing about what a long prefill costs the box. Measured on the reference box with a
+fresh boot, `MemAvailable` sampled every 2 s during a needle probe sent straight to the
+engine, kernel log watched for GPU driver allocation refusals (`NVRM: NV_ERR_NO_MEMORY`):
+
+| prompt (tokens) | MemAvailable floor | growth over idle | driver refusals | memory returned after |
+|---|---|---|---|---|
+| idle after boot | 23.6 to 24.2 GiB | 0 | 0 | |
+| 30K / 60K | 23.0 / 23.1 GiB | +0.9 | 0 | yes |
+| 120K | 16.6 GiB | +7.4 | 0 | no (16.5 after 60 s) |
+| 135K | 12.6 GiB | +11.4 | 0 | no |
+| 150K | 8.9 GiB | +15.3 | 3 | yes (24.0) |
+| 150K, second run | 6.7 GiB | +17.1 | 13 | no (5.8) |
+| 177K | 0.8 GiB | +22.8 | 15 | not measured |
+
+About 0.27 GiB per 1k tokens beyond ~90K, linear. The process RSS stays at 5.7 GiB the
+whole time (unified CUDA allocations do not show in RSS or in the docker cgroup: the
+`--memory 110g` cap does not see them). The 177K prompt still answered the needle
+correctly; the box was one allocation away from the livelock class documented in the
+README. This is why v1.5.6 caps one prompt at 128K on the flash lane (135K served clean,
+the two 150K runs show the variance) and why the README no longer says 262K fits.
+
+Tested and rejected: `--chunked-prefill-size 512` (120K floor 20.4 GiB, better; 150K floor
+6.7 GiB with 13 refusals, worse; cold prefill 30 percent slower: 96 s vs 74 s at 120K).
+
+Method: `needle.sh` at each depth (exact retrieval, real token count from the response),
+`awk` on `/proc/meminfo` every 2 s, `journalctl -k` for the driver lines, one depth at a time,
+cache flushed between depths.
+
 ## The flash target on vLLM (v1.4, historical), measured (2026-08-27)
 
 Same box, same instruments (two-call wall-clock delta for decode, single-shot
