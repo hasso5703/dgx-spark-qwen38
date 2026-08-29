@@ -273,6 +273,8 @@ def collect_engine_info():
 CANARY: dict = {"fails": 0, "last_ok": None, "last_err": "", "latency": None}
 AUTOHEAL = os.environ.get("COCKPIT_AUTOHEAL", "1") == "1"
 AUTOHEAL_COOLDOWN = 1800.0
+AUTOHEAL_GRACE = float(os.environ.get("COCKPIT_AUTOHEAL_GRACE", "0"))   # seconds to leave a wedged engine up for forensics
+WEDGED_SINCE: dict = {}
 LAST_HEAL: dict = {"ts": 0.0}
 LAST_PROGRESS: dict = {"ts": None}
 UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
@@ -491,10 +493,14 @@ def collect_lifecycle():
             if lc.decide_wedge(health_ok=True, canary_fails=CANARY["fails"],
                                num_reqs=num_reqs, progress_age=age):
                 st["state"] = "wedged"
+            else:
+                WEDGED_SINCE.pop(unit, None)
                 if prev.get(unit) != "wedged":
                     audit({"kind": "wedge", "unit": unit, "canary_fails": CANARY["fails"],
                            "num_reqs": num_reqs, "progress_age": age})
+                WEDGED_SINCE.setdefault(unit, time.time())
                 if AUTOHEAL and time.time() - LAST_HEAL["ts"] > AUTOHEAL_COOLDOWN \
+                        and time.time() - WEDGED_SINCE[unit] >= AUTOHEAL_GRACE \
                         and not JOB_LOCK.locked():
                     LAST_HEAL["ts"] = time.time()
                     add_event("autoheal", f"{unit} wedged (health ok, {CANARY['fails']} "
