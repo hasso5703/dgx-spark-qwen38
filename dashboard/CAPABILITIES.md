@@ -48,3 +48,12 @@ fixed argv template.
 ## Explicitly out of scope now (groundwork only)
 Multi-node, multi-GPU, clusters: the collector/action registries carry
 `node_id` and capability flags from day one, UI stays single-node.
+
+## Recipes (step 4, since 29/08 evening)
+| capability | shell today | UI |
+|---|---|---|
+| What each lane serves, as data | pins in `install.sh` + unit/launcher templates | Recipes panel: built-in recipes derived from the repo, custom JSON recipes from `~/.config/qwen38/recipes/` |
+| Is it on the box | `docker images`, HF cache scan | presence chips (image, model revision, drafter revision) |
+| Does the installed lane match | read the unit or launcher by hand | drift list per recipe (image, model, revision, drafter, serving keys, env) |
+| Validate a custom recipe | none | schema + closed enums + ranges, errors shown inline (planned: as an action with dry-run render) |
+| Apply a recipe | `switch-model.sh` (built-in targets only) | planned: apply with backup, health + canaries + needle, automatic restore on failure |
