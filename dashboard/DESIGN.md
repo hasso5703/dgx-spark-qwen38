@@ -142,3 +142,24 @@ allowed with a truthful warning (next boot rebuilds the PLE table). The UI
 renders the same rules: disabled buttons print their reason, the confirm
 modal carries the warnings, and the per-stage progress bar animates from
 stage pills plus elapsed-vs-learned-ETA.
+
+## Research notes for the modernization pass (29/08)
+
+Sources read: Grafana dashboard best practices (official docs), dark-first
+dashboard guidance (2026), SSE architecture references.
+
+Principles adopted for the cockpit:
+- A dashboard answers ONE question first; general to specific, top-left is the
+  answer (engine state and the pool), details below. One row per service,
+  ordered by data flow: client, proxy, engine, machine.
+- Color has meaning and never carries it alone: every state chip pairs a color
+  with a word; thresholds drive color; icons or position cues for CVD users.
+- Dark is designed, not inverted: WCAG AA contrast, thin bright lines with
+  translucent fills for charts, borders and shadows redesigned for dark.
+- Refresh proportional to change rate (1 s vitals, 2 s lifecycle, 5 s units,
+  30 s engine info, 90 s probes, 300 s registry): already the tier model.
+- Skeleton and empty states for every panel; both themes shipped from day one.
+- Normalize axes (percent of pool, not raw tokens) where comparison matters.
+- Version the layout as code (this repo), never browser-only edits.
+- Alerts lead browsing: the event feed and wedged/degraded chips are the entry
+  points, panels are the drill-down.
