@@ -148,3 +148,20 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
   (COCKPIT_AUTOHEAL=1 par defaut, refroidissement 30 min) qui redemarre l'unite
   via le chemin d'action audite.
 - 43 tests unitaires verts, smoke HTTP 17/17.
+
+## Passe de modernisation UI (29/08, apres-midi)
+
+- Identite ancree dans l'objet (graphite du chassis, or champagne du Spark,
+  vert NVIDIA), theme clair = papier chaud. Cascade d'entree retiree.
+- Signature: le RESERVOIR KV en bande pleine largeur (tokens tenus / capacite
+  reelle / tick « un prompt seul » / fenetre 262K hachuree = ce qui ne tient
+  jamais). Jauge de pool normalisee aussi dans Live requests, avec phrase
+  d'explication qui change au-dela de 70 %.
+- Pilule « un coup d'oeil » dans l'en-tete (lane, etat, pool %, requetes).
+- Feed des requetes (25 dernieres vues par le proxy: client, chemin, taille,
+  duree, issue) et action « Abort all » (generations orphelines).
+- Hysteresis de l'etat ready (3 rates + aucune ligne de progression) apres un
+  battement ready/starting observe sous prefill de 140k.
+- Plancher qualite: focus visible, Escape ferme la modale, mobile 390 px sans
+  defilement horizontal (mesure: scrollWidth == clientWidth), squelettes sur
+  tous les « ... », regions aria-live pour le journal d'evenements.
