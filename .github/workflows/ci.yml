@@ -168,6 +168,8 @@ jobs:
 
       - name: patch-template fixture (anchors, idempotence, revision pin)
         run: python3 tests/test_patch_template.py
+      - name: keepalive proxy oversize guard (offline, fake /tokenize)
+        run: python3 tests/test_proxy_guard.py
 
       - name: Vendored DFlash2 overlay integrity
         run: cd dflash2 && sha256sum -c MANIFEST.sha256
