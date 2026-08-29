@@ -18,7 +18,11 @@ for job in d["jobs"].values():
         if flt and flt not in name:
             continue
         need = [t for t in ("shellcheck", "docker", "gh") if t in run and not shutil.which(t)]
-        if "pip install" in run: need.append("pip (runner-only)")
+        if "pip install" in run:
+            if shutil.which("ruff"):   # ruff present locally: run the step without the runner-only install line
+                run = "\n".join(ln for ln in run.splitlines() if "pip install" not in ln)
+            else:
+                need.append("pip (runner-only)")
         if need:
             print(f"  SKIP {name} (missing: {', '.join(need)})"); skip += 1; continue
         r = subprocess.run(["bash", "-e", "-c", run], capture_output=True, text=True, cwd=os.getcwd())
