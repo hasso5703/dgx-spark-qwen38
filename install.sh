@@ -34,7 +34,7 @@ UNC_REV="21565d389fe573a32c1c425e0c7ade204ddb2263"
 FLASH_REPO="RadixArk/Qwen3.8-Flash-Next-NVFP4"
 FLASH_REV="7b719225242aacd3dbd3f9407468c2ee9a9d2594"
 FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"  # = lmsysorg/sglang:qwen38flashnext, 2026-08-26
-FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-qwen38-flash:v1.5.2}"
+FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-qwen38-flash:v1.5.3}"
 # Backing store for the flash target's mmap-served 51B PLE table (~48 GiB,
 # written once at first boot, reused afterwards; delete it to reclaim).
 PLE_DIR="${PLE_DIR:-$HOME/flashnext-ple}"
@@ -603,6 +603,7 @@ render_tpl() {  # $1 template file; substituted result on stdout
       -e "s|__MODEL_REV_ARGS__|$MODEL_REV_ARGS|g" \
       -e "s|__MODEL__|$MODEL_REPO|g" \
       -e "s|__PLE_DIR__|$PLE_DIR|g" \
+      -e "s|__MODEL_REV__|$MODEL_REV|g" \
       "$1"
 }
 if [ "$LANE" = "flash" ]; then
@@ -705,7 +706,7 @@ except Exception as e:
     # and say how to reclaim them; never delete data on the operator's behalf.
     LEFTOVER_NOTES=""
     if [ "$LANE" = "flash" ]; then
-      for ref in "vllm/vllm-openai:qwen38-flash-next" "vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8" "qwen38-flash:v1.4" "qwen38-flash:v1.5"; do
+      for ref in "vllm/vllm-openai:qwen38-flash-next" "vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8" "qwen38-flash:v1.4" "qwen38-flash:v1.5" "qwen38-flash:v1.5.2"; do
         docker image inspect "$ref" >/dev/null 2>&1 && LEFTOVER_NOTES="${LEFTOVER_NOTES}      docker rmi '$ref'\n"
       done
     fi

@@ -18,7 +18,7 @@ set -euo pipefail
 PLE_DIR=__PLE_DIR__
 if [ -f "$PLE_DIR/.loading" ]; then
   echo "qwen38-flash: previous boot never reached health; rebuilding the PLE table"
-  rm -f "$PLE_DIR"/ple_table_*.bin
+  rm -f "$PLE_DIR"/ple_table_*
 fi
 touch "$PLE_DIR/.loading"
 (
@@ -37,6 +37,7 @@ exec /usr/bin/docker run --rm --name qwen38-flash --gpus all \
   -v __HOME__/.config/qwen38:/out \
   -v __PLE_DIR__:/ple \
   -e SGLANG_QWEN4_PLE_MMAP_DIR=/ple \
+  -e SGLANG_QWEN4_PLE_TAG=__MODEL_REV__ \
   -e HF_HUB_OFFLINE=1 \
   __IMAGE__ \
   python3 -m sglang.launch_server \

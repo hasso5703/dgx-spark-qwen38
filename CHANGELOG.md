@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.3 (2026-08-29): PLE table reused across boots
+
+Every flash boot rewrote the 48 GB PLE table through a random-access mapping
+(issue #7 by nullburn: ~42 GB written per boot, NVMe saturated by 4 KB faults,
+59-minute boots once the page cache is cold; confirmed on the reference box).
+The table is a deterministic function of the checkpoint, so it now carries a
+completion marker (served revision, geometry, dtype) written after msync; a
+boot whose marker matches maps the file and skips the copies, and a real
+(re)build runs with sequential readahead before switching to MADV_RANDOM for
+serving. The launcher tags the table with the served revision
+(SGLANG_QWEN4_PLE_TAG) and wipes the marker together with the table after an
+interrupted boot. Serving image tag: qwen38-flash:v1.5.3.
+
 ## v1.5.2 (2026-08-29): flash lane correctness hotfix
 
 **Fixes a silent long-context corruption in the v1.5 flash lane.** The v1.5
