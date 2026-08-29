@@ -102,7 +102,7 @@ jobs:
           [ "$(get 1m 0)" = "30001 700000 200000" ] || { echo "1m limits drifted"; exit 1; }
           [ "$(get native 1)" = "30000 194048 64000" ] || { echo "no-service limits drifted"; exit 1; }
           getf() { bash -c "LANE=flash; CONTEXT_MODE=native; NO_SERVICE=0; PORT=30000; PROXY_PORT=30001; eval \"\$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; echo \"\$OC_PORT \$OC_CTX \$OC_OUT\""; }
-          [ "$(getf)" = "30001 226000 32000" ] || { echo "flash limits drifted"; exit 1; }
+          [ "$(getf)" = "30001 110000 32000" ] || { echo "flash limits drifted"; exit 1; }
 
       - name: opencode generator produces a valid config (all three install shapes)
         run: |
@@ -121,17 +121,17 @@ jobs:
           assert set(m["variants"]) == {"low", "medium", "xhigh"}
           assert c["model"] == "qwen38/qwen3.8-27b"
           PY
-          gen flash 0 1 226000 32000 native
+          gen flash 0 1 110000 32000 native
           python3 - <<'PY'
           import json
           c = json.load(open("/tmp/octest/opencode.json"))
           assert set(c["provider"]) == {"flashnext"}, c["provider"].keys()
           m = c["provider"]["flashnext"]["models"]["qwen3.8-flash-next"]
-          assert m["limit"] == {"context": 226000, "input": 226000, "output": 32000}
+          assert m["limit"] == {"context": 110000, "input": 110000, "output": 32000}
           assert set(m["variants"]) == {"low", "medium", "xhigh"}
           assert c["model"] == "flashnext/qwen3.8-flash-next"
           PY
-          gen flash 1 1 226000 32000 1m
+          gen flash 1 1 110000 32000 1m
           python3 - <<'PY'
           import json
           c = json.load(open("/tmp/octest/opencode.json"))
