@@ -330,7 +330,13 @@ def collect_engine_info():
     slim = {k: info.get(k) for k in kept}
     for f in MASKED_FIELDS:
         slim.pop(f, None)
-    return {"node_id": "local", "info": slim}
+    # the proxy's absolute prompt ceiling, as deployed in the keepalive unit (0 = pool share only)
+    ceiling = 0
+    env = run(["systemctl", "show", "qwen38-keepalive.service", "-p", "Environment"], timeout=5)
+    m = re.search(r"PROMPT_CEILING_TOKENS=(\d+)", env or "")
+    if m:
+        ceiling = int(m.group(1))
+    return {"node_id": "local", "info": slim, "prompt_ceiling_tokens": ceiling}
 
 
 CANARY: dict = {"fails": 0, "last_ok": None, "last_err": "", "latency": None}

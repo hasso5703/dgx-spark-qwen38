@@ -62,6 +62,7 @@ function rGpu(d){
   });
 }
 function rEngineInfo(d){
+  if (d.prompt_ceiling_tokens != null) CEILING = d.prompt_ceiling_tokens;
   const i = d.info || {};
   $('engmodel').textContent = (i.model_path||'...').split('/').pop();
   $('engrev').textContent = (i.revision||'').slice(0,12);
@@ -77,6 +78,8 @@ function rEngineInfo(d){
 }
 let POOL = null;   // max_total_num_tokens from engine info
 let USABLE = 0.92; // share of the pool one prompt can use (server: usable_frac, same knob as the proxy guard)
+let CEILING = 0;   // absolute one-prompt ceiling from the deployed keepalive unit (0 = none)
+const singleLimit = () => CEILING > 0 ? Math.min(Math.round(POOL*USABLE), CEILING) : Math.round(POOL*USABLE);
 function rPool(l){
   if (!POOL) { $('poollab').textContent = '...'; return; }
   const held = l.num_tokens || 0, pct = 100*held/POOL;
@@ -85,7 +88,7 @@ function rPool(l){
   $('poolgauge').className = 'gauge' + (pct>90 ? ' crit' : pct>70 ? ' warn' : '');
   $('poolnote').textContent = pct>70
     ? 'one more large context will not fit: the scheduler queues it (max-running-requests 1)'
-    : 'a single prompt tops out near ' + Math.round(POOL*USABLE/1000) + 'K tokens on this pool';
+    : 'a single prompt tops out near ' + Math.round(singleLimit()/1000) + 'K tokens on this lane';
 }
 const WINDOW = 262144;
 function rReservoir(l){
@@ -95,7 +98,7 @@ function rReservoir(l){
     return;
   }
   $('restick').style.display = '';
-  const held = l.num_tokens || 0, single = Math.round(POOL*USABLE);
+  const held = l.num_tokens || 0, single = singleLimit();
   const scale = Math.max(WINDOW, POOL);
   const pct = 100*held/POOL;
   $('resbig').innerHTML = held.toLocaleString('en') + `<small id="rescap">of ${POOL.toLocaleString('en')} tokens</small>`;
