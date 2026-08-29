@@ -85,7 +85,7 @@ sm_121 decode now uses a dedicated Triton packed-varlen kernel:
   itself a verbatim copy of `sglang/srt/layers/attention/qsa/sm121_varlen.py`
   from upstream PR sgl-project/sglang#36845 (BBuf, 2026-08-28, open at the time
   of vendoring). Validated there by exact needle retrieval 4/4 at 120k, 190k and
+  210k tokens; re-validated on this repo's box before release (CHANGELOG v1.5.2).
   The PR later moved to a KDA-optimized kernel package (`kda_kernels/qwen38_qsa_sm121`,
   2026-08-29); our copy is the Triton varlen revision of 2026-08-28, sha256-pinned in
   MANIFEST.sha256, field-validated on the reference box (BENCHMARKS, 29/08).
-  210k tokens; re-validated on this repo's box before release (CHANGELOG v1.5.2).
