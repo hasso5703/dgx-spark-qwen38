@@ -1,6 +1,22 @@
 # Changelog
 
-## v1.5.6 (unreleased): the oversize guard counts instead of guessing
+## v1.5.7 (2026-08-29): the ceiling follows the lane
+
+- `switch-model.sh` now sets the keepalive proxy's one-prompt ceiling for the target
+  lane (flash 128,000 tokens by default, the 27B lane none), restarts the proxy and
+  says so. In v1.5.6 only `install.sh` wrote it, so a lane switch left the proxy
+  with the previous lane's ceiling: a 27B lane capped at 128K, or a flash lane
+  without one. Tested both ways on the reference box (unit and running process
+  checked, no engine restart needed).
+- `needle.sh --mem`: samples host MemAvailable every 0.5 s during each prompt and
+  reports the floor per trial plus a summary, so anyone can measure the memory
+  ceiling of their own box the way BENCHMARKS did. No sudo.
+- Docs: the 27B lane measured flat at 100K, 200K and 300K on the 1M unit (the
+  prefill growth is flash-specific); a 40-minute soak under the 128K ceiling
+  (24 prompts, exact, footprint plateaus); ATTRIBUTION names the exact revision
+  of the vendored sm121 kernel.
+
+## v1.5.6 (2026-08-29): the oversize guard counts instead of guessing
 
 - keepalive proxy v6.8: the v6.7 guard refused every body whose size divided by
   2.5 chars per token exceeded the KV pool. English prose runs 3.4 to 4.6 chars
