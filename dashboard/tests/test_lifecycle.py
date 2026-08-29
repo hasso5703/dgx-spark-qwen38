@@ -343,3 +343,27 @@ class MemFloor(unittest.TestCase):
         self.assertEqual(self.d(last_abort_ts=970.0), (False, "cooldown"))
         self.assertTrue(self.d(last_abort_ts=900.0)[0])
         self.assertEqual(self.d(avail_gib=None), (False, "no reading"))
+
+class ParseFeed(unittest.TestCase):
+    RAW = """2026-08-29T20:47:32+02:00 gx10 python3[1]: [proxy] 127.0.0.1:50508 -> POST /v1/chat/completions body=206008b
+2026-08-29T20:47:33+02:00 gx10 python3[1]: [proxy] 127.0.0.1:50508 POST /v1/chat/completions 200 ok non-sse in 0.5s
+2026-08-29T20:48:08+02:00 gx10 python3[1]: [proxy] 127.0.0.1:42706 -> POST /v1/chat/completions body=478952b
+2026-08-29T20:48:08+02:00 gx10 python3[1]: [proxy] 127.0.0.1:42706 REFUSED oversize (478952b, 140151 prompt tokens (counted by the engine), limit 128000)
+2026-08-29T20:48:08+02:00 gx10 python3[1]: [proxy] 127.0.0.1:42706 POST /v1/chat/completions 400 oversize refused in 0.6s
+2026-08-29T20:49:10+02:00 gx10 python3[1]: [proxy] 127.0.0.1:54104 -> POST /v1/chat/completions body=427000b
+2026-08-29T20:49:11+02:00 gx10 python3[1]: [proxy] 127.0.0.1:54104 oversize check: 125070 tokens fit (128000 usable of pool 197760)
+"""
+
+    def test_rows_outcomes_and_details(self):
+        rows = lc.parse_feed(self.RAW)
+        self.assertEqual([r["peer"] for r in rows], ["127.0.0.1:50508", "127.0.0.1:42706", "127.0.0.1:54104"])
+        self.assertEqual(rows[0]["outcome"], "200 ok non-sse"); self.assertIsNone(rows[0]["detail"])
+        self.assertEqual(rows[1]["outcome"], "400 oversize refused")
+        self.assertEqual(rows[1]["detail"], "140151 prompt tokens (counted by the engine), limit 128,000")
+        self.assertEqual(rows[1]["secs"], 0.6)
+        self.assertEqual(rows[2]["outcome"], "in flight")
+        self.assertEqual(rows[2]["detail"], "125,070 tokens counted, fits (128,000 usable)")
+
+    def test_last_n_and_empty(self):
+        self.assertEqual(lc.parse_feed(""), [])
+        self.assertEqual(len(lc.parse_feed(self.RAW, last=2)), 2)

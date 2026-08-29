@@ -430,34 +430,12 @@ def collect_decode_telemetry():
                       "age": round(time.time() - LAST_USAGE["ts"], 1) if LAST_USAGE["ts"] else None}}
 
 
-FEED_START = re.compile(r"\[proxy\] (\S+) -> (POST|GET) (\S+) body=(\d+)b")
-FEED_END = re.compile(r"\[proxy\] (\S+) (POST|GET) (\S+) (.+?) in ([\d.]+)s")
-
-
 @guard
 def collect_feed():
-    """Last requests seen by the keepalive proxy: client, path, size, outcome."""
-    raw = run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "160",
+    """Last requests seen by the keepalive proxy: client, path, size, outcome, guard detail."""
+    raw = run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "200",
                "--no-pager", "-o", "short-iso"], timeout=6)
-    reqs: dict[str, dict] = {}
-    order: list[str] = []
-    for ln in raw.splitlines():
-        ts = ln[:19]
-        m = FEED_START.search(ln)
-        if m:
-            peer = m.group(1)
-            reqs[peer] = {"ts": ts, "peer": peer, "path": m.group(3),
-                          "bytes": int(m.group(4)), "outcome": "in flight",
-                          "secs": None}
-            order.append(peer)
-            continue
-        m = FEED_END.search(ln)
-        if m and m.group(1) in reqs:
-            r = reqs[m.group(1)]
-            r["outcome"] = m.group(4)[:40]
-            r["secs"] = float(m.group(5))
-    rows = [reqs[p] for p in order[-25:]]
-    return {"node_id": "local", "rows": rows}
+    return {"node_id": "local", "rows": lc.parse_feed(raw)}
 
 
 @guard

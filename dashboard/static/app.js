@@ -205,7 +205,8 @@ function rFeed(d){
     const c2 = tr.insertCell(); c2.textContent = r.bytes>=1024 ? (r.bytes/1024).toFixed(0)+' KB' : r.bytes+' B'; c2.className='r num';
     const c3 = tr.insertCell(); c3.textContent = r.secs!=null ? r.secs.toFixed(1)+' s' : ''; c3.className='r num';
     const cls = r.outcome.startsWith('ok') ? 'ok' : r.outcome==='in flight' ? 'flash' : 'err';
-    tr.insertCell().innerHTML = `<span class="chip ${cls}">${r.outcome}</span>`;
+    const c4 = tr.insertCell(); c4.innerHTML = `<span class="chip ${cls}">${r.outcome}</span>`;
+    if (r.detail){ const d = document.createElement('div'); d.className = 'num'; d.style.cssText = 'font-size:10.5px;color:var(--mut);margin-top:3px'; d.textContent = r.detail; c4.appendChild(d); }
   });
   const inflight = rows.filter(r=>r.outcome==='in flight').length;
   $('feedchip').textContent = inflight ? inflight+' in flight' : 'idle';

@@ -259,3 +259,41 @@ def decide_mem_floor(*, avail_gib: float | None, floor_gib: float, num_reqs: int
     if last_abort_ts is not None and now - last_abort_ts < cooldown_s:
         return False, "cooldown"
     return True, f"MemAvailable {avail_gib:.1f} GiB under the {floor_gib:.1f} GiB floor with {num_reqs} running"
+
+
+# ── keepalive proxy journal -> request feed (pure) ──────────────────────────
+FEED_START = re.compile(r"\[proxy\] (\S+) -> (POST|GET) (\S+) body=(\d+)b")
+FEED_END = re.compile(r"\[proxy\] (\S+) (POST|GET) (\S+) (.+?) in ([\d.]+)s")
+FEED_REFUSED = re.compile(r"\[proxy\] (\S+) REFUSED oversize \(\d+b, (.+?), limit (\d+)\)")
+FEED_FIT = re.compile(r"\[proxy\] (\S+) oversize check: (\d+) tokens fit \((\d+) usable")
+
+
+def parse_feed(raw: str, last: int = 25) -> list[dict]:
+    """journalctl text of the keepalive proxy -> the last requests: client, path,
+    size, outcome, seconds, and the guard's detail when it counted the prompt
+    (tokens counted vs the lane's limit) so a 400 explains itself."""
+    reqs: dict[str, dict] = {}
+    order: list[str] = []
+    for ln in raw.splitlines():
+        ts = ln[:19]
+        m = FEED_START.search(ln)
+        if m:
+            peer = m.group(1)
+            reqs[peer] = {"ts": ts, "peer": peer, "path": m.group(3), "bytes": int(m.group(4)),
+                          "outcome": "in flight", "secs": None, "detail": None}
+            order.append(peer)
+            continue
+        m = FEED_REFUSED.search(ln)
+        if m and m.group(1) in reqs:
+            reqs[m.group(1)]["detail"] = f"{m.group(2)}, limit {int(m.group(3)):,}"
+            continue
+        m = FEED_FIT.search(ln)
+        if m and m.group(1) in reqs:
+            reqs[m.group(1)]["detail"] = f"{int(m.group(2)):,} tokens counted, fits ({int(m.group(3)):,} usable)"
+            continue
+        m = FEED_END.search(ln)
+        if m and m.group(1) in reqs:
+            r = reqs[m.group(1)]
+            r["outcome"] = m.group(4)[:40]
+            r["secs"] = float(m.group(5))
+    return [reqs[p] for p in order[-last:]]
