@@ -34,12 +34,6 @@
   }
   .num{font-variant-numeric:tabular-nums; letter-spacing:.01em}
   :focus-visible{outline:2px solid var(--acc); outline-offset:2px; border-radius:6px}
-  @media (max-width:720px){
-    header{padding:10px 14px; gap:9px} .hero{display:none} .repoline{display:none}
-    main{padding:12px 12px 36px; gap:12px}
-    .res{grid-template-columns:1fr} .res .big{font-size:26px}
-    th:first-child, td:first-child{width:auto}
-  }
 
   /* ── header ── */
   header{display:flex; align-items:center; gap:13px; padding:13px 26px;
@@ -218,6 +212,12 @@
   .mcard pre{background:var(--soft); border:1px solid var(--line); border-radius:9px;
              padding:11px 13px; font:12px ui-monospace,monospace; overflow:auto; margin-top:10px}
   .mrow{display:flex; justify-content:flex-end; gap:10px; margin-top:18px}
+  @media (max-width:720px){
+    header{padding:10px 14px; gap:9px} header .hero{display:none} .repoline{display:none}
+    main{padding:12px 12px 36px; gap:12px}
+    .res{grid-template-columns:1fr} .res .big{font-size:26px}
+    th:first-child, td:first-child{width:auto}
+  }
 </style>
 </head>
 <body>
@@ -572,6 +572,12 @@ function rDecode(d){
   $('acclen').textContent = t ? t.accept_len.toFixed(2) : 'idle';
   $('kvusage').textContent = t ? (100*t.token_usage).toFixed(1)+' %' : '...';
 }
+function fmtSince(s){
+  // systemd: 'Sat 2026-08-29 01:34:33 CEST' -> 'since 01:34' today, else 'since 08-29 01:34'
+  const m = (s||'').match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2})/); if(!m) return '';
+  const today = new Date().toISOString().slice(0,10) === `${m[1]}-${m[2]}-${m[3]}`;
+  return 'since ' + (today ? m[4] : `${m[2]}-${m[3]} ${m[4]}`);
+}
 function rUnits(d){
   window._units = d.units || {};
   const box = $('unitlist'); box.innerHTML='';
@@ -583,7 +589,7 @@ function rUnits(d){
       `<span class="chip ${on?'ok':u.active==='failed'?'err':''}">${u.active}</span>`+
       `<span class="name">${name.replace('.service','')}</span>`+
       `<span class="chip ${lane(name)}">${u.enabled}</span>`+
-      `<span class="since">${(u.since||'').replace(/^\w+ /,'')}</span>`;
+      `<span class="since">${fmtSince(u.since)}</span>`;
     const btn = document.createElement('button');
     btn.className = 'btn mini'+(on?' danger':'');
     btn.textContent = on ? 'stop' : 'start';
