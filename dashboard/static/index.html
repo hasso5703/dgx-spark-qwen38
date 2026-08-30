@@ -119,6 +119,13 @@
   td{padding:6px; border-top:1px solid var(--line)}
   td.r{text-align:right}
   td .chip{white-space:normal}
+  .chip.live::before{content:''; display:inline-block; width:7px; height:7px; border-radius:50%;
+    background:currentColor; margin-right:6px; animation:pulse 1.2s ease-in-out infinite}
+  .bfill.indet{width:100% !important; opacity:.6;
+    background:repeating-linear-gradient(45deg, var(--warn) 0 10px, transparent 10px 20px) !important;
+    animation:barber .9s linear infinite}
+  .bfill.indet::after{display:none}
+  @keyframes barber{to{background-position:28.28px 0}}
   .tablewrap{overflow-x:auto; max-width:100%}
 
   .btn{border:1px solid color-mix(in srgb, var(--acc) 60%, transparent);

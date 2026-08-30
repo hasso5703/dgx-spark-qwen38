@@ -119,7 +119,7 @@ function rHero(){
   if (!serving) { $('hero').textContent = ''; return; }
   const [name, e] = serving; const lane = name.includes('flash') ? 'flash 176B' : '27B';
   const l = window._load || {}; const pct = POOL ? Math.round(100*(l.num_tokens||0)/POOL) : null;
-  $('hero').innerHTML = `<b>${lane}</b> <span class="chip ${STATE_CHIP[e.state] ?? 'warn'}">${e.state}</span>`
+  $('hero').innerHTML = `<b>${lane}</b> <span class="chip ${STATE_CHIP[e.state] ?? 'warn'}${e.state==='stopping'?' live':''}">${e.state}</span>`
     + (pct!=null ? ` <span class="num">pool ${pct}%</span>` : '')
     + ((l.num_reqs||0) ? ` <span class="num">${l.num_reqs} running</span>` : '');
 }
@@ -171,7 +171,7 @@ function rUnits(d){
       `<span class="chip ${on?'ok':u.active==='failed'?'err':''}">${u.active}</span>`+
       `<span class="name">${name.replace('.service','')}</span>`+
       `<span class="chip ${lane(name)}">${u.enabled}</span>`+
-      (window._proxy && window._proxy.version ? `<span class="chip ${window._proxy.same_as_repo===false?'warn':''}" title="deployed keepalive-proxy.py${window._proxy.same_as_repo===false?' differs from the repo copy':''}">${window._proxy.version}${window._proxy.same_as_repo===false?' · behind repo':''}</span>` : '')+
+      (window._proxy && window._proxy.version ? `<span class="chip ${window._proxy.same_as_repo===false?'warn':''}" title="deployed keepalive-proxy.py${window._proxy.same_as_repo===false?' differs from the repo copy':''}">${window._proxy.version}${window._proxy.same_as_repo===false?' · not the repo copy':''}</span>` : '')+
       `<span class="since">${fmtSince(u.since)}</span>`;
     const btn = document.createElement('button');
     btn.className = 'btn mini'+(on?' danger':'');
@@ -244,7 +244,7 @@ function rLifecycle(d){
     const chipCls = STATE_CHIP[e.state] ?? 'warn';
     const top = document.createElement('div'); top.className='top';
     top.innerHTML =
-      `<span class="chip ${chipCls}">${e.state}</span>`+
+      `<span class="chip ${chipCls}${e.state==='stopping'?' live':''}">${e.state}</span>`+
       (e.rebuild?'<span class="chip warn">rebuilding PLE table</span>':'')+
       (e.overdue?'<span class="chip err">overdue, check logs</span>':'')+
       `<span class="name">${name.replace('.service','')}</span>`+
@@ -253,7 +253,8 @@ function rLifecycle(d){
     const on = e.state !== 'stopped' && e.state !== 'failed';
     const btn = document.createElement('button');
     btn.className = 'btn mini'+(on?' danger':'');
-    btn.textContent = on ? 'stop' : 'start';
+    btn.textContent = on ? (e.state==='stopping' ? 'stopping\u2026' : 'stop') : 'start';
+    if (e.state==='stopping') btn.disabled = true;
     const blockKey = `unit:start:${name}`;
     const blocked = !on && (d.blocked||{})[blockKey];
     if (blocked) btn.disabled = true;
@@ -289,6 +290,14 @@ function rLifecycle(d){
         `<div class="blab"><span>${stage} · ${fmtDur(e.elapsed)} elapsed</span>`+
         `<span>${eta!=null?'~'+fmtDur(eta)+' left':'first boot: learning duration'}</span></div>`;
       row.appendChild(boot);
+    }
+    if (e.state==='stopping'){
+      const stop = document.createElement('div'); stop.className='boot';
+      stop.innerHTML =
+        `<div class="bbar"><div class="bfill indet"></div></div>`+
+        `<div class="blab"><span>stopping \u00b7 ${e.state_elapsed!=null?fmtDur(e.state_elapsed):'\u2026'} elapsed</span>`+
+        `<span>systemd stops the container (SIGTERM, usually under 30 s)</span></div>`;
+      row.appendChild(stop);
     }
     box.appendChild(row);
   });

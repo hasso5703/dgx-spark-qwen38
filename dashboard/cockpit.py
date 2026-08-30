@@ -495,7 +495,7 @@ def collect_lifecycle():
     states = {}
     for unit in lc.ENGINE_UNITS + ("qwen38-keepalive.service",):
         raw = run(["systemctl", "show", unit, "-p",
-                   "ActiveState,SubState,ActiveEnterTimestampMonotonic"])
+                   "ActiveState,SubState,ActiveEnterTimestampMonotonic,StateChangeTimestampMonotonic"])
         d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
         active = d.get("ActiveState", "?")
         if unit not in lc.ENGINE_UNITS:
@@ -614,6 +614,13 @@ def collect_lifecycle():
                 elapsed = max(0.0, monotonic_now() - mono_us / 1e6)
         except ValueError:
             pass
+        state_elapsed = None
+        try:
+            chg_us = int(d.get("StateChangeTimestampMonotonic", "0"))
+            if chg_us > 0:
+                state_elapsed = max(0.0, monotonic_now() - chg_us / 1e6)
+        except ValueError:
+            pass
         # Learning guard: only record a boot we actually witnessed from its
         # start. A cockpit (re)start facing an already-warm engine must not
         # mistake 'first time I see it' for 'it just booted'.
@@ -636,6 +643,7 @@ def collect_lifecycle():
         engines[unit] = {"state": st["state"], "rebuild": st.get("rebuild", False),
                          "stage_done": boot.get("done", []),
                          "elapsed": round(elapsed, 1) if elapsed else None,
+                         "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,
                          "eta": eta, "overdue": overdue,
                          "boots": history.get(unit, [])[-5:],
                          "boots_rebuild": history.get(f"{unit}:rebuild", [])[-3:]}
