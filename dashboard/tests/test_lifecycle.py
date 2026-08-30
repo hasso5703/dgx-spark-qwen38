@@ -367,3 +367,25 @@ class ParseFeed(unittest.TestCase):
     def test_last_n_and_empty(self):
         self.assertEqual(lc.parse_feed(""), [])
         self.assertEqual(len(lc.parse_feed(self.RAW, last=2)), 2)
+
+
+class ParseFeedDangling(unittest.TestCase):
+    L = "2026-08-30T0{h}:00:00+0200 host python3[1]: [proxy] {rest}"
+
+    def test_old_dangling_start_is_not_in_flight(self):
+        raw = "\n".join([
+            self.L.format(h=1, rest="127.0.0.1:1111 -> POST /v1/chat/completions body=100b"),
+            self.L.format(h=2, rest="127.0.0.1:2222 -> POST /v1/chat/completions body=200b"),
+            self.L.format(h=2, rest="127.0.0.1:2222 POST /v1/chat/completions ok in 3.0s"),
+        ])
+        by = {r["peer"]: r for r in lc.parse_feed(raw)}
+        self.assertEqual(by["127.0.0.1:1111"]["outcome"], "no end logged")
+        self.assertEqual(by["127.0.0.1:2222"]["outcome"], "ok")
+
+    def test_recent_dangling_start_stays_in_flight(self):
+        raw = "\n".join([
+            self.L.format(h=2, rest="127.0.0.1:2222 POST /v1/chat/completions ok in 3.0s"),
+            self.L.format(h=2, rest="127.0.0.1:3333 -> POST /v1/chat/completions body=300b"),
+        ])
+        by = {r["peer"]: r for r in lc.parse_feed(raw)}
+        self.assertEqual(by["127.0.0.1:3333"]["outcome"], "in flight")

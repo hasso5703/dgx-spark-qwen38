@@ -76,6 +76,14 @@ function rEngineInfo(d){
   $('engver').textContent = i.version ?? '...';
   if (i.max_total_num_tokens) POOL = i.max_total_num_tokens;
 }
+function rEngineInfoDown(){
+  // the engine endpoint is unreachable (stopped, crashed or booting): the facts of the
+  // PREVIOUS lane must not survive a switch (seen 30/08: flash info shown during the 27B boot)
+  for (const id of ['engmodel','engrev','engquant','engctx','engspec','engattn','engradix','engver']){
+    const el = $(id); el.textContent = '...'; el.classList.add('skel');
+  }
+  POOL = null; rPool({}); rReservoir(window._load || {});
+}
 let POOL = null;   // max_total_num_tokens from engine info
 let USABLE = 0.92; // share of the pool one prompt can use (server: usable_frac, same knob as the proxy guard)
 let CEILING = 0;   // absolute one-prompt ceiling from the deployed keepalive unit (0 = none)
@@ -331,7 +339,7 @@ function apply(state){
     try{
       if (wrap.data && wrap.data.error) throw new Error(wrap.data.error);
       fn(wrap.data||{});
-    }catch(e){ /* isolated: leave last good render, log once */ console.warn(name, e.message); }
+    }catch(e){ if (name === 'engine_info') rEngineInfoDown(); console.warn(name, e.message); }
   }
   document.querySelectorAll('.skel').forEach(el => {
     if (el.textContent.trim() !== '...') el.classList.remove('skel');
