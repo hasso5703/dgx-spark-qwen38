@@ -1,9 +1,11 @@
 # Spark Cockpit privileged actions: EXACT argv allowlist, nothing else.
 # Rendered by the dashboard installer to /etc/sudoers.d/qwen38-cockpit
 # (validated with visudo -c before install; removed by uninstall).
-# The cockpit runs unprivileged; these six argv lines are the entire
-# privileged surface, and each one names a fixed unit of this repo,
-# plus one read-only forensics wrapper (no arguments accepted).
+# The cockpit runs unprivileged; these lines are the entire privileged
+# surface: start/stop/restart of the three units of this repo, the
+# operations switch-model.sh performs (unit install, enable/disable,
+# daemon-reload, the keepalive ceiling edit), one read-only forensics
+# wrapper, and kernel-journal reads.
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-sglang.service
@@ -13,5 +15,13 @@ __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-flash.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start qwen38-keepalive.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop qwen38-keepalive.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-keepalive.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl enable qwen38-sglang.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl enable qwen38-flash.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-sglang.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-flash.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
+__USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 * /etc/systemd/system/qwen38-sglang.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 * /etc/systemd/system/qwen38-flash.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/sed -i * /etc/systemd/system/qwen38-keepalive.service
 __USER__ ALL=(root) NOPASSWD: /usr/local/bin/qwen38-pyspy-scheduler
 __USER__ ALL=(root) NOPASSWD: /usr/bin/journalctl -k *
