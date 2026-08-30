@@ -524,7 +524,17 @@ if [ -f "$OC_USER_CFG" ]; then
   if [ "${LANE:-27b}" = "flash" ]; then
     python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" flashnext qwen3.8-flash-next "$OC_CTX" "$OC_OUT" || true
   else
-    python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" qwen38 qwen3.8-27b "$OC_CTX" "$OC_OUT" || true
+    # Never downgrade a 27B unit that serves a larger window than this run's
+    # CONTEXT_MODE computed (a native-mode re-install clobbered a 1m user's
+    # 700000/200000 back to 194048/64000, reference box 2026-08-30).
+    UNIT_CTX="$(grep -oE -- '--context-length [0-9]+' "$SGL_UNIT_PATH" 2>/dev/null | awk '{print $2}' | head -1)"
+    if [ -n "$UNIT_CTX" ] && [ "$UNIT_CTX" -gt 262144 ] && [ "$CONTEXT_MODE" != "1m" ]; then
+      echo "NOTE: the installed 27B unit serves --context-length $UNIT_CTX; keeping the existing"
+      echo "      opencode limits (these $CONTEXT_MODE-mode values would shrink them). Re-run with"
+      echo "      CONTEXT_MODE=1m to manage them, or edit $OC_USER_CFG yourself."
+    else
+      python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" qwen38 qwen3.8-27b "$OC_CTX" "$OC_OUT" || true
+    fi
   fi
 fi
 # oc: launcher that lifts opencode's hidden 32000 max_tokens cap to the
@@ -544,7 +554,7 @@ else
 # without this, long thinking phases are cut at 32000 and the turn ends silently.
 # --yolo auto-approves permissions (the reference box runs this way; remove it
 # below if you prefer per-action prompts).
-export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=$OC_OUT
+export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX="\${OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX:-$OC_OUT}"
 OPENCODE_BIN="\$(command -v opencode || true)"
 [ -n "\$OPENCODE_BIN" ] || OPENCODE_BIN="\$HOME/.opencode/bin/opencode"
 # --yolo goes LAST: opencode's parser rejects global flags before a
