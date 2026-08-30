@@ -170,8 +170,11 @@ if [ -f "$KA_UNIT" ]; then
   sudo systemctl restart qwen38-keepalive.service
   echo "keepalive proxy: one-prompt ceiling ${CEIL} tokens for the $TARGET_LANE lane"
 fi
-OC_JSON="$CONFIG_DIR/opencode.json"
-if [ -f "$OC_JSON" ]; then
+# Both files when present: the generated artifact (CONFIG_DIR) and the config
+# opencode actually reads (~/.config/opencode). Updating only the artifact left
+# the real default on the previous lane (seen on the reference box 2026-08-30).
+for OC_JSON in "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json"; do
+  [ -f "$OC_JSON" ] || continue
   TARGET_LANE="$TARGET_LANE" OC_JSON="$OC_JSON" python3 - <<'PYEOF' || echo "NOTE: could not update $OC_JSON (hand-edited?); set its \"model\" field yourself"
 import json
 import os
@@ -188,9 +191,9 @@ else:
     with open(p, "w") as f:
         json.dump(cfg, f, indent=2)
         f.write("\n")
-    print(f"opencode default model -> {want}")
+    print(f"opencode default model -> {want} ({p})")
 PYEOF
-fi
+done
 
 RUNNING=""
 systemctl is-active --quiet "$OTHER_UNIT_NAME" 2>/dev/null && RUNNING="$OTHER_UNIT_NAME"
