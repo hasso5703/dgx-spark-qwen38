@@ -17,6 +17,7 @@ RestartSec=3
 NoNewPrivileges=no
 ProtectSystem=full
 ReadWritePaths=__HOME__/.config/qwen38
+ReadWritePaths=/etc/systemd/system
 PrivateTmp=true
 
 [Install]
