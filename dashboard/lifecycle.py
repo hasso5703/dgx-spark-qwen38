@@ -12,6 +12,7 @@ Flags: rebuild (PLE table rebuild in progress), overdue (stage took > 2x ETA).
 from __future__ import annotations
 
 import re
+from datetime import datetime
 import statistics
 
 # ── Boot-log stage markers (real lines, see tests/test_lifecycle.py) ─────────
@@ -274,8 +275,11 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
     (tokens counted vs the lane's limit) so a 400 explains itself."""
     reqs: dict[str, dict] = {}
     order: list[str] = []
+    latest_ts = None
     for ln in raw.splitlines():
         ts = ln[:19]
+        if len(ts) == 19 and ts[10] == "T":
+            latest_ts = ts
         m = FEED_START.search(ln)
         if m:
             peer = m.group(1)
@@ -296,4 +300,23 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
             r = reqs[m.group(1)]
             r["outcome"] = m.group(4)[:40]
             r["secs"] = float(m.group(5))
+    # A start with no end cannot stay "in flight" forever: the proxy guarantees an
+    # end line per request since 30/08, but a proxy restart mid-request (or an older
+    # journal) can still orphan one. After 10 minutes of newer traffic it becomes an
+    # explicit unknown so the live count stays honest.
+    if latest_ts:
+        try:
+            latest = datetime.fromisoformat(latest_ts)
+        except ValueError:
+            latest = None
+        if latest:
+            for r in reqs.values():
+                if r["outcome"] != "in flight":
+                    continue
+                try:
+                    age = (latest - datetime.fromisoformat(r["ts"])).total_seconds()
+                except ValueError:
+                    continue
+                if age > 600:
+                    r["outcome"] = "no end logged"
     return [reqs[p] for p in order[-last:]]
