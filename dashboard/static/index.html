@@ -402,14 +402,16 @@
   </section>
 
   <section>
-    <h2>opencode</h2>
-    <p style="font-size:13px;color:var(--mut);margin-bottom:10px">
-      The box's agent CLI is wired to this server through the keepalive proxy.
-      Open a terminal and run:</p>
-    <pre style="background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:10px 13px;font:13px ui-monospace,monospace">oc</pre>
-    <p style="font-size:12px;color:var(--mut);margin-top:9px">
-      One command: the launcher lifts the output cap and auto-approves
-      permissions. The default model follows the served lane.</p>
+    <h2>opencode <span class="chip" id="occhip">...</span></h2>
+    <dl>
+      <dt>Integration</dt><dd id="ocstate">...</dd>
+      <dt>Default model</dt><dd id="ocdefault">...</dd>
+      <dt>Limits 27B</dt><dd class="num" id="oclim27">...</dd>
+      <dt>Limits flash</dt><dd class="num" id="oclimflash">...</dd>
+      <dt>Launcher</dt><dd id="oclauncher">...</dd>
+    </dl>
+    <pre id="occmd" style="background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:10px 13px;font:13px ui-monospace,monospace;margin-top:10px">oc</pre>
+    <p id="ocnote" style="font-size:12px;color:var(--mut);margin-top:9px">...</p>
   </section>
 
   <section class="wide actionsec">

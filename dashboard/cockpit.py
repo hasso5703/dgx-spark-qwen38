@@ -458,6 +458,48 @@ def collect_feed():
 
 
 @guard
+def collect_opencode():
+    """What the installer and the switch act on: the --no-opencode marker, the config
+    opencode really reads (default model, per-lane limits), the launcher and its cap."""
+    off = CONFIG_DIR / "opencode.off"
+    real = Path.home() / ".config/opencode/opencode.json"
+    art = CONFIG_DIR / "opencode.json"
+    launcher = Path.home() / ".local/bin/oc"
+    out = {"node_id": "local", "enabled": not off.exists(),
+           "off_note": off.read_text(errors="replace").strip()[:100] if off.exists() else None,
+           "launcher": {"present": launcher.exists(), "ours": False, "cap": None},
+           "real": {"present": real.exists(), "default": None, "limits": {}},
+           "artifact": {"present": art.exists(), "default": None}}
+    if launcher.exists():
+        txt = launcher.read_text(errors="replace")
+        out["launcher"]["ours"] = "dgx-spark-qwen38" in txt
+        m = re.search(r"OUTPUT_TOKEN_MAX[^0-9]*?(\d{4,7})", txt)
+        out["launcher"]["cap"] = int(m.group(1)) if m else None
+    for key, path in (("real", real), ("artifact", art)):
+        if not path.exists():
+            continue
+        try:
+            cfg = json.loads(path.read_text())
+        except (ValueError, OSError) as e:  # noqa: PERF203
+            out[key]["error"] = str(e)[:80]
+            continue
+        out[key]["default"] = cfg.get("model")
+        if key == "real":
+            for prov, pv in (cfg.get("provider") or {}).items():
+                if prov not in ("qwen38", "flashnext"):
+                    continue
+                for mid, mv in (pv.get("models") or {}).items():
+                    lim = mv.get("limit") or {}
+                    out["real"]["limits"][f"{prov}/{mid}"] = {"context": lim.get("context"), "output": lim.get("output")}
+    with LIFE_LOCK:
+        states = dict(LIFE.get("states", {}))
+    ok, why = lc.opencode_default_follows(out["real"]["default"], states)
+    out["follows"] = ok
+    out["why"] = why
+    return out
+
+
+@guard
 def collect_repo():
     def g(*args):
         return run(["git", "-C", str(REPO_DIR), *args]).strip()
@@ -693,7 +735,8 @@ TIERS = [
     (3.0, {"gpu": collect_gpu, "decode": collect_decode_telemetry}),
     (5.0, {"units": collect_units, "containers": collect_containers,
            "feed": collect_feed}),
-    (30.0, {"engine_info": collect_engine_info, "repo": collect_repo, "kernel": collect_kernel}),
+    (30.0, {"engine_info": collect_engine_info, "repo": collect_repo, "kernel": collect_kernel,
+            "opencode": collect_opencode}),
 ]
 
 

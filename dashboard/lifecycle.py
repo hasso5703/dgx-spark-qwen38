@@ -320,3 +320,20 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
                 if age > 600:
                     r["outcome"] = "no end logged"
     return [reqs[p] for p in order[-last:]]
+
+
+# opencode default model vs the lane actually serving (the cockpit panel's verdict).
+LANE_PROVIDER = {"qwen38-sglang.service": "qwen38", "qwen38-flash.service": "flashnext"}
+
+
+def opencode_default_follows(default_model, states: dict) -> tuple:
+    """(True/False/None, reason). None when no engine is serving."""
+    served = [u for u, st in states.items() if u in LANE_PROVIDER and st not in ("stopped", "failed")]
+    if not served:
+        return None, "no engine serving right now"
+    want = LANE_PROVIDER[served[0]]
+    if not default_model:
+        return False, f"no default model set (expected {want}/...)"
+    if default_model.split("/")[0] == want:
+        return True, "follows the served lane"
+    return False, f"served lane wants {want}/..., default is {default_model}"

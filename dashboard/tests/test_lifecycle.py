@@ -389,3 +389,19 @@ class ParseFeedDangling(unittest.TestCase):
         ])
         by = {r["peer"]: r for r in lc.parse_feed(raw)}
         self.assertEqual(by["127.0.0.1:3333"]["outcome"], "in flight")
+
+
+class OpencodeDefault(unittest.TestCase):
+    def test_follows(self):
+        ok, why = lc.opencode_default_follows("qwen38/qwen3.8-27b", {"qwen38-sglang.service": "ready", "qwen38-flash.service": "stopped"})
+        self.assertTrue(ok); self.assertIn("follows", why)
+
+    def test_differs_and_missing(self):
+        ok, why = lc.opencode_default_follows("flashnext/qwen3.8-flash-next", {"qwen38-sglang.service": "loading-weights"})
+        self.assertFalse(ok); self.assertIn("qwen38", why)
+        ok, _why = lc.opencode_default_follows(None, {"qwen38-flash.service": "ready"})
+        self.assertFalse(ok)
+
+    def test_nothing_serving(self):
+        ok, why = lc.opencode_default_follows("qwen38/qwen3.8-27b", {"qwen38-sglang.service": "stopped", "qwen38-flash.service": "failed"})
+        self.assertIsNone(ok); self.assertIn("no engine", why)

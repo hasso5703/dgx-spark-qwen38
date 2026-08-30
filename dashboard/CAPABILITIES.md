@@ -41,7 +41,7 @@ fixed argv template.
 | Reclaim superseded images | printed `docker rmi ...` | One-click per item WITH confirmation + never the current images |
 | Uninstall | `./uninstall.sh [--yes]` | Danger zone, double confirmation, keeps data by default |
 | API key | `~/.config/qwen38/api-key` | Shown masked, copy button, regenerate (with restart warning) |
-| opencode | `oc` launcher, opencode.json | "Open opencode" shortcut: copies the exact command / launches via ttyd-style terminal page if enabled; shows current default model and limits |
+| opencode | `~/.config/qwen38/opencode.off` marker, `~/.config/opencode/opencode.json`, `~/.local/bin/oc` | State-aware panel: on/off (the installer's --no-opencode choice), default model and whether it follows the served lane, per-lane limits, launcher and its output cap; off hides the `oc` instruction and shows the re-enable command |
 | Chat templates | patch-template.py outputs | Template panel: which file, patched markers present, regenerate job |
 | Repo state | git status/log/tags | Repo panel: version, latest upstream tag, CHANGELOG view, update available badge |
 

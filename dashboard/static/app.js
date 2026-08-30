@@ -221,6 +221,34 @@ function rFeed(d){
   $('feedchip').className = 'chip ' + (inflight ? 'flash' : '');
   if(!rows.length){const tr=tb.insertRow();const c=tr.insertCell();c.colSpan=6;c.textContent='no request seen yet';c.style.color='var(--mut)';}
 }
+function rOpencode(d){
+  const chip = $('occhip');
+  const fmtLim = l => l && l.context ? `${l.context.toLocaleString('en')} ctx / ${(l.output||0).toLocaleString('en')} out` : 'not declared';
+  if (!d.enabled){
+    chip.textContent = 'off'; chip.className = 'chip';
+    $('ocstate').textContent = 'off (installed with --no-opencode)' + (d.off_note ? ` · ${d.off_note}` : '');
+    $('ocdefault').textContent = d.real.present ? (d.real.default || 'none') + ' (your own config, never touched)' : 'no opencode config on this box';
+    $('oclim27').textContent = fmtLim(d.real.limits['qwen38/qwen3.8-27b']);
+    $('oclimflash').textContent = fmtLim(d.real.limits['flashnext/qwen3.8-flash-next']);
+    $('oclauncher').textContent = d.launcher.present ? (d.launcher.ours ? 'this repo\u2019s oc (stale, remove it)' : 'a foreign oc, not ours') : 'none';
+    $('occmd').hidden = true;
+    $('ocnote').textContent = 'The switch leaves your opencode default model alone. Turn it back on with: ./install.sh --with-opencode';
+    return;
+  }
+  const ok = d.follows;
+  chip.textContent = ok===true ? 'follows the lane' : ok===false ? 'differs' : 'on';
+  chip.className = 'chip ' + (ok===true ? 'ok' : ok===false ? 'warn' : '');
+  $('ocstate').textContent = 'on · config ' + (d.real.present ? 'present' : 'missing (copy ~/.config/qwen38/opencode.json)');
+  $('ocdefault').textContent = (d.real.default || 'none') + ' · ' + d.why;
+  $('ocdefault').style.color = ok===false ? 'var(--warn)' : '';
+  $('oclim27').textContent = fmtLim(d.real.limits['qwen38/qwen3.8-27b']);
+  $('oclimflash').textContent = fmtLim(d.real.limits['flashnext/qwen3.8-flash-next']);
+  $('oclauncher').textContent = d.launcher.present
+    ? (d.launcher.ours ? `oc, output cap ${d.launcher.cap ? d.launcher.cap.toLocaleString('en') : '?'}` : 'a foreign oc command, launcher not installed')
+    : 'missing (re-run ./install.sh)';
+  $('occmd').hidden = false;
+  $('ocnote').textContent = 'One command: the launcher lifts the output cap and auto-approves permissions. The default model follows every switch; existing sessions keep the model they started with.';
+}
 function rRepo(d){
   window._proxy = d.proxy || null;
   $('repotag').textContent = d.tag||'...';
@@ -321,7 +349,8 @@ function rLifecycle(d){
 
 const RENDER = {machine:rMachine, gpu:rGpu, engine_info:rEngineInfo,
                 engine_fast:rEngineFast, decode:rDecode, units:rUnits,
-                containers:rContainers, repo:rRepo, lifecycle:rLifecycle, feed:rFeed};
+                containers:rContainers, repo:rRepo, lifecycle:rLifecycle, feed:rFeed,
+                opencode:rOpencode};
 
 // skeleton placeholders: every '...' shimmers until real data lands
 document.querySelectorAll('dd, .chip, .num').forEach(el => {
