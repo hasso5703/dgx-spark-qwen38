@@ -283,6 +283,7 @@ class H(BaseHTTPRequestHandler):
 
     # ---- relay -------------------------------------------------------------
     def _done(self, outcome):
+        self._ended = True
         st = ""
         if getattr(self, "_bytes", 0) or getattr(self, "_first", None) is not None:
             f = f"{self._first:.1f}s" if self._first is not None else "never"
@@ -426,7 +427,7 @@ class H(BaseHTTPRequestHandler):
         self._done("ok" if kind == "f" else "UPSTREAM CUT")
 
     # ---- verbs -------------------------------------------------------------
-    def _handle(self, with_body):
+    def _handle_inner(self, with_body):
         self._t0 = time.time()
         self._peer = f"{self.client_address[0]}:{self.client_address[1]}"
         self._bytes = 0; self._first = None; self._last = None
@@ -469,12 +470,35 @@ class H(BaseHTTPRequestHandler):
         if herr is not None: self._upstream_error(herr); return
         self._relay(resp)
 
+    def _handle(self, with_body):
+        """Every request leaves exactly one end line in the journal, even when the
+        client vanishes while the body is read or before the upstream answers
+        (30/08: one such request showed as 'in flight' forever in the cockpit)."""
+        try:
+            self._handle_inner(with_body)
+        finally:
+            if not getattr(self, "_ended", False):
+                self._t0 = getattr(self, "_t0", time.time())
+                self._peer = getattr(self, "_peer", "?")
+                try: self._done("no outcome (client vanished mid-request)")
+                except Exception: pass
+
     def do_POST(self):   self._handle(True)
     def do_PUT(self):    self._handle(True)
     def do_PATCH(self):  self._handle(True)
     def do_DELETE(self): self._handle(True)
 
     def do_GET(self):
+        try:
+            self._get_inner()
+        finally:
+            if not getattr(self, "_ended", False):
+                self._t0 = getattr(self, "_t0", time.time())
+                self._peer = getattr(self, "_peer", "?")
+                try: self._done("no outcome (client vanished mid-request)")
+                except Exception: pass
+
+    def _get_inner(self):
         self._t0 = time.time()
         self._peer = f"{self.client_address[0]}:{self.client_address[1]}"
         self._bytes = 0; self._first = None; self._last = None
