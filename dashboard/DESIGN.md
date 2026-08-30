@@ -264,3 +264,27 @@ fonction sera extraite dans `render-template.sh` (sourcee par install.sh, compor
 appelee par le cockpit avec les variables de la recette exportees. Pas de refactor du flux
 d'install.sh, pas de seconde table de substitution en Python. A faire avec l'etape « validate +
 render » (revue par Hasan d'abord, c'est le coeur du repo).
+
+## Information architecture (2026-08-30, built)
+
+One question per surface, and the answer never needs scrolling.
+
+| surface | always shows | why |
+|---|---|---|
+| top bar | the serving lane and its state, the switch selector, start/stop for that lane, flush, abort, smoke, bundle, the connection | the owner asked never to scroll to the bottom to switch; the lane state is the first question the app answers |
+| job strip | the running action, its elapsed time, its last log line, its log on demand | it comes from the server, so a reload or a second tab never loses a job |
+| banners | lost connection, wedged, failed, degraded, a memory floor that fired, dry run | alarms lead browsing; panels are the drill-down |
+| rail | seven sections with a badge when one needs eyes, collapsible to icons, remembered | tabs separate concerns without hiding what is wrong |
+
+Sections: Overview (reservoir, serving lane, right now, unified memory, events),
+Engines (the two lanes and the proxy with their buttons, served engine facts, probes and
+containers), Requests (the proxy feed, pool and decode), Machine (memory, GPU, CPU, safety
+belts), Models (recipes, registry, upstream watch, inventory), Logs (live logs, events,
+recent jobs), Setup (repo, opencode, the terminal command for the installer, the cockpit's
+own settings).
+
+Rules the panels follow: every panel declares its collectors and shows their age; a panel
+whose data is older than three refresh periods dims and says how old it is; a field never
+shimmers unless it has never been loaded, otherwise it names its state; an action that
+cannot work right now is disabled and says why in one sentence.
+

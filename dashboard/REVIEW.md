@@ -222,3 +222,67 @@ indexer prefill) happened inside one of them. The 1 s tier now derives liveness 
 `/get_load` (a lost HTTP layer is seen within a second) and asks `/health` every 2 s only
 until it answers 200, then every 30 s (`COCKPIT_HEALTH_RECHECK_S`). The 90 s canary is
 unchanged and remains the probe that tells a wedged scheduler from a healthy one.
+
+## 2026-08-30 afternoon: navigation rebuilt, monkey-proofing, ten real defects
+
+The owner's brief: primary actions at the top (no scrolling to switch), a collapsible
+left rail with tabs, explicit loading and stopping animations, explicit messages
+everywhere, and an app that survives people clicking everything several times.
+
+### Shape
+Sticky top bar (brand, the serving lane at a glance, the whole action set, connection),
+a job strip under it that every tab and every browser sees, a collapsible rail with seven
+sections (Overview, Engines, Requests, Machine, Models, Logs, Setup) and per-section
+badges, then panels that each declare which collectors feed them.
+
+### Defects found and fixed (each verified at the source before and after)
+1. `app.js` died on load with `ReferenceError: Cannot access 'loaded' before initialization`
+   whenever the URL carried `#models`: `showTab()` runs at parse time and read a `const`
+   declared 640 lines below. Proven in isolation with node, now a regression test
+   (reload on every hash).
+2. A busy engine was reported as `starting` and its own identity panel went blank: on this
+   build `GET /health` is a generation, it queues behind the running request and times out
+   every time. Liveness now comes from `/get_load` reporting work in flight; the generating
+   probe is only asked when the engine is idle.
+3. `/get_server_info` intermittently exceeded its 6 s timeout under a long prefill (three in
+   a row measured, while the same endpoint answered in 0.19 s between two requests). The
+   timeout is now 10 s, and a timeout no longer erases the engine facts: they are kept and
+   the panel ages visibly. Only lifecycle decides that a lane is gone.
+4. Panels looked fresh over frozen data: the ages came from the collector's last RUN, even
+   a failed one, and did not grow when the stream died. Ages now come from the last
+   SUCCESSFUL sample plus the time since the last payload.
+5. Engine actions (flush, abort, smoke) were clickable with no engine running and could
+   only fail. They are disabled with the reason, and `askAction` refuses them too.
+6. Empty states shimmered like a loading state: `Running ...` next to `Tokens in KV 0`.
+   Every field now names its state (`no engine`, `no pool`, `idle`).
+7. The pool guard wrote one event per attempt and retried every 38 s (20 identical
+   "flush failed: timed out" lines in the journal). One event per failure streak, a
+   backoff that grows to 4 minutes, a required quiet period in the engine's own log, and
+   the guard now says what it costs (the next long prompt prefills from scratch).
+8. A page opened while the cockpit was restarting fell back to 2 s polling and never tried
+   the live stream again; SSE handlers could also be replaced while still firing. Both fixed
+   and covered by the resilience test.
+9. The log source picker overwrote the user's choice 3 s after load; button tooltips were
+   lost for good when the page loaded during a job; the lane pill forced a 10 px horizontal
+   scroll at 390 px.
+10. `update_stack` was a button that ran `install.sh`, which needs an interactive sudo a
+    service cannot give: a half-applied install is the one failure this cockpit must never
+    cause. It is now the exact terminal command, printed in Setup.
+
+### Rails that were added
+Every action is one supervised job with a server-side lock, so a second click, a second
+tab or the autoheal belt gets `409 busy` naming the running job. The job strip, its log and
+the history come from the server, so a reload never loses a job. A dry-run mode
+(`COCKPIT_DRY_RUN=1`) confirms, logs and audits every action without executing anything,
+and without probing the real engine.
+
+### Tests (all green on 2026-08-30)
+- `tests/monkey-check.mjs`: 43 checks. Every tab, a reload on every hash, the modal, a
+  triple click, a confirm storm, 35 random clicks, the engine gate in both directions, the
+  rail memory, 390 px. It refuses to run against a cockpit that is not in dry run.
+- `tests/resilience-check.mjs`: 16 checks. It spawns its own cockpit, kills it, reads what
+  the user would see (header, banner, stale panels, disabled actions, a forced click), then
+  restarts it and proves the page recovers to the live stream without a reload.
+- `tests/smoke-http.sh` 18/18 (19 with both lanes installed and one active), 70 unit tests,
+  `tests/headless-check.mjs` with zero console exception.
+

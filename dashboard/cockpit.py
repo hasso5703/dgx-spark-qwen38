@@ -42,7 +42,11 @@ PORT = int(os.environ.get("COCKPIT_PORT", "30090"))
 ENGINE_BASE = os.environ.get("COCKPIT_ENGINE", "http://127.0.0.1:30000")
 PROXY_BASE = os.environ.get("COCKPIT_PROXY", "http://127.0.0.1:30001")
 STATIC_DIR = HERE / "static"
-VERSION = "0.1.0-beta"
+VERSION = "0.2.0-beta"
+# Dry run: every mutating action and every automatic belt is logged, audited and
+# shown exactly as usual, but nothing is executed. This is how the click-storm test
+# (tests/monkey-check.mjs) exercises the whole UI against a second cockpit instance.
+DRY_RUN = os.environ.get("COCKPIT_DRY_RUN", "0") == "1"
 
 # Fields from get_server_info that must never reach a browser.
 MASKED_FIELDS = {"api_key", "admin_api_key"}
@@ -276,28 +280,36 @@ def collect_engine_fast():
     except Exception:  # noqa: BLE001
         load = None
     now = time.time()
+    num_reqs, waiting = 0, 0
+    try:
+        row = (load or [{}])[0]
+        num_reqs = int(row.get("num_reqs", 0))
+        waiting = int(row.get("num_waiting_reqs", 0))
+    except (TypeError, ValueError, AttributeError, IndexError):
+        pass
     if load is None:
         # no HTTP layer at all (stopped, crashed, restarting): unhealthy within the second
         HEALTH["ok"], HEALTH["ts"] = False, now
+    elif num_reqs + waiting > 0:
+        # It answers AND it is working: that is liveness, proven without asking it to
+        # generate anything. Measured 30/08: on a busy engine GET /health queues behind
+        # the running request and times out every single time, which made the cockpit
+        # call a serving engine "starting" and blank its own identity panel.
+        HEALTH["ok"], HEALTH["ts"] = True, now
     elif now - HEALTH["ts"] >= (HEALTH_RECHECK_S if HEALTH["ok"] else 2.0):
         # In these SGLang builds GET /health is /health_generate: it runs a one-token
         # generation whenever the engine is idle (2,394 generations in the last hour of the
         # 30/08 instance at 1 Hz, and the 01:15 GPU fault happened inside one of them). So
-        # it is asked every 2 s only until it answers 200, then every 30 s; the 90 s canary
-        # remains the probe that tells a wedged scheduler from a healthy one.
+        # it is only asked when the engine has nothing to do: every 2 s until it answers
+        # 200, then every 30 s; the 90 s canary remains the probe that tells a wedged
+        # scheduler from a healthy one.
         try:
-            urllib.request.urlopen(ENGINE_BASE + "/health", timeout=2).read()
+            urllib.request.urlopen(ENGINE_BASE + "/health", timeout=4).read()
             HEALTH["ok"] = True
         except Exception:  # noqa: BLE001
             HEALTH["ok"] = False
         HEALTH["ts"] = now
     healthy = HEALTH["ok"]
-    # memory-floor belt (1 s tier): the unified pool is the livelock surface
-    num_reqs = 0
-    try:
-        num_reqs = int((load or [{}])[0].get("num_reqs", 0))
-    except (TypeError, ValueError, AttributeError, IndexError):
-        pass
     avail = mem_available_gib()
     abort, reason = lc.decide_mem_floor(avail_gib=avail, floor_gib=MEM_FLOOR_GIB, num_reqs=num_reqs,
                                         last_abort_ts=MEM_FLOOR["last_abort"], now=time.time())
@@ -306,6 +318,8 @@ def collect_engine_fast():
         MEM_FLOOR["aborts"] += 1
         MEM_FLOOR["last_reason"] = reason
         try:
+            if DRY_RUN:
+                raise RuntimeError("dry run: abort_all not sent")
             engine_abort_all()
             audit({"kind": "mem_floor", "avail_gib": avail, "num_reqs": num_reqs, "ok": True})
             add_event("mem_floor", f"memory floor: {reason}; every generation aborted")
@@ -337,7 +351,10 @@ def collect_kernel():
 
 @guard
 def collect_engine_info():
-    info = http_json(ENGINE_BASE + "/get_server_info", timeout=6)
+    # 10 s, not 6: SGLang's event loop stalls under a long prefill and a late answer is
+    # far better than none (measured 30/08: three timeouts in a row at 6 s while the same
+    # endpoint answered in 0.19 s between two requests).
+    info = http_json(ENGINE_BASE + "/get_server_info", timeout=10)
     kept = ("model_path", "served_model_name", "revision", "quantization",
             "context_length", "mem_fraction_static", "max_running_requests",
             "chunked_prefill_size", "speculative_algorithm",
@@ -374,6 +391,10 @@ LAST_USAGE: dict = {"value": 0.0, "mamba": 0.0, "ts": 0.0}   # pool usage from t
 MAMBA_GUARD_THRESHOLD = float(os.environ.get("COCKPIT_MAMBA_GUARD_THRESHOLD", "0.5"))
 IDLE_SINCE: dict = {"ts": None}
 LAST_FLUSH: dict = {"ts": 0.0}
+# The guard says what it did and what it cost, once per streak: it used to write one
+# event per attempt, and a scheduler busy with a prefill made it retry every 38 s
+# (20 identical "flush failed: timed out" lines in the 30/08 journal).
+POOL_GUARD_STATE: dict = {"flushes": 0, "last": None, "fails": 0, "last_err": "", "last_fail": None}
 PROGRESS_RE = re.compile(r"(Prefill|Decode) batch")
 USAGE_RE = re.compile(r"token usage: ([\d.]+)")
 MAMBA_RE = re.compile(r"mamba usage: ([\d.]+)")
@@ -391,7 +412,9 @@ def collect_canary():
     busy = int(load.get("num_reqs") or 0) + int(load.get("num_waiting_reqs") or 0) > 0
     # a request seen in the last 60 s means a client is active: stay out of its way
     recent = LAST_PROGRESS["ts"] and time.time() - LAST_PROGRESS["ts"] < 60
-    if not ready or JOB_LOCK.locked() or busy or recent:
+    # a dry-run instance exists to exercise the UI: it must not make the real engine
+    # generate anything, not even two tokens (a second cockpit shares the same box).
+    if DRY_RUN or not ready or JOB_LOCK.locked() or busy or recent:
         # never queue a probe behind a user's request (max-running-requests 1)
         return {"node_id": "local", **CANARY, "skipped": True}
     body = json.dumps({"model": "canary", "max_tokens": 2, "temperature": 0,
@@ -521,6 +544,16 @@ def collect_repo():
             "proxy": proxy}
 
 
+def _guard_failed(err: str):
+    """One event per failure streak, then silence: the next line is the recovery."""
+    POOL_GUARD_STATE["fails"] += 1
+    POOL_GUARD_STATE["last_err"] = err
+    POOL_GUARD_STATE["last_fail"] = time.time()
+    if POOL_GUARD_STATE["fails"] == 1:
+        add_event("guard", f"pool guard: could not flush the prefix cache ({err}); "
+                           f"backing off, it will try again when the engine is quiet")
+
+
 def monotonic_now() -> float:
     return float(Path("/proc/uptime").read_text().split()[0])
 
@@ -588,25 +621,36 @@ def collect_lifecycle():
                 IDLE_SINCE["ts"] = IDLE_SINCE["ts"] or time.time()
             else:
                 IDLE_SINCE["ts"] = None
-            if (POOL_GUARD and IDLE_SINCE["ts"] and time.time() - IDLE_SINCE["ts"] > 3
+            # A failed attempt backs off further and further instead of retrying at a
+            # fixed 30 s, and the engine must also be quiet in its own log: /get_load
+            # can read zero between two turns while the scheduler is still working.
+            quiet = not LAST_PROGRESS["ts"] or time.time() - LAST_PROGRESS["ts"] > 10
+            cooldown = 30.0 * min(8, 1 + POOL_GUARD_STATE["fails"])
+            if (POOL_GUARD and IDLE_SINCE["ts"] and time.time() - IDLE_SINCE["ts"] > 3 and quiet
                     and (LAST_USAGE["value"] > POOL_GUARD_THRESHOLD
                          or LAST_USAGE["mamba"] >= MAMBA_GUARD_THRESHOLD)
-                    and time.time() - LAST_FLUSH["ts"] > 30):
+                    and time.time() - LAST_FLUSH["ts"] > cooldown):
+                held, mamba = LAST_USAGE["value"], LAST_USAGE["mamba"]
                 try:
+                    if DRY_RUN:
+                        raise urllib.error.HTTPError(ENGINE_BASE, 400, "dry run: flush not sent", None, None)
                     req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST",
                                                  data=b"", headers={"Authorization": f"Bearer {api_key()}"})
                     urllib.request.urlopen(req, timeout=8).read()
-                    add_event("guard", f"pool guard: cache flushed (tokens {LAST_USAGE['value']:.0%}, "
-                                       f"mamba slots {LAST_USAGE['mamba']:.0%}), engine idle")
-                    audit({"kind": "pool_guard", "usage": LAST_USAGE["value"], "mamba": LAST_USAGE["mamba"]})
+                    POOL_GUARD_STATE.update(flushes=POOL_GUARD_STATE["flushes"] + 1,
+                                            last=time.time(), fails=0, last_err="")
+                    add_event("guard", f"pool guard: prefix cache flushed while the engine was idle "
+                                       f"({held:.0%} of the pool held, {mamba:.0%} of the mamba slots); "
+                                       f"the next long prompt prefills from scratch")
+                    audit({"kind": "pool_guard", "usage": held, "mamba": mamba})
                 except urllib.error.HTTPError as e:
                     # 400 = "pending requests": the engine is not idle after all
                     # (a queued request the load endpoint does not show); stand down.
                     if e.code != 400:
-                        add_event("guard", f"pool guard flush failed: HTTP {e.code}")
+                        _guard_failed(f"HTTP {e.code}")
                     IDLE_SINCE["ts"] = None
                 except Exception as e:  # noqa: BLE001
-                    add_event("guard", f"pool guard flush failed: {str(e)[:80]}")
+                    _guard_failed(str(e)[:80])
                 LAST_USAGE["value"] = 0.0
                 LAST_USAGE["mamba"] = 0.0
                 LAST_FLUSH["ts"] = time.time()
@@ -627,8 +671,8 @@ def collect_lifecycle():
                     audit({"kind": "wedge", "unit": unit, "canary_fails": CANARY["fails"],
                            "num_reqs": num_reqs, "progress_age": age})
                     # forensics before any restart: the scheduler's Python stacks
-                    dump = run(["sudo", "-n", "/usr/local/bin/qwen38-pyspy-scheduler"],
-                               timeout=40, merge_err=True)
+                    dump = "" if DRY_RUN else run(["sudo", "-n", "/usr/local/bin/qwen38-pyspy-scheduler"],
+                                                  timeout=40, merge_err=True)
                     if dump.strip():
                         f = CONFIG_DIR / f"wedge-{time.strftime('%Y%m%d-%H%M%S')}.txt"
                         try:
@@ -639,8 +683,9 @@ def collect_lifecycle():
                 if plan["restart"]:
                     LAST_HEAL["ts"] = time.time()
                     add_event("autoheal", f"{unit} wedged (health ok, {CANARY['fails']} "
-                              f"probes failed, {num_reqs} req): restarting it")
-                    code, out = start_action("unit", {"verb": "restart", "unit": unit})
+                              f"probes failed, {num_reqs} req): restarting it"
+                              + (" (dry run: not really)" if DRY_RUN else ""))
+                    code, out = start_action("unit", {"verb": "restart", "unit": unit}, origin="autoheal")
                     audit({"kind": "autoheal", "unit": unit, "code": code, "out": out})
             else:
                 WEDGED_SINCE.pop(unit, None)
@@ -715,6 +760,7 @@ def collect_lifecycle():
         ev = list(EVENTS)[-30:]
     return {"node_id": "local", "engines": engines,
             "keepalive": states.get("qwen38-keepalive.service", "stopped"),
+            "pool_guard": {"enabled": POOL_GUARD, "threshold": POOL_GUARD_THRESHOLD, **POOL_GUARD_STATE},
             "blocked": blocked, "events": ev}
 
 
@@ -725,11 +771,15 @@ STATE_LOCK = threading.Lock()
 # proxy's oversize guard (OVERSIZE_MARGIN_FRAC), so the reservoir tick and the proxy's
 # refusals tell one story.
 USABLE_FRAC = round(1.0 - float(os.environ.get("OVERSIZE_MARGIN_FRAC", "0.08")), 3)
-STATE["config"] = {"data": {"usable_frac": USABLE_FRAC, "version": VERSION}, "ts": time.time()}
 EVENT = threading.Condition()
 
+def collect_jobs():
+    """1 s tier: the running job (whoever started it) and the recent ones."""
+    return job_snapshot()
+
+
 TIERS = [
-    (1.0, {"machine": collect_machine, "engine_fast": collect_engine_fast}),
+    (1.0, {"machine": collect_machine, "engine_fast": collect_engine_fast, "job": collect_jobs}),
     (2.0, {"lifecycle": collect_lifecycle}),
     (90.0, {"canary": collect_canary}),
     (3.0, {"gpu": collect_gpu, "decode": collect_decode_telemetry}),
@@ -738,6 +788,14 @@ TIERS = [
     (30.0, {"engine_info": collect_engine_info, "repo": collect_repo, "kernel": collect_kernel,
             "opencode": collect_opencode}),
 ]
+
+
+# expected refresh period per collector, so the UI can tell a stale panel from a slow one
+PERIODS = {name: period for period, cols in TIERS for name in cols}
+STATE["config"] = {"data": {"usable_frac": USABLE_FRAC, "version": VERSION, "dry_run": DRY_RUN,
+                            "repo_dir": str(REPO_DIR), "periods": PERIODS,
+                            "terminal_only": {"update_stack": f"cd {REPO_DIR} && ./install.sh"}},
+                   "ts": time.time()}
 
 
 def sampler(period: float, collectors: dict):
@@ -782,16 +840,13 @@ ACTIONS = {
     "flush_cache": {
         "danger": "low",
         "params": {},
-        "argv": None,  # HTTP action, handled inline
-        "timeout": 10,
+        "argv": None,  # python job, see JOB_FUNCS
+        "timeout": 20,
     },
-    # supervised converging upgrade of the serving stack
-    "update_stack": {
-        "danger": "high",
-        "params": {},
-        "argv": lambda p: ["bash", str(REPO_DIR / "install.sh")],
-        "timeout": 3600,
-    },
+    # NOTE: no "update_stack" here. install.sh needs an interactive sudo (units, cp,
+    # sed) that a service without a tty cannot give; a half-applied install from a
+    # button is the one failure this cockpit must never cause. The Setup tab shows
+    # the exact terminal command instead (STATE config: terminal_only).
     # abort every in-flight generation (orphans left by vanished clients)
     "abort_all": {
         "danger": "medium",
@@ -817,24 +872,61 @@ ACTIONS = {
 
 
 class Job:
-    def __init__(self, action: str, argv: list[str], timeout: float):
+    def __init__(self, action: str, argv: list[str] | None, timeout: float,
+                 params: dict | None = None, fn=None, origin: str = "ui"):
         self.id = secrets.token_hex(8)
         self.action = action
         self.argv = argv
+        self.fn = fn                     # python job (flush, abort, smoke, bundle)
+        self.params = params or {}
+        self.origin = origin             # ui | autoheal
         self.timeout = timeout
         self.lines: list[str] = []
         self.status = "running"
         self.rc: int | None = None
         self.started = time.time()
+        self.ended: float | None = None
+        self.result: dict = {}
 
     def append(self, line: str):
         self.lines.append(line[:500])
         if len(self.lines) > 2000:  # bounded memory, always
             del self.lines[:500]
 
+    def summary(self, tail: int = 0) -> dict:
+        d = {"id": self.id, "action": self.action, "params": self.params, "origin": self.origin,
+             "status": self.status, "rc": self.rc, "started": self.started, "ended": self.ended,
+             "elapsed": round((self.ended or time.time()) - self.started, 1),
+             "argv": self.argv, "result": self.result, "dry_run": DRY_RUN}
+        if tail:
+            d["lines"] = self.lines[-tail:]
+        return d
+
 
 JOBS: dict[str, Job] = {}
+JOBS_KEEP = 50                # bounded: the audit log is the long-term record
 JOB_LOCK = threading.Lock()   # one mutating job at a time, ever
+JOB_CURRENT: dict = {"id": None}
+
+
+def job_snapshot() -> dict:
+    """What every browser tab sees, whoever started the job: the running job with its
+    log tail, and the last finished ones. A reload or a second tab never loses a job."""
+    cur = JOBS.get(JOB_CURRENT["id"]) if JOB_CURRENT["id"] else None
+    if cur and cur.status != "running":
+        cur = None
+    hist = sorted((j for j in JOBS.values() if j.status != "running"),
+                  key=lambda j: j.started, reverse=True)[:5]
+    return {"node_id": "local", "current": cur.summary(tail=40) if cur else None,
+            "recent": [j.summary() for j in hist], "locked": JOB_LOCK.locked()}
+
+
+def _prune_jobs():
+    if len(JOBS) <= JOBS_KEEP:
+        return
+    for j in sorted(JOBS.values(), key=lambda j: j.started)[:len(JOBS) - JOBS_KEEP]:
+        if j.status != "running":
+            JOBS.pop(j.id, None)
 
 
 def audit(entry: dict):
@@ -848,30 +940,149 @@ def audit(entry: dict):
 
 def run_job(job: Job):
     try:
-        proc = subprocess.Popen(job.argv, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True,
-                                cwd=str(REPO_DIR))
-        assert proc.stdout is not None
-        deadline = time.time() + job.timeout
-        for line in proc.stdout:
-            job.append(line.rstrip())
-            if time.time() > deadline:
-                proc.kill()
-                job.append("[cockpit] job timeout, killed")
-                break
-        job.rc = proc.wait(timeout=30)
-        job.status = "done" if job.rc == 0 else "failed"
+        if DRY_RUN:
+            job.append(f"[dry run] would run: {' '.join(job.argv) if job.argv else job.action}")
+            time.sleep(2.0)
+            job.rc = 0
+            job.status = "done"
+            job.result = {"ok": True, "dry_run": True}
+        elif job.fn is not None:
+            ok, lines, result = job.fn(job)
+            for ln in lines:
+                job.append(ln)
+            job.result = result
+            job.rc = 0 if ok else 1
+            job.status = "done" if ok else "failed"
+        else:
+            proc = subprocess.Popen(job.argv, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True,
+                                    cwd=str(REPO_DIR))
+            assert proc.stdout is not None
+            deadline = time.time() + job.timeout
+            for line in proc.stdout:
+                job.append(line.rstrip())
+                if time.time() > deadline:
+                    proc.kill()
+                    job.append("[cockpit] job timeout, killed")
+                    break
+            job.rc = proc.wait(timeout=30)
+            job.status = "done" if job.rc == 0 else "failed"
     except Exception as e:  # noqa: BLE001
         job.status = "failed"
         job.append(f"[cockpit] {type(e).__name__}: {e}")
     finally:
+        job.ended = time.time()
         audit({"kind": "job_end", "action": job.action, "rc": job.rc,
-               "status": job.status, "id": job.id})
-        add_event("job", f"{job.action} {job.status} (rc={job.rc})")
+               "status": job.status, "id": job.id, "dry_run": DRY_RUN})
+        add_event("job", f"{job.action} {job.status}" + (f" (rc={job.rc})" if job.argv else "")
+                  + (" [dry run]" if DRY_RUN else ""))
+        _prune_jobs()
         JOB_LOCK.release()
+        with EVENT:
+            EVENT.notify_all()
 
 
-def start_action(name: str, params: dict) -> tuple[int, dict]:
+# ── python jobs (they used to run inline in the HTTP handler, unlocked) ──────
+def served_model_name() -> str:
+    """The name the served engine answers to (never a hardcoded lane)."""
+    with STATE_LOCK:
+        info = ((STATE.get("engine_info") or {}).get("data") or {}).get("info") or {}
+    name = info.get("served_model_name")
+    if name:
+        return name
+    with LIFE_LOCK:
+        states = dict(LIFE.get("states", {}))
+    if states.get("qwen38-flash.service") not in (None, "stopped", "failed"):
+        return "qwen3.8-flash-next"
+    return "qwen3.8-27b"
+
+
+def job_flush_cache(job: Job):
+    req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST", data=b"",
+                                 headers={"Authorization": f"Bearer {api_key()}"})
+    try:
+        urllib.request.urlopen(req, timeout=8).read()
+    except urllib.error.HTTPError as e:
+        if e.code == 400:
+            return False, ["the engine refused: requests are still running (nothing was flushed)"], {"ok": False, "reason": "busy"}
+        raise
+    return True, ["radix cache flushed: the next prompt starts from an empty pool"], {"ok": True}
+
+
+def job_abort_all(job: Job):
+    engine_abort_all()
+    return True, ["every in-flight generation aborted (clients see their stream end)"], {"ok": True}
+
+
+def job_smoke(job: Job):
+    model = served_model_name()
+    job.append(f"canary through the proxy {PROXY_BASE}, model {model}, up to 200 tokens")
+    body = json.dumps({"model": model, "max_tokens": 200,
+                       "chat_template_kwargs": {"enable_thinking": False},
+                       "messages": [{"role": "user",
+                                     "content": "Reply with exactly: COCKPIT-SMOKE-OK"}]}).encode()
+    req = urllib.request.Request(PROXY_BASE + "/v1/chat/completions", body,
+                                 {"Content-Type": "application/json",
+                                  "Authorization": f"Bearer {api_key()}"})
+    t0 = time.time()
+    out = json.loads(urllib.request.urlopen(req, timeout=280).read())
+    txt = (out["choices"][0]["message"].get("content") or "").strip()
+    ok = "SMOKE-OK" in txt
+    return ok, [f"reply in {time.time() - t0:.1f} s: {txt[:120]!r}",
+                "smoke OK: the proxy, the engine and the chat template all answer" if ok
+                else "smoke FAILED: the engine answered but not with the expected marker"], \
+        {"ok": ok, "reply": txt[:80], "seconds": round(time.time() - t0, 1)}
+
+
+def job_diag_bundle(job: Job):
+    import tarfile
+    import tempfile
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    out = Path.home() / f"qwen38-diag-{ts}.tar.gz"
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        with STATE_LOCK:
+            (tdp / "cockpit-state.json").write_text(json.dumps(STATE, default=str, indent=1))
+        (tdp / "journal-flash.txt").write_text(run(["journalctl", "-u", "qwen38-flash.service", "-n", "400", "--no-pager", "-o", "short-iso"], timeout=15))
+        (tdp / "journal-sglang.txt").write_text(run(["journalctl", "-u", "qwen38-sglang.service", "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
+        (tdp / "journal-keepalive.txt").write_text(run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
+        for cont in CONTAINERS:
+            (tdp / f"docker-{cont}.txt").write_text(run(["docker", "logs", "--tail", "600", cont], timeout=15, merge_err=True))
+        (tdp / "nvidia-smi.txt").write_text(run(["nvidia-smi"], timeout=10))
+        (tdp / "system.txt").write_text(run(["uname", "-a"]) + run(["free", "-g"]) + run(["df", "-h", str(Path.home())]) + run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}} {{.ID}}"], timeout=10))
+        (tdp / "units.txt").write_text("".join(run(["systemctl", "show", u, "--no-pager"], timeout=5) + "\n" for u in UNITS))
+        try:
+            info = http_json(ENGINE_BASE + "/get_server_info", timeout=6)
+            for f in MASKED_FIELDS:
+                info.pop(f, None)
+            (tdp / "server-info.json").write_text(json.dumps(info, default=str, indent=1))
+        except Exception as e:  # noqa: BLE001
+            (tdp / "server-info.json").write_text(json.dumps({"error": str(e)[:200]}))
+        launch = CONFIG_DIR / "launch-flash.sh"
+        if launch.exists():
+            txt = re.sub(r'--api-key "\$\(cat [^)]*\)"', '--api-key <masked>', launch.read_text())
+            (tdp / "launch-flash.sh").write_text(txt)
+        # scrub the key VALUE everywhere: SGLang prints api_key=... in its
+        # ServerArgs banner, which lands in docker logs and the journal
+        key = api_key()
+        for f in tdp.iterdir():
+            txt = f.read_text(errors="replace")
+            if key and key in txt:
+                f.write_text(txt.replace(key, "<masked>"))
+        with tarfile.open(out, "w:gz") as tar:
+            for f in sorted(tdp.iterdir()):
+                tar.add(f, arcname=f"qwen38-diag-{ts}/{f.name}")
+    size = out.stat().st_size
+    add_event("action", f"diagnostics bundle written: {out.name}")
+    return True, [f"bundle written: {out} ({size / 1024:.0f} KB, API key masked)"], \
+        {"ok": True, "path": str(out), "bytes": size}
+
+
+JOB_FUNCS = {"flush_cache": job_flush_cache, "abort_all": job_abort_all,
+             "smoke": job_smoke, "diag_bundle": job_diag_bundle}
+
+
+def start_action(name: str, params: dict, origin: str = "ui") -> tuple[int, dict]:
     spec = ACTIONS.get(name)
     if not spec:
         return 404, {"error": "unknown action"}
@@ -883,7 +1094,8 @@ def start_action(name: str, params: dict) -> tuple[int, dict]:
             return 400, {"error": f"invalid {key}"}
         clean[key] = val
     # lifecycle gates: the server refuses what the UI also disables
-    if name in ("unit", "switch", "update_stack"):
+    warnings = []
+    if name in ("unit", "switch"):
         with LIFE_LOCK:
             states = dict(LIFE.get("states", {}))
         reasons = lc.blocked_reasons(name, clean, states)
@@ -892,92 +1104,27 @@ def start_action(name: str, params: dict) -> tuple[int, dict]:
                    "params": clean, "reasons": reasons})
             return 409, {"error": "blocked", "reasons": reasons}
         warnings = lc.warn_reasons(name, clean, states)
-    else:
-        warnings = []
-    if name == "flush_cache":
-        try:
-            req = urllib.request.Request(ENGINE_BASE + "/flush_cache",
-                                         method="POST", data=b"",
-                                         headers={"Authorization": f"Bearer {api_key()}"})
-            urllib.request.urlopen(req, timeout=8).read()
-            audit({"kind": "action", "action": name, "ok": True})
-            return 200, {"ok": True}
-        except Exception as e:  # noqa: BLE001
-            return 502, {"error": str(e)[:200]}
-    if name == "diag_bundle":
-        try:
-            import tarfile
-            import tempfile
-            ts = time.strftime("%Y%m%d-%H%M%S")
-            out = Path.home() / f"qwen38-diag-{ts}.tar.gz"
-            with tempfile.TemporaryDirectory() as td:
-                tdp = Path(td)
-                (tdp / "cockpit-state.json").write_text(json.dumps(STATE, default=str, indent=1))
-                (tdp / "journal-flash.txt").write_text(run(["journalctl", "-u", "qwen38-flash.service", "-n", "400", "--no-pager", "-o", "short-iso"], timeout=15))
-                (tdp / "journal-sglang.txt").write_text(run(["journalctl", "-u", "qwen38-sglang.service", "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
-                (tdp / "journal-keepalive.txt").write_text(run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
-                for cont in CONTAINERS:
-                    (tdp / f"docker-{cont}.txt").write_text(run(["docker", "logs", "--tail", "600", cont], timeout=15, merge_err=True))
-                (tdp / "nvidia-smi.txt").write_text(run(["nvidia-smi"], timeout=10))
-                (tdp / "system.txt").write_text(run(["uname", "-a"]) + run(["free", "-g"]) + run(["df", "-h", str(Path.home())]) + run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}} {{.ID}}"], timeout=10))
-                (tdp / "units.txt").write_text("".join(run(["systemctl", "show", u, "--no-pager"], timeout=5) + "\n" for u in UNITS))
-                try:
-                    info = http_json(ENGINE_BASE + "/get_server_info", timeout=6)
-                    for f in MASKED_FIELDS:
-                        info.pop(f, None)
-                    (tdp / "server-info.json").write_text(json.dumps(info, default=str, indent=1))
-                except Exception as e:  # noqa: BLE001
-                    (tdp / "server-info.json").write_text(json.dumps({"error": str(e)[:200]}))
-                launch = CONFIG_DIR / "launch-flash.sh"
-                if launch.exists():
-                    txt = re.sub(r'--api-key "\$\(cat [^)]*\)"', '--api-key <masked>', launch.read_text())
-                    (tdp / "launch-flash.sh").write_text(txt)
-                # scrub the key VALUE everywhere: SGLang prints api_key=... in its
-                # ServerArgs banner, which lands in docker logs and the journal
-                key = api_key()
-                for f in tdp.iterdir():
-                    txt = f.read_text(errors="replace")
-                    if key and key in txt:
-                        f.write_text(txt.replace(key, "<masked>"))
-                with tarfile.open(out, "w:gz") as tar:
-                    for f in sorted(tdp.iterdir()):
-                        tar.add(f, arcname=f"qwen38-diag-{ts}/{f.name}")
-            audit({"kind": "action", "action": name, "ok": True, "path": str(out)})
-            add_event("action", f"diagnostics bundle written: {out.name}")
-            return 200, {"ok": True, "path": str(out), "bytes": out.stat().st_size}
-        except Exception as e:  # noqa: BLE001
-            return 500, {"error": str(e)[:200]}
-    if name == "abort_all":
-        try:
-            engine_abort_all()
-            audit({"kind": "action", "action": name, "ok": True})
-            add_event("action", "abort_all: every in-flight generation aborted")
-            return 200, {"ok": True}
-        except Exception as e:  # noqa: BLE001
-            return 502, {"error": str(e)[:200]}
-    if name == "smoke":
-        try:
-            body = json.dumps({"model": "qwen3.8-flash-next", "max_tokens": 200,
-                               "messages": [{"role": "user",
-                                             "content": "Reply with exactly: COCKPIT-SMOKE-OK"}]}).encode()
-            req = urllib.request.Request(PROXY_BASE + "/v1/chat/completions", body,
-                                         {"Content-Type": "application/json",
-                                          "Authorization": f"Bearer {api_key()}"})
-            out = json.loads(urllib.request.urlopen(req, timeout=280).read())
-            txt = (out["choices"][0]["message"].get("content") or "").strip()
-            audit({"kind": "action", "action": name, "ok": "SMOKE-OK" in txt})
-            return 200, {"ok": "SMOKE-OK" in txt, "reply": txt[:80]}
-        except Exception as e:  # noqa: BLE001
-            return 502, {"error": str(e)[:200]}
+    # one job at a time: the second click, the second tab, the autoheal, all wait
     if not JOB_LOCK.acquire(blocking=False):
-        return 409, {"error": "another job is already running"}
-    job = Job(name, spec["argv"](clean), spec["timeout"])
-    JOBS[job.id] = job
-    audit({"kind": "job_start", "action": name, "params": clean,
-           "argv": job.argv, "id": job.id})
-    add_event("job", f"{name} started ({job.id})")
-    threading.Thread(target=run_job, args=(job,), daemon=True).start()
-    return 202, {"job": job.id, "argv": job.argv, "warnings": warnings}
+        cur = JOBS.get(JOB_CURRENT["id"]) if JOB_CURRENT["id"] else None
+        return 409, {"error": "busy",
+                     "running": cur.summary() if cur else None,
+                     "message": f"another action is already running"
+                                + (f": {cur.action}" if cur else "") + "; wait for it to finish"}
+    try:
+        argv = spec["argv"](clean) if spec["argv"] else None
+        job = Job(name, argv, spec["timeout"], params=clean, fn=JOB_FUNCS.get(name), origin=origin)
+        JOBS[job.id] = job
+        JOB_CURRENT["id"] = job.id
+        audit({"kind": "job_start", "action": name, "params": clean,
+               "argv": argv, "id": job.id, "origin": origin, "dry_run": DRY_RUN})
+        add_event("job", f"{name} started" + (f" ({clean})" if clean else "")
+                  + (" [dry run]" if DRY_RUN else ""))
+        threading.Thread(target=run_job, args=(job,), daemon=True).start()
+    except Exception as e:  # noqa: BLE001 (the lock must never leak)
+        JOB_LOCK.release()
+        return 500, {"error": f"could not start: {type(e).__name__}: {str(e)[:120]}"}
+    return 202, {"job": job.id, "argv": argv, "warnings": warnings, "dry_run": DRY_RUN}
 
 
 # ── Sessions / auth ──────────────────────────────────────────────────────────
@@ -1256,10 +1403,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             job = JOBS.get(path.rsplit("/", 1)[1])
             if not job:
                 return self.send_json({"error": "no such job"}, 404)
-            return self.send_json({"id": job.id, "action": job.action,
-                                   "status": job.status, "rc": job.rc,
-                                   "started": job.started,
-                                   "lines": job.lines[-200:]})
+            return self.send_json(job.summary(tail=200))
         if path == "/api/stream":
             return self.stream()
         return self.send_json({"error": "not found"}, 404)
@@ -1267,7 +1411,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length", "0") or 0)
-        raw = self.rfile.read(min(length, 65536)) if length else b""
+        if length > 65536:
+            self.close_connection = True
+            return self.send_json({"error": "body too large"}, 413)
+        raw = self.rfile.read(length) if length else b""
         if path == "/api/login":
             # Rate limit: after 5 failures from one address, lock 60 s.
             ip = self.client_address[0]
@@ -1332,6 +1479,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # a redeploy must reach every open browser at its next load: revalidate always
+        self.send_header("Cache-Control", "no-cache")
+        self.security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -1365,7 +1515,8 @@ def main():
     for period, cols in TIERS:
         threading.Thread(target=sampler, args=(period, cols), daemon=True).start()
     srv = Server((BIND, PORT), Handler)
-    print(f"Spark Cockpit {VERSION} on http://{BIND}:{PORT} (repo: {REPO_DIR})")
+    print(f"Spark Cockpit {VERSION} on http://{BIND}:{PORT} (repo: {REPO_DIR})"
+          + ("  [DRY RUN: nothing is executed]" if DRY_RUN else ""))
     srv.serve_forever()
 
 

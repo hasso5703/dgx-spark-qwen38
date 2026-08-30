@@ -7,7 +7,7 @@ fixed argv template.
 ## Install and upgrade
 | capability | shell today | UI |
 |---|---|---|
-| First install / upgrade (converging) | `get.sh` one-liner / `install.sh` | Jobs page: "Update serving stack" (runs get.sh, streamed log, converge-safe) |
+| First install / upgrade (converging) | `get.sh` one-liner / `install.sh` | Setup tab prints the exact terminal command: the installer needs an interactive sudo that a service cannot give, and a half-applied install is the one failure the cockpit must never cause |
 | Choose target model | `MODEL_CHOICE=stock/uncensored/flash` | Switch page selector |
 | 1M context mode (27B) | `CONTEXT_MODE=1m` | Switch page toggle (27B only, greyed on flash with the reason) |
 | Custom port / HF cache / PLE dir | `PORT= HF_CACHE= PLE_DIR=` | Settings (read + edit with validation, applied on next update job) |

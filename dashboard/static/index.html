@@ -3,456 +3,592 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Live control room for the Qwen3.8 serving stack on a DGX Spark: engine lifecycle, KV pool, requests, registry, actions.">
+<meta name="description" content="Live control room for the Qwen3.8 serving stack on a DGX Spark: engine lifecycle, KV pool, requests, models, actions.">
 <title>Spark Cockpit</title>
 <link rel="icon" href="/static/favicon.svg">
 <style>
   /* Palette from the object itself: the Spark's graphite chassis and its
      champagne-gold anodizing, NVIDIA green for good, warm white text. */
   :root{
-    --paper:#0e1014; --card:#15181e; --card2:#191d24; --line:#272c35;
+    --paper:#0e1014; --card:#15181e; --card2:#191d24; --line:#272c35; --line2:#323945;
     --txt:#ece9e1; --mut:#9a9d95; --soft:#0f1216; --glow:rgba(217,180,94,.10);
     --acc:#d9b45e; --ok:#43d18d; --warn:#f0a13a; --err:#ef5b5b;
     --flash:#c4a3f5; --lane27:#5cc8f2;
     --shadow:0 10px 30px rgba(0,0,0,.45);
+    --rail:236px; --rail-min:64px; --top:58px;
   }
   @media (prefers-color-scheme: light){
-    :root{ --paper:#f3f1eb; --card:#ffffff; --card2:#fbfaf6; --line:#e2ded4;
+    :root{ --paper:#f3f1eb; --card:#ffffff; --card2:#fbfaf6; --line:#e2ded4; --line2:#d3cec2;
            --txt:#1b1c1f; --mut:#6d6f68; --soft:#f1efe8; --glow:rgba(190,150,60,.10);
            --acc:#a7852c; --ok:#178a5c; --warn:#b26f0d; --err:#c73f3f;
            --flash:#7a55d6; --lane27:#0b7fae;
            --shadow:0 8px 24px rgba(40,35,20,.10); }
   }
   *{box-sizing:border-box; margin:0}
-  html{scrollbar-color:var(--line) transparent}
-  body{
-    background:
-      radial-gradient(1100px 420px at 18% -10%, var(--glow), transparent 60%),
-      var(--paper);
-    color:var(--txt);
-    font:14px/1.5 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-    min-height:100vh;
-  }
+  html{scrollbar-color:var(--line2) transparent}
+  body{background:radial-gradient(1100px 420px at 18% -10%, var(--glow), transparent 60%), var(--paper);
+       color:var(--txt); font:13.5px/1.5 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; min-height:100vh}
   .num{font-variant-numeric:tabular-nums; letter-spacing:.01em}
   :focus-visible{outline:2px solid var(--acc); outline-offset:2px; border-radius:6px}
+  button{font:inherit; color:inherit}
+  [hidden]{display:none !important}
 
-  /* ── header ── */
-  header{display:flex; align-items:center; gap:13px; padding:13px 26px;
-         position:sticky; top:0; z-index:5;
-         background:color-mix(in srgb, var(--paper) 82%, transparent);
-         backdrop-filter:blur(14px); border-bottom:1px solid var(--line)}
-  header img{width:30px;height:30px; filter:drop-shadow(0 0 10px var(--glow))}
-  header h1{font-size:16.5px; font-weight:700; letter-spacing:.01em}
-  .beta{font-size:9.5px; font-weight:800; letter-spacing:.14em; color:var(--flash);
-        border:1px solid color-mix(in srgb, var(--flash) 55%, transparent);
-        background:color-mix(in srgb, var(--flash) 12%, transparent);
-        border-radius:6px; padding:2.5px 7px}
-  .repoline{color:var(--mut); font-size:12px}
-  .hero{display:flex; align-items:center; gap:8px; margin-left:14px; font-size:12.5px;
-        color:var(--txt); padding:4px 10px; border:1px solid var(--line); border-radius:999px;
-        background:color-mix(in srgb, var(--card) 60%, transparent)}
-  .hero:empty{display:none}
-  .hero b{font-weight:650}
-  .skel{color:transparent !important; background:linear-gradient(90deg, var(--soft), var(--line), var(--soft));
-        background-size:200% 100%; animation:skel 1.2s linear infinite; border-radius:6px}
-  @keyframes skel{to{background-position:-200% 0}}
-  .spacer{flex:1}
-  .conn{display:flex; align-items:center; gap:8px; color:var(--mut);
-        font-size:11.5px; letter-spacing:.05em; text-transform:uppercase}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--err);
-       transition:background .25s; box-shadow:0 0 0 0 transparent}
-  .dot.on{background:var(--ok); box-shadow:0 0 10px 1px color-mix(in srgb, var(--ok) 60%, transparent);
-          animation:beat 2.4s ease-in-out infinite}
+  /* ── top bar: brand, lane at a glance, the actions, connection ── */
+  .top{position:sticky; top:0; z-index:30; height:var(--top); display:flex; align-items:center; gap:12px;
+       padding:0 16px 0 12px; border-bottom:1px solid var(--line);
+       background:color-mix(in srgb, var(--paper) 86%, transparent); backdrop-filter:blur(14px)}
+  .top .brand{display:flex; align-items:center; gap:9px; min-width:0}
+  .top .brand img{width:26px; height:26px; filter:drop-shadow(0 0 10px var(--glow))}
+  .top .brand h1{font-size:15px; font-weight:700; letter-spacing:.01em; white-space:nowrap}
+  .badge{font-size:9.5px; font-weight:800; letter-spacing:.14em; border-radius:6px; padding:2.5px 7px;
+         border:1px solid color-mix(in srgb, var(--flash) 55%, transparent); color:var(--flash);
+         background:color-mix(in srgb, var(--flash) 12%, transparent); white-space:nowrap}
+  .badge.dry{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 60%, transparent);
+             background:color-mix(in srgb, var(--warn) 14%, transparent)}
+  .iconbtn{width:34px; height:34px; border-radius:9px; border:1px solid var(--line); background:transparent;
+           display:grid; place-items:center; cursor:pointer; color:var(--mut)}
+  .iconbtn:hover{color:var(--txt); border-color:var(--line2)}
+  .lanepill{display:flex; align-items:center; gap:8px; padding:5px 11px; border:1px solid var(--line);
+            border-radius:999px; background:color-mix(in srgb, var(--card) 70%, transparent); font-size:12.5px;
+            white-space:nowrap; min-width:0; overflow:hidden; flex-shrink:1}
+  .lanepill b{font-weight:650; overflow:hidden; text-overflow:ellipsis}
+  /* the sub-line is the first thing to give way on a narrow screen, never the state chip */
+  .lanepill .sub{color:var(--mut); min-width:0; overflow:hidden; text-overflow:ellipsis}
+  .lanepill .chip{flex:none}
+  .actbar{display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end}
+  .actbar .grp{display:flex; align-items:center; gap:6px; padding:4px 6px; border:1px solid var(--line);
+               border-radius:11px; background:color-mix(in srgb, var(--card) 55%, transparent)}
+  .conn{display:flex; align-items:center; gap:7px; color:var(--mut); font-size:11px; letter-spacing:.05em;
+        text-transform:uppercase; white-space:nowrap}
+  .dot{width:8px; height:8px; border-radius:50%; background:var(--err); transition:background .25s}
+  .dot.on{background:var(--ok); box-shadow:0 0 10px 1px color-mix(in srgb, var(--ok) 60%, transparent); animation:beat 2.4s ease-in-out infinite}
+  .dot.warn{background:var(--warn)}
   @keyframes beat{50%{box-shadow:0 0 4px 0 color-mix(in srgb, var(--ok) 25%, transparent)}}
 
-  /* ── grid ── */
-  main{display:grid; gap:15px; padding:18px 26px 46px;
-       grid-template-columns:repeat(auto-fit,minmax(335px,1fr));
-       max-width:1760px; margin:0 auto}
-  section{background:linear-gradient(180deg, var(--card2), var(--card));
-          border:1px solid var(--line); border-radius:16px;
-          padding:16px 19px; min-width:0; box-shadow:var(--shadow)}
-  @keyframes rise{from{opacity:0; transform:translateY(7px)}}
-  @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important} }
-  section.wide{grid-column:1 / -1}
-  section h2{font-size:10.5px; font-weight:700; letter-spacing:.14em;
-             text-transform:uppercase; color:var(--mut); margin-bottom:13px;
-             display:flex; align-items:center; gap:8px}
-  section h2 .chip{margin-left:auto}
-  footer{color:var(--mut); font-size:11px; text-align:center; padding:0 0 26px}
+  /* ── job strip: what is running right now, for every tab and every browser ── */
+  .jobstrip{position:sticky; top:var(--top); z-index:25; display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+            padding:8px 16px; border-bottom:1px solid var(--line); font-size:12.5px;
+            background:color-mix(in srgb, var(--card) 92%, transparent)}
+  .jobstrip.running{border-bottom-color:color-mix(in srgb, var(--warn) 50%, transparent)}
+  .jobstrip.done{border-bottom-color:color-mix(in srgb, var(--ok) 50%, transparent)}
+  .jobstrip.failed{border-bottom-color:color-mix(in srgb, var(--err) 55%, transparent)}
+  .jobstrip .what{font-weight:650}
+  .jobstrip .last{color:var(--mut); font:11.5px ui-monospace, monospace; min-width:0; overflow:hidden;
+                  text-overflow:ellipsis; white-space:nowrap; flex:1}
+  .jobstrip .bar{width:120px; height:6px; border-radius:4px; background:var(--soft); border:1px solid var(--line); overflow:hidden}
+  .jobstrip .bar i{display:block; height:100%; width:100%; opacity:.7;
+                   background:repeating-linear-gradient(45deg, var(--warn) 0 8px, transparent 8px 16px); animation:barber .9s linear infinite}
+  .joblog{background:var(--soft); border:1px solid var(--line); border-radius:11px; padding:10px 13px;
+          font:11.5px/1.55 ui-monospace, "SF Mono", monospace; max-height:260px; overflow:auto; white-space:pre-wrap; width:100%}
 
-  /* ── primitives ── */
+  /* ── banners ── */
+  .banners{display:flex; flex-direction:column; gap:8px; padding:12px 18px 0}
+  .banners:empty{display:none}
+  .banner{display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:11px; font-size:13px;
+          border:1px solid color-mix(in srgb, var(--warn) 55%, transparent); background:color-mix(in srgb, var(--warn) 12%, transparent)}
+  .banner.err{border-color:color-mix(in srgb, var(--err) 55%, transparent); background:color-mix(in srgb, var(--err) 12%, transparent)}
+  .banner.info{border-color:var(--line); background:color-mix(in srgb, var(--card) 60%, transparent); color:var(--mut)}
+  .banner b{font-weight:650}
+
+  /* ── shell: rail + content ── */
+  .shell{display:grid; grid-template-columns:var(--rail) 1fr; min-height:calc(100vh - var(--top))}
+  body.railmin .shell{grid-template-columns:var(--rail-min) 1fr}
+  .rail{position:sticky; top:var(--top); align-self:start; height:calc(100vh - var(--top)); overflow:auto;
+        border-right:1px solid var(--line); padding:12px 10px; display:flex; flex-direction:column; gap:4px;
+        background:color-mix(in srgb, var(--card) 40%, transparent)}
+  .rail .nav{display:flex; align-items:center; gap:11px; width:100%; padding:9px 11px; border-radius:10px;
+             border:1px solid transparent; background:transparent; cursor:pointer; text-align:left; color:var(--mut);
+             font-size:13px; font-weight:600; white-space:nowrap}
+  .rail .nav svg{width:18px; height:18px; flex:none; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round}
+  .rail .nav:hover{color:var(--txt); background:color-mix(in srgb, var(--card2) 80%, transparent)}
+  .rail .nav[aria-current="page"]{color:var(--acc); border-color:color-mix(in srgb, var(--acc) 40%, transparent);
+                                  background:color-mix(in srgb, var(--acc) 9%, transparent)}
+  .rail .nav .lab{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis}
+  .rail .nav .bdg{font-size:10px; font-weight:800; padding:1px 7px; border-radius:999px; border:1px solid var(--line); color:var(--mut)}
+  .rail .nav .bdg.warn{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 55%, transparent)}
+  .rail .nav .bdg.err{color:var(--err); border-color:color-mix(in srgb, var(--err) 55%, transparent)}
+  .rail .nav .bdg:empty{display:none}
+  body.railmin .rail .nav .lab, body.railmin .rail .nav .bdg, body.railmin .rail .foot{display:none}
+  body.railmin .rail .nav{justify-content:center; padding:10px 0}
+  .rail .foot{margin-top:auto; color:var(--mut); font-size:11px; padding:10px 11px; line-height:1.6}
+  .content{padding:14px 18px 40px; min-width:0}
+  .tab{display:none}
+  .tab.active{display:block}
+  .grid{display:grid; gap:14px; align-items:start; grid-template-columns:repeat(auto-fit, minmax(330px, 1fr))}
+  .grid .wide{grid-column:1 / -1}
+  .tabhead{display:flex; align-items:baseline; gap:12px; margin:4px 0 14px}
+  .tabhead h2{font-size:18px; font-weight:700; letter-spacing:-.01em}
+  .tabhead p{color:var(--mut); font-size:12.5px}
+
+  /* ── panels ── */
+  section.panel{background:linear-gradient(180deg, var(--card2), var(--card)); border:1px solid var(--line); border-radius:15px;
+                padding:15px 18px; min-width:0; box-shadow:var(--shadow); position:relative}
+  section.panel.stale{opacity:.72}
+  section.panel h3{font-size:10.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--mut);
+                   margin-bottom:12px; display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  section.panel h3 .right{margin-left:auto; display:flex; align-items:center; gap:6px}
+  .age{font-size:10px; letter-spacing:.03em; text-transform:none; color:var(--mut); font-variant-numeric:tabular-nums}
+  .age.stale{color:var(--warn)}
+  .empty{color:var(--mut); font-size:12.5px; padding:8px 0}
+  .note{color:var(--mut); font-size:11.5px; margin-top:8px}
   .kv{display:grid; grid-template-columns:auto 1fr; gap:5px 14px; font-size:13px}
   .kv dt{color:var(--mut)} .kv dd{text-align:right; overflow-wrap:anywhere}
-  .chip{font-size:10.5px; font-weight:700; letter-spacing:.04em; border-radius:999px;
-        padding:2.5px 10px; border:1px solid var(--line); color:var(--mut);
-        background:color-mix(in srgb, var(--card) 40%, transparent);
-        white-space:nowrap; transition:all .25s}
-  .chip.ok{color:var(--ok); border-color:color-mix(in srgb, var(--ok) 50%, transparent);
-           background:color-mix(in srgb, var(--ok) 10%, transparent)}
-  .chip.err{color:var(--err); border-color:color-mix(in srgb, var(--err) 50%, transparent);
-            background:color-mix(in srgb, var(--err) 12%, transparent)}
-  .chip.warn{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 50%, transparent);
-             background:color-mix(in srgb, var(--warn) 12%, transparent)}
-  .chip.flash{color:var(--flash); border-color:color-mix(in srgb, var(--flash) 50%, transparent);
-              background:color-mix(in srgb, var(--flash) 12%, transparent)}
-  .chip.lane27{color:var(--lane27); border-color:color-mix(in srgb, var(--lane27) 50%, transparent);
-               background:color-mix(in srgb, var(--lane27) 12%, transparent)}
+  .chip{font-size:10.5px; font-weight:700; letter-spacing:.04em; border-radius:999px; padding:2.5px 10px; border:1px solid var(--line);
+        color:var(--mut); background:color-mix(in srgb, var(--card) 40%, transparent); white-space:nowrap; transition:all .25s}
+  .chip.ok{color:var(--ok); border-color:color-mix(in srgb, var(--ok) 50%, transparent); background:color-mix(in srgb, var(--ok) 10%, transparent)}
+  .chip.err{color:var(--err); border-color:color-mix(in srgb, var(--err) 50%, transparent); background:color-mix(in srgb, var(--err) 12%, transparent)}
+  .chip.warn{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 50%, transparent); background:color-mix(in srgb, var(--warn) 12%, transparent)}
+  .chip.flash{color:var(--flash); border-color:color-mix(in srgb, var(--flash) 50%, transparent); background:color-mix(in srgb, var(--flash) 12%, transparent)}
+  .chip.lane27{color:var(--lane27); border-color:color-mix(in srgb, var(--lane27) 50%, transparent); background:color-mix(in srgb, var(--lane27) 12%, transparent)}
+  .chip.live::before{content:''; display:inline-block; width:7px; height:7px; border-radius:50%; background:currentColor; margin-right:6px; animation:pulse 1.2s ease-in-out infinite}
+  .skel{color:transparent !important; background:linear-gradient(90deg, var(--soft), var(--line), var(--soft)); background-size:200% 100%;
+        animation:skel 1.2s linear infinite; border-radius:6px}
+  @keyframes skel{to{background-position:-200% 0}}
+  @keyframes pulse{50%{opacity:.45}}
+  @keyframes barber{to{background-position:22.6px 0}}
+  @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important} }
 
-  .gauge{margin:6px 0 12px}
-  .gauge .bar{height:9px; border-radius:6px; background:var(--soft);
-              overflow:hidden; border:1px solid var(--line)}
-  .gauge .fill{height:100%; border-radius:6px; transition:width .6s ease-out;
-               background:linear-gradient(90deg, var(--acc), color-mix(in srgb, var(--acc) 55%, var(--flash)))}
+  .gauge{margin:6px 0 10px}
+  .gauge .bar{height:9px; border-radius:6px; background:var(--soft); overflow:hidden; border:1px solid var(--line)}
+  .gauge .fill{height:100%; border-radius:6px; transition:width .6s ease-out; background:linear-gradient(90deg, var(--acc), color-mix(in srgb, var(--acc) 55%, var(--flash)))}
   .gauge.warn .fill{background:linear-gradient(90deg, var(--warn), #f97316)}
   .gauge.crit .fill{background:linear-gradient(90deg, var(--err), #f43f5e)}
-  .gauge .lab{display:flex; justify-content:space-between; font-size:12px;
-              color:var(--mut); margin-bottom:5px}
+  .gauge .lab{display:flex; justify-content:space-between; font-size:12px; color:var(--mut); margin-bottom:5px}
   canvas.spark{width:100%; height:46px; display:block; margin-top:8px; opacity:.95}
 
   table{width:100%; border-collapse:collapse; font-size:12.5px; table-layout:fixed}
-  td{overflow-wrap:anywhere}
-  #gpuprocs th:first-child, #gpuprocs td:first-child, #invtable th:first-child, #invtable td:first-child{width:92px}
-  #regmodels td:first-child, #othertable td:first-child, #feedtable td:nth-child(3){overflow-wrap:normal}
-  th{color:var(--mut); text-align:left; font-weight:600; font-size:10px;
-     text-transform:uppercase; letter-spacing:.09em; padding:3px 6px}
-  td{padding:6px; border-top:1px solid var(--line)}
-  td.r{text-align:right}
+  td{overflow-wrap:anywhere; padding:6px; border-top:1px solid var(--line)}
+  th{color:var(--mut); text-align:left; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:.09em; padding:3px 6px}
+  td.r, th.r{text-align:right}
   td .chip{white-space:normal}
-  .chip.live::before{content:''; display:inline-block; width:7px; height:7px; border-radius:50%;
-    background:currentColor; margin-right:6px; animation:pulse 1.2s ease-in-out infinite}
-  .bfill.indet{width:100% !important; opacity:.6;
-    background:repeating-linear-gradient(45deg, var(--warn) 0 10px, transparent 10px 20px) !important;
-    animation:barber .9s linear infinite}
-  .bfill.indet::after{display:none}
-  @keyframes barber{to{background-position:28.28px 0}}
   .tablewrap{overflow-x:auto; max-width:100%}
+  #feedtable td:nth-child(3){overflow-wrap:normal}
 
-  .btn{border:1px solid color-mix(in srgb, var(--acc) 60%, transparent);
-       color:var(--acc); background:color-mix(in srgb, var(--acc) 8%, transparent);
-       border-radius:9px; padding:6px 15px; font-size:12.5px; font-weight:650;
-       cursor:pointer; transition:all .18s ease-out}
-  .btn:hover{background:var(--acc); color:#fff; box-shadow:0 4px 18px color-mix(in srgb, var(--acc) 40%, transparent)}
-  .btn.low{border-color:color-mix(in srgb, var(--ok) 60%, transparent); color:var(--ok);
-           background:color-mix(in srgb, var(--ok) 8%, transparent)}
-  .btn.low:hover{background:var(--ok); color:#04121c; box-shadow:0 4px 18px color-mix(in srgb, var(--ok) 35%, transparent)}
-  .btn.danger{border-color:color-mix(in srgb, var(--err) 60%, transparent); color:var(--err);
-              background:color-mix(in srgb, var(--err) 8%, transparent)}
-  .btn.danger:hover{background:var(--err); color:#fff; box-shadow:0 4px 18px color-mix(in srgb, var(--err) 35%, transparent)}
+  .btn{border:1px solid color-mix(in srgb, var(--acc) 60%, transparent); color:var(--acc); background:color-mix(in srgb, var(--acc) 8%, transparent);
+       border-radius:9px; padding:6px 14px; font-size:12.5px; font-weight:650; cursor:pointer; transition:all .18s ease-out; white-space:nowrap}
+  .btn:hover:not(:disabled){background:var(--acc); color:#fff; box-shadow:0 4px 18px color-mix(in srgb, var(--acc) 40%, transparent)}
+  .btn.low{border-color:color-mix(in srgb, var(--ok) 60%, transparent); color:var(--ok); background:color-mix(in srgb, var(--ok) 8%, transparent)}
+  .btn.low:hover:not(:disabled){background:var(--ok); color:#04121c; box-shadow:0 4px 18px color-mix(in srgb, var(--ok) 35%, transparent)}
+  .btn.danger{border-color:color-mix(in srgb, var(--err) 60%, transparent); color:var(--err); background:color-mix(in srgb, var(--err) 8%, transparent)}
+  .btn.danger:hover:not(:disabled){background:var(--err); color:#fff; box-shadow:0 4px 18px color-mix(in srgb, var(--err) 35%, transparent)}
   .btn.ghost{border-color:var(--line); color:var(--mut); background:transparent}
-  .btn.mini{padding:3.5px 11px; font-size:11px}
-  .btn:disabled{opacity:.4; pointer-events:none}
-  select{background:var(--soft); color:var(--txt); border:1px solid var(--line);
-         border-radius:9px; padding:6px 11px; font-size:12.5px}
+  .btn.mini{padding:3.5px 10px; font-size:11px}
+  .btn:disabled{opacity:.42; cursor:not-allowed}
+  select{background:var(--soft); color:var(--txt); border:1px solid var(--line); border-radius:9px; padding:5px 10px; font-size:12.5px}
+  select:disabled{opacity:.5}
 
   /* ── the reservoir: KV pool held vs capacity vs model window ── */
   .res{display:grid; grid-template-columns:auto 1fr; gap:6px 22px; align-items:end}
   .res .big{font-size:34px; font-weight:700; letter-spacing:-.02em; line-height:1}
   .res .big small{font-size:13px; font-weight:500; color:var(--mut); letter-spacing:0; margin-left:6px}
   .res .eyebrow{font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut)}
-  .tank{position:relative; height:26px; border-radius:8px; background:var(--soft);
-        border:1px solid var(--line); overflow:hidden}
-  .tank .cap{position:absolute; inset:0 auto 0 0; background:
-        repeating-linear-gradient(135deg, transparent 0 7px, color-mix(in srgb, var(--line) 70%, transparent) 7px 8px);
-        border-right:1px dashed var(--mut)}
-  .tank .level{position:absolute; inset:0 auto 0 0; border-radius:7px 0 0 7px;
-        background:linear-gradient(90deg, color-mix(in srgb, var(--acc) 70%, var(--card)), var(--acc));
-        transition:width .8s cubic-bezier(.2,.8,.2,1)}
+  .tank{position:relative; height:26px; border-radius:8px; background:var(--soft); border:1px solid var(--line); overflow:hidden}
+  .tank .cap{position:absolute; inset:0 auto 0 0; background:repeating-linear-gradient(135deg, transparent 0 7px, color-mix(in srgb, var(--line) 70%, transparent) 7px 8px); border-right:1px dashed var(--mut)}
+  .tank .level{position:absolute; inset:0 auto 0 0; border-radius:7px 0 0 7px; background:linear-gradient(90deg, color-mix(in srgb, var(--acc) 70%, var(--card)), var(--acc)); transition:width .8s cubic-bezier(.2,.8,.2,1)}
   .tank .level.hot{background:linear-gradient(90deg, var(--warn), var(--err))}
   .tank .tick{position:absolute; top:0; bottom:0; width:1px; background:var(--txt); opacity:.55}
-  .tank .ghost{position:absolute; inset:0 0 0 auto; background:
-        repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--err) 25%, transparent) 6px 7px)}
+  .tank .ghost{position:absolute; inset:0 0 0 auto; background:repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--err) 25%, transparent) 6px 7px)}
   .res .legend{display:flex; gap:16px; font-size:11px; color:var(--mut); margin-top:6px; flex-wrap:wrap}
   .res .legend b{color:var(--txt); font-weight:600}
 
-  /* ── engines panel ── */
+  /* ── engine cards ── */
   .eng{padding:13px 2px; border-top:1px solid var(--line)}
   .eng:first-child{border-top:0; padding-top:4px}
-  .eng .top{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
-  .eng .name{font-weight:700; font-size:14px; letter-spacing:.01em}
+  .eng .row{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .eng .name{font-weight:700; font-size:14px}
   .eng .since{color:var(--mut); font-size:11.5px; margin-left:auto}
-  .blockedwhy{color:var(--mut); font-size:11px; padding:6px 2px 0}
+  .eng .why{color:var(--mut); font-size:11.5px; padding:6px 2px 0}
+  .eng .why.warn{color:var(--warn)}
   .boot{margin-top:10px}
-  .boot .bbar{height:9px; border-radius:6px; background:var(--soft);
-              border:1px solid var(--line); overflow:hidden; position:relative}
-  .boot .bfill{height:100%; border-radius:6px; transition:width 1s linear;
-               position:relative; overflow:hidden;
-               background:linear-gradient(90deg, var(--acc), var(--flash))}
-  .boot .bfill::after{content:''; position:absolute; inset:0;
-    background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent);
-    animation:shimmer 1.4s infinite}
+  .boot .bbar{height:9px; border-radius:6px; background:var(--soft); border:1px solid var(--line); overflow:hidden; position:relative}
+  .boot .bfill{height:100%; border-radius:6px; transition:width 1s linear; position:relative; overflow:hidden; background:linear-gradient(90deg, var(--acc), var(--flash))}
+  .boot .bfill::after{content:''; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent); animation:shimmer 1.4s infinite}
   @keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+  .bfill.indet{width:100% !important; opacity:.6; background:repeating-linear-gradient(45deg, var(--warn) 0 10px, transparent 10px 20px) !important; animation:barber .9s linear infinite}
+  .bfill.indet::after{display:none}
   .boot .stages{display:flex; gap:6px; margin-top:8px; flex-wrap:wrap}
-  .boot .stage{font-size:10px; font-weight:650; padding:2px 9px; border-radius:999px;
-               border:1px solid var(--line); color:var(--mut); transition:all .3s}
-  .boot .stage.done{color:var(--ok); border-color:color-mix(in srgb, var(--ok) 55%, transparent);
-                    background:color-mix(in srgb, var(--ok) 10%, transparent)}
-  .boot .stage.now{color:var(--acc); border-color:color-mix(in srgb, var(--acc) 60%, transparent);
-                   background:color-mix(in srgb, var(--acc) 12%, transparent);
-                   animation:pulse 1.2s ease-in-out infinite}
-  @keyframes pulse{50%{opacity:.45}}
-  .boot .blab{display:flex; justify-content:space-between; font-size:11.5px;
-              color:var(--mut); margin-top:6px}
-  .unit{display:flex; align-items:center; gap:10px; padding:11px 2px 3px;
-        border-top:1px solid var(--line); font-size:13px}
-  .unit .name{font-weight:650}
-  .unit .since{color:var(--mut); font-size:11px; margin-left:auto}
-
-  .evt{display:flex; gap:10px; padding:7px 0; border-top:1px solid var(--line);
-       font-size:12px; align-items:baseline}
+  .boot .stage{font-size:10px; font-weight:650; padding:2px 9px; border-radius:999px; border:1px solid var(--line); color:var(--mut); transition:all .3s}
+  .boot .stage.done{color:var(--ok); border-color:color-mix(in srgb, var(--ok) 55%, transparent); background:color-mix(in srgb, var(--ok) 10%, transparent)}
+  .boot .stage.now{color:var(--acc); border-color:color-mix(in srgb, var(--acc) 60%, transparent); background:color-mix(in srgb, var(--acc) 12%, transparent); animation:pulse 1.2s ease-in-out infinite}
+  .boot .blab{display:flex; justify-content:space-between; font-size:11.5px; color:var(--mut); margin-top:6px; gap:10px; flex-wrap:wrap}
+  .evt{display:flex; gap:10px; padding:7px 0; border-top:1px solid var(--line); font-size:12px; align-items:baseline}
   .evt:first-child{border-top:0}
   .evt time{color:var(--mut); font-size:11px; white-space:nowrap; font-variant-numeric:tabular-nums}
+  .evt .k{font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); min-width:58px}
+  .hist{display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); font-size:12.5px; flex-wrap:wrap}
+  .hist:first-child{border-top:0}
+  .hist .m{color:var(--mut); font-size:11.5px}
+  .cmd{background:var(--soft); border:1px solid var(--line); border-radius:9px; padding:9px 12px; font:12.5px ui-monospace, monospace; overflow:auto; white-space:pre}
 
-  .actions .arow{display:flex; align-items:center; gap:10px; padding:10px 0;
-                 border-top:1px solid var(--line); font-size:13px; flex-wrap:wrap}
-  .actions .arow:first-child{border-top:0}
-  .actions .arow span{flex:1}
-  .joblog{margin-top:12px; background:var(--soft); border:1px solid var(--line);
-          border-radius:11px; padding:12px 14px;
-          font:11.5px/1.55 ui-monospace, "SF Mono", monospace;
-          max-height:270px; overflow:auto; white-space:pre-wrap}
-  .joblog[hidden]{display:none}
-
-  .modal{position:fixed; inset:0; background:rgba(3,6,14,.66); z-index:20;
-         display:grid; place-items:center; backdrop-filter:blur(4px)}
-  .modal[hidden]{display:none}
-  .mcard{width:min(580px,92vw); background:var(--card); border:1px solid var(--line);
-         border-radius:16px; padding:24px; box-shadow:0 24px 80px rgba(0,0,0,.5);
-         animation:rise .2s ease-out}
+  /* ── modal ── */
+  .modal{position:fixed; inset:0; background:rgba(3,6,14,.66); z-index:50; display:grid; place-items:center; backdrop-filter:blur(4px)}
+  .mcard{width:min(600px,92vw); background:var(--card); border:1px solid var(--line); border-radius:16px; padding:22px 24px; box-shadow:0 24px 80px rgba(0,0,0,.5)}
   .mcard h3{font-size:15px}
-  .mcard pre{background:var(--soft); border:1px solid var(--line); border-radius:9px;
-             padding:11px 13px; font:12px ui-monospace,monospace; overflow:auto; margin-top:10px}
-  .mrow{display:flex; justify-content:flex-end; gap:10px; margin-top:18px}
-  @media (max-width:720px){
-    header{padding:10px 14px; gap:9px} header .hero{display:none} .repoline{display:none}
-    main{padding:12px 12px 36px; gap:12px}
-    .res{grid-template-columns:1fr} .res .big{font-size:26px}
-    #gpuprocs th:first-child, #gpuprocs td:first-child, #invtable th:first-child, #invtable td:first-child{width:auto}
+  .mcard .mwhat{color:var(--mut); font-size:13px; margin:8px 0; white-space:pre-line}
+  .mcard .mwarn{color:var(--warn); font-size:12.5px; margin:6px 0; white-space:pre-line}
+  .mcard pre{background:var(--soft); border:1px solid var(--line); border-radius:9px; padding:11px 13px; font:12px ui-monospace,monospace; overflow:auto; margin-top:10px}
+  .mrow{display:flex; justify-content:flex-end; gap:10px; margin-top:18px; align-items:center}
+  .mrow .mstatus{margin-right:auto; color:var(--mut); font-size:12px}
+  .toast{position:fixed; left:50%; bottom:22px; transform:translateX(-50%); z-index:60; background:var(--card); border:1px solid var(--line2);
+         border-radius:11px; padding:10px 16px; font-size:13px; box-shadow:var(--shadow); max-width:min(640px, 92vw)}
+  .toast.warn{border-color:color-mix(in srgb, var(--warn) 60%, transparent)}
+  .toast.err{border-color:color-mix(in srgb, var(--err) 60%, transparent)}
+
+  @media (max-width:980px){
+    .shell{grid-template-columns:1fr}
+    .rail{position:static; height:auto; flex-direction:row; flex-wrap:wrap; border-right:0; border-bottom:1px solid var(--line); padding:8px}
+    .rail .foot{display:none}
+    .rail .nav{width:auto}
+    .top{height:auto; flex-wrap:wrap; padding:8px 12px}
+    .jobstrip{top:auto; position:static}
   }
 </style>
 </head>
 <body>
-<header>
-  <img src="/static/favicon.svg" alt="">
-  <h1>Spark Cockpit</h1><span class="beta">BETA</span>
-  <span class="repoline" id="repoline">repo ...</span>
-  <span class="hero" id="hero" aria-live="polite"></span>
-  <div class="spacer"></div>
-  <div class="conn"><span id="connlabel">connecting</span><span class="dot" id="conndot"></span></div>
+<header class="top">
+  <button class="iconbtn" id="railbtn" aria-label="Collapse or expand the menu" aria-expanded="true" title="Menu">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <div class="brand">
+    <img src="/static/favicon.svg" alt="">
+    <h1>Spark Cockpit</h1>
+    <span class="badge" id="verbadge">BETA</span>
+    <span class="badge dry" id="drybadge" hidden title="Every action is logged and audited but nothing is executed">DRY RUN</span>
+  </div>
+  <div class="lanepill" id="lanepill" aria-live="polite"><span class="chip skel" id="lanestate">...</span><b id="lanename">...</b><span class="sub" id="lanesub"></span></div>
+  <div class="actbar" id="actbar" aria-label="Actions">
+    <div class="grp" title="Change which model the serving unit runs (the switch itself never restarts anything)">
+      <select id="switchsel" aria-label="Target model to switch to">
+        <option value="stock">stock (27B)</option>
+        <option value="uncensored">uncensored (27B)</option>
+        <option value="flash">flash (176B)</option>
+      </select>
+      <button class="btn mini" data-act="switch">Switch</button>
+    </div>
+    <div class="grp">
+      <button class="btn mini danger" id="lanebtn" data-act="lane" disabled>...</button>
+    </div>
+    <div class="grp">
+      <button class="btn mini low" data-act="flush_cache" title="Empty the radix cache so the next big prompt never waits for an eviction">Flush cache</button>
+      <button class="btn mini danger" data-act="abort_all" title="Abort every in-flight generation (orphans left by vanished clients)">Abort all</button>
+      <button class="btn mini low" data-act="smoke" title="One real generation through the proxy, the way a client uses it">Smoke</button>
+      <button class="btn mini" data-act="diag_bundle" title="Write a diagnostics tarball in your home (API key masked)">Bundle</button>
+    </div>
+  </div>
+  <div class="conn" title="Live connection to the cockpit and age of the newest data"><span id="connlabel">connecting</span><span class="dot" id="conndot"></span></div>
 </header>
 
-<main>
-  <section class="wide" id="reservoir" aria-label="KV pool reservoir">
-    <div class="res">
-      <div>
-        <div class="eyebrow">KV pool held</div>
-        <div class="big num" id="resbig">...<small id="rescap"></small></div>
+<div class="jobstrip" id="jobstrip" hidden aria-live="polite">
+  <span class="chip" id="jobchip">idle</span>
+  <span class="what" id="jobwhat"></span>
+  <span class="num" id="jobelapsed"></span>
+  <span class="bar" id="jobbar" hidden><i></i></span>
+  <span class="last" id="joblast"></span>
+  <button class="btn mini ghost" id="joblogbtn" aria-expanded="false">show log</button>
+  <pre class="joblog" id="joblog" hidden></pre>
+</div>
+
+<div class="shell">
+  <nav class="rail" id="rail" aria-label="Sections">
+    <button class="nav" data-tab="overview" aria-current="page"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg><span class="lab">Overview</span><span class="bdg" id="bdg-overview"></span></button>
+    <button class="nav" data-tab="engines"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg><span class="lab">Engines</span><span class="bdg" id="bdg-engines"></span></button>
+    <button class="nav" data-tab="requests"><svg viewBox="0 0 24 24"><path d="M4 7h13l-3-3M20 17H7l3 3"/></svg><span class="lab">Requests</span><span class="bdg" id="bdg-requests"></span></button>
+    <button class="nav" data-tab="machine"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg><span class="lab">Machine</span><span class="bdg" id="bdg-machine"></span></button>
+    <button class="nav" data-tab="models"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg><span class="lab">Models</span><span class="bdg" id="bdg-models"></span></button>
+    <button class="nav" data-tab="logs"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span class="lab">Logs</span><span class="bdg" id="bdg-logs"></span></button>
+    <button class="nav" data-tab="setup"><svg viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/></svg><span class="lab">Setup</span><span class="bdg" id="bdg-setup"></span></button>
+    <div class="foot" id="railfoot">Every action asks first and shows the exact command it will run. One action at a time, from any tab or browser.</div>
+  </nav>
+
+  <main class="content">
+    <div class="banners" id="banners"></div>
+
+    <!-- ── Overview ── -->
+    <div class="tab active" id="tab-overview">
+      <div class="grid">
+        <section class="panel wide" data-src="engine_fast,engine_info" aria-label="KV pool reservoir">
+          <h3>KV pool held <span class="right"><span class="age"></span></span></h3>
+          <div class="res">
+            <div>
+              <div class="eyebrow" id="reseyebrow">tokens held right now</div>
+              <div class="big num" id="resbig">...</div>
+            </div>
+            <div>
+              <div class="tank">
+                <div class="cap" id="rescapzone"></div>
+                <div class="level" id="reslevel" style="width:0%"></div>
+                <div class="tick" id="restick" style="left:0"></div>
+                <div class="ghost" id="resghost" style="width:0%"></div>
+              </div>
+              <div class="legend" id="reslegend"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel wide" data-src="lifecycle">
+          <h3>Serving lane <span class="right"><span class="age"></span></span></h3>
+          <div id="ovlane"></div>
+        </section>
+
+        <section class="panel" data-src="engine_fast,decode,canary">
+          <h3>Right now <span class="chip" id="loadchip">...</span><span class="right"><span class="age"></span></span></h3>
+          <dl class="kv">
+            <dt>Running</dt><dd class="num" id="reqrun">...</dd>
+            <dt>Waiting</dt><dd class="num" id="reqwait">...</dd>
+            <dt>Tokens in KV</dt><dd class="num" id="reqtok">...</dd>
+            <dt>Accept length</dt><dd class="num" id="acclen">...</dd>
+            <dt>Generation probe</dt><dd id="canary">...</dd>
+          </dl>
+          <canvas class="spark" id="reqspark" width="600" height="92"></canvas>
+        </section>
+
+        <section class="panel" data-src="machine,kernel">
+          <h3>Unified memory <span class="chip" id="memchip">...</span><span class="right"><span class="age"></span></span></h3>
+          <div class="gauge" id="memgauge">
+            <div class="lab"><span>used</span><span class="num" id="memlab">...</span></div>
+            <div class="bar"><div class="fill" id="memfill" style="width:0%"></div></div>
+          </div>
+          <dl class="kv">
+            <dt>Available</dt><dd class="num" id="memavail">...</dd>
+            <dt>Floor belt</dt><dd class="num" id="memfloor">...</dd>
+            <dt>Driver refusals (1 h)</dt><dd class="num" id="nvrm">...</dd>
+          </dl>
+        </section>
+
+        <section class="panel" data-src="lifecycle">
+          <h3>Events <span class="right"><span class="age"></span></span></h3>
+          <div id="evtlist" role="log" aria-live="polite" aria-relevant="additions"><p class="empty">no events yet in this cockpit session</p></div>
+        </section>
       </div>
-      <div>
-        <div class="tank">
-          <div class="cap" id="rescapzone"></div>
-          <div class="level" id="reslevel" style="width:0%"></div>
-          <div class="tick" id="restick" style="left:0"></div>
-          <div class="ghost" id="resghost" style="width:0%"></div>
-        </div>
-        <div class="legend" id="reslegend"></div>
+    </div>
+
+    <!-- ── Engines ── -->
+    <div class="tab" id="tab-engines">
+      <div class="tabhead"><h2>Engines and services</h2><p>one serving engine at a time on unified memory; the proxy fronts it for agent clients</p></div>
+      <div class="grid">
+        <section class="panel wide" data-src="lifecycle,units">
+          <h3>Engines <span class="right"><span class="age"></span></span></h3>
+          <div id="enginelist"></div>
+          <div id="unitlist"></div>
+        </section>
+        <section class="panel" data-src="engine_info">
+          <h3>Served engine <span class="chip" id="engchip">...</span><span class="right"><span class="age"></span></span></h3>
+          <dl class="kv">
+            <dt>Model</dt><dd id="engmodel">...</dd>
+            <dt>Revision</dt><dd class="num" id="engrev">...</dd>
+            <dt>Quantization</dt><dd id="engquant">...</dd>
+            <dt>Context window</dt><dd class="num" id="engctx">...</dd>
+            <dt>KV pool</dt><dd class="num" id="engpool">...</dd>
+            <dt>Speculative</dt><dd id="engspec">...</dd>
+            <dt>Attention</dt><dd id="engattn">...</dd>
+            <dt>Radix cache</dt><dd id="engradix">...</dd>
+            <dt>Engine version</dt><dd class="num" id="engver">...</dd>
+          </dl>
+        </section>
+        <section class="panel" data-src="canary,containers">
+          <h3>Probes and containers <span class="right"><span class="age"></span></span></h3>
+          <dl class="kv">
+            <dt>Generation probe</dt><dd id="canary2">...</dd>
+            <dt>Last probe</dt><dd class="num" id="canarylast">...</dd>
+          </dl>
+          <table id="ctable" style="margin-top:10px"><thead><tr><th>Container</th><th class="r">CPU</th><th class="r">cgroup mem</th></tr></thead><tbody></tbody></table>
+          <p class="note">cgroup memory excludes CUDA unified allocations; the unified memory panel is the real gauge.</p>
+        </section>
       </div>
     </div>
-  </section>
 
-  <section class="wide">
-    <h2>Engines &amp; services</h2>
-    <div id="enginelist"></div>
-    <div id="unitlist"></div>
-  </section>
-
-  <section>
-    <h2>Unified memory <span class="chip" id="memchip">...</span></h2>
-    <div class="gauge" id="memgauge">
-      <div class="lab"><span>used</span><span class="num" id="memlab">...</span></div>
-      <div class="bar"><div class="fill" id="memfill" style="width:0%"></div></div>
-    </div>
-    <canvas class="spark" id="memspark" width="600" height="92"></canvas>
-    <dl class="kv">
-      <dt>Available</dt><dd class="num" id="memavail">...</dd>
-      <dt>Page cache</dt><dd class="num" id="memcache">...</dd>
-      <dt>Swap used</dt><dd class="num" id="swap">...</dd>
-      <dt>Floor belt</dt><dd class="num" id="memfloor">...</dd>
-      <dt>Driver refusals (1 h)</dt><dd class="num" id="nvrm">...</dd>
-    </dl>
-  </section>
-
-  <section>
-    <h2>Serving engine <span class="chip" id="engchip">...</span></h2>
-    <dl class="kv" id="engkv">
-      <dt>Model</dt><dd id="engmodel">...</dd>
-      <dt>Revision</dt><dd class="num" id="engrev">...</dd>
-      <dt>Quantization</dt><dd id="engquant">...</dd>
-      <dt>Context</dt><dd class="num" id="engctx">...</dd>
-      <dt>Speculative</dt><dd id="engspec">...</dd>
-      <dt>Attention</dt><dd id="engattn">...</dd>
-      <dt>Radix cache</dt><dd id="engradix">...</dd>
-      <dt>Engine version</dt><dd class="num" id="engver">...</dd>
-    </dl>
-  </section>
-
-  <section>
-    <h2>Live requests <span class="chip" id="loadchip">...</span></h2>
-    <dl class="kv">
-      <dt>Running</dt><dd class="num" id="reqrun">...</dd>
-      <dt>Waiting</dt><dd class="num" id="reqwait">...</dd>
-      <dt>Tokens in KV</dt><dd class="num" id="reqtok">...</dd>
-      <dt>Accept length</dt><dd class="num" id="acclen">...</dd>
-      <dt>KV usage</dt><dd class="num" id="kvusage">...</dd>
-      <dt>Mamba state slots</dt><dd class="num" id="mambausage">...</dd>
-    </dl>
-    <div class="gauge" id="poolgauge" style="margin-top:10px">
-      <div class="lab"><span>KV pool held</span><span class="num" id="poollab">...</span></div>
-      <div class="bar"><div class="fill" id="poolfill" style="width:0%"></div></div>
-    </div>
-    <p id="poolnote" style="color:var(--mut);font-size:11px;margin-top:6px"></p>
-    <canvas class="spark" id="reqspark" width="600" height="92"></canvas>
-  </section>
-
-  <section>
-    <h2>GPU (GB10) <span class="chip" id="gpuchip">...</span></h2>
-    <dl class="kv">
-      <dt>Power draw</dt><dd class="num" id="gpupower">...</dd>
-      <dt>Temperature</dt><dd class="num" id="gputemp">...</dd>
-    </dl>
-    <canvas class="spark" id="powspark" width="600" height="92"></canvas>
-    <table id="gpuprocs"><thead><tr><th>GPU process</th><th>pid</th><th class="r">memory</th></tr></thead><tbody></tbody></table>
-  </section>
-
-  <section>
-    <h2>CPU <span class="chip" id="cpuchip">...</span></h2>
-    <canvas class="spark" id="cpuspark" width="600" height="92"></canvas>
-    <dl class="kv">
-      <dt>Load 1 / 5 / 15</dt><dd class="num" id="loads">...</dd>
-      <dt>Cores</dt><dd class="num" id="cores">...</dd>
-    </dl>
-  </section>
-
-  <section class="wide">
-    <h2>Request feed <span class="chip" id="feedchip">proxy :30001</span></h2>
-    <div class="tablewrap"><table id="feedtable"><thead><tr><th>Time</th><th>Client</th><th>Path</th><th class="r">Body</th><th class="r">Duration</th><th>Outcome</th></tr></thead><tbody></tbody></table></div>
-  </section>
-
-  <section>
-    <h2>Events <span class="chip" id="evtchip">live</span></h2>
-    <div id="evtlist" role="log" aria-live="polite" aria-relevant="additions"><p style="color:var(--mut);font-size:12px">no events yet in this cockpit session</p></div>
-  </section>
-
-  <section>
-    <h2>Containers</h2>
-    <table id="ctable"><thead><tr><th>Container</th><th class="r">CPU</th><th class="r">cgroup mem</th></tr></thead><tbody></tbody></table>
-    <p style="color:var(--mut);font-size:11px;margin-top:9px">
-      cgroup memory excludes CUDA unified allocations; the unified memory panel is the real gauge.</p>
-  </section>
-
-  <section>
-    <h2>Live logs
-      <select id="logsel" aria-label="Log source" style="margin-left:auto">
-        <option value="qwen38-flash">qwen38-flash (container)</option>
-        <option value="qwen38-sglang">qwen38-sglang (container)</option>
-        <option value="qwen38-keepalive.service">keepalive (journal)</option>
-      </select>
-      <button class="btn mini" id="logbtn">Tail</button>
-    </h2>
-    <pre id="logview" class="joblog" style="max-height:230px" hidden></pre>
-  </section>
-
-  <section>
-    <h2>Inventory <button class="chip" id="invbtn" aria-label="Scan the inventory" style="margin-left:auto;cursor:pointer">scan</button></h2>
-    <p style="color:var(--mut);font-size:12px;margin-bottom:8px">
-      Everything any version of this repo left on this box (read-only scan).</p>
-    <table id="invtable"><thead><tr><th>Kind</th><th>What</th></tr></thead><tbody></tbody></table>
-  </section>
-
-  <section class="wide" id="recipes">
-    <h2>Recipes <button class="chip" id="rcpbtn" aria-label="Reload the recipes" style="margin-left:auto;cursor:pointer">reload</button></h2>
-    <p style="color:var(--mut);font-size:12px;margin-bottom:8px">
-      What each lane serves, as data. Built-in recipes are read from the repo's own pins and templates; a custom recipe is a JSON file in <code id="rcpdir" class="num"></code>. Drift lists where the installed unit or launcher differs from the recipe.</p>
-    <div class="tablewrap"><table id="rcptable"><thead><tr><th>Recipe</th><th>Engine image</th><th>Model</th><th>Drafter</th><th>Serving</th><th>On this box</th><th>Drift</th></tr></thead><tbody></tbody></table></div>
-    <p id="rcpline" style="color:var(--mut);font-size:12px;margin-top:8px"></p>
-  </section>
-
-  <section class="wide">
-    <h2>Registry <button class="chip" id="regbtn" aria-label="Scan the model and image registry" style="margin-left:auto;cursor:pointer">scan</button></h2>
-    <p style="color:var(--mut);font-size:12px;margin-bottom:8px">
-      Models, revisions and engine images on this box; pinned means a repo script serves exactly this revision.</p>
-    <div class="tablewrap"><table id="regmodels"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">Disk</th><th>Status</th></tr></thead><tbody></tbody></table></div>
-    <div class="tablewrap"><table id="regimages" style="margin-top:14px"><thead><tr><th>Engine image</th><th class="r">Size</th><th class="r">Id</th></tr></thead><tbody></tbody></table></div>
-    <h2 style="margin-top:16px">Other cached models <span class="chip" id="otherchip"></span></h2>
-    <p style="color:var(--mut);font-size:12px;margin-bottom:8px">Hugging Face cache entries no repo script serves (yours to keep or reclaim).</p>
-    <div class="tablewrap"><table id="othertable"><thead><tr><th>Model</th><th class="r">Disk</th></tr></thead><tbody></tbody></table></div>
-    <h2 style="margin-top:16px">Upstream watch <button class="chip" id="upbtn" aria-label="Check upstream revisions" style="margin-left:auto;cursor:pointer">check</button></h2>
-    <table id="uptable"><thead><tr><th>Model</th><th>Pinned</th><th>Upstream main</th><th>Status</th></tr></thead><tbody></tbody></table>
-    <p id="upline" style="color:var(--mut);font-size:12px;margin-top:8px"></p>
-  </section>
-
-  <section>
-    <h2>Repo</h2>
-    <dl class="kv">
-      <dt>Version</dt><dd class="num" id="repotag">...</dd>
-      <dt>Branch</dt><dd id="repobranch">...</dd>
-      <dt>Head</dt><dd class="num" id="repohead">...</dd>
-      <dt>Working tree</dt><dd id="repodirty">...</dd>
-    </dl>
-  </section>
-
-  <section>
-    <h2>opencode <span class="chip" id="occhip">...</span></h2>
-    <dl>
-      <dt>Integration</dt><dd id="ocstate">...</dd>
-      <dt>Default model</dt><dd id="ocdefault">...</dd>
-      <dt>Limits 27B</dt><dd class="num" id="oclim27">...</dd>
-      <dt>Limits flash</dt><dd class="num" id="oclimflash">...</dd>
-      <dt>Launcher</dt><dd id="oclauncher">...</dd>
-    </dl>
-    <pre id="occmd" style="background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:10px 13px;font:13px ui-monospace,monospace;margin-top:10px">oc</pre>
-    <p id="ocnote" style="font-size:12px;color:var(--mut);margin-top:9px">...</p>
-  </section>
-
-  <section class="wide actionsec">
-    <h2>Actions <span class="chip" id="jobchip">idle</span></h2>
-    <div class="actions">
-      <div class="arow">
-        <span>Switch target model</span>
-        <select id="switchsel" aria-label="Target model to switch to">
-          <option value="stock">stock (27B)</option>
-          <option value="uncensored">uncensored (27B)</option>
-          <option value="flash">flash (176B)</option>
-        </select>
-        <button class="btn" data-act="switch">Queue switch</button>
+    <!-- ── Requests ── -->
+    <div class="tab" id="tab-requests">
+      <div class="tabhead"><h2>Requests</h2><p>what the keepalive proxy on :30001 sees, and how the engine is spending its pool</p></div>
+      <div class="grid">
+        <section class="panel wide" data-src="feed">
+          <h3>Request feed <span class="chip" id="feedchip">...</span><span class="right"><span class="age"></span></span></h3>
+          <div class="tablewrap"><table id="feedtable"><thead><tr><th>Time</th><th>Client</th><th>Path</th><th class="r">Body</th><th class="r">Duration</th><th>Outcome</th></tr></thead><tbody></tbody></table></div>
+        </section>
+        <section class="panel" data-src="engine_fast,decode">
+          <h3>Pool and decode <span class="right"><span class="age"></span></span></h3>
+          <div class="gauge" id="poolgauge">
+            <div class="lab"><span>KV pool held</span><span class="num" id="poollab">...</span></div>
+            <div class="bar"><div class="fill" id="poolfill" style="width:0%"></div></div>
+          </div>
+          <p class="note" id="poolnote"></p>
+          <dl class="kv" style="margin-top:10px">
+            <dt>KV usage (engine log)</dt><dd class="num" id="kvusage">...</dd>
+            <dt>Mamba state slots</dt><dd class="num" id="mambausage">...</dd>
+            <dt>Accept length</dt><dd class="num" id="acclen2">...</dd>
+          </dl>
+        </section>
       </div>
-      <div class="arow"><span>Abort every in-flight generation (orphans left by vanished clients)</span>
-        <button class="btn danger" data-act="abort_all">Abort all</button></div>
-      <div class="arow"><span>Diagnostics bundle for an issue report (logs, state, versions; API key masked)</span>
-        <button class="btn low" data-act="diag_bundle">Write bundle</button></div>
-      <div class="arow"><span>Health smoke (canary via proxy)</span>
-        <button class="btn low" data-act="smoke">Run smoke</button></div>
-      <div class="arow"><span>Flush engine cache</span>
-        <button class="btn low" data-act="flush_cache">Flush</button></div>
-      <div class="arow"><span>Update serving stack (converging install)</span>
-        <button class="btn danger" data-act="update_stack">Update</button></div>
     </div>
-    <pre id="joblog" class="joblog" hidden></pre>
-  </section>
-</main>
 
-<div class="modal" id="modal" hidden>
+    <!-- ── Machine ── -->
+    <div class="tab" id="tab-machine">
+      <div class="tabhead"><h2>Machine</h2><p>the GB10 as it really is: unified memory is the gauge that matters</p></div>
+      <div class="grid">
+        <section class="panel" data-src="machine">
+          <h3>Unified memory <span class="chip" id="memchip2">...</span><span class="right"><span class="age"></span></span></h3>
+          <canvas class="spark" id="memspark" width="600" height="92"></canvas>
+          <dl class="kv" style="margin-top:8px">
+            <dt>Used</dt><dd class="num" id="memused2">...</dd>
+            <dt>Available</dt><dd class="num" id="memavail2">...</dd>
+            <dt>Page cache</dt><dd class="num" id="memcache">...</dd>
+            <dt>Swap used</dt><dd class="num" id="swap">...</dd>
+            <dt>Disk free (home)</dt><dd class="num" id="diskhome">...</dd>
+            <dt>Disk free (docker)</dt><dd class="num" id="diskdocker">...</dd>
+          </dl>
+        </section>
+        <section class="panel" data-src="gpu">
+          <h3>GPU (GB10) <span class="chip" id="gpuchip">...</span><span class="right"><span class="age"></span></span></h3>
+          <dl class="kv">
+            <dt>Power draw</dt><dd class="num" id="gpupower">...</dd>
+            <dt>Temperature</dt><dd class="num" id="gputemp">...</dd>
+          </dl>
+          <canvas class="spark" id="powspark" width="600" height="92"></canvas>
+          <table id="gpuprocs"><thead><tr><th>GPU process</th><th>pid</th><th class="r">memory</th></tr></thead><tbody></tbody></table>
+        </section>
+        <section class="panel" data-src="machine">
+          <h3>CPU <span class="chip" id="cpuchip">...</span><span class="right"><span class="age"></span></span></h3>
+          <canvas class="spark" id="cpuspark" width="600" height="92"></canvas>
+          <dl class="kv">
+            <dt>Load 1 / 5 / 15</dt><dd class="num" id="loads">...</dd>
+            <dt>Cores</dt><dd class="num" id="cores">...</dd>
+          </dl>
+        </section>
+        <section class="panel" data-src="kernel,engine_fast,lifecycle">
+          <h3>Safety belts <span class="right"><span class="age"></span></span></h3>
+          <dl class="kv">
+            <dt>Memory floor</dt><dd class="num" id="memfloor2">...</dd>
+            <dt>Driver refusals (1 h)</dt><dd class="num" id="nvrm2">...</dd>
+            <dt>Prefix cache guard</dt><dd class="num" id="poolguard">...</dd>
+          </dl>
+          <p class="note">The floor belt aborts every generation when host memory falls under the floor while requests run. Driver refusals are recoverable allocation failures during a prefill near the memory edge; the engine retries them. The prefix cache guard empties the radix cache while the engine is idle above its threshold, so a later giant prompt never has to evict: the cost is that the next long prompt prefills from scratch.</p>
+        </section>
+      </div>
+    </div>
+
+    <!-- ── Models ── -->
+    <div class="tab" id="tab-models">
+      <div class="tabhead"><h2>Models, recipes and images</h2><p>what each lane serves as data, what is on disk, what moved upstream</p></div>
+      <div class="grid">
+        <section class="panel wide">
+          <h3>Recipes <span class="right"><span class="age" id="rcpage"></span><button class="btn mini ghost" id="rcpbtn">reload</button></span></h3>
+          <p class="note" style="margin:0 0 8px">Built-in recipes are read from the repo's own pins and templates; a custom recipe is a JSON file in <code id="rcpdir" class="num"></code>. Drift lists where the installed unit or launcher differs from the recipe.</p>
+          <div class="tablewrap"><table id="rcptable"><thead><tr><th>Recipe</th><th>Engine image</th><th>Model</th><th>Drafter</th><th>Serving</th><th>On this box</th><th>Drift</th></tr></thead><tbody></tbody></table></div>
+          <p class="note" id="rcpline"></p>
+        </section>
+        <section class="panel wide">
+          <h3>Registry <span class="right"><span class="age" id="regage"></span><button class="btn mini ghost" id="regbtn">scan</button></span></h3>
+          <p class="note" style="margin:0 0 8px">Models, revisions and engine images on this box; pinned means a repo script serves exactly this revision. The scan reads metadata only.</p>
+          <div class="tablewrap"><table id="regmodels"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">Disk</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+          <div class="tablewrap"><table id="regimages" style="margin-top:14px"><thead><tr><th>Engine image</th><th class="r">Size</th><th class="r">Id</th></tr></thead><tbody></tbody></table></div>
+          <h3 style="margin-top:16px">Other cached models <span class="chip" id="otherchip"></span></h3>
+          <div class="tablewrap"><table id="othertable"><thead><tr><th>Model</th><th class="r">Disk</th></tr></thead><tbody></tbody></table></div>
+        </section>
+        <section class="panel">
+          <h3>Upstream watch <span class="right"><button class="btn mini ghost" id="upbtn">check</button></span></h3>
+          <div class="tablewrap"><table id="uptable"><thead><tr><th>Model</th><th>Pinned</th><th>Upstream</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+          <p class="note" id="upline">Compares every pinned revision with the upstream main branch and the local tag with the latest release. Read-only, never auto-bumps.</p>
+        </section>
+        <section class="panel">
+          <h3>Inventory <span class="right"><button class="btn mini ghost" id="invbtn">scan</button></span></h3>
+          <p class="note" style="margin:0 0 8px">Everything any version of this repo left on this box (uninstall.sh --list, read-only).</p>
+          <table id="invtable"><thead><tr><th style="width:92px">Kind</th><th>What</th></tr></thead><tbody></tbody></table>
+          <p class="note" id="invline"></p>
+        </section>
+      </div>
+    </div>
+
+    <!-- ── Logs ── -->
+    <div class="tab" id="tab-logs">
+      <div class="tabhead"><h2>Logs, events and jobs</h2><p>the raw material behind every state shown elsewhere</p></div>
+      <div class="grid">
+        <section class="panel wide">
+          <h3>Live logs
+            <span class="right">
+              <select id="logsel" aria-label="Log source">
+                <option value="qwen38-sglang">qwen38-sglang (container)</option>
+                <option value="qwen38-flash">qwen38-flash (container)</option>
+                <option value="qwen38-keepalive.service">keepalive proxy (journal)</option>
+              </select>
+              <label style="font-size:11.5px;color:var(--mut);display:flex;align-items:center;gap:5px"><input type="checkbox" id="logfollow"> follow</label>
+              <button class="btn mini ghost" id="logbtn">Tail</button>
+            </span>
+          </h3>
+          <pre id="logview" class="joblog" style="max-height:360px"><span class="empty">press Tail to read the last 120 lines</span></pre>
+        </section>
+        <section class="panel" data-src="lifecycle">
+          <h3>Events (last 30) <span class="right"><span class="age"></span></span></h3>
+          <div id="evtlist2"><p class="empty">no events yet</p></div>
+        </section>
+        <section class="panel" data-src="job">
+          <h3>Recent jobs <span class="right"><span class="age"></span></span></h3>
+          <div id="jobhist"><p class="empty">no job run since the cockpit started</p></div>
+          <pre id="jobhistlog" class="joblog" style="margin-top:10px" hidden></pre>
+          <p class="note">The complete record is the audit log: <code class="num">~/.config/qwen38/cockpit-audit.log</code></p>
+        </section>
+      </div>
+    </div>
+
+    <!-- ── Setup ── -->
+    <div class="tab" id="tab-setup">
+      <div class="tabhead"><h2>Setup</h2><p>the repo, the proxy, the agent CLI and the cockpit itself</p></div>
+      <div class="grid">
+        <section class="panel" data-src="repo">
+          <h3>Repo <span class="right"><span class="age"></span></span></h3>
+          <dl class="kv">
+            <dt>Version</dt><dd class="num" id="repotag">...</dd>
+            <dt>Branch</dt><dd id="repobranch">...</dd>
+            <dt>Head</dt><dd class="num" id="repohead">...</dd>
+            <dt>Working tree</dt><dd id="repodirty">...</dd>
+            <dt>Keepalive proxy</dt><dd id="proxyver">...</dd>
+          </dl>
+        </section>
+        <section class="panel" data-src="opencode">
+          <h3>opencode <span class="chip" id="occhip">...</span><span class="right"><span class="age"></span></span></h3>
+          <dl class="kv">
+            <dt>Integration</dt><dd id="ocstate">...</dd>
+            <dt>Default model</dt><dd id="ocdefault">...</dd>
+            <dt>Limits 27B</dt><dd class="num" id="oclim27">...</dd>
+            <dt>Limits flash</dt><dd class="num" id="oclimflash">...</dd>
+            <dt>Launcher</dt><dd id="oclauncher">...</dd>
+          </dl>
+          <pre id="occmd" class="cmd" style="margin-top:10px">oc</pre>
+          <p class="note" id="ocnote">...</p>
+        </section>
+        <section class="panel">
+          <h3>Update the serving stack</h3>
+          <p class="note" style="margin:0 0 8px">The installer needs an interactive sudo, so it is not a button (a half-applied install is the one thing this cockpit must never cause). Run it in a terminal on the box; your choices (model, context mode, port, opencode on or off) are remembered.</p>
+          <pre class="cmd" id="updatecmd">...</pre>
+        </section>
+        <section class="panel">
+          <h3>Cockpit</h3>
+          <dl class="kv">
+            <dt>Version</dt><dd class="num" id="ckver">...</dd>
+            <dt>Mode</dt><dd id="ckmode">...</dd>
+            <dt>Usable pool share</dt><dd class="num" id="ckusable">...</dd>
+            <dt>One-prompt ceiling</dt><dd class="num" id="ckceiling">...</dd>
+            <dt>Refresh</dt><dd class="num" id="ckperiods">...</dd>
+          </dl>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="mtitle">
   <div class="mcard">
     <h3 id="mtitle">Confirm</h3>
-    <p id="mwhat" style="color:var(--mut);font-size:13px;margin:8px 0"></p>
+    <p class="mwhat" id="mwhat"></p>
+    <p class="mwarn" id="mwarn" hidden></p>
     <pre id="margv"></pre>
     <div class="mrow">
+      <span class="mstatus" id="mstatus"></span>
       <button class="btn ghost" id="mcancel">Cancel</button>
       <button class="btn danger" id="mgo">Run it</button>
     </div>
   </div>
 </div>
-<footer>Spark Cockpit BETA. Every action asks first and shows the exact command it will run.</footer>
+<div class="toast" id="toast" hidden role="status"></div>
 
 <script src="/static/app.js" defer></script>
 </body>

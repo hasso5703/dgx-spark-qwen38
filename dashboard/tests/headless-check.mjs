@@ -5,7 +5,7 @@
 // Usage: node dashboard/tests/headless-check.mjs [width] [height] [path] [screenshot.png]
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-const BASE = 'http://127.0.0.1:30090';
+const BASE = process.env.COCKPIT_BASE || 'http://127.0.0.1:30090';
 const key = readFileSync(`${process.env.HOME}/.config/qwen38/api-key`, 'utf8').trim();
 const login = await fetch(`${BASE}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
 const cookie = (login.headers.get('set-cookie') || '').match(/cockpit=([^;]+)/)?.[1];
@@ -20,14 +20,16 @@ const { result: { targetId } } = await send('Target.createTarget', { url: 'about
 const { result: { sessionId } } = await send('Target.attachToTarget', { targetId, flatten: true });
 await send('Network.enable', {}, sessionId); await send('Runtime.enable', {}, sessionId); await send('Page.enable', {}, sessionId);
 await send('Network.setCookie', { name: 'cockpit', value: cookie, url: BASE, httpOnly: true, sameSite: 'Strict' }, sessionId);
-const target = process.argv[4] || '/';
+const target = process.argv[4] || '/#models';
 await send('Page.navigate', { url: /^(https?|file):/.test(target) ? target : BASE + target }, sessionId);
-await new Promise(r => setTimeout(r, 5000));
+await new Promise(r => setTimeout(r, 6000));
 const ev = await send('Runtime.evaluate', { returnByValue: true, expression: `JSON.stringify({
   url: location.pathname, title: document.title,
   rows: [...document.querySelectorAll('#rcptable tbody tr')].map(tr => tr.innerText.replace(/\\s+/g, ' ').slice(0, 220)),
   line: document.getElementById('rcpline')?.textContent, dir: document.getElementById('rcpdir')?.textContent,
-  hero: document.getElementById('hero')?.textContent, conn: document.getElementById('connlabel')?.textContent,
+  lane: [document.getElementById('lanestate'), document.getElementById('lanename'), document.getElementById('lanesub')].map(e => e?.textContent).join(' '),
+  conn: document.getElementById('connlabel')?.textContent, tab: [...document.querySelectorAll('.tab.active')].map(t => t.id).join(','),
+  banners: [...document.querySelectorAll('#banners .banner')].map(b => b.textContent.slice(0, 90)),
   legend: document.getElementById('reslegend')?.textContent.replace(/\\s+/g, ' ').trim() })` }, sessionId);
 const errors = events.filter(m => m.method === 'Runtime.exceptionThrown').map(m => m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
 const cons = events.filter(m => m.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(m.params.type)).map(m => m.params.args.map(a => a.value || a.description).join(' '));

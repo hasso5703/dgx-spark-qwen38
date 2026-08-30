@@ -1,507 +1,788 @@
 "use strict";
+/* Spark Cockpit UI. One state payload (SSE or polling) drives every panel through
+   idempotent renderers that write text nodes only (never HTML built from data).
+   Every panel knows how fresh its sources are; every action goes through one modal,
+   one server-side job lock, and one job strip visible from every tab and browser. */
 const $ = id => document.getElementById(id);
-const GB = 1024**3;
-const fmtB = b => b==null ? '...' : (b/GB).toFixed(1)+' GB';
+const GB = 1024 ** 3;
+const fmtB = b => b == null || isNaN(b) ? '...' : (b / GB).toFixed(1) + ' GB';
+const fmtN = n => n == null || isNaN(n) ? '...' : Number(n).toLocaleString('en');
+const fmtK = n => n == null ? '?' : Math.round(n / 1000) + 'K';
+// a time of day is ambiguous once the cockpit reloads events written on another day
+const clockTime = ts => {
+  const d = new Date(ts * 1000), now = new Date();
+  const hm = d.toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'});
+  if (d.toDateString() === now.toDateString()) return hm;
+  return d.toLocaleDateString([], {day: '2-digit', month: '2-digit'}) + ' ' + hm.slice(0, 5);
+};
+const fmtDur = s => s == null ? '?' : s < 90 ? Math.round(s) + ' s'
+  : s < 3600 ? Math.floor(s / 60) + ' min ' + String(Math.round(s % 60)).padStart(2, '0')
+  : Math.floor(s / 3600) + ' h ' + String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+const setText = (id, txt) => { const e = $(id); if (e) { e.textContent = txt; e.classList.remove('skel'); } };
+const setChip = (id, txt, cls) => { const e = $(id); if (e) { e.textContent = txt; e.className = 'chip ' + (cls || ''); } };
+const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+const clear = n => { while (n.firstChild) n.removeChild(n.firstChild); };
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
-// ── tiny sparkline store ────────────────────────────────────────────────────
-const series = {};
-function push(name, v, max=120){
-  (series[name] = series[name] || []).push(v);
-  if (series[name].length > max) series[name].shift();
+// ── vocabulary: one word per engine state, everywhere ─────────────────────────
+const STATE_LABEL = {
+  stopped: 'stopped', failed: 'failed', starting: 'starting', 'loading-weights': 'loading weights',
+  'loading-draft': 'loading the draft head', 'allocating-kv': 'allocating the KV pool',
+  'capturing-graphs': 'capturing CUDA graphs', 'warming-up': 'warming up', ready: 'ready',
+  degraded: 'ready but not answering', stopping: 'stopping', wedged: 'wedged: no generation'};
+const STATE_CHIP = {ready: 'ok', degraded: 'warn', failed: 'err', stopped: '', stopping: 'warn', wedged: 'err'};
+const TRANSITIONAL = new Set(['starting', 'loading-weights', 'loading-draft', 'allocating-kv', 'capturing-graphs', 'warming-up']);
+const STAGE_LABEL = {'init': 'init', 'loading-weights': 'weights', 'loading-draft': 'draft', 'allocating-kv': 'KV', 'capturing-graphs': 'graphs', 'warming-up': 'warmup'};
+const ALL_STAGES = Object.keys(STAGE_LABEL);
+const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B'};
+const laneCls = name => name.includes('flash') ? 'flash' : 'lane27';
+const stateChipCls = st => (STATE_CHIP[st] ?? 'warn') + (st === 'stopping' || TRANSITIONAL.has(st) ? ' live' : '');
+
+// ── tabs and the collapsible rail ─────────────────────────────────────────────
+// declared here, not next to its loader: showTab() runs at parse time and reads it
+const loaded = {recipes: false};
+const TABS = ['overview', 'engines', 'requests', 'machine', 'models', 'logs', 'setup'];
+let activeTab = 'overview';
+function showTab(name, push = true){
+  if (!TABS.includes(name)) name = 'overview';
+  activeTab = name;
+  TABS.forEach(t => { const p = $('tab-' + t); if (p) p.classList.toggle('active', t === name); });
+  document.querySelectorAll('.rail .nav').forEach(b => {
+    if (b.dataset.tab === name) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  if (push && location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+  if (name === 'models' && !loaded.recipes) loadRecipes();
 }
+document.querySelectorAll('.rail .nav').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'overview', false));
+showTab(location.hash.slice(1) || 'overview', false);
+function setRail(min){
+  document.body.classList.toggle('railmin', min);
+  $('railbtn').setAttribute('aria-expanded', String(!min));
+  try { localStorage.setItem('cockpit.rail', min ? 'min' : 'open'); } catch { /* storage may be unavailable */ }
+}
+try { setRail(localStorage.getItem('cockpit.rail') === 'min'); } catch { setRail(false); }
+$('railbtn').addEventListener('click', () => setRail(!document.body.classList.contains('railmin')));
+
+// ── sparklines (canvas, bounded series) ───────────────────────────────────────
+const series = {};
+function push(name, v, max = 120){ (series[name] = series[name] || []).push(v); if (series[name].length > max) series[name].shift(); }
 function drawSpark(canvas, name, color, yMax){
+  if (!canvas) return;
   const c = canvas.getContext('2d'), w = canvas.width, h = canvas.height;
   const data = series[name] || [];
-  c.clearRect(0,0,w,h);
+  c.clearRect(0, 0, w, h);
   if (data.length < 2) return;
   const m = yMax || Math.max(...data, 1e-9);
   c.beginPath();
-  data.forEach((v,i)=>{
-    const x = i*(w/(data.length-1)), y = h - Math.min(v/m,1)*(h-6) - 3;
-    i ? c.lineTo(x,y) : c.moveTo(x,y);
-  });
+  data.forEach((v, i) => { const x = i * (w / (data.length - 1)), y = h - Math.min(v / m, 1) * (h - 6) - 3; i ? c.lineTo(x, y) : c.moveTo(x, y); });
   c.strokeStyle = color; c.lineWidth = 2.5; c.stroke();
-  c.lineTo(w,h); c.lineTo(0,h); c.closePath();
+  c.lineTo(w, h); c.lineTo(0, h); c.closePath();
   c.globalAlpha = .12; c.fillStyle = color; c.fill(); c.globalAlpha = 1;
 }
-const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
-// ── panel renderers (each isolated: one failure never blanks the rest) ─────
+// ── shared facts between renderers (each guarded against missing data) ────────
+const F = {pool: null, usable: 0.92, ceiling: 0, window: 262144, maxRun: null, load: {}, life: null,
+           units: {}, containers: {}, proxy: null, config: {}, job: null, health: null};
+const singleLimit = () => F.pool ? (F.ceiling > 0 ? Math.min(Math.round(F.pool * F.usable), F.ceiling) : Math.round(F.pool * F.usable)) : null;
+
+// ── renderers ─────────────────────────────────────────────────────────────────
 function rMachine(d){
   const m = d.mem || {};
-  const used = m.MemTotal - m.MemAvailable;
-  const pct = 100*used/m.MemTotal;
-  $('memlab').textContent = fmtB(used)+' / '+fmtB(m.MemTotal);
-  $('memfill').style.width = pct.toFixed(1)+'%';
-  $('memgauge').className = 'gauge'+(pct>90?' crit':pct>80?' warn':'');
-  $('memchip').textContent = fmtB(m.MemAvailable)+' free';
-  $('memchip').className = 'chip '+(m.MemAvailable<8*GB?'err':m.MemAvailable<15*GB?'warn':'ok');
-  $('memavail').textContent = fmtB(m.MemAvailable);
-  $('memcache').textContent = fmtB(m.Cached);
-  $('swap').textContent = fmtB((m.SwapTotal||0)-(m.SwapFree||0));
-  push('mem', used/GB); drawSpark($('memspark'),'mem',css('--acc'), m.MemTotal/GB);
+  if (m.MemTotal){
+    const used = m.MemTotal - m.MemAvailable, pct = 100 * used / m.MemTotal;
+    setText('memlab', fmtB(used) + ' / ' + fmtB(m.MemTotal));
+    $('memfill').style.width = pct.toFixed(1) + '%';
+    $('memgauge').className = 'gauge' + (pct > 90 ? ' crit' : pct > 80 ? ' warn' : '');
+    const cls = m.MemAvailable < 8 * GB ? 'err' : m.MemAvailable < 15 * GB ? 'warn' : 'ok';
+    setChip('memchip', fmtB(m.MemAvailable) + ' free', cls); setChip('memchip2', fmtB(m.MemAvailable) + ' free', cls);
+    setText('memavail', fmtB(m.MemAvailable)); setText('memavail2', fmtB(m.MemAvailable)); setText('memused2', fmtB(used));
+    setText('memcache', fmtB(m.Cached)); setText('swap', fmtB((m.SwapTotal || 0) - (m.SwapFree || 0)));
+    push('mem', used / GB); drawSpark($('memspark'), 'mem', css('--acc'), m.MemTotal / GB);
+    badge('machine', m.MemAvailable < 8 * GB ? fmtB(m.MemAvailable) : '', m.MemAvailable < 8 * GB ? 'err' : '');
+  }
   const cpu = d.cpu_pct || {};
-  $('cpuchip').textContent = (cpu.cpu??0).toFixed(0)+' %';
-  $('cpuchip').className = 'chip '+((cpu.cpu||0)>85?'warn':'ok');
-  $('loads').textContent = (d.load||[]).map(x=>x.toFixed(2)).join(' / ');
-  $('cores').textContent = Object.keys(cpu).length-1;
-  push('cpu', cpu.cpu||0); drawSpark($('cpuspark'),'cpu',css('--lane27'),100);
+  setChip('cpuchip', (cpu.cpu ?? 0).toFixed(0) + ' %', (cpu.cpu || 0) > 85 ? 'warn' : 'ok');
+  setText('loads', (d.load || []).map(x => x.toFixed(2)).join(' / '));
+  setText('cores', String(Math.max(0, Object.keys(cpu).length - 1)));
+  push('cpu', cpu.cpu || 0); drawSpark($('cpuspark'), 'cpu', css('--lane27'), 100);
+  const dk = d.disks || {};
+  setText('diskhome', dk.home ? fmtB(dk.home.free) + ' of ' + fmtB(dk.home.total) : 'n/a');
+  setText('diskdocker', dk.docker ? fmtB(dk.docker.free) + ' of ' + fmtB(dk.docker.total) : 'n/a');
 }
 function rGpu(d){
-  $('gpupower').textContent = d.power_w!=null ? d.power_w.toFixed(1)+' W' : 'n/a';
-  $('gputemp').textContent = d.temp_c!=null ? d.temp_c.toFixed(0)+' °C' : 'n/a';
-  $('gpuchip').textContent = (d.procs||[]).length+' proc';
-  $('gpuchip').className = 'chip '+(d.temp_c>85?'err':d.temp_c>75?'warn':'ok');
-  push('pow', d.power_w||0); drawSpark($('powspark'),'pow',css('--warn'));
-  const tb = $('gpuprocs').tBodies[0]; tb.innerHTML='';
-  (d.procs||[]).slice(0,5).forEach(p=>{
-    const tr = tb.insertRow();
-    tr.insertCell().textContent = p.name||'?';
-    tr.insertCell().textContent = p.pid;
-    const c = tr.insertCell(); c.textContent = p.mem; c.className='r num';
+  setText('gpupower', d.power_w != null ? d.power_w.toFixed(1) + ' W' : 'n/a');
+  setText('gputemp', d.temp_c != null ? d.temp_c.toFixed(0) + ' °C' : 'n/a');
+  setChip('gpuchip', (d.procs || []).length + ' proc', d.temp_c > 85 ? 'err' : d.temp_c > 75 ? 'warn' : 'ok');
+  push('pow', d.power_w || 0); drawSpark($('powspark'), 'pow', css('--warn'));
+  const tb = $('gpuprocs').tBodies[0]; clear(tb);
+  (d.procs || []).slice(0, 6).forEach(p => {
+    const tr = tb.insertRow(); tr.insertCell().textContent = p.name || '?'; tr.insertCell().textContent = p.pid;
+    const c = tr.insertCell(); c.textContent = p.mem; c.className = 'r num';
   });
+  if (!tb.rows.length){ const tr = tb.insertRow(); const c = tr.insertCell(); c.colSpan = 3; c.className = 'empty'; c.textContent = 'no process on the GPU'; }
 }
 function rEngineInfo(d){
-  if (d.prompt_ceiling_tokens != null) CEILING = d.prompt_ceiling_tokens;
+  if (d.prompt_ceiling_tokens != null) F.ceiling = d.prompt_ceiling_tokens;
   const i = d.info || {};
-  $('engmodel').textContent = (i.model_path||'...').split('/').pop();
-  $('engrev').textContent = (i.revision||'').slice(0,12);
-  $('engquant').textContent = i.quantization ?? '...';
-  $('engctx').textContent = i.context_length?.toLocaleString('en') ?? '...';
-  $('engspec').textContent = i.speculative_algorithm
-      ? `${i.speculative_algorithm} ${i.speculative_num_steps}/${i.speculative_num_draft_tokens}` : '...';
-  $('engattn').textContent = i.prefill_attention_backend
-      ? `${i.prefill_attention_backend} / ${i.decode_attention_backend}` : (i.attention_backend??'...');
-  $('engradix').textContent = i.mamba_radix_cache_strategy ?? '...';
-  $('engver').textContent = i.version ?? '...';
-  if (i.max_total_num_tokens) POOL = i.max_total_num_tokens;
+  setText('engmodel', (i.model_path || '...').split('/').pop());
+  setText('engrev', (i.revision || '').slice(0, 12) || 'n/a');
+  setText('engquant', i.quantization ?? 'n/a');
+  setText('engctx', i.context_length ? fmtN(i.context_length) + ' tokens' : '...');
+  setText('engpool', i.max_total_num_tokens ? fmtN(i.max_total_num_tokens) + ' tokens' : '...');
+  setText('engspec', i.speculative_algorithm ? `${i.speculative_algorithm} ${i.speculative_num_steps}/${i.speculative_num_draft_tokens}` : 'none');
+  setText('engattn', i.prefill_attention_backend ? `${i.prefill_attention_backend} / ${i.decode_attention_backend}` : (i.attention_backend ?? 'n/a'));
+  setText('engradix', i.mamba_radix_cache_strategy ?? 'n/a');
+  setText('engver', i.version ?? 'n/a');
+  setText('ckceiling', F.ceiling > 0 ? fmtN(F.ceiling) + ' tokens (proxy)' : 'none: pool share only');
+  if (i.max_total_num_tokens) F.pool = i.max_total_num_tokens;
+  if (i.context_length) F.window = i.context_length;
+  if (i.max_running_requests) F.maxRun = i.max_running_requests;
+  rPool(); rReservoir();
 }
-function rEngineInfoDown(){
-  // the engine endpoint is unreachable (stopped, crashed or booting): the facts of the
-  // PREVIOUS lane must not survive a switch (seen 30/08: flash info shown during the 27B boot)
-  for (const id of ['engmodel','engrev','engquant','engctx','engspec','engattn','engradix','engver']){
-    const el = $(id); el.textContent = '...'; el.classList.add('skel');
-  }
-  POOL = null; rPool({}); rReservoir(window._load || {});
+const ENG_FIELDS = ['engmodel', 'engrev', 'engquant', 'engctx', 'engpool', 'engspec', 'engattn', 'engradix', 'engver'];
+function rEngineInfoDown(reason){
+  // No lane is serving, so the facts of the PREVIOUS one must not survive (30/08: flash
+  // model and pool shown during the 27B boot). This says why instead of shimmering as if
+  // it were still loading.
+  ENG_FIELDS.forEach(id => setText(id, reason || 'no engine'));
+  F.pool = null; F.maxRun = null; rPool(); rReservoir();
 }
-let POOL = null;   // max_total_num_tokens from engine info
-let USABLE = 0.92; // share of the pool one prompt can use (server: usable_frac, same knob as the proxy guard)
-let CEILING = 0;   // absolute one-prompt ceiling from the deployed keepalive unit (0 = none)
-const singleLimit = () => CEILING > 0 ? Math.min(Math.round(POOL*USABLE), CEILING) : Math.round(POOL*USABLE);
-function rPool(l){
-  if (!POOL) { $('poollab').textContent = '...'; return; }
-  const held = l.num_tokens || 0, pct = 100*held/POOL;
-  $('poollab').textContent = held.toLocaleString('en') + ' / ' + POOL.toLocaleString('en') + ' tokens';
+function servingReady(){
+  const s = servingEngine();
+  return !!(s && ['ready', 'degraded', 'wedged'].includes(s[1].state));
+}
+function rPool(){
+  const l = F.load || {};
+  if (!F.pool){ setText('poollab', 'waiting for the engine'); $('poolfill').style.width = '0%'; setText('poolnote', 'the pool size arrives with the engine (max_total_num_tokens at boot)'); return; }
+  const held = l.num_tokens || 0, pct = 100 * held / F.pool;
+  setText('poollab', fmtN(held) + ' / ' + fmtN(F.pool) + ' tokens');
   $('poolfill').style.width = Math.min(100, pct).toFixed(1) + '%';
-  $('poolgauge').className = 'gauge' + (pct>90 ? ' crit' : pct>70 ? ' warn' : '');
-  $('poolnote').textContent = pct>70
-    ? 'one more large context will not fit: the scheduler queues it (max-running-requests 1)'
-    : 'a single prompt tops out near ' + Math.round(singleLimit()/1000) + 'K tokens on this lane';
+  $('poolgauge').className = 'gauge' + (pct > 90 ? ' crit' : pct > 70 ? ' warn' : '');
+  setText('poolnote', pct > 70
+    ? 'one more large context will not fit: the scheduler queues it' + (F.maxRun ? ` (max-running-requests ${F.maxRun})` : '')
+    : 'a single prompt tops out near ' + fmtK(singleLimit()) + ' tokens on this lane');
 }
-const WINDOW = 262144;
-function rReservoir(l){
-  if (!POOL){
-    $('resbig').textContent = '...'; $('restick').style.display = 'none';
-    $('reslegend').innerHTML = '<span>the pool size arrives with the engine (max_total_num_tokens at boot)</span>';
+function rReservoir(){
+  const l = F.load || {};
+  if (!F.pool){
+    setText('resbig', 'no pool'); $('restick').hidden = true;
+    $('reslevel').style.width = '0%'; $('resghost').style.width = '0%';
+    const lg = $('reslegend'); clear(lg); lg.append(el('span', null, 'the pool size arrives with the engine (max_total_num_tokens at boot)'));
     return;
   }
-  $('restick').style.display = '';
-  const held = l.num_tokens || 0, single = singleLimit();
-  const scale = Math.max(WINDOW, POOL);
-  const pct = 100*held/POOL;
-  $('resbig').innerHTML = held.toLocaleString('en') + `<small id="rescap">of ${POOL.toLocaleString('en')} tokens</small>`;
-  $('rescapzone').style.width = (100*POOL/scale).toFixed(2)+'%';
-  $('reslevel').style.width = (100*Math.min(held,POOL)/scale).toFixed(2)+'%';
-  $('reslevel').className = 'level' + (pct>70 ? ' hot' : '');
-  $('restick').style.left = (100*single/scale).toFixed(2)+'%';
-  $('resghost').style.width = (100*Math.max(0, WINDOW-POOL)/scale).toFixed(2)+'%';
-  $('reslegend').innerHTML =
-    `<span><b>${pct.toFixed(0)}%</b> held` + ((l.num_reqs||0) ? ` by ${l.num_reqs} request${l.num_reqs>1?'s':''}` : '') + `</span>`
-    + `<span>one prompt tops out near <b>${Math.round(single/1000)}K</b> (tick)</span>`
-    + `<span>capacity <b>${Math.round(POOL/1000)}K</b> at these memory settings</span>`
-    + `<span>model window <b>${Math.round(WINDOW/1000)}K</b>: the hatched red zone never fits</span>`;
-}
-function rHero(){
-  const life = window._life || {}; const eng = life.engines || {};
-  const serving = Object.entries(eng).find(([n,e]) => e.state !== 'stopped' && e.state !== 'failed');
-  if (!serving) { $('hero').textContent = ''; return; }
-  const [name, e] = serving; const lane = name.includes('flash') ? 'flash 176B' : '27B';
-  const l = window._load || {}; const pct = POOL ? Math.round(100*(l.num_tokens||0)/POOL) : null;
-  $('hero').innerHTML = `<b>${lane}</b> <span class="chip ${STATE_CHIP[e.state] ?? 'warn'}${e.state==='stopping'?' live':''}">${e.state}</span>`
-    + (pct!=null ? ` <span class="num">pool ${pct}%</span>` : '')
-    + ((l.num_reqs||0) ? ` <span class="num">${l.num_reqs} running</span>` : '');
+  const held = l.num_tokens || 0, single = singleLimit(), scale = Math.max(F.window, F.pool), pct = 100 * held / F.pool;
+  const big = $('resbig'); clear(big); big.classList.remove('skel');
+  big.append(fmtN(held)); big.append(el('small', null, `of ${fmtN(F.pool)} tokens`));
+  $('rescapzone').style.width = (100 * F.pool / scale).toFixed(2) + '%';
+  $('reslevel').style.width = (100 * Math.min(held, F.pool) / scale).toFixed(2) + '%';
+  $('reslevel').className = 'level' + (pct > 70 ? ' hot' : '');
+  $('restick').hidden = false; $('restick').style.left = (100 * single / scale).toFixed(2) + '%';
+  $('resghost').style.width = (100 * Math.max(0, F.window - F.pool) / scale).toFixed(2) + '%';
+  const lg = $('reslegend'); clear(lg);
+  const span = (a, b, c) => { const s = el('span'); if (a) s.append(a); s.append(el('b', null, b)); s.append(c); return s; };
+  lg.append(span('', pct.toFixed(0) + '%', ' held' + ((l.num_reqs || 0) ? ` by ${l.num_reqs} request${l.num_reqs > 1 ? 's' : ''}` : '')));
+  lg.append(span('one prompt tops out near ', fmtK(single), ' (tick)'));
+  lg.append(span('capacity ', fmtK(F.pool), ' at these memory settings'));
+  lg.append(F.window > F.pool ? span('model window ', fmtK(F.window), ': the hatched zone never fits')
+                              : span('model window ', fmtK(F.window), ': it fits in the pool'));
 }
 function rEngineFast(d){
+  F.health = d.healthy;
   if (d.mem_floor){
     const f = d.mem_floor;
-    $('memfloor').textContent = `abort under ${f.gib} GiB` + (f.aborts ? ` · ${f.aborts} fired` : ' · quiet');
-    $('memfloor').style.color = f.aborts ? 'var(--warn)' : '';
+    const txt = `abort under ${f.gib} GiB` + (f.aborts ? ` · fired ${f.aborts} time${f.aborts > 1 ? 's' : ''}` : ' · quiet');
+    setText('memfloor', txt); setText('memfloor2', txt);
+    [$('memfloor'), $('memfloor2')].forEach(e => { if (e) e.style.color = f.aborts ? 'var(--warn)' : ''; });
+    F.memFloor = f;
   }
-  const l = (d.load||[])[0] || {};
-  window._load = l; rPool(l); rReservoir(l); rHero();
-  // A container burning CPU with health still down is a BOOT, not an outage
-  // (weight loads are journal-silent for many minutes; field lesson).
-  const life = window._life || {};
-  const engs = Object.values(life.engines||{});
-  const boot = engs.find(e=>TRANSITIONAL.has(e.state));
-  const c = window._containers || {};
-  const busy = Object.values(c).some(x => parseFloat(x.cpu) > 15);
-  const state = d.healthy ? 'healthy' : boot ? boot.state : busy ? 'booting' : 'down';
-  $('engchip').textContent = state;
-  $('engchip').className = 'chip '+(d.healthy?'ok':(boot||busy)?'warn':'err');
-  $('reqrun').textContent = l.num_reqs ?? '...';
-  $('reqwait').textContent = l.num_waiting_reqs ?? '...';
-  $('reqtok').textContent = (l.num_tokens??0).toLocaleString('en');
-  $('loadchip').textContent = (l.num_reqs||0)>0 ? 'active' : 'idle';
-  $('loadchip').className = 'chip '+((l.num_reqs||0)>0?'flash':'');
-  push('req', l.num_reqs||0); drawSpark($('reqspark'),'req',css('--flash'),4);
+  const noEngine = !d.load;
+  const l = (d.load || [])[0] || {};
+  F.load = l; rPool(); rReservoir(); rLanePill();
+  setText('reqrun', noEngine ? 'no engine' : (l.num_reqs ?? '...'));
+  setText('reqwait', noEngine ? 'no engine' : (l.num_waiting_reqs ?? '...'));
+  setText('reqtok', noEngine ? 'no engine' : fmtN(l.num_tokens ?? 0));
+  setChip('loadchip', noEngine ? 'no engine' : (l.num_reqs || 0) > 0 ? `${l.num_reqs} running` : 'idle',
+          noEngine ? '' : (l.num_reqs || 0) > 0 ? 'flash live' : '');
+  badge('requests', (l.num_reqs || 0) > 0 ? String(l.num_reqs) : '', '');
+  if (noEngine){   // a flat line at zero reads as "quiet", not as "there is nothing here"
+    series.req = [];
+    const c = $('reqspark'); if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
+  } else {
+    push('req', l.num_reqs || 0); drawSpark($('reqspark'), 'req', css('--flash'), 4);
+  }
+  const serving = servingEngine();
+  setChip('engchip', serving ? STATE_LABEL[serving[1].state] || serving[1].state : 'no engine', serving ? stateChipCls(serving[1].state) : '');
 }
 function rDecode(d){
   const t = d.decode, u = d.usage || {};
-  $('acclen').textContent = t ? t.accept_len.toFixed(2) : 'idle';
-  $('kvusage').textContent = t ? (100*t.token_usage).toFixed(1)+' %' : (u.tokens ? (100*u.tokens).toFixed(0)+' % (last seen)' : '...');
-  $('mambausage').textContent = u.mamba ? (100*u.mamba).toFixed(0)+' %' + (u.mamba>=0.5 ? ' (guard flushes when idle)' : '') : '...';
-}
-function fmtSince(s){
-  // systemd: 'Sat 2026-08-29 01:34:33 CEST' -> 'since 01:34' today, else 'since 08-29 01:34'
-  const m = (s||'').match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2})/); if(!m) return '';
-  const today = new Date().toISOString().slice(0,10) === `${m[1]}-${m[2]}-${m[3]}`;
-  return 'since ' + (today ? m[4] : `${m[2]}-${m[3]} ${m[4]}`);
-}
-function rUnits(d){
-  window._units = d.units || {};
-  const box = $('unitlist'); box.innerHTML='';
-  const lane = n => n.includes('flash') ? 'flash' : n.includes('sglang') ? 'lane27' : '';
-  Object.entries(d.units||{}).filter(([n])=>n.includes('keepalive')).forEach(([name,u])=>{
-    const row = document.createElement('div'); row.className='unit';
-    const on = u.active==='active';
-    row.innerHTML =
-      `<span class="chip ${on?'ok':u.active==='failed'?'err':''}">${u.active}</span>`+
-      `<span class="name">${name.replace('.service','')}</span>`+
-      `<span class="chip ${lane(name)}">${u.enabled}</span>`+
-      (window._proxy && window._proxy.version ? `<span class="chip ${window._proxy.same_as_repo===false?'warn':''}" title="deployed keepalive-proxy.py${window._proxy.same_as_repo===false?' differs from the repo copy':''}">${window._proxy.version}${window._proxy.same_as_repo===false?' · not the repo copy':''}</span>` : '')+
-      `<span class="since">${fmtSince(u.since)}</span>`;
-    const btn = document.createElement('button');
-    btn.className = 'btn mini'+(on?' danger':'');
-    btn.textContent = on ? 'stop' : 'start';
-    btn.onclick = () => askAction('unit',
-      {verb: on?'stop':'start', unit: name},
-      ['sudo','-n','/usr/bin/systemctl', on?'stop':'start', name]);
-    row.appendChild(btn);
-    box.appendChild(row);
-  });
-}
-function rContainers(d){
-  window._containers = d.containers || {};
-  const tb = $('ctable').tBodies[0]; tb.innerHTML='';
-  Object.entries(d.containers||{}).forEach(([n,c])=>{
-    const tr = tb.insertRow();
-    tr.insertCell().textContent = n;
-    const a = tr.insertCell(); a.textContent=c.cpu; a.className='r num';
-    const b = tr.insertCell(); b.textContent=c.mem; b.className='r num';
-  });
-  if(!tb.rows.length){const tr=tb.insertRow();const c=tr.insertCell();c.colSpan=3;c.textContent='no serving container running';c.style.color='var(--mut)';}
-}
-function rFeed(d){
-  const tb = $('feedtable').tBodies[0]; tb.innerHTML='';
-  const rows = (d.rows||[]).slice().reverse();
-  rows.forEach(r => {
-    const tr = tb.insertRow();
-    tr.insertCell().textContent = (r.ts||'').slice(11,19);
-    const c1 = tr.insertCell(); c1.textContent = r.peer; c1.className='num';
-    tr.insertCell().textContent = r.path;
-    const c2 = tr.insertCell(); c2.textContent = r.bytes>=1024 ? (r.bytes/1024).toFixed(0)+' KB' : r.bytes+' B'; c2.className='r num';
-    const c3 = tr.insertCell(); c3.textContent = r.secs!=null ? r.secs.toFixed(1)+' s' : ''; c3.className='r num';
-    const cls = r.outcome.startsWith('ok') ? 'ok' : r.outcome==='in flight' ? 'flash' : 'err';
-    const c4 = tr.insertCell(); c4.innerHTML = `<span class="chip ${cls}">${r.outcome}</span>`;
-    if (r.detail){ const d = document.createElement('div'); d.className = 'num'; d.style.cssText = 'font-size:10.5px;color:var(--mut);margin-top:3px'; d.textContent = r.detail; c4.appendChild(d); }
-  });
-  const inflight = rows.filter(r=>r.outcome==='in flight').length;
-  $('feedchip').textContent = inflight ? inflight+' in flight' : 'idle';
-  $('feedchip').className = 'chip ' + (inflight ? 'flash' : '');
-  if(!rows.length){const tr=tb.insertRow();const c=tr.insertCell();c.colSpan=6;c.textContent='no request seen yet';c.style.color='var(--mut)';}
-}
-function rOpencode(d){
-  const chip = $('occhip');
-  const fmtLim = l => l && l.context ? `${l.context.toLocaleString('en')} ctx / ${(l.output||0).toLocaleString('en')} out` : 'not declared';
-  if (!d.enabled){
-    chip.textContent = 'off'; chip.className = 'chip';
-    $('ocstate').textContent = 'off (installed with --no-opencode)' + (d.off_note ? ` · ${d.off_note}` : '');
-    $('ocdefault').textContent = d.real.present ? (d.real.default || 'none') + ' (your own config, never touched)' : 'no opencode config on this box';
-    $('oclim27').textContent = fmtLim(d.real.limits['qwen38/qwen3.8-27b']);
-    $('oclimflash').textContent = fmtLim(d.real.limits['flashnext/qwen3.8-flash-next']);
-    $('oclauncher').textContent = d.launcher.present ? (d.launcher.ours ? 'this repo\u2019s oc (stale, remove it)' : 'a foreign oc, not ours') : 'none';
-    $('occmd').hidden = true;
-    $('ocnote').textContent = 'The switch leaves your opencode default model alone. Turn it back on with: ./install.sh --with-opencode';
+  const none = !d.lane;   // no serving container at all
+  if (none){
+    ['acclen', 'acclen2', 'kvusage', 'mambausage'].forEach(i => setText(i, 'no engine'));
     return;
   }
+  const acc = t ? t.accept_len.toFixed(2) + ' tokens per step' : 'idle';
+  setText('acclen', acc); setText('acclen2', acc);
+  setText('kvusage', t ? (100 * t.token_usage).toFixed(1) + ' %' : (u.tokens ? (100 * u.tokens).toFixed(0) + ' % (last seen)' : 'idle'));
+  setText('mambausage', u.mamba ? (100 * u.mamba).toFixed(0) + ' %' + (u.mamba >= 0.5 ? ' (guard flushes when idle)' : '') : 'idle');
+}
+function rCanary(d){
+  let txt, cls = '';
+  if (d.skipped && d.last_ok == null) txt = 'not yet run (waits for a ready, idle engine)';
+  else if (d.fails > 0){ txt = `${d.fails} consecutive failure${d.fails > 1 ? 's' : ''}: ${d.last_err || ''}`; cls = 'var(--err)'; }
+  else if (d.last_ok) txt = `ok, ${d.latency} s` + (d.skipped ? ' (skipped this round: engine busy)' : '');
+  else txt = 'idle';
+  setText('canary', txt); setText('canary2', txt);
+  [$('canary'), $('canary2')].forEach(e => { if (e) e.style.color = cls; });
+  setText('canarylast', d.last_ok ? clockTime(d.last_ok) : 'never in this cockpit life');
+}
+function rKernel(d){
+  const txt = d.nvrm_oom_1h ? `${d.nvrm_oom_1h} (last ${(d.nvrm_last || '').slice(11, 19)})` : 'none';
+  setText('nvrm', txt); setText('nvrm2', txt);
+  [$('nvrm'), $('nvrm2')].forEach(e => { if (e) e.style.color = d.nvrm_oom_1h ? 'var(--warn)' : ''; });
+}
+function rUnits(d){
+  F.units = d.units || {};
+  const box = $('unitlist'); clear(box);
+  Object.entries(F.units).filter(([n]) => n.includes('keepalive')).forEach(([name, u]) => {
+    const row = el('div', 'eng'); const top = el('div', 'row');
+    const on = u.active === 'active';
+    top.append(el('span', 'chip ' + (on ? 'ok' : u.active === 'failed' ? 'err' : ''), on ? 'running' : u.active));
+    top.append(el('span', 'name', 'keepalive proxy :30001'));
+    top.append(el('span', 'chip', u.enabled === 'enabled' ? 'starts at boot' : u.enabled));
+    if (F.proxy && F.proxy.version) top.append(el('span', 'chip ' + (F.proxy.same_as_repo === false ? 'warn' : ''), F.proxy.version + (F.proxy.same_as_repo === false ? ' · not the repo copy' : '')));
+    top.append(el('span', 'since', fmtSince(u.since)));
+    const btn = el('button', 'btn mini' + (on ? ' danger' : ' low'), on ? 'stop' : 'start');
+    btn.dataset.act = 'unit'; btn.dataset.unit = name; btn.dataset.verb = on ? 'stop' : 'start';
+    btn.addEventListener('click', () => askAction('unit', {verb: on ? 'stop' : 'start', unit: name},
+      ['sudo', '-n', '/usr/bin/systemctl', on ? 'stop' : 'start', name],
+      on ? ['agent clients on :30001 lose the proxy until it is back (the engine itself keeps running)'] : []));
+    top.append(btn); row.append(top);
+    row.append(el('div', 'why', 'Fronts the engine for agent clients: keeps streams alive, refuses prompts the lane cannot serve, aborts orphan generations.'));
+    box.append(row);
+  });
+  applyBusy();
+}
+function fmtSince(s){
+  const m = (s || '').match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2})/); if (!m) return '';
+  const now = new Date(), today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  return 'since ' + (today === `${m[1]}-${m[2]}-${m[3]}` ? m[4] : `${m[2]}-${m[3]} ${m[4]}`);
+}
+function rContainers(d){
+  F.containers = d.containers || {};
+  const tb = $('ctable').tBodies[0]; clear(tb);
+  Object.entries(F.containers).forEach(([n, c]) => {
+    const tr = tb.insertRow(); tr.insertCell().textContent = n;
+    const a = tr.insertCell(); a.textContent = c.cpu; a.className = 'r num';
+    const b = tr.insertCell(); b.textContent = c.mem; b.className = 'r num';
+  });
+  if (!tb.rows.length){ const tr = tb.insertRow(); const c = tr.insertCell(); c.colSpan = 3; c.className = 'empty'; c.textContent = 'no serving container running'; }
+}
+function feedTime(ts){
+  if (!ts || ts.length < 19) return ts || '';
+  const n = new Date();
+  const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  return ts.slice(0, 10) === today ? ts.slice(11, 19) : `${ts.slice(8, 10)}/${ts.slice(5, 7)} ${ts.slice(11, 16)}`;
+}
+function rFeed(d){
+  const tb = $('feedtable').tBodies[0]; clear(tb);
+  const rows = (d.rows || []).slice().reverse();
+  rows.forEach(r => {
+    const tr = tb.insertRow();
+    tr.insertCell().textContent = feedTime(r.ts);
+    const c1 = tr.insertCell(); c1.textContent = r.peer; c1.className = 'num';
+    tr.insertCell().textContent = r.path;
+    const c2 = tr.insertCell(); c2.textContent = r.bytes >= 1024 ? (r.bytes / 1024).toFixed(0) + ' KB' : r.bytes + ' B'; c2.className = 'r num';
+    const c3 = tr.insertCell(); c3.textContent = r.secs != null ? r.secs.toFixed(1) + ' s' : ''; c3.className = 'r num';
+    const cls = r.outcome.startsWith('ok') ? 'ok' : r.outcome === 'in flight' ? 'flash live' : r.outcome === 'no end logged' ? '' : 'err';
+    const c4 = tr.insertCell(); c4.append(el('span', 'chip ' + cls, r.outcome));
+    if (r.detail){ const dv = el('div', 'num', r.detail); dv.style.cssText = 'font-size:10.5px;color:var(--mut);margin-top:3px'; c4.append(dv); }
+  });
+  const inflight = rows.filter(r => r.outcome === 'in flight').length;
+  setChip('feedchip', inflight ? inflight + ' in flight' : rows.length ? 'idle' : 'no request yet', inflight ? 'flash live' : '');
+  if (!rows.length){ const tr = tb.insertRow(); const c = tr.insertCell(); c.colSpan = 6; c.className = 'empty'; c.textContent = 'no request has gone through the proxy yet (agent clients use :30001)'; }
+}
+function rOpencode(d){
+  const fmtLim = l => l && l.context ? `${fmtN(l.context)} ctx / ${fmtN(l.output || 0)} out` : 'not declared';
+  setText('oclim27', fmtLim(d.real.limits['qwen38/qwen3.8-27b'])); setText('oclimflash', fmtLim(d.real.limits['flashnext/qwen3.8-flash-next']));
+  if (!d.enabled){
+    setChip('occhip', 'off', '');
+    setText('ocstate', 'off (installed with --no-opencode)' + (d.off_note ? ` · ${d.off_note}` : ''));
+    setText('ocdefault', d.real.present ? (d.real.default || 'none') + ' (your own config, never touched)' : 'no opencode config on this box');
+    setText('oclauncher', d.launcher.present ? (d.launcher.ours ? 'this repo’s oc is still there (stale, remove it)' : 'a foreign oc, not ours') : 'none');
+    $('occmd').hidden = true;
+    setText('ocnote', 'The switch leaves your opencode default model alone. Turn the integration back on with: ./install.sh --with-opencode');
+    badge('setup', '', ''); return;
+  }
   const ok = d.follows;
-  chip.textContent = ok===true ? 'follows the lane' : ok===false ? 'differs' : 'on';
-  chip.className = 'chip ' + (ok===true ? 'ok' : ok===false ? 'warn' : '');
-  $('ocstate').textContent = 'on · config ' + (d.real.present ? 'present' : 'missing (copy ~/.config/qwen38/opencode.json)');
-  $('ocdefault').textContent = (d.real.default || 'none') + ' · ' + d.why;
-  $('ocdefault').style.color = ok===false ? 'var(--warn)' : '';
-  $('oclim27').textContent = fmtLim(d.real.limits['qwen38/qwen3.8-27b']);
-  $('oclimflash').textContent = fmtLim(d.real.limits['flashnext/qwen3.8-flash-next']);
-  $('oclauncher').textContent = d.launcher.present
-    ? (d.launcher.ours ? `oc, output cap ${d.launcher.cap ? d.launcher.cap.toLocaleString('en') : '?'}` : 'a foreign oc command, launcher not installed')
-    : 'missing (re-run ./install.sh)';
+  setChip('occhip', ok === true ? 'follows the lane' : ok === false ? 'differs' : 'on', ok === true ? 'ok' : ok === false ? 'warn' : '');
+  setText('ocstate', 'on · config ' + (d.real.present ? 'present' : 'missing (copy ~/.config/qwen38/opencode.json to ~/.config/opencode/)'));
+  setText('ocdefault', (d.real.default || 'none') + ' · ' + d.why);
+  $('ocdefault').style.color = ok === false ? 'var(--warn)' : '';
+  setText('oclauncher', d.launcher.present
+    ? (d.launcher.ours ? `oc, output cap ${d.launcher.cap ? fmtN(d.launcher.cap) : '?'}` : 'a foreign oc command, launcher not installed')
+    : 'missing (re-run ./install.sh)');
   $('occmd').hidden = false;
-  $('ocnote').textContent = 'One command: the launcher lifts the output cap and auto-approves permissions. The default model follows every switch; existing sessions keep the model they started with.';
+  setText('ocnote', 'One command: the launcher lifts the output cap and auto-approves permissions. The default model follows every switch; existing sessions keep the model they started with.');
+  badge('setup', ok === false ? 'opencode' : '', 'warn');
 }
 function rRepo(d){
-  window._proxy = d.proxy || null;
-  $('repotag').textContent = d.tag||'...';
-  $('repobranch').textContent = d.branch||'...';
-  $('repohead').textContent = (d.head||'').slice(0,46);
-  $('repodirty').textContent = d.dirty ? 'modified' : 'clean';
-  $('repoline').textContent = `${d.tag||''} · ${d.branch||''}`;
+  F.proxy = d.proxy || null;
+  setText('repotag', d.tag || 'n/a'); setText('repobranch', d.branch || 'n/a'); setText('repohead', (d.head || '').slice(0, 60) || 'n/a');
+  setText('repodirty', d.dirty ? 'modified (uncommitted changes)' : 'clean');
+  setText('proxyver', F.proxy && F.proxy.version ? F.proxy.version + (F.proxy.same_as_repo === false ? ' · deployed file differs from the repo copy' : ' · repo copy') : 'unknown');
+}
+function rConfig(d){
+  F.config = d; F.usable = d.usable_frac || F.usable;
+  setText('ckver', d.version || '?'); $('verbadge').textContent = (d.version || '').includes('beta') ? 'BETA' : 'v' + (d.version || '');
+  setText('ckmode', d.dry_run ? 'DRY RUN: every action is logged and audited but nothing is executed' : 'live: actions execute after your confirmation');
+  $('drybadge').hidden = !d.dry_run;
+  setText('ckusable', Math.round(F.usable * 100) + ' % of the KV pool for one prompt');
+  const per = d.periods || {};
+  setText('ckperiods', Object.entries(per).map(([k, v]) => `${k} ${v}s`).join(', '));
+  setText('updatecmd', (d.terminal_only || {}).update_stack || 'cd <repo> && ./install.sh');
 }
 
-const STAGE_LABEL = {'init':'init','loading-weights':'weights',
-  'loading-draft':'draft','allocating-kv':'KV','capturing-graphs':'graphs',
-  'warming-up':'warmup'};
-const ALL_STAGES = Object.keys(STAGE_LABEL);
-const TRANSITIONAL = new Set(['starting','loading-weights','loading-draft',
-  'allocating-kv','capturing-graphs','warming-up']);
-const STATE_CHIP = {ready:'ok', degraded:'warn', failed:'err', stopped:'',
-                    stopping:'warn', wedged:'err'};
-const fmtDur = s => s==null ? '?' : s<90 ? Math.round(s)+' s'
-  : Math.floor(s/60)+' min '+String(Math.round(s%60)).padStart(2,'0');
-
-function rLifecycle(d){
-  window._life = d; rHero();
-  const box = $('enginelist'); box.innerHTML='';
-  const units = window._units || {};
-  Object.entries(d.engines||{}).forEach(([name, e])=>{
-    const lane = name.includes('flash') ? 'flash' : 'lane27';
-    const row = document.createElement('div'); row.className='eng';
-    const booting = TRANSITIONAL.has(e.state);
-    const chipCls = STATE_CHIP[e.state] ?? 'warn';
-    const top = document.createElement('div'); top.className='top';
-    top.innerHTML =
-      `<span class="chip ${chipCls}${e.state==='stopping'?' live':''}">${e.state}</span>`+
-      (e.rebuild?'<span class="chip warn">rebuilding PLE table</span>':'')+
-      (e.overdue?'<span class="chip err">overdue, check logs</span>':'')+
-      `<span class="name">${name.replace('.service','')}</span>`+
-      `<span class="chip ${lane}">${(units[name]||{}).enabled||''}</span>`+
-      `<span class="since">${e.state==='ready'&&e.elapsed?'up '+fmtDur(e.elapsed):''}</span>`;
+// ── lifecycle: engine cards (updated in place), lane pill, events, badges ─────
+const CARDS = new Map();
+function servingEngine(){
+  const eng = (F.life && F.life.engines) || {};
+  return Object.entries(eng).find(([n, e]) => e.state !== 'stopped' && e.state !== 'failed') || null;
+}
+function enabledUnit(){
+  const e = Object.entries(F.units).find(([n, u]) => n !== 'qwen38-keepalive.service' && u.enabled === 'enabled');
+  return e ? e[0] : 'qwen38-sglang.service';
+}
+function rLanePill(){
+  const s = servingEngine();
+  if (!s){
+    setChip('lanestate', 'no engine', 'err'); setText('lanename', 'nothing serving');
+    setText('lanesub', F.units && Object.keys(F.units).length ? `start ${LANE_NAME[enabledUnit()] || 'an engine'} from the actions` : '');
+    return;
+  }
+  const [name, e] = s;
+  setChip('lanestate', STATE_LABEL[e.state] || e.state, stateChipCls(e.state));
+  setText('lanename', LANE_NAME[name] || name);
+  const l = F.load || {};
+  let sub = '';
+  if (e.state === 'ready' || e.state === 'degraded'){
+    sub = (F.pool ? `pool ${Math.round(100 * (l.num_tokens || 0) / F.pool)} %` : '') + ((l.num_reqs || 0) ? ` · ${l.num_reqs} running` : '') + (e.elapsed ? ` · up ${fmtDur(e.elapsed)}` : '');
+  } else if (TRANSITIONAL.has(e.state)){
+    const eta = e.eta && e.elapsed ? Math.max(0, e.eta - e.elapsed) : null;
+    sub = `${fmtDur(e.elapsed)} elapsed` + (eta != null ? ` · about ${fmtDur(eta)} left` : ' · first boot, learning the duration');
+  } else if (e.state === 'stopping'){
+    sub = `${e.state_elapsed != null ? fmtDur(e.state_elapsed) : ''} elapsed`;
+  }
+  setText('lanesub', sub);
+}
+function bootBlock(e){
+  const doneN = (e.stage_done || []).length, stage = ALL_STAGES[doneN] || 'init';
+  const pct = e.eta && e.elapsed ? Math.min(97, 100 * e.elapsed / e.eta) : Math.min(95, 8 + doneN * (84 / ALL_STAGES.length));
+  const eta = e.eta && e.elapsed ? Math.max(0, e.eta - e.elapsed) : null;
+  const boot = el('div', 'boot');
+  const bar = el('div', 'bbar'); const fill = el('div', 'bfill'); fill.style.width = pct.toFixed(1) + '%'; bar.append(fill); boot.append(bar);
+  const stages = el('div', 'stages');
+  ALL_STAGES.forEach((st, i) => stages.append(el('span', 'stage ' + (i < doneN ? 'done' : st === stage ? 'now' : ''), STAGE_LABEL[st])));
+  boot.append(stages);
+  const lab = el('div', 'blab');
+  lab.append(el('span', null, `${STATE_LABEL[e.state] || stage} · ${fmtDur(e.elapsed)} elapsed`));
+  lab.append(el('span', null, eta != null ? `about ${fmtDur(eta)} left (median of ${(e.boots || []).length} boots)` : 'first boot: learning the duration'));
+  boot.append(lab);
+  if (e.rebuild) boot.append(el('div', 'why warn', 'the flash PLE table is being rebuilt: this boot takes about 12 minutes instead of 9'));
+  if (e.overdue) boot.append(el('div', 'why warn', 'this boot is taking more than twice the usual time: check the Logs tab'));
+  return boot;
+}
+function stoppingBlock(e){
+  const boot = el('div', 'boot');
+  const bar = el('div', 'bbar'); bar.append(el('div', 'bfill indet')); boot.append(bar);
+  const lab = el('div', 'blab');
+  lab.append(el('span', null, `stopping · ${e.state_elapsed != null ? fmtDur(e.state_elapsed) : '…'} elapsed`));
+  lab.append(el('span', null, 'systemd stops the container (SIGTERM, usually under 30 s)'));
+  boot.append(lab); return boot;
+}
+function engineCard(name){
+  let c = CARDS.get(name);
+  if (c) return c;
+  const root = el('div', 'eng'); const row = el('div', 'row');
+  const chip = el('span', 'chip'); const nameEl = el('span', 'name', LANE_NAME[name] ? `${name.replace('.service', '')} · ${LANE_NAME[name]}` : name);
+  const enabled = el('span', 'chip ' + laneCls(name)); const since = el('span', 'since');
+  const btn = el('button', 'btn mini'); btn.dataset.act = 'unit'; btn.dataset.unit = name;
+  row.append(chip, nameEl, enabled, since, btn); root.append(row);
+  const why = el('div', 'why'); root.append(why);
+  const hist = el('div', 'why'); root.append(hist);
+  const extra = el('div'); root.append(extra);
+  c = {root, chip, enabled, since, btn, why, hist, extra, sig: ''};
+  btn.addEventListener('click', () => {
+    const e = ((F.life || {}).engines || {})[name]; if (!e) return;
     const on = e.state !== 'stopped' && e.state !== 'failed';
-    const btn = document.createElement('button');
-    btn.className = 'btn mini'+(on?' danger':'');
-    btn.textContent = on ? (e.state==='stopping' ? 'stopping\u2026' : 'stop') : 'start';
-    if (e.state==='stopping') btn.disabled = true;
-    const blockKey = `unit:start:${name}`;
-    const blocked = !on && (d.blocked||{})[blockKey];
-    if (blocked) btn.disabled = true;
-    btn.onclick = () => askAction('unit',
-      {verb: on?'stop':'start', unit: name},
-      ['sudo','-n','/usr/bin/systemctl', on?'stop':'start', name],
-      on && booting && name.includes('flash')
-        ? ['stopping mid-boot marks the PLE table dirty: the NEXT boot rebuilds it (~12 min)'] : []);
-    top.appendChild(btn);
-    row.appendChild(top);
-    if (!booting && (e.boots||[]).length){
-      const hist = document.createElement('div'); hist.className='blockedwhy';
-      hist.textContent = 'last boots: ' + e.boots.slice().reverse().map(fmtDur).join(', ')
-        + ((e.boots_rebuild||[]).length ? '  (with table rebuild: ' + e.boots_rebuild.slice().reverse().map(fmtDur).join(', ') + ')' : '');
-      row.appendChild(hist);
-    }
-    if (blocked){
-      const why = document.createElement('div'); why.className='blockedwhy';
-      why.textContent = 'start blocked: ' + blocked[0];
-      row.appendChild(why);
-    }
-    if (booting){
-      const doneN = (e.stage_done||[]).length;
-      const stage = ALL_STAGES[doneN] || 'init';
-      const pct = e.eta && e.elapsed ? Math.min(97, 100*e.elapsed/e.eta)
-                : Math.min(95, 8 + doneN*(84/ALL_STAGES.length));
-      const eta = e.eta && e.elapsed ? Math.max(0, e.eta - e.elapsed) : null;
-      const boot = document.createElement('div'); boot.className='boot';
-      boot.innerHTML =
-        `<div class="bbar"><div class="bfill" style="width:${pct.toFixed(1)}%"></div></div>`+
-        `<div class="stages">`+ALL_STAGES.map((st,i)=>
-          `<span class="stage ${i<doneN?'done':st===stage?'now':''}">${STAGE_LABEL[st]}</span>`).join('')+`</div>`+
-        `<div class="blab"><span>${stage} · ${fmtDur(e.elapsed)} elapsed</span>`+
-        `<span>${eta!=null?'~'+fmtDur(eta)+' left':'first boot: learning duration'}</span></div>`;
-      row.appendChild(boot);
-    }
-    if (e.state==='stopping'){
-      const stop = document.createElement('div'); stop.className='boot';
-      stop.innerHTML =
-        `<div class="bbar"><div class="bfill indet"></div></div>`+
-        `<div class="blab"><span>stopping \u00b7 ${e.state_elapsed!=null?fmtDur(e.state_elapsed):'\u2026'} elapsed</span>`+
-        `<span>systemd stops the container (SIGTERM, usually under 30 s)</span></div>`;
-      row.appendChild(stop);
-    }
-    box.appendChild(row);
+    const warns = [];
+    if (on && TRANSITIONAL.has(e.state) && name.includes('flash')) warns.push('stopping the flash lane mid-boot marks the PLE table dirty: the NEXT boot rebuilds it (about 12 min)');
+    if (on && e.state === 'ready') warns.push('clients on :30001 get "engine unavailable" until an engine is back (about 9 min after a start)');
+    askAction('unit', {verb: on ? 'stop' : 'start', unit: name}, ['sudo', '-n', '/usr/bin/systemctl', on ? 'stop' : 'start', name], warns);
   });
-  const el = $('evtlist');
-  const evs = (d.events||[]).slice().reverse();
-  if (evs.length){
-    el.innerHTML = evs.slice(0,12).map(ev=>{
-      const t = new Date(ev.ts*1000).toLocaleTimeString();
-      return `<div class="evt"><time>${t}</time><span>${ev.msg}</span></div>`;
-    }).join('');
-  }
+  CARDS.set(name, c); $('enginelist').append(root);
+  return c;
 }
+function rLifecycle(d){
+  F.life = d; rLanePill(); renderLaneAction();
+  const g = d.pool_guard;
+  if (g){
+    F.poolGuard = g;
+    setText('poolguard', !g.enabled ? 'off (COCKPIT_POOL_GUARD=0)'
+      : g.fails ? `cannot flush since ${clockTime(g.last_fail)}: ${g.last_err}`
+      : g.flushes ? `${g.flushes} flush${g.flushes > 1 ? 'es' : ''}, last ${clockTime(g.last)}, above ${Math.round(g.threshold * 100)} % held`
+      : `armed above ${Math.round(g.threshold * 100)} % held, never fired yet`);
+    const e = $('poolguard'); if (e) e.style.color = g.fails ? 'var(--warn)' : '';
+  }
+  const units = F.units || {};
+  Object.entries(d.engines || {}).forEach(([name, e]) => {
+    const c = engineCard(name);
+    c.chip.textContent = STATE_LABEL[e.state] || e.state; c.chip.className = 'chip ' + stateChipCls(e.state);
+    const en = (units[name] || {}).enabled;
+    c.enabled.textContent = en === 'enabled' ? 'starts at boot' : en === 'disabled' ? 'manual start only' : en || '';
+    c.since.textContent = e.state === 'ready' && e.elapsed ? 'up ' + fmtDur(e.elapsed) : '';
+    const on = e.state !== 'stopped' && e.state !== 'failed';
+    const blocked = !on && (d.blocked || {})[`unit:start:${name}`];
+    c.btn.textContent = on ? (e.state === 'stopping' ? 'stopping…' : 'stop') : 'start';
+    c.btn.className = 'btn mini ' + (on ? 'danger' : 'low');
+    c.btn.dataset.verb = on ? 'stop' : 'start';
+    c.btn.dataset.blocked = blocked ? blocked[0] : '';
+    c.btn.disabled = e.state === 'stopping' || !!blocked;
+    c.why.textContent = blocked ? 'start blocked: ' + blocked[0] : (e.state === 'failed' ? 'the unit failed: read its journal in the Logs tab, then start it again' : '');
+    c.why.className = 'why' + (blocked || e.state === 'failed' ? ' warn' : '');
+    const boots = (e.boots || []).slice().reverse().map(fmtDur).join(', ');
+    c.hist.textContent = !TRANSITIONAL.has(e.state) && boots ? 'last boots: ' + boots + ((e.boots_rebuild || []).length ? ` (with table rebuild: ${e.boots_rebuild.slice().reverse().map(fmtDur).join(', ')})` : '') : '';
+    // the animated block is rebuilt only when its shape changes, its numbers every tick
+    const sig = TRANSITIONAL.has(e.state) ? 'boot' : e.state === 'stopping' ? 'stop' : 'none';
+    if (sig !== c.sig || sig !== 'none'){ clear(c.extra); if (sig === 'boot') c.extra.append(bootBlock(e)); if (sig === 'stop') c.extra.append(stoppingBlock(e)); c.sig = sig; }
+  });
+  // overview lane card: the serving engine's card, mirrored
+  const ov = $('ovlane'); clear(ov);
+  const s = servingEngine();
+  // engine facts belong to a lane that is actually up: while it boots, stops or is gone,
+  // say so rather than showing the previous lane's model, pool and percentages
+  if (!servingReady()) rEngineInfoDown(s ? 'engine ' + (STATE_LABEL[s[1].state] || s[1].state) : 'no engine running');
+  if (!s){
+    const p = el('p', 'empty', 'No engine is serving. Start the enabled lane from the action bar (about 9 minutes to ready), or switch the target first.');
+    ov.append(p);
+  } else {
+    const [name, e] = s; const row = el('div', 'row');
+    row.append(el('span', 'chip ' + stateChipCls(e.state), STATE_LABEL[e.state] || e.state), el('span', 'name', `${LANE_NAME[name] || name}`),
+               el('span', 'chip ' + laneCls(name), name.replace('.service', '')), el('span', 'since', e.state === 'ready' && e.elapsed ? 'up ' + fmtDur(e.elapsed) : ''));
+    ov.append(row);
+    if (TRANSITIONAL.has(e.state)) ov.append(bootBlock(e));
+    else if (e.state === 'stopping') ov.append(stoppingBlock(e));
+    else if (e.state === 'wedged') ov.append(el('div', 'why warn', 'the engine answers health checks but generates nothing: the autoheal belt restarts it after its grace period (Engines tab, Logs tab for the forensics)'));
+    else if (e.state === 'degraded') ov.append(el('div', 'why warn', 'the engine was serving and stopped answering: probes retry every 2 s'));
+  }
+  // events, twice (overview short, logs long)
+  const evs = (d.events || []).slice().reverse();
+  [[$('evtlist'), 12], [$('evtlist2'), 30]].forEach(([box, n]) => {
+    if (!box) return; clear(box);
+    if (!evs.length){ box.append(el('p', 'empty', 'no events yet in this cockpit session')); return; }
+    evs.slice(0, n).forEach(ev => {
+      const row = el('div', 'evt'); row.append(el('time', null, clockTime(ev.ts)), el('span', 'k', ev.kind), el('span', null, ev.msg)); box.append(row);
+    });
+  });
+  // badges: what needs eyes
+  const states = Object.values(d.engines || {}).map(e => e.state);
+  const bad = states.find(st => st === 'wedged' || st === 'failed' || st === 'degraded');
+  const trans = states.find(st => TRANSITIONAL.has(st) || st === 'stopping');
+  badge('engines', bad ? STATE_LABEL[bad].split(':')[0] : trans ? STATE_LABEL[trans] : '', bad ? 'err' : trans ? 'warn' : '');
+  applyBusy();
+}
+function badge(tab, txt, cls){ const b = $('bdg-' + tab); if (b){ b.textContent = txt; b.className = 'bdg ' + (cls || ''); } }
 
-const RENDER = {machine:rMachine, gpu:rGpu, engine_info:rEngineInfo,
-                engine_fast:rEngineFast, decode:rDecode, units:rUnits,
-                containers:rContainers, repo:rRepo, lifecycle:rLifecycle, feed:rFeed,
-                opencode:rOpencode};
-
-// skeleton placeholders: every '...' shimmers until real data lands
-document.querySelectorAll('dd, .chip, .num').forEach(el => {
-  if (el.textContent.trim() === '...') el.classList.add('skel');
+// ── jobs: the strip everybody sees, the history, the busy lock in the UI ─────
+const JOBLINES = {id: null, lines: []};
+let stripPinned = false, lastFinished;
+function rJob(d){
+  F.job = d;
+  const strip = $('jobstrip'), cur = d.current, recent = (d.recent || [])[0];
+  const now = Date.now() / 1000;
+  const describe = j => j.action + (j.params && Object.keys(j.params).length ? ' ' + Object.entries(j.params).map(([k, v]) => `${k}=${v}`).join(' ') : '') + (j.origin === 'autoheal' ? ' (started by the autoheal belt)' : '') + (j.dry_run ? ' [dry run]' : '');
+  if (cur){
+    strip.hidden = false; strip.className = 'jobstrip running';
+    setChip('jobchip', 'running', 'warn live');
+    setText('jobwhat', describe(cur)); setText('jobelapsed', fmtDur(cur.elapsed)); $('jobbar').hidden = false;
+    if (JOBLINES.id !== cur.id){ JOBLINES.id = cur.id; JOBLINES.lines = []; }
+    if (cur.lines && cur.lines.length) JOBLINES.lines = cur.lines;
+    setText('joblast', JOBLINES.lines.length ? JOBLINES.lines[JOBLINES.lines.length - 1] : 'starting…');
+  } else if (recent && (now - (recent.ended || recent.started) < 90 || stripPinned)){
+    strip.hidden = false; strip.className = 'jobstrip ' + (recent.status === 'done' ? 'done' : 'failed');
+    setChip('jobchip', recent.status === 'done' ? 'done' : 'failed', recent.status === 'done' ? 'ok' : 'err');
+    setText('jobwhat', describe(recent)); setText('jobelapsed', fmtDur(recent.elapsed)); $('jobbar').hidden = true;
+    const r = recent.result || {};
+    setText('joblast', r.reply ? `reply: ${r.reply}` : r.path ? `written: ${r.path}` : r.reason === 'busy' ? 'the engine refused: requests still running'
+      : recent.status === 'done' ? (recent.argv ? `finished with exit code ${recent.rc}` : 'finished') : `failed${recent.rc != null ? ` (exit code ${recent.rc})` : ''}: open the log`);
+    if (JOBLINES.id !== recent.id){ JOBLINES.id = recent.id; JOBLINES.lines = []; fetchJobLines(recent.id); }
+    if (lastFinished === undefined) lastFinished = recent.id;        // first sight: adopt, do not act
+    else if (lastFinished !== recent.id){
+      lastFinished = recent.id;
+      if (recent.action === 'switch' || recent.action === 'unit'){   // the lane may have changed
+        loaded.recipes = false;
+        if (activeTab === 'models') loadRecipes();
+      }
+    }
+  } else if (!stripPinned){
+    strip.hidden = true;
+  }
+  $('joblog').textContent = JOBLINES.lines.join('\n') || '(no output yet)';
+  if (!$('joblog').hidden) $('joblog').scrollTop = $('joblog').scrollHeight;
+  // history panel
+  const hist = $('jobhist'); clear(hist);
+  const all = (cur ? [cur] : []).concat(d.recent || []);
+  if (!all.length) hist.append(el('p', 'empty', 'no job run since the cockpit started'));
+  all.forEach(j => {
+    const row = el('div', 'hist');
+    row.append(el('span', 'chip ' + (j.status === 'running' ? 'warn live' : j.status === 'done' ? 'ok' : 'err'), j.status));
+    row.append(el('span', null, describe(j)));
+    row.append(el('span', 'm num', clockTime(j.started) + ' · ' + fmtDur(j.elapsed)));
+    const b = el('button', 'btn mini ghost', 'log'); b.addEventListener('click', () => showJobLog(j.id)); row.append(b);
+    hist.append(row);
+  });
+  applyBusy();
+}
+async function fetchJobLines(id){
+  try{ const r = await fetch('/api/jobs/' + id); if (r.status === 401) return login(); if (!r.ok) return;
+    const j = await r.json(); if (JOBLINES.id === id){ JOBLINES.lines = j.lines || []; $('joblog').textContent = JOBLINES.lines.join('\n') || '(no output)'; } }
+  catch { /* the strip keeps what it has */ }
+}
+async function showJobLog(id){
+  const v = $('jobhistlog'); v.hidden = false; v.textContent = 'loading…';
+  try{ const r = await fetch('/api/jobs/' + id); if (r.status === 401) return login();
+    if (r.status === 404){ v.textContent = 'this job is no longer in memory (the cockpit restarted); the audit log has its outcome'; return; }
+    const j = await r.json(); v.textContent = `$ ${j.action} ${JSON.stringify(j.params || {})}\n` + (j.argv ? j.argv.join(' ') + '\n' : '') + (j.lines || []).join('\n') + `\n[${j.status}${j.rc != null ? ', exit code ' + j.rc : ''}, ${fmtDur(j.elapsed)}]`; }
+  catch(e){ v.textContent = 'could not load the job: ' + e.message; }
+}
+$('joblogbtn').addEventListener('click', () => {
+  const open = $('joblog').hidden; $('joblog').hidden = !open; stripPinned = open;
+  $('joblogbtn').textContent = open ? 'hide log' : 'show log'; $('joblogbtn').setAttribute('aria-expanded', String(open));
+  if (open && JOBLINES.id) fetchJobLines(JOBLINES.id);
 });
-function apply(state){
-  if (state.kernel && state.kernel.data && state.kernel.data.nvrm_oom_1h != null){
-    const k = state.kernel.data;
-    $('nvrm').textContent = k.nvrm_oom_1h ? `${k.nvrm_oom_1h} (last ${(k.nvrm_last||'').slice(11,19)})` : 'none';
-    $('nvrm').style.color = k.nvrm_oom_1h ? 'var(--err)' : '';
-  }
-  if (state.config && state.config.data && state.config.data.usable_frac) USABLE = state.config.data.usable_frac;
-  for (const [name, wrap] of Object.entries(state)){
-    const fn = RENDER[name]; if(!fn) continue;
-    try{
-      if (wrap.data && wrap.data.error) throw new Error(wrap.data.error);
-      fn(wrap.data||{});
-    }catch(e){ if (name === 'engine_info') rEngineInfoDown(); console.warn(name, e.message); }
-  }
-  document.querySelectorAll('.skel').forEach(el => {
-    if (el.textContent.trim() !== '...') el.classList.remove('skel');
+let offline = false;
+document.querySelectorAll('[data-act][title]').forEach(b => b.setAttribute('data-title', b.title));
+// these three talk to the engine itself: without one they can only fail
+const NEEDS_ENGINE = new Set(['flush_cache', 'abort_all', 'smoke']);
+function applyBusy(){
+  const busy = !!(F.job && F.job.current);
+  const why = offline ? 'the cockpit is unreachable: actions are disabled until the connection is back'
+            : busy ? `another action is running (${F.job.current.action}); wait for it to finish` : '';
+  const engineUp = servingReady();
+  const noEngineWhy = engineUp ? '' : 'no engine is serving: start one first (it answers in about 9 minutes)';
+  document.querySelectorAll('[data-act]').forEach(b => {
+    if (b.id === 'lanebtn') return;
+    if (b.dataset.act === 'unit'){
+      const blockedWhy = b.dataset.blocked || '';
+      const stopping = b.textContent.startsWith('stopping');
+      b.disabled = !!(why || blockedWhy || stopping); b.title = why || blockedWhy || '';
+    } else {
+      const need = NEEDS_ENGINE.has(b.dataset.act) ? noEngineWhy : '';
+      b.disabled = !!(why || need);
+      b.title = why || need || b.getAttribute('data-title') || '';
+    }
   });
+  const sw = $('switchsel'); if (sw){ const bl = ((F.life || {}).blocked || {}).switch; sw.disabled = !!why; const sb = document.querySelector('[data-act="switch"]'); if (sb){ sb.disabled = !!(why || bl); sb.title = why || (bl ? bl.join('; ') : 'Change the model the serving unit runs (never restarts anything by itself)'); } }
+  renderLaneAction(why);
+}
+function renderLaneAction(why){
+  const b = $('lanebtn'); if (!b) return;
+  const s = servingEngine();
+  if (s){
+    const [name, e] = s; const stopping = e.state === 'stopping';
+    b.textContent = stopping ? `${LANE_NAME[name]} stopping…` : `Stop ${LANE_NAME[name] || name}`;
+    b.className = 'btn mini danger'; b.disabled = !!(why || stopping); b.title = why || `systemctl stop ${name}`;
+    b.onclick = () => CARDS.get(name) ? CARDS.get(name).btn.click() : null;
+  } else {
+    const name = enabledUnit(); const bl = ((F.life || {}).blocked || {})[`unit:start:${name}`];
+    b.textContent = `Start ${LANE_NAME[name] || name}`; b.className = 'btn mini low';
+    b.disabled = !!(why || bl || !F.life); b.title = why || (bl ? bl[0] : `systemctl start ${name} (about 9 minutes to ready)`);
+    b.onclick = () => askAction('unit', {verb: 'start', unit: name}, ['sudo', '-n', '/usr/bin/systemctl', 'start', name], []);
+  }
 }
 
-// ── SSE with reconnect + polling fallback ──────────────────────────────────
-let es = null, pollTimer = null;
-function setConn(on, label){
-  $('conndot').className = 'dot'+(on?' on':'');
-  $('connlabel').textContent = label;
+// ── apply: freshness, banners, isolation ──────────────────────────────────────
+const RENDER = {machine: rMachine, gpu: rGpu, engine_info: rEngineInfo, engine_fast: rEngineFast, decode: rDecode,
+                canary: rCanary, kernel: rKernel, units: rUnits, containers: rContainers, repo: rRepo,
+                lifecycle: rLifecycle, feed: rFeed, opencode: rOpencode, config: rConfig, job: rJob};
+document.querySelectorAll('dd, .chip, .num').forEach(e => { if (e.textContent.trim() === '...') e.classList.add('skel'); });
+let lastMsgAt = 0, lastState = null, lastAges = {}, lastErrors = {};
+const lastGood = {};   // per collector: the last sample that was NOT an error
+const warned = {};     // one console line per distinct failure, not one per second
+function warnOnce(name, msg){
+  if (warned[name] === msg) return;
+  warned[name] = msg; console.warn(name, msg);
 }
+function apply(state){
+  lastState = state; lastMsgAt = Date.now();
+  const serverNow = Math.max(...Object.values(state).map(w => w && w.ts ? w.ts : 0));
+  const errors = {}, ages = {};
+  for (const [name, wrap] of Object.entries(state)){
+    const bad = !!(wrap && wrap.data && wrap.data.error);
+    if (bad) errors[name] = wrap.data.error;
+    // a collector that keeps failing must not look fresh just because it keeps trying
+    if (wrap && wrap.ts && !bad) lastGood[name] = wrap.ts;
+    ages[name] = lastGood[name] != null ? Math.max(0, serverNow - lastGood[name]) : null;
+  }
+  // order matters a little: config, units and engine_info feed the others
+  const order = ['config', 'units', 'repo', 'engine_info', 'engine_fast', 'lifecycle'];
+  const names = order.filter(n => n in state).concat(Object.keys(state).filter(n => !order.includes(n)));
+  for (const name of names){
+    const fn = RENDER[name], wrap = state[name]; if (!fn) continue;
+    try{
+      if (errors[name]) throw new Error(errors[name]);
+      fn(wrap.data || {});
+      delete warned[name];
+    }catch(e){
+      // a timeout on a busy engine is not a lane change: keep the last known facts and
+      // let the panel age visibly. Only lifecycle decides that a lane is gone.
+      if (name === 'engine_info' && !servingReady()) rEngineInfoDown();
+      warnOnce(name, e.message);
+    }
+  }
+  lastAges = ages; lastErrors = errors;
+  freshness();
+  banners(state, errors);
+  document.querySelectorAll('.skel').forEach(e => { if (e.textContent.trim() !== '...') e.classList.remove('skel'); });
+}
+function freshness(){
+  // age = how old the server said the sample was, PLUS how long we have had no payload
+  const drift = lastMsgAt ? Math.max(0, (Date.now() - lastMsgAt) / 1000) : 0;
+  const periods = (F.config && F.config.periods) || {};
+  document.querySelectorAll('section.panel[data-src]').forEach(sec => {
+    const srcs = sec.dataset.src.split(',');
+    let worst = 0, stale = false, err = null;
+    srcs.forEach(s => { const a = lastAges[s]; const p = periods[s] || 5; if (a != null){ const t = a + drift; worst = Math.max(worst, t); if (t > 3 * p + 3) stale = true; } if (lastErrors[s] && s !== 'engine_info') err = err || `${s}: ${lastErrors[s]}`; });
+    const ageEl = sec.querySelector('.age');
+    if (ageEl){ ageEl.textContent = err ? 'no data: ' + err.slice(0, 70) : stale ? `stale, ${fmtDur(worst)} old` : worst > 4 ? `${Math.round(worst)} s ago` : ''; ageEl.className = 'age' + (stale || err ? ' stale' : ''); }
+    sec.classList.toggle('stale', stale || !!err);
+  });
+}
+function banners(state, errors){
+  const box = $('banners'); clear(box);
+  const add = (cls, strong, text) => { const b = el('div', 'banner ' + cls); if (strong) b.append(el('b', null, strong + ' ')); b.append(text); box.append(b); };
+  if (offline) add('err', 'Connection lost.', `No data from the cockpit for ${fmtDur((Date.now() - lastMsgAt) / 1000)}: the values on screen are frozen and actions are disabled until it is back.`);
+  if (F.config && F.config.dry_run) add('info', 'Dry run.', 'Every action is confirmed, logged and audited exactly as usual, but nothing is executed. This instance exists for tests.');
+  const eng = (F.life && F.life.engines) || {};
+  Object.entries(eng).forEach(([n, e]) => {
+    if (e.state === 'wedged') add('err', `${LANE_NAME[n] || n} is wedged.`, 'It answers health checks but generates nothing. The autoheal belt restarts it after its grace period; the Logs tab has the scheduler forensics.');
+    if (e.state === 'failed') add('err', `${LANE_NAME[n] || n} failed.`, 'systemd reports the unit failed. Read its journal in the Logs tab, then start it again from the action bar.');
+    if (e.state === 'degraded') add('warn', `${LANE_NAME[n] || n} stopped answering.`, 'It was serving; health probes retry every 2 s. If it stays here, the Logs tab tells why.');
+  });
+  if (F.memFloor && F.memFloor.aborts && F.memFloor.last_abort && Date.now() / 1000 - F.memFloor.last_abort < 600)
+    add('warn', 'Memory floor fired.', `Host memory fell under ${F.memFloor.gib} GiB with requests running: every generation was aborted ${fmtDur(Date.now() / 1000 - F.memFloor.last_abort)} ago to keep the box out of a livelock.`);
+  if (errors.lifecycle) add('warn', 'Engine state unknown.', 'The lifecycle collector failed: ' + errors.lifecycle.slice(0, 120));
+}
+// offline watch: client clock, one second
+setInterval(() => {
+  const was = offline; offline = lastMsgAt && Date.now() - lastMsgAt > 6000;
+  if (offline) setConn(false, 'no data ' + fmtDur((Date.now() - lastMsgAt) / 1000));
+  if (lastState) freshness();
+  if (was !== offline){ if (lastState) banners(lastState, lastErrors); applyBusy(); }
+}, 1000);
+
+// ── transport: SSE with polling fallback ─────────────────────────────────────
+let es = null, pollTimer = null, sseUp = false, lastSseTry = 0;
+function setConn(on, label){ $('conndot').className = 'dot' + (on ? ' on' : offline ? '' : ' warn'); $('connlabel').textContent = label; }
+function login(){ location.href = '/login'; }
 function startPolling(){
   if (pollTimer) return;
-  pollTimer = setInterval(async ()=>{
+  pollTimer = setInterval(async () => {
     try{
-      const r = await fetch('/api/state');
-      if (r.status===401) location.href='/login';
-      apply(await r.json()); setConn(true,'polling');
-    }catch{ setConn(false,'offline'); }
+      const r = await fetch('/api/state'); if (r.status === 401) return login();
+      apply(await r.json()); setConn(true, 'polling');
+      if (!sseUp && Date.now() - lastSseTry > 15000) connect();   // climb back to the live stream
+    }
+    catch { setConn(false, 'offline'); }
   }, 2000);
 }
 function connect(){
-  es = new EventSource('/api/stream');
-  es.onopen = ()=>{ setConn(true,'live'); if(pollTimer){clearInterval(pollTimer);pollTimer=null;} };
-  es.onmessage = ev => apply(JSON.parse(ev.data));
-  es.onerror = ()=>{ setConn(false,'reconnecting'); es.close(); startPolling(); setTimeout(connect, 3000); };
+  lastSseTry = Date.now();
+  if (es){ try { es.close(); } catch { /* already gone */ } }   // never two streams at once
+  // handlers hold their OWN stream: a late event from a replaced EventSource must not
+  // flip the connection state of the current one
+  const src = new EventSource('/api/stream');
+  es = src;
+  src.onopen = () => { if (es !== src) return; sseUp = true; setConn(true, 'live'); if (pollTimer){ clearInterval(pollTimer); pollTimer = null; } };
+  src.onmessage = ev => { if (es !== src) return; try { apply(JSON.parse(ev.data)); setConn(true, 'live'); } catch(e){ console.warn('bad frame', e.message); } };
+  src.onerror = () => {
+    if (es !== src) { try { src.close(); } catch { /* gone */ } return; }
+    sseUp = false; setConn(false, 'reconnecting'); src.close(); startPolling(); setTimeout(connect, 3000);
+  };
 }
-fetch('/api/state').then(r=>{ if(r.status===401){location.href='/login';return;}
-  return r.json();}).then(s=>{ if(s) apply(s); connect(); })
-  .catch(()=>{ setConn(false,'offline'); startPolling(); });
+fetch('/api/state').then(r => { if (r.status === 401){ login(); return null; } return r.json(); })
+  .then(s => { if (s){ apply(s); connect(); } })
+  .catch(() => { setConn(false, 'offline'); startPolling(); });
 
-// ── actions: confirm modal with the exact command, CSRF, one job at a time ──
-let pendingRun = null;
+// ── actions: one modal, exact command, warnings, one job at a time ───────────
+let pending = null, inflight = false;
+function toast(text, cls, ms = 4000){
+  const t = $('toast'); t.textContent = text; t.className = 'toast ' + (cls || ''); t.hidden = false;
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, ms);
+}
 function askAction(name, params, argv, warns){
-  $('mtitle').textContent = 'Confirm: ' + name;
-  const what = Object.entries(params||{}).map(([k,v])=>k+' = '+v).join('   ') || 'no parameters';
-  $('mwhat').textContent = what + ((warns&&warns.length)?'\n\u26a0 '+warns.join('\n\u26a0 '):'');
-  $('mwhat').style.whiteSpace = 'pre-line';
+  if (offline){ toast('The cockpit is unreachable right now: nothing can be started.', 'err'); return; }
+  if (NEEDS_ENGINE.has(name) && !servingReady()){ toast('No engine is serving: start one first, then this action has something to talk to.', 'warn'); return; }
+  if (F.job && F.job.current){ toast(`Another action is running (${F.job.current.action}). Wait for the job strip to finish.`, 'warn'); return; }
+  if (!$('modal').hidden) return;
+  const TITLES = {unit: p => `${p.verb} ${LANE_NAME[p.unit] || p.unit.replace('.service', '')}`, switch: p => `switch the target model to ${p.target}`,
+                  flush_cache: () => 'flush the engine cache', abort_all: () => 'abort every in-flight generation', smoke: () => 'run a smoke generation through the proxy', diag_bundle: () => 'write a diagnostics bundle'};
+  const EXPLAIN = {unit: p => p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : 'systemd starts the unit; the engine loads its weights and is ready in about 9 minutes (watch the boot bar).',
+                   switch: () => 'switch-model.sh rewrites the unit for the chosen target, updates the boot enablement, the proxy ceiling and the opencode default model. It never restarts anything: stop and start the engines afterwards.',
+                   flush_cache: () => 'Empties the radix cache. Harmless; refused by the engine if requests are running.',
+                   abort_all: () => 'Every running or queued generation ends now; the clients see their stream end.',
+                   smoke: () => 'One real 200-token generation through the proxy, the way a client uses it (up to a few minutes while a boot finishes).',
+                   diag_bundle: () => 'Collects logs, state and versions into a tarball in your home; the API key is masked everywhere.'};
+  $('mtitle').textContent = 'Confirm: ' + (TITLES[name] ? TITLES[name](params) : name);
+  $('mwhat').textContent = (EXPLAIN[name] ? EXPLAIN[name](params) : '') + (F.config.dry_run ? '\nDry run: nothing will really be executed.' : '');
+  const w = $('mwarn'); w.hidden = !(warns && warns.length); w.textContent = (warns || []).map(x => '⚠ ' + x).join('\n');
   $('margv').textContent = argv.join(' ');
-  $('modal').hidden = false;
-  pendingRun = () => runAction(name, params);
+  $('mstatus').textContent = ''; $('mgo').disabled = false;
+  $('modal').hidden = false; pending = {name, params};
+  setTimeout(() => $('mgo').focus(), 0);
 }
-$('mcancel').onclick = () => { $('modal').hidden = true; pendingRun = null; };
-$('mgo').onclick = () => { $('modal').hidden = true; const f = pendingRun; pendingRun = null; if (f) f(); };
-$('modal').addEventListener('click', e => { if (e.target === $('modal')) $('mcancel').onclick(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('modal').hidden) $('mcancel').onclick(); });
-
-async function runAction(name, params){
-  const chip = $('jobchip'), log = $('joblog');
-  chip.textContent = 'running'; chip.className = 'chip warn';
-  log.hidden = false; log.textContent = '$ ' + name + ' ' + JSON.stringify(params||{}) + '\n';
+function closeModal(){ $('modal').hidden = true; pending = null; }
+$('mcancel').addEventListener('click', closeModal);
+$('modal').addEventListener('click', e => { if (e.target === $('modal') && !inflight) closeModal(); });
+document.addEventListener('keydown', e => {
+  if ($('modal').hidden) return;
+  if (e.key === 'Escape' && !inflight) closeModal();
+  if (e.key === 'Tab'){ // focus trap: cancel <-> run
+    const f = [$('mcancel'), $('mgo')]; const i = f.indexOf(document.activeElement);
+    e.preventDefault(); f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+  }
+});
+$('mgo').addEventListener('click', async () => {
+  if (!pending || inflight) return;
+  inflight = true; $('mgo').disabled = true; $('mcancel').disabled = true; $('mstatus').textContent = 'starting…';
+  const {name, params} = pending;
   try{
-    const t = await (await fetch('/api/csrf', {method:'POST'})).json();
-    const r = await fetch('/api/action', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({name, params, csrf: t.token})});
+    const t = await fetch('/api/csrf', {method: 'POST'}); if (t.status === 401) return login();
+    const tok = (await t.json()).token;
+    const r = await fetch('/api/action', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name, params, csrf: tok})});
+    if (r.status === 401) return login();
     const out = await r.json();
-    if (r.status === 409 && out.reasons){
-      log.textContent += 'BLOCKED: ' + out.reasons.join('; ') + '\n';
-      chip.textContent = 'blocked'; chip.className = 'chip warn';
-      return;
-    }
-    if (r.status === 202 && out.job){
-      (out.warnings||[]).forEach(w => log.textContent += 'warning: ' + w + '\n');
-      log.textContent += out.argv.join(' ') + '\n';
-      return pollJob(out.job);
-    }
-    log.textContent += JSON.stringify(out, null, 1) + '\n';
-    chip.textContent = r.ok && out.ok !== false ? 'done' : 'failed';
-    chip.className = 'chip ' + (r.ok && out.ok !== false ? 'ok' : 'err');
-  }catch(e){
-    log.textContent += 'request failed: ' + e.message + '\n';
-    chip.textContent = 'failed'; chip.className = 'chip err';
-  }
-}
-async function pollJob(id){
-  const chip = $('jobchip'), log = $('joblog');
-  let shown = 0;
-  for(;;){
-    await new Promise(res => setTimeout(res, 1200));
-    let j;
-    try{ j = await (await fetch('/api/jobs/' + id)).json(); }
-    catch{ continue; }
-    const lines = j.lines || [];
-    if (lines.length > shown){
-      log.textContent += lines.slice(shown).join('\n') + '\n';
-      shown = lines.length;
-      log.scrollTop = log.scrollHeight;
-    }
-    if (j.status !== 'running'){
-      chip.textContent = j.status + (j.rc!=null ? ' (rc '+j.rc+')' : '');
-      chip.className = 'chip ' + (j.status === 'done' ? 'ok' : 'err');
-      return;
-    }
-  }
-}
-$('logbtn').onclick = async () => {
-  const v = $('logview'); v.hidden = false; v.textContent = 'loading...';
-  try{
-    const d = await (await fetch('/api/logs/' + $('logsel').value)).json();
-    v.textContent = (d.lines||[]).join('\n') || '(empty)';
-    v.scrollTop = v.scrollHeight;
-  }catch(e){ v.textContent = 'failed: ' + e.message; }
-};
-const fmtGiB = b => (b/1024**3).toFixed(1)+' GiB';
-$('upbtn').onclick = async () => {
-  $('upbtn').textContent = 'checking...';
-  try{
-    const d = await (await fetch('/api/upstream')).json();
-    const tb = $('uptable').tBodies[0]; tb.innerHTML='';
-    (d.models||[]).forEach(m => {
-      const tr = tb.insertRow();
-      tr.insertCell().textContent = m.model.split('/').pop();
-      const a1 = tr.insertCell(); a1.textContent = m.pin; a1.className='num';
-      const a2 = tr.insertCell(); a2.textContent = m.upstream || '?'; a2.className='num';
-      const cls = m.status==='same' ? 'ok' : m.status==='moved' ? 'warn' : 'err';
-      tr.insertCell().innerHTML = `<span class="chip ${cls}">${m.status}</span>`;
-    });
-    const r = d.release || {};
-    $('upline').textContent = r.latest
-      ? `repo release: local ${r.local}, latest published ${r.latest}` +
-        (r.latest === r.local ? ' (up to date)' : ' (update available)')
-      : 'release check offline';
-    const moved = (d.models||[]).filter(m=>m.status==='moved').length;
-    $('upbtn').textContent = moved ? moved+' moved' : 'all same';
-  }catch{ $('upbtn').textContent = 'check failed'; }
-};
-function chip(text, cls){ const s = document.createElement('span'); s.className = 'chip' + (cls ? ' ' + cls : ''); s.textContent = text; return s; }
+    if (r.status === 202){ closeModal(); toast(`${name} started` + (out.dry_run ? ' (dry run)' : '') + '. Follow it in the strip under the top bar.', 'ok'); stripPinned = false; return; }
+    if (r.status === 409 && out.reasons){ $('mstatus').textContent = 'blocked: ' + out.reasons.join('; '); return; }
+    if (r.status === 409){ closeModal(); toast(out.message || 'Another action is already running.', 'warn'); return; }
+    $('mstatus').textContent = `refused (${r.status}): ` + (out.error || JSON.stringify(out));
+  }catch(e){ $('mstatus').textContent = 'request failed: ' + e.message; }
+  finally{ inflight = false; $('mgo').disabled = false; $('mcancel').disabled = false; }
+});
+document.querySelectorAll('.actbar [data-act]').forEach(b => {
+  const act = b.dataset.act; if (act === 'lane') return;
+  b.addEventListener('click', () => {
+    if (act === 'switch'){ const target = $('switchsel').value; askAction('switch', {target}, ['bash', 'switch-model.sh', target], ((F.life || {}).blocked || {}).switch || []); }
+    else askAction(act, {}, ['cockpit', act], []);
+  });
+});
+
+// ── on-demand loaders (buttons say what happened) ─────────────────────────────
+function chip(text, cls){ return el('span', 'chip' + (cls ? ' ' + cls : ''), text); }
 function cellChips(tr, items){ const td = tr.insertCell(); items.forEach((it, i) => { if (i) td.append(' '); td.append(chip(it[0], it[1])); }); return td; }
 function fmtServe(sv){
   const parts = [];
-  if (sv.context_length) parts.push('ctx ' + sv.context_length.toLocaleString('en-US'));
+  if (sv.context_length) parts.push('ctx ' + fmtN(sv.context_length));
   if (sv.mem_fraction != null) parts.push('mem ' + sv.mem_fraction);
   if (sv.max_running_requests) parts.push('run ' + sv.max_running_requests);
   if (sv.chunked_prefill) parts.push('chunk ' + sv.chunked_prefill);
@@ -510,118 +791,125 @@ function fmtServe(sv){
   return parts.join(' · ');
 }
 function recipeRow(tb, row){
-  const r = row.recipe, tr = tb.insertRow();
-  const c0 = tr.insertCell();
+  const r = row.recipe, tr = tb.insertRow(); const c0 = tr.insertCell();
   if (r){
-    c0.append(chip(r.lane === 'flash' ? 'flash' : '27B', r.lane === 'flash' ? 'flash' : 'lane27'), ' ');
-    const name = document.createElement('strong'); name.textContent = r.id; c0.append(name);
+    c0.append(chip(r.lane === 'flash' ? 'flash' : '27B', r.lane === 'flash' ? 'flash' : 'lane27'), ' ', el('strong', null, r.id));
     if (row.installed) c0.append(' ', chip('installed', 'ok'));
     if (!r.builtin) c0.append(' ', chip(row.file || 'custom'));
-  } else { c0.append(chip(row.file || '?', 'err')); }
-  if (row.errors && row.errors.length){
-    const td = tr.insertCell(); td.colSpan = 6; td.append(chip('invalid', 'err'), ' ');
-    td.append(row.errors.join('; ')); return;
-  }
+  } else c0.append(chip(row.file || '?', 'err'));
+  if (row.errors && row.errors.length){ const td = tr.insertCell(); td.colSpan = 6; td.append(chip('invalid', 'err'), ' ', row.errors.join('; ')); return; }
   const c1 = tr.insertCell(); c1.textContent = r.engine.image; c1.className = 'num';
-  const c2 = tr.insertCell(); c2.textContent = r.model.repo.split('/').pop() + ' ';
-  const rev = document.createElement('span'); rev.className = 'num'; rev.textContent = r.model.revision.slice(0, 10); c2.append(rev);
+  const c2 = tr.insertCell(); c2.textContent = r.model.repo.split('/').pop() + ' '; c2.append(el('span', 'num', r.model.revision.slice(0, 10)));
   const d = r.drafter || {};
-  tr.insertCell().textContent = d.algorithm === 'none' || !d.algorithm ? 'none'
-    : d.algorithm + (d.repo ? ' ' + d.repo.split('/').pop() : ' (own head)') + (d.draft_tokens ? ' ×' + d.draft_tokens : '');
+  tr.insertCell().textContent = d.algorithm === 'none' || !d.algorithm ? 'none' : d.algorithm + (d.repo ? ' ' + d.repo.split('/').pop() : ' (own head)') + (d.draft_tokens ? ' ×' + d.draft_tokens : '');
   tr.insertCell().textContent = fmtServe(r.serve || {});
   const p = row.presence || {};
-  const pres = [['image', p.image === true ? 'ok' : p.image === false ? 'err' : ''],
-                ['model', p.model === true ? 'ok' : p.model === false ? 'err' : ''],
-                ['drafter', p.drafter === true ? 'ok' : p.drafter === false ? 'err' : '']]
-    .map(([k, cls]) => [cls === 'err' ? k + ' missing' : cls === 'ok' ? k : k + ' n/a', cls]);
-  cellChips(tr, pres);
+  cellChips(tr, [['image', p.image], ['model', p.model], ['drafter', p.drafter]].map(([k, v]) => [v === true ? k : v === false ? k + ' missing' : k + ' n/a', v === true ? 'ok' : v === false ? 'err' : '']));
   const cd = tr.insertCell();
-  if (row.drift === null || row.drift === undefined){ cd.append(chip('lane not installed')); }
-  else if (!row.drift.length){ cd.append(chip('matches installed', 'ok')); }
+  if (row.drift == null) cd.append(chip('lane not installed'));
+  else if (!row.drift.length) cd.append(chip('matches installed', 'ok'));
   else {
-    const det = document.createElement('details');
-    const sum = document.createElement('summary'); sum.style.cursor = 'pointer';
-    sum.append(chip(row.drift.length + ' differ', row.installed ? 'warn' : '')); det.append(sum);
-    const ul = document.createElement('ul'); ul.style.cssText = 'margin:6px 0 0 14px;padding:0;font-size:11.5px';
-    row.drift.forEach(x => { const li = document.createElement('li'); li.className = 'num';
-      li.textContent = x.key + ': recipe ' + JSON.stringify(x.recipe) + ', installed ' + JSON.stringify(x.installed); ul.append(li); });
+    const det = el('details'); const sum = el('summary'); sum.style.cursor = 'pointer'; sum.append(chip(row.drift.length + ' differ', row.installed ? 'warn' : '')); det.append(sum);
+    const ul = el('ul'); ul.style.cssText = 'margin:6px 0 0 14px;padding:0;font-size:11.5px';
+    row.drift.forEach(x => ul.append(el('li', 'num', `${x.key}: recipe ${JSON.stringify(x.recipe)}, installed ${JSON.stringify(x.installed)}`)));
     det.append(ul); cd.append(det);
   }
 }
 async function loadRecipes(){
-  $('rcpbtn').textContent = 'loading...';
+  $('rcpbtn').textContent = 'loading…'; $('rcpbtn').disabled = true;
   try{
-    const r = await fetch('/api/recipes'); if (r.status === 401) return;
-    const d = await r.json();
-    const tb = $('rcptable').tBodies[0]; tb.innerHTML = '';
-    (d.builtin || []).forEach(row => recipeRow(tb, row));
-    (d.custom || []).forEach(row => recipeRow(tb, row));
-    $('rcpdir').textContent = d.custom_dir || '';
+    const r = await fetch('/api/recipes'); if (r.status === 401) return login();
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json(); loaded.recipes = true;
+    const tb = $('rcptable').tBodies[0]; clear(tb);
+    (d.builtin || []).forEach(row => recipeRow(tb, row)); (d.custom || []).forEach(row => recipeRow(tb, row));
+    setText('rcpdir', d.custom_dir || '');
     const installed = (d.builtin || []).concat(d.custom || []).filter(x => x.installed).map(x => x.recipe.id);
     const drifting = (d.builtin || []).filter(x => x.installed && x.drift && x.drift.length).length;
-    $('rcpline').textContent = (installed.length ? 'installed: ' + installed.join(', ') : 'no lane matches a recipe')
-      + (drifting ? '; ' + drifting + ' installed lane differs from its recipe (see drift)' : '')
-      + ((d.custom || []).length ? '; ' + d.custom.length + ' custom' : '; no custom recipe yet');
+    setText('rcpline', (installed.length ? 'installed: ' + installed.join(', ') : 'no lane matches a recipe') + (drifting ? `; ${drifting} installed lane differs from its recipe (open the drift)` : '') + ((d.custom || []).length ? `; ${d.custom.length} custom` : '; no custom recipe yet'));
+    setText('rcpage', 'read ' + new Date().toLocaleTimeString()); badge('models', drifting ? `${drifting} drift` : '', 'warn');
     $('rcpbtn').textContent = 'reload';
-  }catch{ $('rcpbtn').textContent = 'load failed'; }
+  }catch(e){ setText('rcpline', 'could not load the recipes: ' + e.message); $('rcpbtn').textContent = 'retry'; }
+  finally{ $('rcpbtn').disabled = false; }
 }
-$('rcpbtn').onclick = loadRecipes;
-loadRecipes();
-$('regbtn').onclick = async () => {
-  $('regbtn').textContent = 'scanning...';
+$('rcpbtn').addEventListener('click', loadRecipes);
+const fmtGiB = b => (b / 1024 ** 3).toFixed(1) + ' GiB';
+$('regbtn').addEventListener('click', async () => {
+  const b = $('regbtn'); b.textContent = 'scanning…'; b.disabled = true;
   try{
-    const d = await (await fetch('/api/registry')).json();
-    const tb = $('regmodels').tBodies[0]; tb.innerHTML='';
-    (d.models||[]).forEach(m => (m.revisions||[]).forEach((r,i) => {
-      const tr = tb.insertRow();
-      tr.insertCell().textContent = i ? '' : m.repo_id.split('/').pop();
-      const c1 = tr.insertCell(); c1.textContent = r.rev.slice(0,10); c1.className='num';
-      const c2 = tr.insertCell(); c2.textContent = fmtGiB(r.bytes); c2.className='r num';
-      const c3 = tr.insertCell(); c3.textContent = i ? '' : fmtGiB(m.disk_bytes); c3.className='r num';
-      const cls = r.status==='pinned' ? 'ok' : r.status==='stray' ? 'warn' : '';
-      tr.insertCell().innerHTML = `<span class="chip ${cls}">${r.status}</span>`+(r.pin?` <span class="chip">${r.pin}</span>`:'');
+    const r = await fetch('/api/registry'); if (r.status === 401) return login(); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const tb = $('regmodels').tBodies[0]; clear(tb);
+    (d.models || []).forEach(m => (m.revisions || []).forEach((rv, i) => {
+      const tr = tb.insertRow(); tr.insertCell().textContent = i ? '' : m.repo_id.split('/').pop();
+      const c1 = tr.insertCell(); c1.textContent = rv.rev.slice(0, 10); c1.className = 'num';
+      const c2 = tr.insertCell(); c2.textContent = fmtGiB(rv.bytes); c2.className = 'r num';
+      const c3 = tr.insertCell(); c3.textContent = i ? '' : fmtGiB(m.disk_bytes); c3.className = 'r num';
+      const c4 = tr.insertCell(); c4.append(chip(rv.status, rv.status === 'pinned' ? 'ok' : rv.status === 'stray' ? 'warn' : '')); if (rv.pin) c4.append(' ', chip(rv.pin));
     }));
-    const ti = $('regimages').tBodies[0]; ti.innerHTML='';
-    (d.images||[]).forEach(im => {
-      const tr = ti.insertRow();
-      tr.insertCell().textContent = im.ref;
-      const a2 = tr.insertCell(); a2.textContent = im.size; a2.className='r num';
-      const b2 = tr.insertCell(); b2.textContent = im.id; b2.className='r num';
-    });
-    const to = $('othertable').tBodies[0]; to.innerHTML='';
-    const others = (d.other_models||[]).slice().sort((a,b)=>b.disk_bytes-a.disk_bytes);
-    others.forEach(m => { const tr = to.insertRow(); tr.insertCell().textContent = m.repo_id;
-      const c = tr.insertCell(); c.textContent = fmtGiB(m.disk_bytes); c.className='r num'; });
-    const otherTotal = others.reduce((a,m)=>a+m.disk_bytes,0);
-    $('otherchip').textContent = others.length ? fmtGiB(otherTotal) + ' in ' + others.length + ' models' : 'none';
-    const strays = (d.models||[]).flatMap(m=>m.revisions).filter(r=>r.status==='stray');
-    $('regbtn').textContent = strays.length ? strays.length+' stray rev' : 'clean';
-  }catch{ $('regbtn').textContent = 'scan failed'; }
-};
-$('invbtn').onclick = async () => {
-  $('invbtn').textContent = 'scanning...';
-  try{
-    const d = await (await fetch('/api/inventory')).json();
-    const tb = $('invtable').tBodies[0]; tb.innerHTML='';
-    (d.items||[]).forEach(i=>{
-      const tr = tb.insertRow();
-      const k = tr.insertCell(); k.innerHTML = `<span class="chip">${i.kind}</span>`;
-      tr.insertCell().textContent = i.what;
-    });
-    $('invbtn').textContent = (d.items||[]).length + ' items';
-  }catch{ $('invbtn').textContent = 'scan failed'; }
-};
-document.querySelectorAll('.btn[data-act]').forEach(b => {
-  b.onclick = () => {
-    const act = b.dataset.act;
-    if (act === 'switch'){
-      const target = $('switchsel').value;
-      askAction('switch', {target},
-        ['bash','switch-model.sh', target]);
-    } else if (act === 'update_stack'){
-      askAction('update_stack', {}, ['bash','install.sh','(converging upgrade)']);
-    } else {
-      askAction(act, {}, ['engine:', act]);
-    }
-  };
+    if (!tb.rows.length){ const tr = tb.insertRow(); const c = tr.insertCell(); c.colSpan = 5; c.className = 'empty'; c.textContent = 'no managed model in the Hugging Face cache'; }
+    const ti = $('regimages').tBodies[0]; clear(ti);
+    (d.images || []).forEach(im => { const tr = ti.insertRow(); tr.insertCell().textContent = im.ref; const a = tr.insertCell(); a.textContent = im.size; a.className = 'r num'; const c = tr.insertCell(); c.textContent = im.id; c.className = 'r num'; });
+    const to = $('othertable').tBodies[0]; clear(to);
+    const others = (d.other_models || []).slice().sort((a, b2) => b2.disk_bytes - a.disk_bytes);
+    others.forEach(m => { const tr = to.insertRow(); tr.insertCell().textContent = m.repo_id; const c = tr.insertCell(); c.textContent = fmtGiB(m.disk_bytes); c.className = 'r num'; });
+    if (!others.length){ const tr = to.insertRow(); const c = tr.insertCell(); c.colSpan = 2; c.className = 'empty'; c.textContent = 'none'; }
+    setChip('otherchip', others.length ? fmtGiB(others.reduce((a, m) => a + m.disk_bytes, 0)) + ' in ' + others.length + ' models' : 'none', '');
+    const strays = (d.models || []).flatMap(m => m.revisions).filter(rv => rv.status === 'stray');
+    b.textContent = strays.length ? `rescan (${strays.length} stray revision${strays.length > 1 ? 's' : ''})` : 'rescan (clean)';
+    setText('regage', 'scanned ' + new Date().toLocaleTimeString());
+  }catch(e){ b.textContent = 'retry'; setText('regage', 'scan failed: ' + e.message); }
+  finally{ b.disabled = false; }
 });
+$('upbtn').addEventListener('click', async () => {
+  const b = $('upbtn'); b.textContent = 'checking…'; b.disabled = true;
+  try{
+    const r = await fetch('/api/upstream'); if (r.status === 401) return login(); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const tb = $('uptable').tBodies[0]; clear(tb);
+    (d.models || []).forEach(m => {
+      const tr = tb.insertRow(); tr.insertCell().textContent = m.model.split('/').pop();
+      const a1 = tr.insertCell(); a1.textContent = m.pin; a1.className = 'num';
+      const a2 = tr.insertCell(); a2.textContent = m.upstream || '?'; a2.className = 'num';
+      tr.insertCell().append(chip(m.status, m.status === 'same' ? 'ok' : m.status === 'moved' ? 'warn' : 'err'));
+    });
+    const rel = d.release || {};
+    setText('upline', rel.latest ? `repo release: local ${rel.local}, latest published ${rel.latest}` + (rel.latest === rel.local ? ' (up to date)' : ' (update available)') : 'release check offline (no network or GitHub unreachable)');
+    const moved = (d.models || []).filter(m => m.status === 'moved').length;
+    b.textContent = moved ? `recheck (${moved} moved)` : 'recheck (all same)';
+  }catch(e){ b.textContent = 'retry'; setText('upline', 'check failed: ' + e.message); }
+  finally{ b.disabled = false; }
+});
+$('invbtn').addEventListener('click', async () => {
+  const b = $('invbtn'); b.textContent = 'scanning…'; b.disabled = true;
+  try{
+    const r = await fetch('/api/inventory'); if (r.status === 401) return login(); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json(); const tb = $('invtable').tBodies[0]; clear(tb);
+    (d.items || []).forEach(i => { const tr = tb.insertRow(); tr.insertCell().append(chip(i.kind)); tr.insertCell().textContent = i.what; });
+    if (!(d.items || []).length){ const tr = tb.insertRow(); const c = tr.insertCell(); c.colSpan = 2; c.className = 'empty'; c.textContent = 'nothing found (is the repo installed on this box?)'; }
+    b.textContent = 'rescan'; setText('invline', `${(d.items || []).length} items, scanned ${new Date().toLocaleTimeString()}`);
+  }catch(e){ b.textContent = 'retry'; setText('invline', 'scan failed: ' + e.message); }
+  finally{ b.disabled = false; }
+});
+// live logs: manual tail, optional follow every 3 s while the Logs tab is visible
+let followTimer = null;
+async function tailLog(){
+  const v = $('logview'), src = $('logsel').value;
+  try{
+    const r = await fetch('/api/logs/' + src); if (r.status === 401) return login(); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json(); v.textContent = (d.lines || []).join('\n') || `(${src} has no output yet)`; v.scrollTop = v.scrollHeight;
+  }catch(e){ v.textContent = 'could not read ' + src + ': ' + e.message; }
+}
+$('logbtn').addEventListener('click', () => { $('logview').textContent = 'loading…'; tailLog(); });
+$('logfollow').addEventListener('change', () => {
+  if (followTimer){ clearInterval(followTimer); followTimer = null; }
+  if ($('logfollow').checked){ tailLog(); followTimer = setInterval(() => { if (activeTab === 'logs' && !document.hidden) tailLog(); }, 3000); }
+});
+// default log source: the container that is serving, unless the user already picked one
+let logTouched = false;
+$('logsel').addEventListener('change', () => { logTouched = true; });
+setTimeout(() => {
+  if (logTouched) return;
+  const s = servingEngine(); const u = s ? s[0] : enabledUnit();
+  $('logsel').value = u.includes('flash') ? 'qwen38-flash' : 'qwen38-sglang';
+}, 3000);
