@@ -244,6 +244,14 @@ def collect_containers():
         name, cpu, memu = (line.split("|") + ["", ""])[:3]
         if name in CONTAINERS:
             rows[name] = {"cpu": cpu, "mem": memu}
+    # which image each serving container actually runs: a lane can be started outside
+    # systemd (by hand, or by an older unit), and then the tag is the only way to know
+    # what is really serving (field case 2026-08-31).
+    for line in run(["docker", "ps", "--format", "{{.Names}}|{{.Image}}|{{.Status}}"],
+                    timeout=8).splitlines():
+        name, image, status = (line.split("|") + ["", ""])[:3]
+        if name in CONTAINERS:
+            rows.setdefault(name, {}).update(image=image, status=status)
     return {"node_id": "local", "containers": rows}
 
 
@@ -554,6 +562,11 @@ def _guard_failed(err: str):
                            f"backing off, it will try again when the engine is quiet")
 
 
+def containers_now() -> dict:
+    with STATE_LOCK:
+        return ((STATE.get("containers") or {}).get("data") or {}).get("containers") or {}
+
+
 def monotonic_now() -> float:
     return float(Path("/proc/uptime").read_text().split()[0])
 
@@ -758,7 +771,14 @@ def collect_lifecycle():
             blocked[act] = r
     with EVENTS_LOCK:
         ev = list(EVENTS)[-30:]
-    return {"node_id": "local", "engines": engines,
+    # A container serving while its unit is not active: the cockpit's buttons act on the
+    # unit, so it must say so instead of reporting "no engine" over a live engine.
+    orphans = []
+    for unit, cont in UNIT2CONT.items():
+        if states.get(unit) == "stopped" and run(["docker", "ps", "-q", "-f", f"name=^{cont}$"]).strip():
+            orphans.append({"unit": unit, "container": cont,
+                            "image": (containers_now().get(cont) or {}).get("image")})
+    return {"node_id": "local", "engines": engines, "orphans": orphans,
             "keepalive": states.get("qwen38-keepalive.service", "stopped"),
             "pool_guard": {"enabled": POOL_GUARD, "threshold": POOL_GUARD_THRESHOLD, **POOL_GUARD_STATE},
             "blocked": blocked, "events": ev}

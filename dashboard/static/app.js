@@ -270,11 +270,15 @@ function fmtSince(s){
 }
 function rContainers(d){
   F.containers = d.containers || {};
+  const serving = Object.entries(F.containers).find(([n, c]) => c.image);
+  setText('engimage', serving ? serving[1].image : 'no serving container');
   const tb = $('ctable').tBodies[0]; clear(tb);
   Object.entries(F.containers).forEach(([n, c]) => {
-    const tr = tb.insertRow(); tr.insertCell().textContent = n;
-    const a = tr.insertCell(); a.textContent = c.cpu; a.className = 'r num';
-    const b = tr.insertCell(); b.textContent = c.mem; b.className = 'r num';
+    const tr = tb.insertRow();
+    const c0 = tr.insertCell(); c0.textContent = n;
+    if (c.image){ const im = el('div', 'num'); im.style.cssText = 'font-size:10.5px;color:var(--mut)'; im.textContent = c.image; c0.append(im); }
+    const a = tr.insertCell(); a.textContent = c.cpu || ''; a.className = 'r num';
+    const b = tr.insertCell(); b.textContent = c.mem || ''; b.className = 'r num';
   });
   if (!tb.rows.length){ const tr = tb.insertRow(); const c = tr.insertCell(); c.colSpan = 3; c.className = 'empty'; c.textContent = 'no serving container running'; }
 }
@@ -671,6 +675,9 @@ function banners(state, errors){
   });
   if (F.memFloor && F.memFloor.aborts && F.memFloor.last_abort && Date.now() / 1000 - F.memFloor.last_abort < 600)
     add('warn', 'Memory floor fired.', `Host memory fell under ${F.memFloor.gib} GiB with requests running: every generation was aborted ${fmtDur(Date.now() / 1000 - F.memFloor.last_abort)} ago to keep the box out of a livelock.`);
+  ((F.life || {}).orphans || []).forEach(o => add('warn',
+    `${LANE_NAME[o.unit] || o.unit} is running outside systemd.`,
+    `The container ${o.container} is serving${o.image ? ` from ${o.image}` : ''}, but its unit is stopped, so the buttons here cannot manage it and a reboot will not bring it back. Stop it from a terminal (docker rm -f ${o.container}) and start the unit instead.`));
   if (errors.lifecycle) add('warn', 'Engine state unknown.', 'The lifecycle collector failed: ' + errors.lifecycle.slice(0, 120));
 }
 // offline watch: client clock, one second
