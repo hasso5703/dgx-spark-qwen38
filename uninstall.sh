@@ -74,6 +74,7 @@ done
 if [ -d "$CONFIG_DIR" ]; then
   echo "  config    $CONFIG_DIR ($(dir_size "$CONFIG_DIR")): api-key, patched templates, opencode.json, launch script, compile cache"
   [ -f "$CONFIG_DIR/claude-code.env" ] && echo "  legacy    $CONFIG_DIR/claude-code.env (pre-v1.3 client config, unmaintained)"
+  [ -f "$CONFIG_DIR/opencode.off" ] && echo "  marker    $CONFIG_DIR/opencode.off (opencode integration disabled with --no-opencode)"
 fi
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
   echo "  launcher  $HOME/.local/bin/oc (this repo's opencode launcher)"
