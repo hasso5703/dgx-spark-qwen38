@@ -49,6 +49,39 @@ First boot takes **~7-9 minutes** for a 27B target (CUDA graph capture + kernel 
 - Everything is **pinned twice** (base image digest + checkpoint revisions at download, and the same `--revision` passed to the server itself, so an upstream push to a checkpoint repo can never change what you serve; plus sha256-verified overlay files: five for DFlash2, `dflash2/ATTRIBUTION.md`, two for flash, `flash-sglang/ATTRIBUTION.md`). It still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
 - Since 2026-08-21, this same combination (DFLASH2, draft block 8) is the **official recipe in the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**. No official image ships it yet (the cookbook has you build from source at a pinned commit), so this repo's prebuilt overlay stays the no-build path until one does.
 
+### Your choices, and how they combine
+
+Everything below is optional and combinable. Variables ride on the `bash` side of the one-liner, flags go after `bash -s --`; with a clone, they go straight on `./install.sh`.
+
+| Choice | How | Default | Notes |
+|---|---|---|---|
+| Model | `MODEL_CHOICE=stock`, `uncensored`, `flash` | `stock` | 27B stock, 27B abliterated, or Flash-Next 176B (see the three targets) |
+| Context mode (27B) | `CONTEXT_MODE=native` or `1m` | `native` | `1m` = 1,010,000 window, mem-fraction 0.70, proxy required (see the 1M section) |
+| systemd service | default, or `--no-service` | service | `--no-service`: foreground with `./run.sh`, no sudo, 27B native only |
+| Start now | default, or `--no-start` | starts | install everything, start later with `sudo systemctl start` |
+| opencode integration | default, or `--no-opencode` | on | on = ready config + `oc` launcher + default model following every switch; off = none of that, your own opencode config is never touched. `--with-opencode` turns it back on |
+| Ports | `PORT=`, `PROXY_PORT=` | 30000, 30001 | agent clients use the proxy port |
+| Storage | `HF_CACHE=`, `PLE_DIR=` | `~/.cache/huggingface`, `~/flashnext-ple` | checkpoints, and the 48 GB flash PLE backing file |
+| Clone location | `DIR=` (one-liner only) | `~/dgx-spark-qwen38` | must be a clone of this repo on `main` |
+
+Combinations that make sense:
+
+```bash
+# one-liner forms (variables on the bash side, flags after "bash -s --")
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash                                  # 27B stock, native, service, opencode on
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | CONTEXT_MODE=1m bash                  # 27B stock, 1M context
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=uncensored CONTEXT_MODE=1m bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=flash bash               # Flash-Next lane (service only)
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --no-opencode              # API only, no opencode files
+# clone forms
+./install.sh --no-service && ./run.sh                    # no systemd, foreground, Ctrl+C stops it
+CONTEXT_MODE=1m ./install.sh --no-start                  # prepare the 1M unit, start it yourself later
+./install.sh --with-opencode                             # turn the opencode integration back on
+./switch-model.sh stock | uncensored | flash             # change model later, no reinstall (then stop/start the units it prints)
+```
+
+Re-running the installer (upgrades included) remembers what you chose: the installed model, the context mode, the port, the HF cache, and the opencode on/off choice. Pass the variable or flag again only to change something. `./uninstall.sh --list` shows everything the repo put on the box before removing anything.
+
 ## What speed to expect
 
 Speculative decoding accepts *predictable* tokens, so speed depends on **what the model generates**, not on one magic number:
@@ -105,6 +138,8 @@ mkdir -p ~/.config/opencode && cp ~/.config/qwen38/opencode.json ~/.config/openc
 # already have one? merge the "qwen38" (and/or "flashnext") provider block into it
 opencode
 ```
+
+Do not want any of it? `./install.sh --no-opencode` (one-liner: `| bash -s -- --no-opencode`) installs the API only: no generated config, no `oc` launcher, and `switch-model.sh` never touches your opencode default model. The choice is remembered by later runs (marker `~/.config/qwen38/opencode.off`); `./install.sh --with-opencode` turns it back on. Your own `~/.config/opencode/opencode.json` is never rewritten in either mode: the installer only merges the served lane's limits into it when the integration is on.
 
 What the shipped config gets right for you:
 
@@ -377,7 +412,7 @@ cd dgx-spark-qwen38 && git pull && ./install.sh
 ```
 
 Your choices survive the upgrade: the API key, the patched template, your own systemd drop-ins
-under `/etc/systemd/system/qwen38-sglang.service.d/`, and (since v1.3) the installed target
+under `/etc/systemd/system/qwen38-sglang.service.d/`, the opencode on/off choice (v1.5.9), and (since v1.3) the installed target
 model, port and HF cache location, which are read from the installed unit (v1.4: units; a box
 serving the flash target keeps it, exactly like a 27B choice). The unit itself is
 rewritten on the repo's current flags (the previous one is backed up to

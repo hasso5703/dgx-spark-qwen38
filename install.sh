@@ -77,26 +77,34 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 NO_START=0
 NO_SERVICE=0
+NO_OPENCODE=0
+WITH_OPENCODE=0
 for arg in "$@"; do
   case "$arg" in
     --no-start) NO_START=1 ;;
     --no-service) NO_SERVICE=1 ;;
+    --no-opencode) NO_OPENCODE=1 ;;
+    --with-opencode) WITH_OPENCODE=1 ;;
     --with-claude-warmup)
       echo "NOTE: --with-claude-warmup was removed in v1.3 (the repo's client story moved to opencode)."
       echo "      The flag is ignored; an installed warmup drop-in from an earlier version is cleaned up." ;;
     -h|--help)
       cat <<'HLP'
-Usage: ./install.sh [--no-start] [--no-service]
+Usage: ./install.sh [--no-start] [--no-service] [--no-opencode | --with-opencode]
 
   --no-start            install everything but don't start the service now
   --no-service          no systemd, no sudo: just prepare everything (image,
                         checkpoints, key, template), then run in the foreground
                         anytime with ./run.sh (Ctrl+C stops it)
+  --no-opencode         skip the opencode integration (no generated config, no
+                        oc launcher, and switch-model.sh leaves your opencode
+                        default model alone). Remembered by later runs.
+  --with-opencode       re-enable it after a --no-opencode
 
 Re-running over an existing install keeps the operator's choices: the target
-model (stock/uncensored), the context mode (native/1m), the port and the HF
-cache location are read from the installed unit unless the env var is passed
-explicitly.
+model (stock/uncensored), the context mode (native/1m), the port, the HF
+cache location and the opencode on/off choice are read from the installed
+unit (or the marker file) unless the env var or flag is passed explicitly.
 
 Env overrides (defaults are pinned to the validated 2026-08-15 versions):
   IMAGE=lmsysorg/sglang:qwen38-27b   use the moving tag instead of the digest
@@ -243,6 +251,20 @@ PROXY_PORT="${PROXY_PORT:-$((PORT+1))}"
 
 if [ "$NO_SERVICE" -eq 1 ] && [ "$NO_START" -eq 1 ]; then
   printf -- '--no-start controls the systemd service; with --no-service there is no service (drop one flag)\n' >&2; exit 1
+fi
+if [ "$NO_OPENCODE" -eq 1 ] && [ "$WITH_OPENCODE" -eq 1 ]; then
+  printf -- '--no-opencode and --with-opencode contradict each other (drop one flag)\n' >&2; exit 1
+fi
+# The opencode on/off choice persists like the other choices: a marker file in
+# CONFIG_DIR, written by --no-opencode, removed by --with-opencode. The switch
+# script and the cockpit read the same marker.
+OC_OFF_MARK="$CONFIG_DIR/opencode.off"
+OPENCODE=1
+if [ "$NO_OPENCODE" -eq 1 ]; then
+  OPENCODE=0
+elif [ "$WITH_OPENCODE" -eq 0 ] && [ -f "$OC_OFF_MARK" ]; then
+  OPENCODE=0
+  echo "Keeping the opencode integration off (your earlier --no-opencode). Pass --with-opencode to re-enable."
 fi
 if [ "$NO_SERVICE" -eq 1 ] && [ "$CONTEXT_MODE" = "1m" ]; then
   printf -- 'CONTEXT_MODE=1m needs the systemd path (keepalive proxy service); ./run.sh serves the native config only.\nEither drop --no-service, or pass CONTEXT_MODE=native explicitly.\n' >&2; exit 1
@@ -430,6 +452,18 @@ if [ "$CONTEXT_MODE" = "1m" ]; then
   python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$DRAFT2_REPO" "$DRAFT2_REV" || die "YaRN patch failed on the DFlash2 draft"
 fi
 
+if [ "$OPENCODE" -eq 0 ]; then
+  step "7/9 opencode integration: off"
+  mkdir -p "$CONFIG_DIR"
+  [ -f "$OC_OFF_MARK" ] || printf 'disabled with ./install.sh --no-opencode on %s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" > "$OC_OFF_MARK"
+  if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
+    rm -f "$HOME/.local/bin/oc"; echo "removed this repo's oc launcher"
+  fi
+  rm -f "$CONFIG_DIR/opencode.json"
+  echo "no generated config, no launcher; switch-model.sh leaves your opencode default model alone."
+  echo "Your own ~/.config/opencode/opencode.json is never touched either way. Re-enable: ./install.sh --with-opencode"
+else
+rm -f "$OC_OFF_MARK"
 step "7/9 opencode provider config + oc launcher"
 # A complete, ready-to-use opencode config (https://opencode.ai). The limits
 # satisfy the serving window with margin in BOTH modes, including when
@@ -568,6 +602,8 @@ OCWRAP
     *) echo "NOTE: $HOME/.local/bin is not in your PATH; add it or call $OC_BIN directly." ;;
   esac
 fi
+fi
+# end of step 7
 
 if [ "$NO_SERVICE" -eq 1 ]; then
   printf '\n\033[1;32m✅ Prepared (no systemd, nothing needed sudo).\033[0m\n'
@@ -741,7 +777,11 @@ except Exception as e:
     echo "  Anthropic  : http://<host>:$PORT/v1/messages   (Bearer auth only)"
     echo "  Agent CLIs : http://<host>:$PROXY_PORT (keepalive proxy, use THIS for opencode)"
     echo "  API key    : $CONFIG_DIR/api-key"
-    echo "  opencode   : provider config ready at $CONFIG_DIR/opencode.json (README, \"opencode integration\")"
+    if [ "$OPENCODE" -eq 1 ]; then
+      echo "  opencode   : provider config ready at $CONFIG_DIR/opencode.json (README, \"opencode integration\")"
+    else
+      echo "  opencode   : integration off (--no-opencode); ./install.sh --with-opencode turns it on"
+    fi
     [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh"
     exit 0
   fi

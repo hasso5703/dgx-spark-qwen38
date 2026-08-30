@@ -173,6 +173,10 @@ fi
 # Both files when present: the generated artifact (CONFIG_DIR) and the config
 # opencode actually reads (~/.config/opencode). Updating only the artifact left
 # the real default on the previous lane (seen on the reference box 2026-08-30).
+# A box installed with --no-opencode (marker file) is left entirely alone.
+if [ -f "$CONFIG_DIR/opencode.off" ]; then
+  echo "opencode integration is off on this box (./install.sh --no-opencode): default model left alone"
+else
 for OC_JSON in "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json"; do
   [ -f "$OC_JSON" ] || continue
   TARGET_LANE="$TARGET_LANE" OC_JSON="$OC_JSON" python3 - <<'PYEOF' || echo "NOTE: could not update $OC_JSON (hand-edited?); set its \"model\" field yourself"
@@ -194,6 +198,7 @@ else:
     print(f"opencode default model -> {want} ({p})")
 PYEOF
 done
+fi
 
 RUNNING=""
 systemctl is-active --quiet "$OTHER_UNIT_NAME" 2>/dev/null && RUNNING="$OTHER_UNIT_NAME"

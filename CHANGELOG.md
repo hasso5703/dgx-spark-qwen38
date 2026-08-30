@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.5.9 (2026-08-30): opencode is a choice, and every choice is written down
+
+- `./install.sh --no-opencode` (one-liner: `| bash -s -- --no-opencode`): API only. No
+  generated config, no `oc` launcher, and `switch-model.sh` leaves your opencode default
+  model alone. The choice persists across re-runs and upgrades through a marker file
+  (`~/.config/qwen38/opencode.off`), like the installed model, context mode, port and cache;
+  `--with-opencode` turns it back on. Your own `~/.config/opencode/opencode.json` is never
+  rewritten in either mode. `./uninstall.sh --list` shows the marker.
+- switch-model.sh now updates the default model in the config opencode actually reads
+  (`~/.config/opencode/opencode.json`) and not only in the generated artifact: on the
+  reference box, opencode kept opening on the previous lane after a switch.
+- The installer no longer shrinks the 27B opencode limits of a box whose installed unit
+  serves more than 262,144 tokens when re-run in native mode (a native re-run had turned
+  a 1M box's 700000/200000 into 194048/64000, hence a "21K tokens = 11 percent" gauge).
+- The `oc` launcher respects an inherited `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` instead
+  of hardcoding the cap of the last install (a flash install had capped a 1M box at 32000).
+- keepalive proxy: every request leaves exactly one end line in the journal, including a
+  client that vanishes while its body is still being read (a request had shown as "in
+  flight" forever).
+- README: a "Your choices, and how they combine" table under Quickstart, with the one-liner
+  and clone forms of every sensible combination.
+
 ## v1.5.8 (2026-08-30): an engine that is down is reported as down
 
 - keepalive proxy v6.9: when the engine does not answer (stopped, crashed, restarting, still
