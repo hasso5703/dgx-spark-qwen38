@@ -26,10 +26,10 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 CHOICE="${1:-${MODEL_CHOICE:-stock}}"
-case "$CHOICE" in stock|uncensored|flash) ;; *) die "usage: ./switch-model.sh [stock|uncensored|flash]" ;; esac
+case "$CHOICE" in stock|uncensored|fp8|flash) ;; *) die "usage: ./switch-model.sh [stock|uncensored|fp8|flash]" ;; esac
 
-PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
-[ "$(printf '%s\n' "$PINS" | wc -l)" -eq 12 ] || die "could not read the 12 pinned variables from install.sh (repo layout changed?)"
+PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+[ "$(printf '%s\n' "$PINS" | wc -l)" -eq 14 ] || die "could not read the 14 pinned variables from install.sh (repo layout changed?)"
 eval "$PINS"
 
 SGL_UNIT="/etc/systemd/system/qwen38-sglang.service"
@@ -38,6 +38,7 @@ FLASH_UNIT="/etc/systemd/system/qwen38-flash.service"
 case "$CHOICE" in
   stock)      TARGET_REPO="$STOCK_REPO"; TARGET_REV="$STOCK_REV"; TARGET_LANE=27b ;;
   uncensored) TARGET_REPO="$UNC_REPO";   TARGET_REV="$UNC_REV";   TARGET_LANE=27b ;;
+  fp8)        TARGET_REPO="$FP8_REPO";   TARGET_REV="$FP8_REV";   TARGET_LANE=27b ;;
   flash)      TARGET_REPO="$FLASH_REPO"; TARGET_REV="$FLASH_REV"; TARGET_LANE=flash ;;
 esac
 
@@ -209,7 +210,8 @@ else
   echo "Effective after:  sudo systemctl restart $TARGET_UNIT_NAME   (or next reboot)"
 fi
 case "$CHOICE" in
-  stock)      echo "Switch back:      ./switch-model.sh uncensored   (or flash)" ;;
-  uncensored) echo "Switch back:      ./switch-model.sh stock   (or flash)" ;;
-  flash)      echo "Switch back:      ./switch-model.sh stock   (or uncensored)" ;;
+  stock)      echo "Switch back:      ./switch-model.sh uncensored   (or fp8, flash)" ;;
+  uncensored) echo "Switch back:      ./switch-model.sh stock   (or fp8, flash)" ;;
+  fp8)        echo "Switch back:      ./switch-model.sh stock   (or uncensored, flash)" ;;
+  flash)      echo "Switch back:      ./switch-model.sh stock   (or uncensored, fp8)" ;;
 esac

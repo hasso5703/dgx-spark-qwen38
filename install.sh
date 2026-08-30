@@ -22,6 +22,13 @@ IMAGE="${IMAGE:-lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d8960249
 # NVFP4 recipe: same architecture, chat template, MTP + vision, ~22 GB).
 STOCK_REPO="RadixArk/Qwen3.8-27B-NVFP4"
 STOCK_REV="52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"
+# Qwen's own FP8 release: the quality reference of the 27B lane. Weights are 30.9 GB
+# against 21 GB for NVFP4, which SGLang takes out of the KV pool (measured on the
+# reference box: 1 GB of pool is about 20,000 tokens, so expect roughly 200,000 fewer).
+# Decode is bandwidth bound on GB10, so it is also slower. No flag changes: SGLang reads
+# the scheme from the checkpoint's own config.
+FP8_REPO="Qwen/Qwen3.8-27B-FP8"
+FP8_REV="017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
 UNC_REPO="edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4"
 UNC_REV="21565d389fe573a32c1c425e0c7ade204ddb2263"
 # Third target: Qwen3.8-Flash-Next (176B hybrid MoE, 6B active) in NVFP4 on
@@ -42,8 +49,9 @@ MODEL_CHOICE="${MODEL_CHOICE:-stock}"
 case "$MODEL_CHOICE" in
   stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
   uncensored) MODEL_REPO="$UNC_REPO";   MODEL_REV="${MODEL_REV:-$UNC_REV}" ;;
+  fp8)        MODEL_REPO="$FP8_REPO";   MODEL_REV="${MODEL_REV:-$FP8_REV}" ;;
   flash)      MODEL_REPO="$FLASH_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_REV}" ;;
-  *) printf 'ERROR: MODEL_CHOICE must be "stock", "uncensored" or "flash" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
+  *) printf 'ERROR: MODEL_CHOICE must be "stock", "uncensored", "fp8" or "flash" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
 esac
 DRAFT_REPO="RadixArk/Qwen3.8-27B-DSpark"
 DRAFT_REV="${DRAFT_REV:-85ef153be924f17ce4bf62726954eeaa4a73e854}"
