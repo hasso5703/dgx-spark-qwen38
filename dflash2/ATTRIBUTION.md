@@ -1,9 +1,16 @@
-# DFlash2 overlay: provenance and licenses
+# 27B serving overlay: provenance and licenses
 
-No official SGLang release image contains DFLASH2 yet (merged upstream 2026-08-19). Until one
-does, `install.sh` builds the serving image locally: the pinned base image plus the five
+`install.sh` builds the 27B serving image locally: the pinned base image plus the eight
 sha256-verified files in `sglang/`, copied to `/sgl-workspace/sglang/python/sglang/`. Nothing
 is downloaded at build time; `MANIFEST.sha256` is checked before every build.
+
+The overlay carries two upstream patches the pinned base predates.
+
+## Patch 1: DFlash2 (five files)
+
+No official SGLang release image contained DFLASH2 when the base was pinned (merged upstream
+2026-08-19; an official `lmsysorg/sglang:dev-qwen38-27b-dflash2` image appeared 2026-08-22 and
+supersedes this patch the day the repo pins it).
 
 Provenance of the five files:
 
@@ -21,5 +28,37 @@ Provenance of the five files:
 - Draft model: [z-lab/Qwen3.8-27B-DFlash2](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2)
   (pinned by revision in `install.sh`).
 
-This directory is deleted from the install path the day an official image ships DFLASH2; the
-repo then pins that image digest instead.
+## Patch 2: mrope height and width in the fused Qwen3.5 rope kernel (three files)
+
+Upstream: [sgl-project/sglang PR #34446](https://github.com/sgl-project/sglang/pull/34446)
+("[rotary] Fix the fused Qwen3.5 RoPE kernel discarding mrope height and width"), merged
+2026-08-30 at `e6355774`. License: Apache-2.0.
+
+`fused_qk_gemma_rmsnorm_rope_gate` loaded one position per token, so a multimodal
+`[3, T]` mrope tensor only ever yielded row 0: every image token was rotated as if it sat at
+its temporal position on all three axes. Text is unaffected (a text token holds the same
+position on all three rows), which is why no text benchmark catches it. The path is not behind
+a flag: `Qwen3_5AttentionDecoderLayer.self_attention` takes it whenever CUDA and
+`attn_output_gate` are both true, which is this repo's 27B configuration
+(`mrope_section [11, 11, 10]`, `mrope_interleaved`, gate on).
+
+Provenance of the three files:
+
+- `kernels/ops/attention/fused_qk_rmsnorm_rope_gate.py`: upstream's fixed file, with the five em
+  dashes in its docstrings replaced by commas to satisfy this repo's house typography rule
+  (comments only, no code change). The base image's copy was byte-identical to the upstream pre-fix version,
+  so the fixed file drops in.
+- `srt/layers/rotary_embedding/mrope.py` and `srt/models/qwen3_5.py`: the upstream hunks ported
+  onto the base image's copies, which differ from upstream by four pre-existing local
+  variations (an older `runtime_context` API and one CPU return placement). Verified by diffing
+  the ported files against upstream's fixed versions: the only differences are those four.
+
+Verification performed before vendoring (2026-08-30, reference box): upstream's own two test
+files from the PR pass inside the built image; the built image boots, serves, and answers text
+byte-identically to the unpatched image at the same speed (64.1 vs 64.6 tok/s, within noise).
+
+## Retiring this overlay
+
+Each patch is deleted from the install path the day an official image ships it, and the repo
+pins that image digest instead. Patch 1 is already superseded upstream; patch 2 needs an image
+built after 2026-08-30 07:37 UTC.

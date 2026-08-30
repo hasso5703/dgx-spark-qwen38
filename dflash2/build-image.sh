@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the DFlash2 serving image: pinned base + the five sha256-verified overlay files.
+# Build the 27B serving image: pinned base + the sha256-verified overlay files.
 # Deterministic and offline (the base image must already be pulled by install.sh).
 # Usage: BASE_IMAGE=<pinned digest ref> TAG=<local tag> ./build-image.sh
 set -euo pipefail
