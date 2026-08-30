@@ -67,9 +67,9 @@ fi
 # never enabled together.
 LANE=27b; UNIT_NAME="qwen38-sglang.service"
 [ "$MODEL_CHOICE" = "flash" ] && { LANE=flash; UNIT_NAME="qwen38-flash.service"; }
-# Served image = pinned base + the 5 sha256-verified DFlash2 files (dflash2/, built locally,
+# Served image = pinned base + the 8 sha256-verified overlay files (dflash2/, built locally,
 # offline). Replaced by an official image digest the day one ships DFLASH2.
-SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2.2}"
+SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2.3}"
 PORT="${PORT:-30000}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 CONFIG_DIR="$HOME/.config/qwen38"
