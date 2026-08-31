@@ -374,13 +374,23 @@ def collect_engine_info():
     slim = {k: info.get(k) for k in kept}
     for f in MASKED_FIELDS:
         slim.pop(f, None)
+    # Which switch target these weights are: the selector must show what is serving,
+    # not the first option in the list. Derived from the registry pins, so a new pin
+    # is a new target with no extra table to keep in step.
+    var2target = {"STOCK_REV": "stock", "UNC_REV": "uncensored", "FP8_REV": "fp8", "FLASH_REV": "flash"}
+    served_target = None
+    for var, repo in rg.PIN_MODELS.items():
+        if repo == slim.get("model_path") and var in var2target:
+            served_target = var2target[var]
+            break
     # the proxy's absolute prompt ceiling, as deployed in the keepalive unit (0 = pool share only)
     ceiling = 0
     env = run(["systemctl", "show", "qwen38-keepalive.service", "-p", "Environment"], timeout=5)
     m = re.search(r"PROMPT_CEILING_TOKENS=(\d+)", env or "")
     if m:
         ceiling = int(m.group(1))
-    return {"node_id": "local", "info": slim, "prompt_ceiling_tokens": ceiling}
+    return {"node_id": "local", "info": slim, "prompt_ceiling_tokens": ceiling,
+            "served_target": served_target}
 
 
 CANARY: dict = {"fails": 0, "last_ok": None, "last_err": "", "latency": None}
@@ -527,6 +537,30 @@ def collect_opencode():
     ok, why = lc.opencode_default_follows(out["real"]["default"], states)
     out["follows"] = ok
     out["why"] = why
+    # Do the declared limits fit the pool the engine actually booted with? A limit
+    # larger than the pool does not fail early: the conversation grows until the
+    # proxy refuses a prompt mid-session.
+    with STATE_LOCK:
+        info = ((STATE.get("engine_info") or {}).get("data") or {}).get("info") or {}
+    pool = int(info.get("max_total_num_tokens") or 0)
+    served = info.get("served_model_name") or ""
+    out["fit"] = None
+    if pool and served:
+        prov = {"qwen3.8-27b": "qwen38", "qwen3.8-flash-next": "flashnext"}.get(served)
+        lim = (out["real"]["limits"] or {}).get(f"{prov}/{served}") if prov else None
+        if lim and lim.get("context"):
+            ctx, outp = int(lim["context"]), int(lim.get("output") or 0)
+            usable = int(pool * USABLE_FRAC)
+            # two independent constraints: the prompt alone must pass the proxy (which
+            # also applies the lane's absolute ceiling), and prompt plus answer must fit
+            # the pool. The flash lane fails only the first, the FP8 lane only the second.
+            ceiling = ((STATE.get("engine_info") or {}).get("data") or {}).get("prompt_ceiling_tokens") or 0
+            prompt_cap = min(usable, ceiling) if ceiling else usable
+            why = ("the prompt alone exceeds what the proxy relays" if ctx > prompt_cap
+                   else "prompt plus answer exceeds the pool" if ctx + outp > usable else "")
+            out["fit"] = {"pool": pool, "worst": ctx + outp, "usable": usable, "served": served,
+                          "prompt_cap": prompt_cap, "ok": not why, "why": why,
+                          "context": ctx, "output": outp}
     return out
 
 
@@ -852,7 +886,7 @@ ACTIONS = {
     # model switch (repo script, itself never restarts anything)
     "switch": {
         "danger": "medium",
-        "params": {"target": ["stock", "uncensored", "flash"]},
+        "params": {"target": ["stock", "uncensored", "fp8", "flash"]},
         "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"]],
         "timeout": 1800,
     },
@@ -873,6 +907,13 @@ ACTIONS = {
         "params": {},
         "argv": None,
         "timeout": 10,
+    },
+    # make opencode ask for no more than the served engine can hold
+    "fit_opencode": {
+        "danger": "low",
+        "params": {},
+        "argv": lambda p: ["python3", str(REPO_DIR / "oc-fit-limits.py")],
+        "timeout": 60,
     },
     # diagnostics bundle for issue reports (logs, state, versions; key masked)
     "diag_bundle": {
@@ -1362,7 +1403,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # ---- routes ----
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        path, _, query = self.path.partition("?")
+        fresh = "refresh=1" in query
         if path == "/api/health":
             return self.send_json({"ok": True, "version": VERSION})
         if path == "/login" or path == "/favicon.ico" or path.startswith("/static/"):
@@ -1382,17 +1424,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                    for n, s in ACTIONS.items()})
         if path == "/api/upstream":
             try:
-                return self.send_json(upstream_snapshot())
+                return self.send_json(upstream_snapshot(max_age=0.0 if fresh else 3600.0))
             except Exception as e:  # noqa: BLE001
                 return self.send_json({"error": str(e)[:200]}, 500)
         if path == "/api/registry":
             try:
-                return self.send_json(registry_snapshot())
+                # "scan" has to mean scan: the button sends refresh=1 and bypasses the cache
+                return self.send_json(registry_snapshot(max_age=0.0 if fresh else 300.0))
             except Exception as e:  # noqa: BLE001 (isolated endpoint)
                 return self.send_json({"error": str(e)[:200]}, 500)
         if path == "/api/recipes":
             try:
-                return self.send_json(recipes_snapshot())
+                if fresh:
+                    registry_snapshot(max_age=0.0)   # recipes read the registry for presence
+                return self.send_json(recipes_snapshot(max_age=0.0 if fresh else 60.0))
             except Exception as e:  # noqa: BLE001 (isolated endpoint)
                 return self.send_json({"error": str(e)[:200]}, 500)
         if path == "/api/inventory":

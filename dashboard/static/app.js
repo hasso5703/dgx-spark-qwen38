@@ -124,6 +124,10 @@ function rGpu(d){
 }
 function rEngineInfo(d){
   if (d.prompt_ceiling_tokens != null) F.ceiling = d.prompt_ceiling_tokens;
+  // the selector shows what is serving, so "Switch" always reads as a change
+  F.target = d.served_target || null;
+  const sel = $('switchsel');
+  if (sel && F.target && !sel.dataset.touched && sel.value !== F.target) sel.value = F.target;
   const i = d.info || {};
   setText('engmodel', (i.model_path || '...').split('/').pop());
   setText('engrev', (i.revision || '').slice(0, 12) || 'n/a');
@@ -307,6 +311,7 @@ function rFeed(d){
   if (!rows.length){ const tr = tb.insertRow(); const c = tr.insertCell(); c.colSpan = 6; c.className = 'empty'; c.textContent = 'no request has gone through the proxy yet (agent clients use :30001)'; }
 }
 function rOpencode(d){
+  F.ocfit = d.fit || null;
   const fmtLim = l => l && l.context ? `${fmtN(l.context)} ctx / ${fmtN(l.output || 0)} out` : 'not declared';
   setText('oclim27', fmtLim(d.real.limits['qwen38/qwen3.8-27b'])); setText('oclimflash', fmtLim(d.real.limits['flashnext/qwen3.8-flash-next']));
   if (!d.enabled){
@@ -326,6 +331,11 @@ function rOpencode(d){
   setText('oclauncher', d.launcher.present
     ? (d.launcher.ours ? `oc, output cap ${d.launcher.cap ? fmtN(d.launcher.cap) : '?'}` : 'a foreign oc command, launcher not installed')
     : 'missing (re-run ./install.sh)');
+  const f = d.fit;
+  setText('ocfit', !f ? 'unknown until an engine is serving'
+    : f.ok ? `fits: prompt up to ${fmtN(f.context)} of ${fmtN(f.prompt_cap)}, worst case ${fmtN(f.worst)} of ${fmtN(f.usable)}`
+    : `too large: ${f.why} (${fmtN(f.worst)} asked, ${fmtN(f.usable)} servable)`);
+  const fe = $('ocfit'); if (fe) fe.style.color = f && !f.ok ? 'var(--warn)' : '';
   $('occmd').hidden = false;
   setText('ocnote', 'One command: the launcher lifts the output cap and auto-approves permissions. The default model follows every switch; existing sessions keep the model they started with.');
   badge('setup', ok === false ? 'opencode' : '', 'warn');
@@ -365,8 +375,10 @@ function rLanePill(){
     return;
   }
   const [name, e] = s;
+  const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8', flash: ''};
   setChip('lanestate', STATE_LABEL[e.state] || e.state, stateChipCls(e.state));
-  setText('lanename', LANE_NAME[name] || name);
+  const t = F.target && TARGET_SHORT[F.target] ? ' ' + TARGET_SHORT[F.target] : '';
+  setText('lanename', (LANE_NAME[name] || name) + t);
   const l = F.load || {};
   let sub = '';
   if (e.state === 'ready' || e.state === 'degraded'){
@@ -675,6 +687,9 @@ function banners(state, errors){
   });
   if (F.memFloor && F.memFloor.aborts && F.memFloor.last_abort && Date.now() / 1000 - F.memFloor.last_abort < 600)
     add('warn', 'Memory floor fired.', `Host memory fell under ${F.memFloor.gib} GiB with requests running: every generation was aborted ${fmtDur(Date.now() / 1000 - F.memFloor.last_abort)} ago to keep the box out of a livelock.`);
+  const ocf = F.ocfit;
+  if (ocf && !ocf.ok) add('warn', 'opencode asks for more than this engine can hold.',
+    `${ocf.why} (${fmtN(ocf.worst)} asked, ${fmtN(ocf.usable)} servable on ${ocf.served}): the session would break mid-conversation when the proxy refuses the prompt. Setup tab, "Fit the limits to this engine".`);
   ((F.life || {}).orphans || []).forEach(o => add('warn',
     `${LANE_NAME[o.unit] || o.unit} is running outside systemd.`,
     `The container ${o.container} is serving${o.image ? ` from ${o.image}` : ''}, but its unit is stopped, so the buttons here cannot manage it and a reboot will not bring it back. Stop it from a terminal (docker rm -f ${o.container}) and start the unit instead.`));
@@ -732,14 +747,27 @@ function askAction(name, params, argv, warns){
   if (NEEDS_ENGINE.has(name) && !servingReady()){ toast('No engine is serving: start one first, then this action has something to talk to.', 'warn'); return; }
   if (F.job && F.job.current){ toast(`Another action is running (${F.job.current.action}). Wait for the job strip to finish.`, 'warn'); return; }
   if (!$('modal').hidden) return;
-  const TITLES = {unit: p => `${p.verb} ${LANE_NAME[p.unit] || p.unit.replace('.service', '')}`, switch: p => `switch the target model to ${p.target}`,
+  const TARGET_NAME = {stock: 'stock 27B (NVFP4)', uncensored: 'uncensored 27B (NVFP4)',
+                       fp8: 'FP8 27B (Qwen official)', flash: 'flash 176B'};
+  const TARGET_NOTE = {
+    fp8: 'Qwen\u2019s own FP8 release: the most faithful weights of this lane, and the heaviest. '
+       + '30.9 GB against 21 GB for NVFP4, and SGLang takes that out of the KV pool: expect around '
+       + '200,000 fewer tokens of context and a slower decode, because this box is bandwidth bound. '
+       + 'The first switch downloads about 31 GB.',
+    stock: 'The NVFP4 quantization this repo pins by default: smallest and fastest of the 27B targets.',
+    uncensored: 'The abliterated NVFP4 checkpoint: same size and speed as stock, refusals removed.',
+    flash: 'The 176B Flash-Next lane. It has its own unit, its own image and its own 48 GB PLE table.'};
+  const TITLES = {unit: p => `${p.verb} ${LANE_NAME[p.unit] || p.unit.replace('.service', '')}`,
+                  switch: p => `switch the target model to ${TARGET_NAME[p.target] || p.target}`,
                   flush_cache: () => 'flush the engine cache', abort_all: () => 'abort every in-flight generation', smoke: () => 'run a smoke generation through the proxy', diag_bundle: () => 'write a diagnostics bundle'};
   const EXPLAIN = {unit: p => p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : 'systemd starts the unit; the engine loads its weights and is ready in about 9 minutes (watch the boot bar).',
-                   switch: () => 'switch-model.sh rewrites the unit for the chosen target, updates the boot enablement, the proxy ceiling and the opencode default model. It never restarts anything: stop and start the engines afterwards.',
+                   switch: p => (TARGET_NOTE[p.target] ? TARGET_NOTE[p.target] + '\n\n' : '')
+                     + 'switch-model.sh rewrites the unit for the chosen target, updates the boot enablement, the proxy ceiling and the opencode default model. It never restarts anything: stop and start the engines afterwards.',
                    flush_cache: () => 'Empties the radix cache. Harmless; refused by the engine if requests are running.',
                    abort_all: () => 'Every running or queued generation ends now; the clients see their stream end.',
                    smoke: () => 'One real 200-token generation through the proxy, the way a client uses it (up to a few minutes while a boot finishes).',
-                   diag_bundle: () => 'Collects logs, state and versions into a tarball in your home; the API key is masked everywhere.'};
+                   diag_bundle: () => 'Collects logs, state and versions into a tarball in your home; the API key is masked everywhere.',
+                   fit_opencode: () => 'Reads the KV pool of the engine that is serving right now and rewrites only opencode\u2019s context and output limits so a conversation can never outgrow it. Your other opencode settings, providers and the default model are untouched, and a dated backup is written first. Restart opencode to pick the new limits up.'};
   $('mtitle').textContent = 'Confirm: ' + (TITLES[name] ? TITLES[name](params) : name);
   $('mwhat').textContent = (EXPLAIN[name] ? EXPLAIN[name](params) : '') + (F.config.dry_run ? '\nDry run: nothing will really be executed.' : '');
   const w = $('mwarn'); w.hidden = !(warns && warns.length); w.textContent = (warns || []).map(x => '⚠ ' + x).join('\n');
@@ -776,6 +804,7 @@ $('mgo').addEventListener('click', async () => {
   }catch(e){ $('mstatus').textContent = 'request failed: ' + e.message; }
   finally{ inflight = false; $('mgo').disabled = false; $('mcancel').disabled = false; }
 });
+$('switchsel').addEventListener('change', e => { e.target.dataset.touched = '1'; });
 document.querySelectorAll('.actbar [data-act]').forEach(b => {
   const act = b.dataset.act; if (act === 'lane') return;
   b.addEventListener('click', () => {
@@ -811,7 +840,10 @@ function recipeRow(tb, row){
   tr.insertCell().textContent = d.algorithm === 'none' || !d.algorithm ? 'none' : d.algorithm + (d.repo ? ' ' + d.repo.split('/').pop() : ' (own head)') + (d.draft_tokens ? ' ×' + d.draft_tokens : '');
   tr.insertCell().textContent = fmtServe(r.serve || {});
   const p = row.presence || {};
-  cellChips(tr, [['image', p.image], ['model', p.model], ['drafter', p.drafter]].map(([k, v]) => [v === true ? k : v === false ? k + ' missing' : k + ' n/a', v === true ? 'ok' : v === false ? 'err' : '']));
+  const cells = [['image', p.image], ['model', p.model], ['drafter', p.drafter]].map(([k, v]) =>
+    [v === true ? k : v === false ? k + ' missing' : k + ' n/a', v === true ? 'ok' : v === false ? 'err' : '']);
+  if (p.downloading) cells[1] = ['model downloading', 'warn'];   // blobs still arriving
+  cellChips(tr, cells);
   const cd = tr.insertCell();
   if (row.drift == null) cd.append(chip('lane not installed'));
   else if (!row.drift.length) cd.append(chip('matches installed', 'ok'));
@@ -825,7 +857,7 @@ function recipeRow(tb, row){
 async function loadRecipes(){
   $('rcpbtn').textContent = 'loading…'; $('rcpbtn').disabled = true;
   try{
-    const r = await fetch('/api/recipes'); if (r.status === 401) return login();
+    const r = await fetch('/api/recipes?refresh=1'); if (r.status === 401) return login();
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json(); loaded.recipes = true;
     const tb = $('rcptable').tBodies[0]; clear(tb);
@@ -844,7 +876,7 @@ const fmtGiB = b => (b / 1024 ** 3).toFixed(1) + ' GiB';
 $('regbtn').addEventListener('click', async () => {
   const b = $('regbtn'); b.textContent = 'scanning…'; b.disabled = true;
   try{
-    const r = await fetch('/api/registry'); if (r.status === 401) return login(); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const r = await fetch('/api/registry?refresh=1'); if (r.status === 401) return login(); if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const tb = $('regmodels').tBodies[0]; clear(tb);
     (d.models || []).forEach(m => (m.revisions || []).forEach((rv, i) => {
@@ -871,7 +903,7 @@ $('regbtn').addEventListener('click', async () => {
 $('upbtn').addEventListener('click', async () => {
   const b = $('upbtn'); b.textContent = 'checking…'; b.disabled = true;
   try{
-    const r = await fetch('/api/upstream'); if (r.status === 401) return login(); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const r = await fetch('/api/upstream?refresh=1'); if (r.status === 401) return login(); if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const tb = $('uptable').tBodies[0]; clear(tb);
     (d.models || []).forEach(m => {

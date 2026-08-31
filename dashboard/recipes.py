@@ -51,7 +51,7 @@ DRAFT_FLAGS = {
     "steps": ("--speculative-num-steps", int),
     "draft_tokens": ("--speculative-num-draft-tokens", int),
 }
-BUILTIN_IDS = ("stock", "uncensored", "flash")
+BUILTIN_IDS = ("stock", "uncensored", "fp8", "flash")
 
 
 def parse_assignments(text: str) -> dict[str, str]:
@@ -121,7 +121,7 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str]) 
         base = assigns.get("FLASH_IMAGE")
         overlay = "flash-sglang"
     else:
-        pfx = "STOCK" if recipe_id == "stock" else "UNC"
+        pfx = {"stock": "STOCK", "uncensored": "UNC", "fp8": "FP8"}[recipe_id]
         repo, rev, image = assigns[f"{pfx}_REPO"], assigns[f"{pfx}_REV"], assigns["SERVE_IMAGE"]
         base = None
         overlay = "dflash2"
@@ -248,18 +248,24 @@ def presence(recipe: dict, registry: dict) -> dict:
     from the registry (model outside the managed set)."""
     images = {i.get("ref") for i in registry.get("images", [])}
     known: dict[str, set] = {}
+    busy: set = set()
     for m in registry.get("models", []):
         known.setdefault(m["repo_id"], set()).update(r["rev"] for r in m.get("revisions", []))
+        if m.get("incomplete"):
+            busy.add(m["repo_id"])
 
     def cached(repo, rev):
         if repo is None:
             return None
         if repo not in known:
             return None
+        if repo in busy:
+            return False          # a snapshot with blobs still arriving is not servable
         return rev in known[repo]
 
     dr = recipe.get("drafter", {})
     return {"image": recipe["engine"].get("image") in images,
+            "downloading": recipe["model"].get("repo") in busy,
             "model": cached(recipe["model"].get("repo"), recipe["model"].get("revision")),
             "drafter": cached(dr.get("repo"), dr.get("revision")) if dr.get("algorithm") == "DFLASH" else None}
 

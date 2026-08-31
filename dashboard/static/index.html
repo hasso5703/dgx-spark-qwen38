@@ -259,8 +259,9 @@
   <div class="actbar" id="actbar" aria-label="Actions">
     <div class="grp" title="Change which model the serving unit runs (the switch itself never restarts anything)">
       <select id="switchsel" aria-label="Target model to switch to">
-        <option value="stock">stock (27B)</option>
-        <option value="uncensored">uncensored (27B)</option>
+        <option value="stock">stock (27B, NVFP4)</option>
+        <option value="uncensored">uncensored (27B, NVFP4)</option>
+        <option value="fp8">FP8 (27B, Qwen official)</option>
         <option value="flash">flash (176B)</option>
       </select>
       <button class="btn mini" data-act="switch">Switch</button>
@@ -552,7 +553,9 @@
             <dt>Limits 27B</dt><dd class="num" id="oclim27">...</dd>
             <dt>Limits flash</dt><dd class="num" id="oclimflash">...</dd>
             <dt>Launcher</dt><dd id="oclauncher">...</dd>
+            <dt>Limits vs the pool</dt><dd id="ocfit">...</dd>
           </dl>
+          <div style="margin-top:10px"><button class="btn mini" data-act="fit_opencode">Fit the limits to this engine</button></div>
           <pre id="occmd" class="cmd" style="margin-top:10px">oc</pre>
           <p class="note" id="ocnote">...</p>
         </section>

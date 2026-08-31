@@ -71,13 +71,24 @@ class ProfileFromText(unittest.TestCase):
 
 
 class Builtins(unittest.TestCase):
-    def test_three_valid_recipes(self):
+    def test_every_builtin_recipe_is_valid(self):
         recs = rc.builtins(ASSIGNS, TEMPLATES)
-        self.assertEqual([r["id"] for r in recs], ["stock", "uncensored", "flash"])
+        self.assertEqual([r["id"] for r in recs], ["stock", "uncensored", "fp8", "flash"])
         for r in recs:
             errs = rc.validate(r) if r["lane"] == "flash" else rc.validate(
                 {**r, "serve": {**r["serve"], "context_length": 262144}})
             self.assertEqual(errs, [], r["id"])
+
+    def test_fp8_is_the_27b_lane_with_qwens_own_checkpoint(self):
+        f = rc.builtin("fp8", ASSIGNS, TEMPLATES)
+        self.assertEqual(f["lane"], "27b")
+        self.assertEqual(f["model"]["repo"], ASSIGNS["FP8_REPO"])
+        self.assertEqual(f["model"]["revision"], ASSIGNS["FP8_REV"])
+        # same engine image and same drafter as the NVFP4 targets: only the weights differ
+        s = rc.builtin("stock", ASSIGNS, TEMPLATES)
+        self.assertEqual(f["engine"], s["engine"])
+        self.assertEqual(f["drafter"], s["drafter"])
+        self.assertEqual(f["serve"], s["serve"])
 
     def test_flash_pins_substituted(self):
         f = rc.builtin("flash", ASSIGNS, TEMPLATES)
@@ -183,14 +194,15 @@ class Presence(unittest.TestCase):
 
     def test_present(self):
         p = rc.presence(good(), self.REG)
-        self.assertEqual(p, {"image": True, "model": True, "drafter": None})
+        self.assertEqual(p, {"image": True, "downloading": False, "model": True, "drafter": None})
 
     def test_missing_and_unknown(self):
         r = good()
         r["engine"]["image"] = "qwen38-flash:v9"
         r["model"]["revision"] = "8" * 40
         r["drafter"] = {"algorithm": "DFLASH", "repo": "z-lab/Qwen3.8-27B-DFlash2", "revision": "9" * 40}
-        self.assertEqual(rc.presence(r, self.REG), {"image": False, "model": False, "drafter": False})
+        self.assertEqual(rc.presence(r, self.REG),
+                         {"image": False, "downloading": False, "model": False, "drafter": False})
         r["model"]["repo"] = "someone/else"
         self.assertIsNone(rc.presence(r, self.REG)["model"])
 
@@ -212,6 +224,30 @@ class LoadCustom(unittest.TestCase):
             self.assertIsNone(items["broken.json"]["recipe"])
         self.assertEqual(rc.load_custom(Path("/nonexistent/dir")), [])
 
+
+
+class PresenceDuringDownload(unittest.TestCase):
+    """A snapshot directory exists long before the model can be served: while
+    huggingface_hub still has .incomplete blobs, presence must not say 'here'."""
+
+    def rec(self):
+        return rc.builtin("fp8", ASSIGNS, TEMPLATES)
+
+    def reg(self, incomplete):
+        r = self.rec()
+        return {"images": [{"ref": r["engine"]["image"]}],
+                "models": [{"repo_id": r["model"]["repo"], "incomplete": incomplete,
+                            "revisions": [{"rev": r["model"]["revision"]}]}]}
+
+    def test_complete_model_is_present(self):
+        p = rc.presence(self.rec(), self.reg(0))
+        self.assertIs(p["model"], True)
+        self.assertFalse(p["downloading"])
+
+    def test_model_with_incomplete_blobs_is_not_present(self):
+        p = rc.presence(self.rec(), self.reg(8))
+        self.assertIs(p["model"], False)
+        self.assertTrue(p["downloading"])
 
 if __name__ == "__main__":
     unittest.main()

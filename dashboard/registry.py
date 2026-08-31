@@ -15,6 +15,7 @@ from pathlib import Path
 PIN_MODELS = {
     "STOCK_REV": "RadixArk/Qwen3.8-27B-NVFP4",
     "UNC_REV": "edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4",
+    "FP8_REV": "Qwen/Qwen3.8-27B-FP8",
     "FLASH_REV": "RadixArk/Qwen3.8-Flash-Next-NVFP4",
     "DRAFT_REV": "RadixArk/Qwen3.8-27B-DSpark",
     "DRAFT2_REV": "z-lab/Qwen3.8-27B-DFlash2",
@@ -58,9 +59,16 @@ def scan_hf_cache(root: Path) -> list[dict]:
         repo_id = d.name[len("models--"):].replace("--", "/")
         seen: set[int] = set()
         disk = 0
+        incomplete = 0
         blobs = d / "blobs"
         if blobs.is_dir():
             for f in blobs.iterdir():
+                # huggingface_hub writes <sha>.incomplete while a blob is still
+                # arriving: a snapshot directory exists long before it is usable,
+                # so its mere presence must never be read as "the model is here".
+                if f.name.endswith(".incomplete"):
+                    incomplete += 1
+                    continue
                 try:
                     st = f.stat()
                 except OSError:
@@ -82,7 +90,7 @@ def scan_hf_cache(root: Path) -> list[dict]:
                             pass
                 revs.append({"rev": rd.name, "bytes": size})
         out.append({"repo_id": repo_id, "disk_bytes": disk,
-                    "revisions": revs})
+                    "incomplete": incomplete, "revisions": revs})
     return out
 
 
