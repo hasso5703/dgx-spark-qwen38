@@ -596,6 +596,40 @@ def _guard_failed(err: str):
                            f"backing off, it will try again when the engine is quiet")
 
 
+VAR2TARGET = {"STOCK_REV": "stock", "UNC_REV": "uncensored", "FP8_REV": "fp8", "FLASH_REV": "flash"}
+UNIT_PATHS = {"qwen38-sglang.service": Path("/etc/systemd/system/qwen38-sglang.service"),
+              "qwen38-flash.service": CONFIG_DIR / "launch-flash.sh"}
+UNIT_TARGET_CACHE: dict = {}
+
+
+def unit_target(unit: str) -> dict:
+    """{model, target} the unit is configured for, from its own file. Cached on mtime."""
+    path = UNIT_PATHS.get(unit)
+    if not path:
+        return {"model": None, "target": None}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {"model": None, "target": None}
+    hit = UNIT_TARGET_CACHE.get(unit)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return {"model": None, "target": None}
+    m = re.search(r"--model-path\s+(\S+)", text)
+    model = m.group(1) if m else None
+    target = None
+    for var, repo in rg.PIN_MODELS.items():
+        if repo == model and var in VAR2TARGET:
+            target = VAR2TARGET[var]
+            break
+    out = {"model": model, "target": target}
+    UNIT_TARGET_CACHE[unit] = (mtime, out)
+    return out
+
+
 def containers_now() -> dict:
     with STATE_LOCK:
         return ((STATE.get("containers") or {}).get("data") or {}).get("containers") or {}
@@ -775,6 +809,7 @@ def collect_lifecycle():
         overdue = bool(eta and elapsed and st["state"] in lc.TRANSITIONAL
                        and elapsed > 2 * eta)
         engines[unit] = {"state": st["state"], "rebuild": st.get("rebuild", False),
+                         **unit_target(unit),
                          "stage_done": boot.get("done", []),
                          "elapsed": round(elapsed, 1) if elapsed else None,
                          "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,

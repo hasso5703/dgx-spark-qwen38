@@ -40,9 +40,12 @@ const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flas
 const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8', flash: ''};
 function laneLabel(unit){
   const base = LANE_NAME[unit] || unit.replace('.service', '');
+  // the unit file says what it is configured to serve, and it can be read while the
+  // engine is still loading; the live engine only confirms it once it answers
+  const cfg = ((F.life || {}).engines || {})[unit] || {};
   const serving = servingEngine();
-  const mine = serving && serving[0] === unit;   // the target we know is the one serving
-  const t = mine && F.target && TARGET_SHORT[F.target] ? ' ' + TARGET_SHORT[F.target] : '';
+  const target = (serving && serving[0] === unit && F.target) || cfg.target;
+  const t = target && TARGET_SHORT[target] ? ' ' + TARGET_SHORT[target] : '';
   return base + t;
 }
 const laneCls = name => name.includes('flash') ? 'flash' : 'lane27';
@@ -136,8 +139,7 @@ function rEngineInfo(d){
   if (d.prompt_ceiling_tokens != null) F.ceiling = d.prompt_ceiling_tokens;
   // the selector shows what is serving, so "Switch" always reads as a change
   F.target = d.served_target || null;
-  const sel = $('switchsel');
-  if (sel && F.target && !sel.dataset.touched && sel.value !== F.target) sel.value = F.target;
+  syncSelector();
   const i = d.info || {};
   setText('engmodel', (i.model_path || '...').split('/').pop());
   setText('engrev', (i.revision || '').slice(0, 12) || 'n/a');
@@ -448,7 +450,7 @@ function engineCard(name){
   return c;
 }
 function rLifecycle(d){
-  F.life = d; rLanePill(); renderLaneAction();
+  F.life = d; syncSelector(); rLanePill(); renderLaneAction();
   const g = d.pool_guard;
   if (g){
     F.poolGuard = g;
@@ -515,6 +517,17 @@ function rLifecycle(d){
   const trans = states.find(st => TRANSITIONAL.has(st) || st === 'stopping');
   badge('engines', bad ? STATE_LABEL[bad].split(':')[0] : trans ? STATE_LABEL[trans] : '', bad ? 'err' : trans ? 'warn' : '');
   applyBusy();
+}
+function syncSelector(){
+  // show the target of the lane that is serving, booting, or enabled: never just the
+  // first option, which read as "stock" through nine minutes of an FP8 boot
+  const sel = $('switchsel');
+  if (!sel || sel.dataset.touched) return;
+  const eng = (F.life || {}).engines || {};
+  const s = servingEngine();
+  const unit = s ? s[0] : enabledUnit();
+  const target = (s && F.target) || (eng[unit] || {}).target;
+  if (target && sel.value !== target) sel.value = target;
 }
 function badge(tab, txt, cls){ const b = $('bdg-' + tab); if (b){ b.textContent = txt; b.className = 'bdg ' + (cls || ''); } }
 
