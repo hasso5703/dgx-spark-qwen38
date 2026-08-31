@@ -26,10 +26,10 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 CHOICE="${1:-${MODEL_CHOICE:-stock}}"
-case "$CHOICE" in stock|uncensored|fp8|flash) ;; *) die "usage: ./switch-model.sh [stock|uncensored|fp8|flash]" ;; esac
+case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash) ;; *) die "usage: ./switch-model.sh [stock|uncensored|fp8|uncensored-fp8|flash]" ;; esac
 
-PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
-[ "$(printf '%s\n' "$PINS" | wc -l)" -eq 14 ] || die "could not read the 14 pinned variables from install.sh (repo layout changed?)"
+PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+[ "$(printf '%s\n' "$PINS" | wc -l)" -eq 16 ] || die "could not read the 16 pinned variables from install.sh (repo layout changed?)"
 eval "$PINS"
 
 SGL_UNIT="/etc/systemd/system/qwen38-sglang.service"
@@ -39,6 +39,7 @@ case "$CHOICE" in
   stock)      TARGET_REPO="$STOCK_REPO"; TARGET_REV="$STOCK_REV"; TARGET_LANE=27b ;;
   uncensored) TARGET_REPO="$UNC_REPO";   TARGET_REV="$UNC_REV";   TARGET_LANE=27b ;;
   fp8)        TARGET_REPO="$FP8_REPO";   TARGET_REV="$FP8_REV";   TARGET_LANE=27b ;;
+  uncensored-fp8) TARGET_REPO="$UNCFP8_REPO"; TARGET_REV="$UNCFP8_REV"; TARGET_LANE=27b ;;
   flash)      TARGET_REPO="$FLASH_REPO"; TARGET_REV="$FLASH_REV"; TARGET_LANE=flash ;;
 esac
 
@@ -193,6 +194,7 @@ want = "flashnext/qwen3.8-flash-next" if os.environ["TARGET_LANE"] == "flash" el
 LABEL = {"stock": "Qwen3.8-27B NVFP4 + DFlash2",
          "uncensored": "Qwen3.8-27B NVFP4 abliterated + DFlash2",
          "fp8": "Qwen3.8-27B FP8 official + DFlash2",
+         "uncensored-fp8": "Qwen3.8-27B FP8 abliterated + DFlash2",
          "flash": "Qwen3.8-Flash-Next NVFP4 + MTP"}
 cfg = json.load(open(p))
 prov, mid = want.split("/")
@@ -232,6 +234,7 @@ fi
 case "$CHOICE" in
   stock)      echo "Switch back:      ./switch-model.sh uncensored   (or fp8, flash)" ;;
   uncensored) echo "Switch back:      ./switch-model.sh stock   (or fp8, flash)" ;;
-  fp8)        echo "Switch back:      ./switch-model.sh stock   (or uncensored, flash)" ;;
+  fp8)        echo "Switch back:      ./switch-model.sh stock   (or uncensored, uncensored-fp8, flash)" ;;
+  uncensored-fp8) echo "Switch back:      ./switch-model.sh fp8   (or stock, uncensored, flash)" ;;
   flash)      echo "Switch back:      ./switch-model.sh stock   (or uncensored, fp8)" ;;
 esac
