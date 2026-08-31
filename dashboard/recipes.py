@@ -51,7 +51,7 @@ DRAFT_FLAGS = {
     "steps": ("--speculative-num-steps", int),
     "draft_tokens": ("--speculative-num-draft-tokens", int),
 }
-BUILTIN_IDS = ("stock", "uncensored", "fp8", "flash")
+BUILTIN_IDS = ("stock", "uncensored", "fp8", "uncensored-fp8", "flash")
 
 
 def parse_assignments(text: str) -> dict[str, str]:
@@ -121,7 +121,8 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str]) 
         base = assigns.get("FLASH_IMAGE")
         overlay = "flash-sglang"
     else:
-        pfx = {"stock": "STOCK", "uncensored": "UNC", "fp8": "FP8"}[recipe_id]
+        pfx = {"stock": "STOCK", "uncensored": "UNC", "fp8": "FP8",
+               "uncensored-fp8": "UNCFP8"}[recipe_id]
         repo, rev, image = assigns[f"{pfx}_REPO"], assigns[f"{pfx}_REV"], assigns["SERVE_IMAGE"]
         base = None
         overlay = "dflash2"
@@ -247,6 +248,10 @@ def presence(recipe: dict, registry: dict) -> dict:
     """Is what the recipe needs on this box? True/False, None = not knowable
     from the registry (model outside the managed set)."""
     images = {i.get("ref") for i in registry.get("images", [])}
+    # Repos this repo pins: one of them missing from the cache is MISSING, not unknown.
+    # Without this a target that was never downloaded read "n/a", which says nothing
+    # about whether switching to it would work.
+    managed = set(registry.get("managed_repos") or [])
     known: dict[str, set] = {}
     busy: set = set()
     for m in registry.get("models", []):
@@ -258,7 +263,7 @@ def presence(recipe: dict, registry: dict) -> dict:
         if repo is None:
             return None
         if repo not in known:
-            return None
+            return False if repo in managed else None
         if repo in busy:
             return False          # a snapshot with blobs still arriving is not servable
         return rev in known[repo]

@@ -16,6 +16,7 @@ PIN_MODELS = {
     "STOCK_REV": "RadixArk/Qwen3.8-27B-NVFP4",
     "UNC_REV": "edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4",
     "FP8_REV": "Qwen/Qwen3.8-27B-FP8",
+    "UNCFP8_REV": "edp1096/Huihui-Qwen3.8-27B-abliterated-FP8",
     "FLASH_REV": "RadixArk/Qwen3.8-Flash-Next-NVFP4",
     "DRAFT_REV": "RadixArk/Qwen3.8-27B-DSpark",
     "DRAFT2_REV": "z-lab/Qwen3.8-27B-DFlash2",

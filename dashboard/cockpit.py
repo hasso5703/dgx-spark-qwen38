@@ -377,11 +377,10 @@ def collect_engine_info():
     # Which switch target these weights are: the selector must show what is serving,
     # not the first option in the list. Derived from the registry pins, so a new pin
     # is a new target with no extra table to keep in step.
-    var2target = {"STOCK_REV": "stock", "UNC_REV": "uncensored", "FP8_REV": "fp8", "FLASH_REV": "flash"}
     served_target = None
     for var, repo in rg.PIN_MODELS.items():
-        if repo == slim.get("model_path") and var in var2target:
-            served_target = var2target[var]
+        if repo == slim.get("model_path") and var in VAR2TARGET:
+            served_target = VAR2TARGET[var]
             break
     # the proxy's absolute prompt ceiling, as deployed in the keepalive unit (0 = pool share only)
     ceiling = 0
@@ -596,7 +595,8 @@ def _guard_failed(err: str):
                            f"backing off, it will try again when the engine is quiet")
 
 
-VAR2TARGET = {"STOCK_REV": "stock", "UNC_REV": "uncensored", "FP8_REV": "fp8", "FLASH_REV": "flash"}
+VAR2TARGET = {"STOCK_REV": "stock", "UNC_REV": "uncensored", "FP8_REV": "fp8",
+              "UNCFP8_REV": "uncensored-fp8", "FLASH_REV": "flash"}
 UNIT_PATHS = {"qwen38-sglang.service": Path("/etc/systemd/system/qwen38-sglang.service"),
               "qwen38-flash.service": CONFIG_DIR / "launch-flash.sh"}
 UNIT_TARGET_CACHE: dict = {}
@@ -921,7 +921,7 @@ ACTIONS = {
     # model switch (repo script, itself never restarts anything)
     "switch": {
         "danger": "medium",
-        "params": {"target": ["stock", "uncensored", "fp8", "flash"]},
+        "params": {"target": ["stock", "uncensored", "fp8", "uncensored-fp8", "flash"]},
         "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"]],
         "timeout": 1800,
     },
@@ -1373,7 +1373,7 @@ def registry_snapshot(max_age: float = 300.0) -> dict:
             run(["docker", "images", "--format",
                  "{{.Repository}}:{{.Tag}} {{.Size}} {{.ID}}"],
                 timeout=10).splitlines())
-        data = {"pins": pins,
+        data = {"pins": pins, "managed_repos": sorted(set(rg.PIN_MODELS.values())),
                 "models": [m for m in models if m["managed"]],
                 "other_models": [{"repo_id": m["repo_id"],
                                   "disk_bytes": m["disk_bytes"]}

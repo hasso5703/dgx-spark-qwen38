@@ -73,7 +73,8 @@ class ProfileFromText(unittest.TestCase):
 class Builtins(unittest.TestCase):
     def test_every_builtin_recipe_is_valid(self):
         recs = rc.builtins(ASSIGNS, TEMPLATES)
-        self.assertEqual([r["id"] for r in recs], ["stock", "uncensored", "fp8", "flash"])
+        self.assertEqual([r["id"] for r in recs],
+                         ["stock", "uncensored", "fp8", "uncensored-fp8", "flash"])
         for r in recs:
             errs = rc.validate(r) if r["lane"] == "flash" else rc.validate(
                 {**r, "serve": {**r["serve"], "context_length": 262144}})
@@ -89,6 +90,15 @@ class Builtins(unittest.TestCase):
         self.assertEqual(f["engine"], s["engine"])
         self.assertEqual(f["drafter"], s["drafter"])
         self.assertEqual(f["serve"], s["serve"])
+
+    def test_uncensored_fp8_differs_from_fp8_only_by_model(self):
+        a, b = rc.builtin("fp8", ASSIGNS, TEMPLATES), rc.builtin("uncensored-fp8", ASSIGNS, TEMPLATES)
+        self.assertEqual(b["lane"], "27b")
+        self.assertEqual(b["model"]["repo"], ASSIGNS["UNCFP8_REPO"])
+        self.assertEqual(b["model"]["revision"], ASSIGNS["UNCFP8_REV"])
+        self.assertNotEqual(a["model"]["repo"], b["model"]["repo"])
+        for k in ("engine", "drafter", "serve"):
+            self.assertEqual(a[k], b[k], k)
 
     def test_flash_pins_substituted(self):
         f = rc.builtin("flash", ASSIGNS, TEMPLATES)
@@ -248,6 +258,22 @@ class PresenceDuringDownload(unittest.TestCase):
         p = rc.presence(self.rec(), self.reg(8))
         self.assertIs(p["model"], False)
         self.assertTrue(p["downloading"])
+
+
+class PresenceOfANeverDownloadedTarget(unittest.TestCase):
+    """A pinned checkpoint that is not in the cache is missing, not unknown: the
+    difference decides whether switching to it works or downloads 31 GB first."""
+
+    def test_pinned_and_absent_reads_missing(self):
+        r = rc.builtin("uncensored-fp8", ASSIGNS, TEMPLATES)
+        reg = {"images": [{"ref": r["engine"]["image"]}], "models": [],
+               "managed_repos": [r["model"]["repo"]]}
+        self.assertIs(rc.presence(r, reg)["model"], False)
+
+    def test_unpinned_and_absent_stays_unknown(self):
+        r = rc.builtin("uncensored-fp8", ASSIGNS, TEMPLATES)
+        reg = {"images": [], "models": [], "managed_repos": []}
+        self.assertIsNone(rc.presence(r, reg)["model"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,7 +37,8 @@ const ALL_STAGES = Object.keys(STAGE_LABEL);
 const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B'};
 // The three 27B targets share one unit, so the lane name alone ("27B") does not say
 // which checkpoint is loaded. Every control that names the lane says the checkpoint too.
-const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8', flash: ''};
+const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8',
+                      'uncensored-fp8': 'FP8 uncensored', flash: ''};
 function laneLabel(unit){
   const base = LANE_NAME[unit] || unit.replace('.service', '');
   // the unit file says what it is configured to serve, and it can be read while the
@@ -774,7 +775,8 @@ function askAction(name, params, argv, warns){
   if (F.job && F.job.current){ toast(`Another action is running (${F.job.current.action}). Wait for the job strip to finish.`, 'warn'); return; }
   if (!$('modal').hidden) return;
   const TARGET_NAME = {stock: 'stock 27B (NVFP4)', uncensored: 'uncensored 27B (NVFP4)',
-                       fp8: 'FP8 27B (Qwen official)', flash: 'flash 176B'};
+                       fp8: 'FP8 27B (Qwen official)', 'uncensored-fp8': 'FP8 27B abliterated',
+                       flash: 'flash 176B'};
   const TARGET_NOTE = {
     fp8: 'Qwen\u2019s own FP8 release: the most faithful weights of this lane, and the heaviest. '
        + '30.9 GB against 21 GB for NVFP4, and SGLang takes that out of the KV pool: expect around '
@@ -782,6 +784,8 @@ function askAction(name, params, argv, warns){
        + 'The first switch downloads about 31 GB.',
     stock: 'The NVFP4 quantization this repo pins by default: smallest and fastest of the 27B targets.',
     uncensored: 'The abliterated NVFP4 checkpoint: same size and speed as stock, refusals removed.',
+    'uncensored-fp8': 'The abliterated weights in Qwen\u2019s own FP8 format: the refusals of the FP8 target removed, '
+       + 'at the same 30.9 GB and the same cost in pool and speed. The first switch downloads about 31 GB.',
     flash: 'The 176B Flash-Next lane. It has its own unit, its own image and its own 48 GB PLE table.'};
   const TITLES = {unit: p => `${p.verb} ${laneLabel(p.unit)}`,
                   switch: p => `switch the target model to ${TARGET_NAME[p.target] || p.target}`,
