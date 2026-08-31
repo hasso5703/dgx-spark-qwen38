@@ -29,6 +29,13 @@ STOCK_REV="52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"
 # the scheme from the checkpoint's own config.
 FP8_REPO="Qwen/Qwen3.8-27B-FP8"
 FP8_REV="017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+# The abliterated weights in Qwen's own FP8 format: same packager as the NVFP4
+# uncensored target above, same fp8 e4m3 scheme as Qwen's official release (which this
+# repo already serves), and lm_head is left out of the quantization, which is what keeps
+# an FP8 checkpoint loadable by SGLang. Verified against the official FP8: 66 weight
+# files, not one hash in common, so the abliteration is real and not a rename.
+UNCFP8_REPO="edp1096/Huihui-Qwen3.8-27B-abliterated-FP8"
+UNCFP8_REV="603028a116e50e57baeda318eff6181be4ce5876"
 UNC_REPO="edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4"
 UNC_REV="21565d389fe573a32c1c425e0c7ade204ddb2263"
 # Third target: Qwen3.8-Flash-Next (176B hybrid MoE, 6B active) in NVFP4 on
@@ -50,8 +57,9 @@ case "$MODEL_CHOICE" in
   stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
   uncensored) MODEL_REPO="$UNC_REPO";   MODEL_REV="${MODEL_REV:-$UNC_REV}" ;;
   fp8)        MODEL_REPO="$FP8_REPO";   MODEL_REV="${MODEL_REV:-$FP8_REV}" ;;
+  uncensored-fp8) MODEL_REPO="$UNCFP8_REPO"; MODEL_REV="${MODEL_REV:-$UNCFP8_REV}" ;;
   flash)      MODEL_REPO="$FLASH_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_REV}" ;;
-  *) printf 'ERROR: MODEL_CHOICE must be "stock", "uncensored", "fp8" or "flash" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
+  *) printf 'ERROR: MODEL_CHOICE must be "stock", "uncensored", "fp8", "uncensored-fp8" or "flash" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
 esac
 DRAFT_REPO="RadixArk/Qwen3.8-27B-DSpark"
 DRAFT_REV="${DRAFT_REV:-85ef153be924f17ce4bf62726954eeaa4a73e854}"
