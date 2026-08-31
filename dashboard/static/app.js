@@ -35,6 +35,16 @@ const TRANSITIONAL = new Set(['starting', 'loading-weights', 'loading-draft', 'a
 const STAGE_LABEL = {'init': 'init', 'loading-weights': 'weights', 'loading-draft': 'draft', 'allocating-kv': 'KV', 'capturing-graphs': 'graphs', 'warming-up': 'warmup'};
 const ALL_STAGES = Object.keys(STAGE_LABEL);
 const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B'};
+// The three 27B targets share one unit, so the lane name alone ("27B") does not say
+// which checkpoint is loaded. Every control that names the lane says the checkpoint too.
+const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8', flash: ''};
+function laneLabel(unit){
+  const base = LANE_NAME[unit] || unit.replace('.service', '');
+  const serving = servingEngine();
+  const mine = serving && serving[0] === unit;   // the target we know is the one serving
+  const t = mine && F.target && TARGET_SHORT[F.target] ? ' ' + TARGET_SHORT[F.target] : '';
+  return base + t;
+}
 const laneCls = name => name.includes('flash') ? 'flash' : 'lane27';
 const stateChipCls = st => (STATE_CHIP[st] ?? 'warn') + (st === 'stopping' || TRANSITIONAL.has(st) ? ' live' : '');
 
@@ -375,10 +385,8 @@ function rLanePill(){
     return;
   }
   const [name, e] = s;
-  const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8', flash: ''};
   setChip('lanestate', STATE_LABEL[e.state] || e.state, stateChipCls(e.state));
-  const t = F.target && TARGET_SHORT[F.target] ? ' ' + TARGET_SHORT[F.target] : '';
-  setText('lanename', (LANE_NAME[name] || name) + t);
+  setText('lanename', laneLabel(name));
   const l = F.load || {};
   let sub = '';
   if (e.state === 'ready' || e.state === 'degraded'){
@@ -420,14 +428,14 @@ function engineCard(name){
   let c = CARDS.get(name);
   if (c) return c;
   const root = el('div', 'eng'); const row = el('div', 'row');
-  const chip = el('span', 'chip'); const nameEl = el('span', 'name', LANE_NAME[name] ? `${name.replace('.service', '')} · ${LANE_NAME[name]}` : name);
+  const chip = el('span', 'chip'); const nameEl = el('span', 'name', name.replace('.service', ''));
   const enabled = el('span', 'chip ' + laneCls(name)); const since = el('span', 'since');
   const btn = el('button', 'btn mini'); btn.dataset.act = 'unit'; btn.dataset.unit = name;
   row.append(chip, nameEl, enabled, since, btn); root.append(row);
   const why = el('div', 'why'); root.append(why);
   const hist = el('div', 'why'); root.append(hist);
   const extra = el('div'); root.append(extra);
-  c = {root, chip, enabled, since, btn, why, hist, extra, sig: ''};
+  c = {root, chip, nameEl, enabled, since, btn, why, hist, extra, sig: ''};
   btn.addEventListener('click', () => {
     const e = ((F.life || {}).engines || {})[name]; if (!e) return;
     const on = e.state !== 'stopped' && e.state !== 'failed';
@@ -454,6 +462,7 @@ function rLifecycle(d){
   Object.entries(d.engines || {}).forEach(([name, e]) => {
     const c = engineCard(name);
     c.chip.textContent = STATE_LABEL[e.state] || e.state; c.chip.className = 'chip ' + stateChipCls(e.state);
+    c.nameEl.textContent = `${name.replace('.service', '')} · ${laneLabel(name)}`;
     const en = (units[name] || {}).enabled;
     c.enabled.textContent = en === 'enabled' ? 'starts at boot' : en === 'disabled' ? 'manual start only' : en || '';
     c.since.textContent = e.state === 'ready' && e.elapsed ? 'up ' + fmtDur(e.elapsed) : '';
@@ -483,7 +492,7 @@ function rLifecycle(d){
     ov.append(p);
   } else {
     const [name, e] = s; const row = el('div', 'row');
-    row.append(el('span', 'chip ' + stateChipCls(e.state), STATE_LABEL[e.state] || e.state), el('span', 'name', `${LANE_NAME[name] || name}`),
+    row.append(el('span', 'chip ' + stateChipCls(e.state), STATE_LABEL[e.state] || e.state), el('span', 'name', laneLabel(name)),
                el('span', 'chip ' + laneCls(name), name.replace('.service', '')), el('span', 'since', e.state === 'ready' && e.elapsed ? 'up ' + fmtDur(e.elapsed) : ''));
     ov.append(row);
     if (TRANSITIONAL.has(e.state)) ov.append(bootBlock(e));
@@ -606,12 +615,12 @@ function renderLaneAction(why){
   const s = servingEngine();
   if (s){
     const [name, e] = s; const stopping = e.state === 'stopping';
-    b.textContent = stopping ? `${LANE_NAME[name]} stopping…` : `Stop ${LANE_NAME[name] || name}`;
+    b.textContent = stopping ? `${laneLabel(name)} stopping…` : `Stop ${laneLabel(name)}`;
     b.className = 'btn mini danger'; b.disabled = !!(why || stopping); b.title = why || `systemctl stop ${name}`;
     b.onclick = () => CARDS.get(name) ? CARDS.get(name).btn.click() : null;
   } else {
     const name = enabledUnit(); const bl = ((F.life || {}).blocked || {})[`unit:start:${name}`];
-    b.textContent = `Start ${LANE_NAME[name] || name}`; b.className = 'btn mini low';
+    b.textContent = `Start ${laneLabel(name)}`; b.className = 'btn mini low';
     b.disabled = !!(why || bl || !F.life); b.title = why || (bl ? bl[0] : `systemctl start ${name} (about 9 minutes to ready)`);
     b.onclick = () => askAction('unit', {verb: 'start', unit: name}, ['sudo', '-n', '/usr/bin/systemctl', 'start', name], []);
   }
@@ -625,6 +634,7 @@ document.querySelectorAll('dd, .chip, .num').forEach(e => { if (e.textContent.tr
 let lastMsgAt = 0, lastState = null, lastAges = {}, lastErrors = {};
 const lastGood = {};   // per collector: the last sample that was NOT an error
 const warned = {};     // one console line per distinct failure, not one per second
+const renderErr = {};  // collector -> last renderer exception, shown on its panels
 function warnOnce(name, msg){
   if (warned[name] === msg) return;
   warned[name] = msg; console.warn(name, msg);
@@ -648,8 +658,9 @@ function apply(state){
     try{
       if (errors[name]) throw new Error(errors[name]);
       fn(wrap.data || {});
-      delete warned[name];
+      delete warned[name]; delete renderErr[name];
     }catch(e){
+      if (!errors[name]) renderErr[name] = e.message;   // a bug here, not a dead source
       // a timeout on a busy engine is not a lane change: keep the last known facts and
       // let the panel age visibly. Only lifecycle decides that a lane is gone.
       if (name === 'engine_info' && !servingReady()) rEngineInfoDown();
@@ -668,7 +679,9 @@ function freshness(){
   document.querySelectorAll('section.panel[data-src]').forEach(sec => {
     const srcs = sec.dataset.src.split(',');
     let worst = 0, stale = false, err = null;
-    srcs.forEach(s => { const a = lastAges[s]; const p = periods[s] || 5; if (a != null){ const t = a + drift; worst = Math.max(worst, t); if (t > 3 * p + 3) stale = true; } if (lastErrors[s] && s !== 'engine_info') err = err || `${s}: ${lastErrors[s]}`; });
+    srcs.forEach(s => { const a = lastAges[s]; const p = periods[s] || 5; if (a != null){ const t = a + drift; worst = Math.max(worst, t); if (t > 3 * p + 3) stale = true; }
+      if (renderErr[s]) err = err || `${s} render error: ${renderErr[s]}`;
+      else if (lastErrors[s] && s !== 'engine_info') err = err || `${s}: ${lastErrors[s]}`; });
     const ageEl = sec.querySelector('.age');
     if (ageEl){ ageEl.textContent = err ? 'no data: ' + err.slice(0, 70) : stale ? `stale, ${fmtDur(worst)} old` : worst > 4 ? `${Math.round(worst)} s ago` : ''; ageEl.className = 'age' + (stale || err ? ' stale' : ''); }
     sec.classList.toggle('stale', stale || !!err);
@@ -757,7 +770,7 @@ function askAction(name, params, argv, warns){
     stock: 'The NVFP4 quantization this repo pins by default: smallest and fastest of the 27B targets.',
     uncensored: 'The abliterated NVFP4 checkpoint: same size and speed as stock, refusals removed.',
     flash: 'The 176B Flash-Next lane. It has its own unit, its own image and its own 48 GB PLE table.'};
-  const TITLES = {unit: p => `${p.verb} ${LANE_NAME[p.unit] || p.unit.replace('.service', '')}`,
+  const TITLES = {unit: p => `${p.verb} ${laneLabel(p.unit)}`,
                   switch: p => `switch the target model to ${TARGET_NAME[p.target] || p.target}`,
                   flush_cache: () => 'flush the engine cache', abort_all: () => 'abort every in-flight generation', smoke: () => 'run a smoke generation through the proxy', diag_bundle: () => 'write a diagnostics bundle'};
   const EXPLAIN = {unit: p => p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : 'systemd starts the unit; the engine loads its weights and is ready in about 9 minutes (watch the boot bar).',

@@ -111,6 +111,11 @@ const emptyish = await evalJs(`(()=>{
 })()`);
 ok('no visible field stuck on "..." after load', emptyish.length === 0, emptyish.join(', '));
 
+// a renderer that throws must never hide: its panels say so
+const renderErrs = await evalJs(`[...document.querySelectorAll('section.panel .age')]
+  .map(e => e.textContent).filter(t => /render error/.test(t))`);
+ok('no panel reports a render error', renderErrs.length === 0, renderErrs.join(' | '));
+
 // ── 4. the confirm modal: opens, shows the command, Escape closes, no action runs ──
 const jobsBefore = ((await (await api('/api/state')).json()).job || {}).data || {};
 const nBefore = (jobsBefore.recent || []).length;
