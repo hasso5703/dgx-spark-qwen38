@@ -180,23 +180,43 @@ if [ -f "$CONFIG_DIR/opencode.off" ]; then
 else
 for OC_JSON in "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json"; do
   [ -f "$OC_JSON" ] || continue
-  TARGET_LANE="$TARGET_LANE" OC_JSON="$OC_JSON" python3 - <<'PYEOF' || echo "NOTE: could not update $OC_JSON (hand-edited?); set its \"model\" field yourself"
+  TARGET_LANE="$TARGET_LANE" OC_JSON="$OC_JSON" OC_CHOICE="$CHOICE" \
+  OC_CTX="$(grep -oE -- '--context-length [0-9]+' "$TARGET_UNIT" 2>/dev/null | awk '{print $2}' | head -1)" \
+  python3 - <<'PYEOF' || echo "NOTE: could not update $OC_JSON (hand-edited?); set its \"model\" field yourself"
 import json
 import os
 p = os.environ["OC_JSON"]
 want = "flashnext/qwen3.8-flash-next" if os.environ["TARGET_LANE"] == "flash" else "qwen38/qwen3.8-27b"
+# The three 27B targets share one served-model-name, so opencode shows one entry
+# whatever is loaded behind it. Its label has to say WHICH checkpoint, otherwise the
+# picker still reads "NVFP4" while the box serves FP8 (field case 2026-08-31).
+LABEL = {"stock": "Qwen3.8-27B NVFP4 + DFlash2",
+         "uncensored": "Qwen3.8-27B NVFP4 abliterated + DFlash2",
+         "fp8": "Qwen3.8-27B FP8 official + DFlash2",
+         "flash": "Qwen3.8-Flash-Next NVFP4 + MTP"}
 cfg = json.load(open(p))
-prov = want.split("/")[0]
+prov, mid = want.split("/")
 if prov not in cfg.get("provider", {}):
     print(f"NOTE: provider '{prov}' is not in {p} (config predates this target);")
     print( "      re-run ./install.sh once to regenerate it, keeping your choices.")
 else:
     cfg["model"] = want
     cfg["small_model"] = want
+    label = LABEL.get(os.environ.get("OC_CHOICE", ""))
+    try:
+        ctx = int(os.environ.get("OC_CTX") or 0)
+    except ValueError:
+        ctx = 0
+    if label:
+        suffix = " (local, 1M)" if ctx >= 1_000_000 else f" (local, {ctx // 1000}K)" if ctx else " (local)"
+        m = cfg["provider"][prov].get("models", {}).get(mid)
+        if isinstance(m, dict):
+            m["name"] = label + suffix
     with open(p, "w") as f:
         json.dump(cfg, f, indent=2)
         f.write("\n")
-    print(f"opencode default model -> {want} ({p})")
+    print(f"opencode default model -> {want} ({p})"
+          + (f", shown as {label + suffix!r}" if label else ""))
 PYEOF
 done
 fi
