@@ -164,6 +164,21 @@ def tokenize_count(body, path):
 _POOL = {"tokens": None, "ts": 0.0}
 
 
+def invalidate_pool():
+    """Forget the cached pool, because the engine that reported it is gone.
+
+    The pool is a boot lottery (measured 863,398 / 893,479 / 913,334 for one
+    checkpoint) and changes outright between lanes (about 863k on the 27B lane,
+    184k on flash). Caching it for 600 s without ever dropping it meant that
+    after an engine restart the guard kept enforcing the previous engine's
+    limit: a prompt sized against a larger stale pool would be relayed to a
+    smaller one and wedge the scheduler, which is the exact failure this guard
+    exists to prevent. Anything proving the engine is not the one we measured
+    drops the cache.
+    """
+    _POOL.update(tokens=None, ts=0.0)
+
+
 def pool_tokens():
     if _POOL["tokens"] and time.time() - _POOL["ts"] < 600:
         return _POOL["tokens"]
@@ -175,7 +190,9 @@ def pool_tokens():
         if n > 0:
             _POOL.update(tokens=n, ts=time.time())
     except Exception:
-        pass
+        # A read that fails is itself evidence the engine moved: never keep
+        # serving a limit measured on an engine that no longer answers.
+        invalidate_pool()
     return _POOL["tokens"]
 HOP = {"host", "content-length", "connection", "keep-alive", "transfer-encoding"}
 
@@ -446,6 +463,7 @@ class H(BaseHTTPRequestHandler):
                 try:
                     count = tokenize_count(body, self.path)
                 except EngineUnreachable as e:
+                    invalidate_pool()   # this engine is restarting; its pool is not ours
                     self._unavailable(e); self._done("503 engine unreachable"); return
                 if count is None:
                     reason = (f"at least ~{int(est)} tokens by size (a shape the engine's tokenizer "
@@ -466,7 +484,9 @@ class H(BaseHTTPRequestHandler):
                                 json.dumps({"error": {"type": "context_too_long", "message": msg}}).encode())
                     self._done("400 oversize refused"); return
         resp, herr, cerr = self._open(body)
-        if cerr is not None: self._unavailable(cerr); self._done("503 engine unreachable"); return
+        if cerr is not None:
+            invalidate_pool()           # same: the next pool must be read fresh
+            self._unavailable(cerr); self._done("503 engine unreachable"); return
         if herr is not None: self._upstream_error(herr); return
         self._relay(resp)
 
@@ -503,7 +523,9 @@ class H(BaseHTTPRequestHandler):
         self._peer = f"{self.client_address[0]}:{self.client_address[1]}"
         self._bytes = 0; self._first = None; self._last = None
         resp, herr, cerr = self._open(None)
-        if cerr is not None: self._unavailable(cerr); self._done("503 engine unreachable"); return
+        if cerr is not None:
+            invalidate_pool()           # same: the next pool must be read fresh
+            self._unavailable(cerr); self._done("503 engine unreachable"); return
         if herr is not None: self._upstream_error(herr); return
         try: data = resp.read()
         finally:

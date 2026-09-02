@@ -41,6 +41,16 @@
   them happily and `run.sh` then died with "MODEL_CHOICE must be stock,
   uncensored or flash", because its own target map and its pin list both
   predated them. The documented no-service path works for all four 27B targets.
+- **The keepalive proxy stops enforcing a dead engine's KV pool.** `pool_tokens()`
+  cached the pool for 600 s and dropped it nowhere, so for ten minutes after an
+  engine restart the oversize guard sized prompts against the previous engine.
+  The pool is a boot lottery (863,398 / 893,479 / 913,334 measured for one
+  checkpoint) and changes outright between lanes (about 863k on 27B, 184k on
+  flash), so a prompt accepted against a stale larger pool would be relayed to a
+  smaller one and wedge the scheduler, which is the failure the guard exists to
+  prevent. The cache is now dropped whenever the engine proves unreachable and
+  whenever a refresh read fails, with a regression test that goes red if the
+  invalidation is removed.
 - **An upgrade on an FP8 box no longer demotes it to a custom model.** install.sh
   maps the installed `--model-path` back to a MODEL_CHOICE so a re-run keeps your
   target; that map knew stock and uncensored only, so either FP8 checkpoint fell

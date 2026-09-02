@@ -211,5 +211,48 @@ class ProxyInFrontOfLoadingEngine(unittest.TestCase):
         self.assertEqual(json.loads(raw)["error"]["type"], "engine_unavailable")
 
 
+class PoolCacheInvalidation(unittest.TestCase):
+    """The cached pool must never outlive the engine that reported it.
+
+    The pool is a boot lottery and changes outright between lanes (about 863k on
+    the 27B lane, 184k on flash). Before this, pool_tokens() cached for 600 s and
+    dropped the value nowhere, so for ten minutes after an engine restart the
+    guard enforced the previous engine's limit: a prompt sized against a larger
+    stale pool would be relayed to a smaller one and wedge the scheduler, which
+    is the failure the guard exists to prevent."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "kproxy_pool", HERE.parents[1] / "keepalive-proxy.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    def test_invalidate_drops_a_cached_pool(self):
+        self.m._POOL.update(tokens=913334, ts=self.m.time.time())
+        self.assertEqual(self.m.pool_tokens(), 913334, "fresh cache should be used")
+        self.m.invalidate_pool()
+        self.assertIsNone(self.m._POOL["tokens"], "invalidate must clear the value")
+        self.assertEqual(self.m._POOL["ts"], 0.0, "invalidate must clear the timestamp")
+
+    def test_failed_read_does_not_keep_a_stale_pool(self):
+        # No engine answers on this port, so the refresh read fails. The old
+        # behaviour returned the stale number; the guard would then size prompts
+        # against an engine that is not there any more.
+        self.m.UPSTREAM = "http://127.0.0.1:1"
+        self.m._POOL.update(tokens=913334, ts=0.0)      # cached, but expired
+        self.assertIsNone(self.m.pool_tokens(),
+                          "a failed refresh must not fall back on the previous engine's pool")
+
+    def test_a_smaller_pool_is_picked_up_after_invalidation(self):
+        # 27B pool cached, then the box switches to the flash lane. Whatever the
+        # cache said, the limit must follow the engine that is actually serving.
+        self.m._POOL.update(tokens=863398, ts=self.m.time.time())
+        big = self.m.prompt_limit(self.m.pool_tokens())
+        self.m.invalidate_pool()
+        self.m._POOL.update(tokens=184384, ts=self.m.time.time())
+        small = self.m.prompt_limit(self.m.pool_tokens())
+        self.assertLess(small, big, "the flash lane must not inherit the 27B limit")
+
+
 if __name__ == "__main__":
     unittest.main()
