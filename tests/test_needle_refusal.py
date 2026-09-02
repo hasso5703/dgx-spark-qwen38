@@ -10,8 +10,10 @@ proxy does."""
 import http.server
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -52,7 +54,14 @@ def main() -> None:
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     port = srv.server_address[1]
-    env = {**os.environ, "PORT": str(port)}
+    # needle.sh reads the API key from $HOME/.config/qwen38/api-key. Relying on
+    # the developer's own key made this pass here and fail on a runner that has
+    # none, so the test brings its own HOME.
+    home = tempfile.mkdtemp()
+    os.makedirs(os.path.join(home, ".config", "qwen38"))
+    with open(os.path.join(home, ".config", "qwen38", "api-key"), "w") as f:
+        f.write("test-key\n")
+    env = {**os.environ, "PORT": str(port), "HOME": home}
     try:
         # A depth the fake refuses, mixed with one it serves.
         r = subprocess.run(["bash", NEEDLE, "--model", "m", "--depths", "1000 300000",
@@ -77,6 +86,7 @@ def main() -> None:
         print("test_needle_refusal: OK")
     finally:
         srv.shutdown()
+        shutil.rmtree(home, ignore_errors=True)
 
 
 if __name__ == "__main__":

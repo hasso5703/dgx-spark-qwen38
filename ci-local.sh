@@ -5,7 +5,7 @@
 set -u
 FILTER="${1:-}"
 python3 - "$FILTER" <<'PY'
-import subprocess, sys, yaml, shutil, os
+import subprocess, sys, yaml, shutil, os, tempfile
 flt = sys.argv[1]
 d = yaml.safe_load(open(".github/workflows/ci.yml"))
 ok = fail = skip = 0
@@ -25,7 +25,15 @@ for job in d["jobs"].values():
                 need.append("pip (runner-only)")
         if need:
             print(f"  SKIP {name} (missing: {', '.join(need)})"); skip += 1; continue
-        r = subprocess.run(["bash", "-e", "-c", run], capture_output=True, text=True, cwd=os.getcwd())
+        # Run every step under a throwaway HOME. A GitHub runner has no
+        # ~/.config/qwen38, and a test that quietly read the developer's own API
+        # key passed here and failed there; local has to be the harder of the two.
+        home = tempfile.mkdtemp(prefix="ci-local-home-")
+        try:
+            r = subprocess.run(["bash", "-e", "-c", run], capture_output=True, text=True,
+                               cwd=os.getcwd(), env={**os.environ, "HOME": home})
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
         if r.returncode == 0:
             print(f"  ok   {name}"); ok += 1
         else:
