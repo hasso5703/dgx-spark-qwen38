@@ -41,6 +41,15 @@
   them happily and `run.sh` then died with "MODEL_CHOICE must be stock,
   uncensored or flash", because its own target map and its pin list both
   predated them. The documented no-service path works for all four 27B targets.
+- **`oc-merge-limits.py` could report a write it had not made.** It patched the
+  limit block with three regexes; a block missing `output` or `input` matched
+  nothing for those keys, so the file kept its old values while the tool printed
+  the new ones and exited 0, leaving opencode on its own default cap. Missing
+  keys are now inserted, and every run re-reads the file afterwards and restores
+  the backup rather than report a write that did not land. The inline CI fixture
+  became `tests/test_oc_merge_limits.py`, covering four incomplete block shapes,
+  an empty one, preservation of unknown keys and JSONC comments, the no-op exit
+  code, and the verifier itself.
 - **58 cockpit tests were never running.** `dashboard/tests/test_lifecycle.py`
   declares 58 tests across 14 classes and had no `__main__` block, so the CI
   step that invoked it as a script executed nothing and exited 0. The repo's
