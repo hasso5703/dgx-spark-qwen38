@@ -63,6 +63,11 @@ case "$MODEL_CHOICE" in
   flash)      MODEL_REPO="$FLASH_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_REV}" ;;
   *) printf 'ERROR: MODEL_CHOICE must be "stock", "uncensored", "fp8", "uncensored-fp8" or "flash" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
 esac
+# The DSpark drafter. Served up to v1.1; DFlash2 replaced it in v1.2 and no
+# serving path has referenced it since, so it is no longer downloaded (it cost
+# 6 GB and a few minutes on every 27B install). The pin stays so the cockpit's
+# registry can still recognise a copy left on disk, and `git checkout v1.1 &&
+# ./install.sh` fetches it through that release's own installer.
 DRAFT_REPO="RadixArk/Qwen3.8-27B-DSpark"
 DRAFT_REV="${DRAFT_REV:-85ef153be924f17ce4bf62726954eeaa4a73e854}"
 DRAFT2_REPO="z-lab/Qwen3.8-27B-DFlash2"
@@ -126,7 +131,7 @@ unit (or the marker file) unless the env var or flag is passed explicitly.
 
 Env overrides (defaults are pinned to the validated 2026-08-15 versions):
   IMAGE=lmsysorg/sglang:qwen38-27b   use the moving tag instead of the digest
-  MODEL_REV=main  DRAFT_REV=main     use latest checkpoint revisions
+  MODEL_REV=main                     use the latest target revision
   DRAFT2_REV=main                    latest DFlash2 draft revision
   MODEL_CHOICE=uncensored            serve the huihui-abliterated model
                                      (edp1096 NVFP4) instead of the stock base
@@ -380,8 +385,8 @@ DL_MODEL_REPO="$MODEL_REPO"
 [ "$KEEP_MODEL_VERBATIM" -eq 1 ] && DL_MODEL_REPO=""
 # Flash has no separate draft checkpoints: its MTP head ships inside the
 # target checkpoint itself. Empty repo vars are skipped by the downloader.
-DL_DRAFT_REPO="$DRAFT_REPO"; DL_DRAFT2_REPO="$DRAFT2_REPO"
-if [ "$LANE" = "flash" ]; then DL_DRAFT_REPO=""; DL_DRAFT2_REPO=""; fi
+DL_DRAFT2_REPO="$DRAFT2_REPO"
+if [ "$LANE" = "flash" ]; then DL_DRAFT2_REPO=""; fi
 # Unauthenticated downloads get throttled by the Hub (measured: a fresh-cache
 # pull stalled at 3.3 GB). A token in $HF_CACHE/token is picked up through the
 # mount; HF_TOKEN in the environment is passed through as well.
@@ -396,7 +401,6 @@ docker run --rm -i --network host --user "$(id -u):$(id -g)" \
   --entrypoint python3 \
   -e HF_HOME=/hf -e HF_HUB_DOWNLOAD_TIMEOUT=30 -e HF_HUB_DISABLE_XET=1 \
   -e MODEL_REPO="$DL_MODEL_REPO" -e MODEL_REV="$MODEL_REV" \
-  -e DRAFT_REPO="$DL_DRAFT_REPO" -e DRAFT_REV="$DRAFT_REV" \
   -e DRAFT2_REPO="$DL_DRAFT2_REPO" -e DRAFT2_REV="$DRAFT2_REV" \
   "${DL_TOKEN_ARGS[@]}" \
   -v "$HF_CACHE":/hf \
@@ -405,7 +409,6 @@ import os
 import time
 from huggingface_hub import snapshot_download
 for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
-                  (os.environ["DRAFT_REPO"], os.environ["DRAFT_REV"]),
                   (os.environ["DRAFT2_REPO"], os.environ["DRAFT2_REV"])):
     if not repo:  # kept custom model: already in cache, nothing to download
         continue

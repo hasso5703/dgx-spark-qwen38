@@ -9,7 +9,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── Same pins as install.sh (read from it: single source of truth) ──
-PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
 [ "$(printf '%s\n' "$PINS" | wc -l)" -eq 15 ] || die "could not read the 15 pinned variables from install.sh (repo layout changed?)"
 eval "$PINS"
 case "${MODEL_CHOICE}" in
@@ -41,7 +41,7 @@ PREP="./install.sh --no-service"
 # "the first snapshot dir": a cache can hold several revisions (an old
 # MODEL_REV=main attempt, an upstream bump), and `ls | head -1` picks
 # alphabetically, failing a healthy install on a stale partial dir (issue #5).
-for PAIR in "$MODEL_REPO=$MODEL_REV" "$DRAFT_REPO=$DRAFT_REV" "$DRAFT2_REPO=$DRAFT2_REV"; do
+for PAIR in "$MODEL_REPO=$MODEL_REV" "$DRAFT2_REPO=$DRAFT2_REV"; do
   REPO="${PAIR%%=*}"; REV="${PAIR#*=}"
   DIR="$HF_CACHE/hub/models--${REPO//\//--}"
   [ -d "$DIR/snapshots" ] || die "checkpoint $REPO not found in $HF_CACHE. Run: $PREP"

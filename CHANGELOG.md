@@ -41,6 +41,15 @@
   them happily and `run.sh` then died with "MODEL_CHOICE must be stock,
   uncensored or flash", because its own target map and its pin list both
   predated them. The documented no-service path works for all four 27B targets.
+- **A 27B install stops downloading 6 GB it never serves.** The DSpark drafter
+  was fetched by every 27B install since v1.2 replaced it with DFlash2, and
+  `run.sh` refused to start when it was missing, but no serving path had
+  referenced it for six releases. It is no longer downloaded or required; the
+  pin stays so the cockpit's registry still recognises a copy on disk, and
+  `git checkout v1.1 && ./install.sh` fetches it through that release's own
+  installer. A 27B target now needs about 84 GB free instead of 90, and CI
+  fails if the set of downloaded checkpoints and the set something actually
+  serves drift apart again.
 - **The keepalive proxy stops enforcing a dead engine's KV pool.** `pool_tokens()`
   cached the pool for 600 s and dropped it nowhere, so for ten minutes after an
   engine restart the oversize guard sized prompts against the previous engine.

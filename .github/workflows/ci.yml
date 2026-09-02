@@ -38,10 +38,10 @@ jobs:
           python3 tests/test_lifecycle.py
           python3 tests/test_recipes.py
 
-      - name: Pin contracts (run.sh reads 19, switch-model.sh reads 16)
+      - name: Pin contracts (run.sh reads 17, switch-model.sh reads 16)
         run: |
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 19 ] || { echo "run.sh pin contract broken: $n != 19"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 17 ] || { echo "run.sh pin contract broken: $n != 17"; exit 1; }
           n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
           [ "$n" -eq 16 ] || { echo "switch-model.sh pin contract broken: $n != 16"; exit 1; }
           # This check must mirror the grep switch-model.sh actually runs, or a
@@ -68,6 +68,30 @@ jobs:
           eval "$PINS_F"
           [ "${#FLASH_REV}" -eq 40 ] || { echo "FLASH_REV is not a 40-char sha"; exit 1; }
           case "$FLASH_IMAGE" in *@sha256:*) ;; *) echo "FLASH_IMAGE is not digest-pinned"; exit 1 ;; esac
+
+      - name: Every downloaded checkpoint is one something actually serves
+        run: |
+          # The DSpark drafter was fetched by every 27B install for six releases
+          # after DFlash2 replaced it: 6 GB and minutes of download that no
+          # serving path referenced, and run.sh refused to start without it.
+          # Downloads and serving must not drift apart again.
+          dl=$(sed -n '/^for repo, rev in ((os.environ/,/^)):/p' install.sh \
+               | grep -oE 'os\.environ\["[A-Z0-9_]+_REPO"\]' | grep -oE '[A-Z0-9_]+_REPO' | sort -u)
+          echo "downloaded: $dl"
+          [ "$(echo "$dl" | wc -l)" -eq 2 ] || { echo "expected exactly MODEL_REPO and DRAFT2_REPO"; exit 1; }
+          echo "$dl" | grep -qx MODEL_REPO  || { echo "the target model is not downloaded"; exit 1; }
+          echo "$dl" | grep -qx DRAFT2_REPO || { echo "the served drafter is not downloaded"; exit 1; }
+          # and the drafter that IS downloaded must be the one the units serve
+          served=$(grep -hoE -- '--speculative-draft-model-path [^ ]+' \
+                   qwen38-sglang.service.template qwen38-sglang-1m.service.template run.sh \
+                   | awk '{print $2}' | sort -u)
+          [ "$(echo "$served" | wc -l)" -eq 1 ] || { echo "27B paths disagree on the drafter: $served"; exit 1; }
+          grep -qE "^DRAFT2_REPO=\"?$served" install.sh \
+            || { echo "the units serve $served but DRAFT2_REPO points elsewhere"; exit 1; }
+          # nothing may serve a checkpoint the installer never fetches
+          ! grep -qE -- '--speculative-draft-model-path .*DSpark' \
+              qwen38-sglang.service.template qwen38-sglang-1m.service.template run.sh \
+            || { echo "a 27B path serves DSpark, which is no longer downloaded"; exit 1; }
 
       - name: Unit templates render with no leftover placeholder
         run: |
