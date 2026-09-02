@@ -1205,7 +1205,7 @@ def start_action(name: str, params: dict, origin: str = "ui") -> tuple[int, dict
         cur = JOBS.get(JOB_CURRENT["id"]) if JOB_CURRENT["id"] else None
         return 409, {"error": "busy",
                      "running": cur.summary() if cur else None,
-                     "message": f"another action is already running"
+                     "message": "another action is already running"
                                 + (f": {cur.action}" if cur else "") + "; wait for it to finish"}
     try:
         argv = spec["argv"](clean) if spec["argv"] else None
@@ -1367,7 +1367,7 @@ def registry_snapshot(max_age: float = 300.0) -> dict:
         try:
             models = rg.classify(rg.scan_hf_cache(
                 Path.home() / ".cache/huggingface/hub"), pins)
-        except OSError as e:
+        except OSError:
             models = []
         images = rg.parse_docker_images(
             run(["docker", "images", "--format",

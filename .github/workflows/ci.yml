@@ -16,12 +16,12 @@ jobs:
 
       - name: Shell syntax
         run: |
-          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh; do
+          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh; do
             bash -n "$f"
           done
 
       - name: shellcheck (warning severity)
-        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh
+        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh
 
       - name: opencode plugin syntax (node)
         run: node --check extras/opencode/auto-continue.js
@@ -29,8 +29,14 @@ jobs:
       - name: Python correctness (ruff F,E9 + compile)
         run: |
           pip install 'ruff==0.5.0'
-          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py tests/*.py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py
+          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py tests/*.py dashboard/*.py dashboard/tests/*.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-fit-limits.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py
+
+      - name: Cockpit unit tests (lifecycle state machine, recipe generation)
+        run: |
+          cd dashboard
+          python3 tests/test_lifecycle.py
+          python3 tests/test_recipes.py
 
       - name: Pin contracts (run.sh expects 15, switch-model.sh expects 8)
         run: |

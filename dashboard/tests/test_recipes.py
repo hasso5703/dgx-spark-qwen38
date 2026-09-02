@@ -1,6 +1,5 @@
 """Offline tests for recipes.py, built on the REAL repo files (install.sh and
 the two lane templates) plus synthetic registry snapshots."""
-import copy
 import json
 import sys
 import tempfile
