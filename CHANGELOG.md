@@ -41,6 +41,15 @@
   them happily and `run.sh` then died with "MODEL_CHOICE must be stock,
   uncensored or flash", because its own target map and its pin list both
   predated them. The documented no-service path works for all four 27B targets.
+- **`needle.sh` no longer reports a lane's own prompt limit as corruption.** It
+  probes through the keepalive proxy by default, so the oversize guard and
+  `PROMPT_CEILING_TOKENS` apply to it, and its default depths run to 140,000
+  while the flash lane's ceiling is 128,000. A refused prompt came back as
+  `ERROR`, counted against the retrieval ratio and exited 1, which reads as the
+  long-context corruption this probe exists to detect. Refusals are now labelled
+  `REFUSED`, excluded from the ratio, explained (lower `--depths`, or probe the
+  engine port directly with `PORT=30000`), and an all-refused run exits 2
+  because nothing was measured rather than 0 because nothing failed.
 - **`oc-merge-limits.py` could report a write it had not made.** It patched the
   limit block with three regexes; a block missing `output` or `input` matched
   nothing for those keys, so the file kept its old values while the tool printed

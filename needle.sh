@@ -37,7 +37,7 @@ fi
 echo "needle probe: model=$MODEL endpoint=$BASE depths=[$DEPTHS] trials=$TRIALS"
 export KEY BASE MODEL TRIALS DEPTHS FLUSH MEM
 python3 -u - <<'PY'
-import json, os, random, threading, time, urllib.request
+import json, os, random, threading, time, urllib.error, urllib.request
 
 KEY, BASE, MODEL = os.environ["KEY"], os.environ["BASE"], os.environ["MODEL"]
 TRIALS = int(os.environ["TRIALS"]); DEPTHS = [int(x) for x in os.environ["DEPTHS"].split()]
@@ -45,14 +45,36 @@ WORDS = ("harbor lantern meadow copper violin thunder saddle marble orchard "
          "pepper canyon willow falcon ember granite tulip anchor cinder velvet "
          "quartz").split()
 
+class Refused(Exception):
+    """The lane refused this prompt by policy, which is not a retrieval result.
+
+    Running through the keepalive proxy (the default port) means the oversize
+    guard and the lane's PROMPT_CEILING_TOKENS apply. A depth above the ceiling
+    comes back as 400 context_too_long, and counting that as a missed needle
+    reported a correctness failure where the box had simply protected itself:
+    ./needle.sh with its default depths does exactly that on the flash lane,
+    whose ceiling is 128000."""
+
+
 def chat(messages, max_tokens=40):
     body = json.dumps({"model": MODEL, "messages": messages, "max_tokens": max_tokens,
                        "temperature": 0, "chat_template_kwargs": {"enable_thinking": False}}).encode()
     req = urllib.request.Request(f"{BASE}/v1/chat/completions", body,
                                  {"Content-Type": "application/json", "Authorization": f"Bearer {KEY}"})
     t0 = time.time()
-    with urllib.request.urlopen(req, timeout=900) as r:
-        out = json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=900) as r:
+            out = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode(errors="replace")
+        kind = ""
+        try:
+            kind = ((json.loads(raw).get("error") or {}).get("type")) or ""
+        except ValueError:
+            pass
+        if e.code == 400 and kind == "context_too_long":
+            raise Refused(raw[:180]) from e
+        raise
     return out, time.time() - t0
 
 MEM = os.environ.get("MEM") == "1" and os.path.exists("/proc/meminfo")
@@ -135,16 +157,33 @@ for depth in DEPTHS:
                     mem_floors.append(floor)
             print(f"depth~{depth:>6} trial {t+1}: prompt_tokens={ptok} {dt:5.1f}s -> {verdict}  reply={reply[:60]!r}{memnote}")
             results.append((depth, t, ptok, verdict))
+        except Refused as e:
+            if sampler:
+                sampler.stop()
+            print(f"depth~{depth:>6} trial {t+1}: REFUSED by the lane, not attempted: {str(e)[:110]}")
+            results.append((depth, t, None, "REFUSED"))
         except Exception as e:  # noqa: BLE001
             if sampler:
                 sampler.stop()
             print(f"depth~{depth:>6} trial {t+1}: ERROR {str(e)[:120]}")
             results.append((depth, t, None, "ERROR"))
-ok = sum(1 for r in results if r[3] == "OK")
-print(f"\nNEEDLE SUMMARY: {ok}/{len(results)} exact retrievals; "
-      + ", ".join(f"{d}:{sum(1 for r in results if r[0]==d and r[3]=='OK')}/{sum(1 for r in results if r[0]==d)}" for d in DEPTHS))
+attempted = [r for r in results if r[3] != "REFUSED"]
+refused = [r for r in results if r[3] == "REFUSED"]
+ok = sum(1 for r in attempted if r[3] == "OK")
+print(f"\nNEEDLE SUMMARY: {ok}/{len(attempted)} exact retrievals"
+      + (f" ({len(refused)} refused by the lane's own prompt limit, not measured)" if refused else "") + "; "
+      + ", ".join(f"{d}:{sum(1 for r in results if r[0]==d and r[3]=='OK')}/{sum(1 for r in results if r[0]==d and r[3]!='REFUSED')}"
+                  for d in DEPTHS))
+if refused:
+    print("Refused depths were never sent to the engine: they exceed this lane's "
+          "PROMPT_CEILING_TOKENS or the proxy's share of the KV pool. To probe past it, "
+          "either lower --depths or talk to the engine directly with PORT=30000 "
+          "(no keepalive, no guard: that is how the ceiling itself was measured).")
 if MEM and mem_floors:
     print(f"MEM SUMMARY: lowest MemAvailable during a prompt {min(mem_floors):.1f} GiB, now {mem_avail_gib():.1f} GiB "
           "(the flash lane keeps the memory it took; under ~10 GiB the box is near the livelock edge, see README)")
-raise SystemExit(0 if ok == len(results) else 1)
+if not attempted:
+    print("nothing was measured: every depth was refused by the lane's own limit")
+    raise SystemExit(2)
+raise SystemExit(0 if ok == len(attempted) else 1)
 PY

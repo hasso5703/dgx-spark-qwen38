@@ -283,6 +283,9 @@ jobs:
       - name: get.sh guards (git fixture, stubbed installer)
         run: python3 tests/test_get_sh.py
 
+      - name: needle.sh separates a lane refusal from a retrieval failure (fake engine)
+        run: python3 tests/test_needle_refusal.py
+
       - name: Vendored DFlash2 overlay integrity
         run: cd dflash2 && sha256sum -c MANIFEST.sha256
 
