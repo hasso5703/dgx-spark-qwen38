@@ -43,6 +43,10 @@ FLAGS = {
     "decode_attention": ("--decode-attention-backend", str, ("flashinfer", "triton", "trtllm_mha", "fa3")),
     "quantization": ("--quantization", str, ("modelopt_fp4", "fp8", "none")),
     "mamba_cache_strategy": ("--mamba-radix-cache-strategy", str, ("extra_buffer", "no_buffer")),
+    # Only the FP8 targets ask for this; the NVFP4 checkpoints carry KV scales in
+    # their own quant config. It is worth about half the KV pool, so a recipe that
+    # omits it is not the recipe that was measured.
+    "kv_cache_dtype": ("--kv-cache-dtype", str, ("fp8_e4m3", "auto", "bf16")),
 }
 DRAFT_FLAGS = {
     "algorithm": ("--speculative-algorithm", str),
@@ -126,7 +130,18 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str]) 
         repo, rev, image = assigns[f"{pfx}_REPO"], assigns[f"{pfx}_REV"], assigns["SERVE_IMAGE"]
         base = None
         overlay = "dflash2"
-    mapping = {"__MODEL__": repo, "__MODEL_REV_ARGS__": f"--revision {rev}",
+    # The unit templates carry the KV cache choice as a placeholder because it is
+    # per-target; substitute it the way install.sh does so an FP8 recipe shows the
+    # flag that defines it instead of leaving a placeholder behind.
+    kv = "--kv-cache-dtype fp8_e4m3 " if recipe_id in ("fp8", "uncensored-fp8") else ""
+    prof = dict(prof)
+    prof["serve"] = dict(prof["serve"])
+    if kv:
+        prof["serve"]["kv_cache_dtype"] = "fp8_e4m3"
+    else:
+        prof["serve"].pop("kv_cache_dtype", None)
+    mapping = {"__KV_CACHE_ARGS__": kv,
+               "__MODEL__": repo, "__MODEL_REV_ARGS__": f"--revision {rev}",
                "__MODEL_REV__": rev, "__IMAGE__": image,
                "__DRAFT2_REV__": assigns.get("DRAFT2_REV", "__DRAFT2_REV__"),
                "__DRAFT_REV__": assigns.get("DRAFT_REV", "__DRAFT_REV__")}

@@ -84,11 +84,17 @@ class Builtins(unittest.TestCase):
         self.assertEqual(f["lane"], "27b")
         self.assertEqual(f["model"]["repo"], ASSIGNS["FP8_REPO"])
         self.assertEqual(f["model"]["revision"], ASSIGNS["FP8_REV"])
-        # same engine image and same drafter as the NVFP4 targets: only the weights differ
+        # same engine image and same drafter as the NVFP4 targets: the weights
+        # differ, and so does exactly one serve flag. Qwen's FP8 checkpoint has no
+        # KV scales, so it must ask for the fp8 KV cache the NVFP4 checkpoints get
+        # from their own quant config; without it the pool roughly halves.
         s = rc.builtin("stock", ASSIGNS, TEMPLATES)
         self.assertEqual(f["engine"], s["engine"])
         self.assertEqual(f["drafter"], s["drafter"])
-        self.assertEqual(f["serve"], s["serve"])
+        self.assertEqual(f["serve"].get("kv_cache_dtype"), "fp8_e4m3")
+        self.assertIsNone(s["serve"].get("kv_cache_dtype"))
+        self.assertEqual({k: v for k, v in f["serve"].items() if k != "kv_cache_dtype"},
+                         s["serve"], "fp8 must differ from stock by the KV cache alone")
 
     def test_uncensored_fp8_differs_from_fp8_only_by_model(self):
         a, b = rc.builtin("fp8", ASSIGNS, TEMPLATES), rc.builtin("uncensored-fp8", ASSIGNS, TEMPLATES)
@@ -273,6 +279,33 @@ class PresenceOfANeverDownloadedTarget(unittest.TestCase):
         r = rc.builtin("uncensored-fp8", ASSIGNS, TEMPLATES)
         reg = {"images": [], "models": [], "managed_repos": []}
         self.assertIsNone(rc.presence(r, reg)["model"])
+
+
+class KvCacheDtype(unittest.TestCase):
+    """Only the FP8 pair asks for an fp8 KV cache, and it must reach the recipe.
+
+    Qwen's FP8 checkpoint carries no KV scales, so without the flag SGLang falls
+    back to a bf16 KV cache worth about half the pool (measured, same 1m unit:
+    771,139 tokens with, 382,706 without). A recipe that omits it is not the
+    recipe anyone measured, and the placeholder must never survive into one."""
+
+    def setUp(self):
+        self.built = {r["id"]: r for r in rc.builtins(ASSIGNS, TEMPLATES)}
+
+    def test_fp8_pair_requests_fp8_kv(self):
+        for rid in ("fp8", "uncensored-fp8"):
+            self.assertEqual(self.built[rid]["serve"].get("kv_cache_dtype"), "fp8_e4m3",
+                             f"{rid} lost the fp8 KV cache that its pool figures assume")
+
+    def test_other_targets_do_not_force_a_kv_dtype(self):
+        for rid in ("stock", "uncensored", "flash"):
+            self.assertIsNone(self.built[rid]["serve"].get("kv_cache_dtype"),
+                              f"{rid} must take the KV dtype from its checkpoint")
+
+    def test_no_placeholder_survives_into_a_recipe(self):
+        for rid, rec in self.built.items():
+            blob = json.dumps(rec)
+            self.assertNotIn("__KV_CACHE_ARGS__", blob, f"{rid} kept the KV placeholder")
 
 if __name__ == "__main__":
     unittest.main()
