@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.9). No content logging, no rewriting.
+"""Keepalive proxy in front of SGLang (v6.10). No content logging, no rewriting.
 
 Three roles, nothing else:
 1. fill the silences of the SSE stream (SGLang's tool-call parser buffers the
@@ -18,6 +18,12 @@ Three roles, nothing else:
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
    cold cache), hence the 3600 s default.
 
+v6.10: the cached KV pool is dropped whenever the engine proves unreachable or a
+      refresh read fails. It was cached for 600 s and invalidated nowhere, so after
+      an engine restart the oversize guard enforced the previous engine's limit for
+      up to ten minutes; the pool is a boot lottery and differs by lane (about 863k
+      on 27B against 184k on flash), so a prompt accepted against a stale larger
+      pool could be relayed to a smaller engine and wedge its scheduler.
 v6.9: an engine that does not answer (stopped, crashed, restarting, loading) gets a 503
       engine_unavailable with Retry-After on EVERY path, never a false context_too_long:
       on 30/08 the size fallback refused a 68k-token request as "~409k tokens" while the
@@ -536,5 +542,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.9 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.10 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     Server(("0.0.0.0", port), H).serve_forever()
