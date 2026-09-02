@@ -23,8 +23,10 @@ IMAGE="${IMAGE:-lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d8960249
 STOCK_REPO="RadixArk/Qwen3.8-27B-NVFP4"
 STOCK_REV="52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"
 # Qwen's own FP8 release: the quality reference of the 27B lane. Weights are 30.9 GB
-# against 21 GB for NVFP4, which SGLang takes out of the KV pool (measured on the
-# reference box: 1 GB of pool is about 20,000 tokens, so expect roughly 200,000 fewer).
+# against 21 GB for NVFP4, which SGLang takes out of the KV pool: measured on the
+# reference box, the same 1m unit reports 863,398 tokens on NVFP4 and 771,139 on
+# FP8, so about 92,000 fewer (an earlier note here extrapolated 200,000 from
+# 20,000 tokens per GB; the measurement is the number to trust).
 # Decode is bandwidth bound on GB10, so it is also slower. No flag changes: SGLang reads
 # the scheme from the checkpoint's own config.
 FP8_REPO="Qwen/Qwen3.8-27B-FP8"
@@ -500,7 +502,17 @@ step "7/9 opencode provider config + oc launcher"
 if [ "${LANE:-27b}" = "flash" ]; then
   OC_CTX=110000; OC_OUT=32000;  OC_LABEL="local"   # 110000+32000 = 142000 <= the 159,552-token KV pool (v1.5.2: one giant context at a time)
 elif [ "$CONTEXT_MODE" = "1m" ]; then
-  OC_CTX=700000; OC_OUT=200000; OC_LABEL="local, 1M"
+  case "${MODEL_CHOICE:-}" in
+    fp8|uncensored-fp8)
+      # FP8 weights cost about 92,000 tokens of KV pool (measured, same 1m unit:
+      # 863,398 on NVFP4, 771,139 on FP8), and the NVFP4 numbers do not transfer:
+      # 680000 compaction + 200000 output is an 880,000 worst case against a
+      # 771,139 pool. These are what oc-fit-limits.py derived from the live FP8
+      # engine on the reference box; run it after a boot to fit yours exactly.
+      OC_CTX=480000; OC_OUT=160000; OC_LABEL="local, 1M" ;;
+    *)
+      OC_CTX=700000; OC_OUT=200000; OC_LABEL="local, 1M" ;;
+  esac
 else
   OC_CTX=194048; OC_OUT=64000;  OC_LABEL="local"
 fi

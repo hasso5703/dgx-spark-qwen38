@@ -28,6 +28,38 @@
   and shellcheck, and the two cockpit suites run as their own step. Before this,
   the repo's largest component was reached by exactly one gate, the typography
   check, and only because that one walks `git ls-files`.
+- **An upgrade on an FP8 box no longer demotes it to a custom model.** install.sh
+  maps the installed `--model-path` back to a MODEL_CHOICE so a re-run keeps your
+  target; that map knew stock and uncensored only, so either FP8 checkpoint fell
+  through to the custom branch, dropping the pinned revision and offering only
+  stock or uncensored as a way out. Reproduced against the reference box's own
+  unit before and after.
+- **The FP8 targets ship 1m opencode limits that fit their pool.** The 1m limits
+  were static across targets: 680,000 compaction plus 200,000 output is an
+  880,000 worst case, against a measured FP8 pool of 771,139. The FP8 pair now
+  gets 480000/160000, what `oc-fit-limits.py` derived from the live FP8 engine.
+- **The NVFP4 1m pool is documented honestly.** Two campaigns on the reference
+  box disagree and their ranges do not overlap (README: 917K-1019K over five
+  v1.3-era boots; `oc-fit-limits.py`: 863,398, 893,479 and 913,334 over three
+  later ones). The README now states both, names 863K as the floor to plan
+  against, and says plainly that the static 1m worst case sits above it, so a
+  1m user is told to run `oc-fit-limits.py` after boot rather than discovering
+  it mid-session. The default itself is unchanged pending a fresh campaign.
+- **The pool cost of FP8 was an extrapolation presented as a measurement.**
+  install.sh reasoned 10 GB of extra weights times 20,000 tokens per GB and
+  published "roughly 200,000 fewer"; the same 1m unit measures 863,398 on NVFP4
+  and 771,139 on FP8, so about 92,000. Corrected in install.sh, README and here.
+- **The CI pin contract matched its own name, not the script.** switch-model.sh
+  reads 16 pins; the check counted a 12-name pattern, leaving the four FP8 names
+  guarded by nothing. It now mirrors the script's `PINS` grep name by name,
+  verified with a negative test, and switch-model.sh refuses a target that
+  resolves to an empty repo or revision.
+- **`oc-fit-limits.py` has tests, and two defects fewer.** It read the lane
+  ceiling with a plain `startswith()`, but systemd prefixes only the first
+  variable with `Environment=`, so a template reordering would have made the
+  ceiling read as absent and handed the flash lane 27B-sized limits. Kilo
+  rounding also bottomed out at `0/0` on an implausibly small pool, and writing
+  `"context": 0` would break opencode; it now refuses instead.
 - Two new targets on the 27B lane, switchable like the others and served by the
   same unit: `fp8` (`Qwen/Qwen3.8-27B-FP8`, Qwen's own release) and
   `uncensored-fp8` (`edp1096/Huihui-Qwen3.8-27B-abliterated-FP8`, huihui-ai's
@@ -35,8 +67,8 @@
   box, `./switch-model.sh fp8` on an existing one. No flag changes: SGLang reads
   the quantization scheme from the checkpoint's own config.
 - What FP8 costs, measured here: the weights are 30.9 GB against 21 GB for
-  NVFP4, which SGLang takes out of the KV pool (about 200,000 fewer tokens of
-  pool, at the measured ratio of 1 GB of pool per 20,000 tokens), and decode is
+  NVFP4, which SGLang takes out of the KV pool (measured on the same 1m unit:
+  863,398 tokens on NVFP4, 771,139 on FP8, so about 92,000 fewer), and decode is
   bandwidth bound on GB10 so it is slower too, 108 tok/s aggregate at 8 streams
   against 135-148 for the NVFP4 default. What it buys is the quantization
   question off the table.

@@ -6,7 +6,7 @@ One command installs a boot-persistent, hardened serving stack for the Qwen3.8 f
 |---|---|---|---|
 | `stock` (default) | Qwen3.8-27B NVFP4 | SGLang + DFlash2 | **50 tok/s** greedy median, 148+ aggregate at 8 streams, optional 1M context |
 | `uncensored` | Qwen3.8-27B abliterated NVFP4 | SGLang + DFlash2 | same speed and serving path as stock |
-| `fp8` | Qwen3.8-27B FP8, Qwen's own release | SGLang + DFlash2 | the quantization reference: 108 tok/s aggregate at 8 streams, ~200K less KV pool |
+| `fp8` | Qwen3.8-27B FP8, Qwen's own release | SGLang + DFlash2 | the quantization reference: 108 tok/s aggregate at 8 streams, ~92K less KV pool |
 | `uncensored-fp8` | Qwen3.8-27B abliterated FP8 | SGLang + DFlash2 | same serving path and same cost as `fp8` |
 | `flash` | **Qwen3.8-Flash-Next 176B** hybrid MoE NVFP4 | SGLang + NEXTN | **34-42 tok/s decode, working prefix caching (30K re-serve: 0.5 s), vision**, 262K on ONE box |
 
@@ -169,9 +169,21 @@ daily since 2026-08-22:
   files by `patch-yarn.py` (target model AND DFlash2 draft, or the draft crashes at load;
   originals backed up next to them as `config.json.pre-yarn`), plus
   `--context-length 1010000` and `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`.
-- **`--mem-fraction-static 0.70`**: 917K-1019K tokens of KV pool depending on the boot
-  (a lottery; 5 measured boots), DFlash2 acceptance unchanged; a real 690K-token request
-  has been served (cold prefill 40 min, then cached).
+- **`--mem-fraction-static 0.70`**: the KV pool is a boot lottery, and the two
+  measurement campaigns on this box do not agree. Five boots in the v1.3 era
+  reported **917K-1019K** tokens; three later ones, around 2026-08-30, reported
+  **863,398, 893,479 and 913,334** for the same checkpoint. The ranges do not
+  overlap, so treat **863K as the floor to plan against** until a fresh campaign
+  settles it. DFlash2 acceptance is unchanged either way, and a real 690K-token
+  request has been served (cold prefill 40 min, then cached).
+- **Fit the limits to your own boot.** The generated opencode limits below are
+  static, and their 1m worst case (compaction at ~680K plus 200K of output) sits
+  **above the 863,398 floor**: on an unlucky boot a long session can meet a proxy
+  refusal mid-conversation, which is the field case that produced this tool. After
+  the engine is up, run `python3 oc-fit-limits.py` (or the cockpit's button): it
+  reads the pool your boot actually got and rewrites the limits to fit it, up or
+  down. The FP8 targets ship lower static limits already, because their pool is
+  about 92,000 tokens smaller.
 - **The keepalive proxy becomes load-bearing.** Every service install ships it (see
   "opencode integration"), but at 1M it is not optional: a cold 690K-token prefill can
   keep the wire silent for tens of minutes. The proxy injects the official Anthropic
@@ -304,8 +316,9 @@ The FP8 pair is Qwen's own release and huihui-ai's abliteration of it in the
 same format. No flag changes: SGLang reads the scheme from the checkpoint's
 config. Take it when you want the quantization question off the table, and know
 what it costs: the weights are **30.9 GB against 21 GB** for NVFP4, SGLang takes
-that out of the KV pool, so expect roughly **200,000 fewer tokens of pool**, and
-decode is bandwidth bound on GB10 so it is also slower (**108 tok/s aggregate at
+that out of the KV pool: the same 1m unit measures **863,398 tokens on NVFP4 and
+771,139 on FP8**, about 92,000 fewer, and decode is bandwidth bound on GB10 so it
+is also slower (**108 tok/s aggregate at
 8 streams** against 135-148 for the NVFP4 default). The abliterated FP8 was
 checked against Qwen's official FP8 file by file before pinning: 66 weight names
 in common and not one shared hash, so the abliteration is real and not a rename,

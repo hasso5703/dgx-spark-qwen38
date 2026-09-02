@@ -121,10 +121,36 @@ jobs:
 
       - name: opencode limits block (both modes and both install paths, from install.sh itself)
         run: |
-          get() { bash -c "CONTEXT_MODE=$1; NO_SERVICE=$2; PORT=30000; PROXY_PORT=30001; eval \"\$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; echo \"\$OC_PORT \$OC_CTX \$OC_OUT\""; }
+          get() { bash -c "CONTEXT_MODE=$1; NO_SERVICE=$2; MODEL_CHOICE=${3:-stock}; PORT=30000; PROXY_PORT=30001; eval \"\$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; echo \"\$OC_PORT \$OC_CTX \$OC_OUT\""; }
           [ "$(get native 0)" = "30001 194048 64000" ] || { echo "native service limits drifted"; exit 1; }
           [ "$(get 1m 0)" = "30001 700000 200000" ] || { echo "1m limits drifted"; exit 1; }
           [ "$(get native 1)" = "30000 194048 64000" ] || { echo "no-service limits drifted"; exit 1; }
+          # FP8 weights cost ~92k of KV pool, so the NVFP4 1m numbers overflow it:
+          # 680000 compaction + 200000 output = 880000 against a measured 771,139.
+          [ "$(get 1m 0 fp8)" = "30001 480000 160000" ] || { echo "fp8 1m limits drifted"; exit 1; }
+          [ "$(get 1m 0 uncensored-fp8)" = "30001 480000 160000" ] || { echo "uncensored-fp8 1m limits drifted"; exit 1; }
+          [ "$(get native 0 fp8)" = "30001 194048 64000" ] || { echo "fp8 native limits drifted"; exit 1; }
+          # The FP8 pair must ask for strictly less than the NVFP4 pair: its pool is
+          # smaller by a measured ~92k. We do NOT assert an absolute pool here; the
+          # repo documents two non-overlapping NVFP4 ranges (README 917K-1019K from
+          # five v1.3-era boots, oc-fit-limits.py 863,398-913,334 from three later
+          # ones) and picking one would bake an unresolved measurement into CI.
+          python3 - <<'FIT'
+          import subprocess
+          def limits(choice):
+              out = subprocess.run(["bash", "-c",
+                  f'CONTEXT_MODE=1m; NO_SERVICE=0; MODEL_CHOICE={choice}; PORT=30000; PROXY_PORT=30001; '
+                  "eval \"$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; "
+                  'echo "$OC_CTX $OC_OUT"'], capture_output=True, text=True).stdout.split()
+              return int(out[0]), int(out[1])
+          nv_ctx, nv_out = limits("stock")
+          for choice in ("fp8", "uncensored-fp8"):
+              ctx, o = limits(choice)
+              assert ctx < nv_ctx and o < nv_out, f"{choice} must ask for less than NVFP4"
+              worst = int(ctx * 0.971) + o      # opencode compacts at ~97% of limit.context
+              assert worst <= 771139, f"{choice}: 1m worst case {worst} exceeds the measured FP8 pool"
+          print("  FP8 1m limits fit the measured FP8 pool and stay under the NVFP4 pair")
+          FIT
           getf() { bash -c "LANE=flash; CONTEXT_MODE=native; NO_SERVICE=0; PORT=30000; PROXY_PORT=30001; eval \"\$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; echo \"\$OC_PORT \$OC_CTX \$OC_OUT\""; }
           [ "$(getf)" = "30001 110000 32000" ] || { echo "flash limits drifted"; exit 1; }
 
