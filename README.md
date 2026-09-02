@@ -371,7 +371,7 @@ and the keepalive proxy stay put.
 ## Operations
 
 ```bash
-systemctl status qwen38-sglang          # 27B server state (target stock/uncensored)
+systemctl status qwen38-sglang          # 27B server state (any of the four 27B targets)
 systemctl status qwen38-flash           # Flash-Next server state (target flash)
 systemctl status qwen38-keepalive       # keepalive proxy state
 systemctl status qwen38-dashboard       # cockpit state, if you installed it
