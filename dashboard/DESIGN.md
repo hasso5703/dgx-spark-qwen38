@@ -1,8 +1,8 @@
-# Spark Cockpit: design foundations (branch `webapp`, NOT released)
+# Spark Cockpit: design foundations
 
 One web app that does everything this repo does from the shell, by clicks, with
-everything visible in real time. Ships later as `qwen38-dashboard.service`.
-BETA badge top-left until Hasan says otherwise.
+everything visible in real time. Ships as `qwen38-dashboard.service`,
+opt-in, since v1.6.
 
 ## Non-negotiables (from the owner)
 

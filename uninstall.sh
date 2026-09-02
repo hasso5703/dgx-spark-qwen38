@@ -32,7 +32,7 @@ done
 # digest: a digest pull leaves no tag behind.
 LOCAL_IMAGE_REPOS="qwen38-dflash2 qwen38-flash"
 BASE_IMAGES="lmsysorg/sglang:qwen38-27b lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1 lmsysorg/sglang:qwen38flashnext lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1 vllm/vllm-openai:qwen38-flash-next vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8"
-HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 RadixArk/Qwen3.8-Flash-Next-NVFP4"
+HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 Qwen/Qwen3.8-27B-FP8 edp1096/Huihui-Qwen3.8-27B-abliterated-FP8 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 RadixArk/Qwen3.8-Flash-Next-NVFP4"
 
 FOUND_IMAGES=()   # "ref|size", deduplicated by image ID (a tag and its digest are one image)
 inventory_images() {
@@ -61,13 +61,16 @@ inventory_images() {
 dir_size() { du -sh "$1" 2>/dev/null | cut -f1; }
 
 echo "── Inventory (everything any version of this repo may have left here) ──"
-for u in qwen38-sglang.service qwen38-flash.service qwen38-keepalive.service; do
+for u in qwen38-sglang.service qwen38-flash.service qwen38-keepalive.service qwen38-dashboard.service; do
   if [ -f "/etc/systemd/system/$u" ]; then
     STATE="$(systemctl is-enabled "$u" 2>/dev/null || true)/$(systemctl is-active "$u" 2>/dev/null || true)"
     echo "  unit      /etc/systemd/system/$u ($STATE)"
   fi
 done
 [ -d /etc/systemd/system/qwen38-sglang.service.d ] && echo "  drop-ins  /etc/systemd/system/qwen38-sglang.service.d (pre-v1.3 warmup lived here)"
+[ -d /etc/systemd/system/qwen38-dashboard.service.d ] && echo "  drop-ins  /etc/systemd/system/qwen38-dashboard.service.d (cockpit overrides)"
+[ -f /etc/sudoers.d/qwen38-cockpit ] && echo "  sudoers   /etc/sudoers.d/qwen38-cockpit (cockpit argv allowlist, NOPASSWD)"
+[ -f /usr/local/bin/qwen38-pyspy-scheduler ] && echo "  wrapper   /usr/local/bin/qwen38-pyspy-scheduler (cockpit forensics helper)"
 for f in "$CONFIG_DIR"/*.bak-preupdate; do
   [ -f "$f" ] && echo "  backup    $f (pre-update unit backup)"
 done
@@ -101,9 +104,13 @@ fi
 sudo systemctl disable --now qwen38-sglang.service 2>/dev/null || true
 sudo systemctl disable --now qwen38-flash.service 2>/dev/null || true
 sudo systemctl disable --now qwen38-keepalive.service 2>/dev/null || true
+sudo systemctl disable --now qwen38-dashboard.service 2>/dev/null || true
 docker rm -f qwen38-sglang qwen38-sglang-run qwen38-flash 2>/dev/null || true
-sudo rm -f /etc/systemd/system/qwen38-sglang.service /etc/systemd/system/qwen38-flash.service /etc/systemd/system/qwen38-keepalive.service
-sudo rm -rf /etc/systemd/system/qwen38-sglang.service.d
+sudo rm -f /etc/systemd/system/qwen38-sglang.service /etc/systemd/system/qwen38-flash.service /etc/systemd/system/qwen38-keepalive.service /etc/systemd/system/qwen38-dashboard.service
+sudo rm -rf /etc/systemd/system/qwen38-sglang.service.d /etc/systemd/system/qwen38-dashboard.service.d
+# The cockpit's privileged surface goes with it: a NOPASSWD allowlist left behind
+# after an uninstall is the one leftover that is not merely clutter.
+sudo rm -f /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler
 sudo systemctl daemon-reload
 # The oc launcher, only if it is ours (never a foreign oc binary)
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Surgical target-model switch on a live install, between the three targets:
+# Surgical target-model switch on a live install, between the five targets:
 #
-#   ./switch-model.sh stock        # RadixArk/Qwen3.8-27B-NVFP4 (SGLang)
-#   ./switch-model.sh uncensored   # edp1096/Huihui-...-abliterated-NVFP4 (SGLang)
-#   ./switch-model.sh flash        # RadixArk/Qwen3.8-Flash-Next-NVFP4 (vLLM)
+#   ./switch-model.sh stock           # RadixArk/Qwen3.8-27B-NVFP4 (SGLang)
+#   ./switch-model.sh uncensored      # edp1096/Huihui-...-abliterated-NVFP4 (SGLang)
+#   ./switch-model.sh fp8             # Qwen/Qwen3.8-27B-FP8 (SGLang)
+#   ./switch-model.sh uncensored-fp8  # edp1096/Huihui-...-abliterated-FP8 (SGLang)
+#   ./switch-model.sh flash           # RadixArk/Qwen3.8-Flash-Next-NVFP4 (SGLang)
 #
-# Within the 27B pair (stock <-> uncensored) it does what it always did:
+# Within the 27B lane (stock, uncensored, fp8, uncensored-fp8) it does what it
+# always did:
 #   1. downloads the checkpoint into $HF_CACHE (resumable, pinned revision);
 #   2. applies the 1M YaRN config patch ONLY if the installed unit uses it;
 #   3. regenerates the patched chat template from the target's own snapshot;

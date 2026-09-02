@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Spark Cockpit as a systemd service (BETA, branch webapp).
+# Install Spark Cockpit as a systemd service. Opt-in: install.sh never runs this.
 # Idempotent. Installs: qwen38-dashboard.service (127.0.0.1:__PORT__) and the
 # narrow sudoers allowlist for the unit start/stop/restart buttons.
 # The sudoers file is validated with visudo -c BEFORE it lands, from a temp

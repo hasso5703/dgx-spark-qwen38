@@ -1,6 +1,33 @@
 # Changelog
 
-## v1.6 (2026-09-02): Qwen's own FP8 joins the 27B lane
+## v1.6 (2026-09-02): Qwen's own FP8 joins the 27B lane, and the cockpit ships
+
+- **Spark Cockpit**, the local web dashboard, is now part of the repo instead of
+  living on a branch the CHANGELOG kept pointing at. Opt-in and never run by
+  `install.sh`: `dashboard/install-dashboard.sh`, bound to `127.0.0.1:30090`,
+  login is the API key. It reports lane state from a real generation canary
+  rather than `/health` (a wedged SGLang answers `/health` fine), keeps a host
+  `MemAvailable` floor and an NVRM allocation-refusal counter, runs one
+  supervised action at a time (unit start/stop/restart, lane switch, flush,
+  abort, smoke) with every argv audited, and shows which pinned checkpoints are
+  actually on disk. Full section in the README.
+- **Cockpit self-restart is off by default.** `COCKPIT_AUTOHEAL` defaulted to
+  `1`, so an install would have restarted a wedged engine on its own. For a repo
+  with a section on how this box freezes that is the wrong default; the unit now
+  ships `COCKPIT_AUTOHEAL=0` and the README says how to arm it.
+- **`./uninstall.sh` now removes the cockpit's privileged surface.** It knew
+  nothing about `qwen38-dashboard.service`, `/etc/sudoers.d/qwen38-cockpit` or
+  `/usr/local/bin/qwen38-pyspy-scheduler`, so a full uninstall left a NOPASSWD
+  sudoers file behind while `sudoers-cockpit.template` claimed it was removed.
+  All three are inventoried by `--list` and deleted by the uninstall.
+- **`./uninstall.sh --list` sees the FP8 checkpoints.** The two new repos were
+  missing from `HF_REPOS`, so about 60 GB of weights was invisible to the
+  inventory that claims to show everything this repo left on the box.
+- CI covers the dashboard: `dashboard/*.py` and `dashboard/tests/*.py` join the
+  ruff and py_compile lists, the three dashboard shell scripts join `bash -n`
+  and shellcheck, and the two cockpit suites run as their own step. Before this,
+  the repo's largest component was reached by exactly one gate, the typography
+  check, and only because that one walks `git ls-files`.
 
 - Two new targets on the 27B lane, switchable like the others and served by the
   same unit: `fp8` (`Qwen/Qwen3.8-27B-FP8`, Qwen's own release) and
@@ -181,9 +208,9 @@ block. The state cache becomes 12 slots of 4 per request, and with
 `--mem-fraction-static 0.81` (host headroom measured unchanged at 23 GB) the KV
 pool grows to 178560 tokens, from 159,552.
 
-`needle.sh` exits cleanly when the engine is unreachable. The cockpit branch adds
-the generation probe, the wedged state with autoheal and a cache flush when the
-engine idles with a mostly-held pool. Upstream report: sglang #30314 (comment).
+`needle.sh` exits cleanly when the engine is unreachable. The cockpit (then a
+branch, shipped in v1.6) adds the generation probe, the wedged state with
+optional autoheal and a cache flush when the engine idles with a mostly-held pool. Upstream report: sglang #30314 (comment).
 
 ## v1.5.3 (2026-08-29): PLE table reused across boots
 
@@ -213,8 +240,9 @@ can free, or a prompt longer than the KV pool, makes the scheduler busy-loop
 forever instead of refusing the request (`/health` keeps answering; gdb and
 py-spy show the event loop spinning in recv_requests with the request queued).
 Four occurrences on 2026-08-29. Mitigations shipped so far live in the cockpit
-branch (generation probe, wedged state, autoheal, cache flush when idle); a
-proxy-level refusal of oversize prompts and an explicit cache size follow.
+(then a branch, shipped in v1.6: generation probe, wedged state, optional
+autoheal, cache flush when idle); a proxy-level refusal of oversize prompts and
+an explicit cache size follow.
 
 ## v1.5.2 (2026-08-29): flash lane correctness hotfix
 

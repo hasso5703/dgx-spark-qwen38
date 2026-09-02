@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Spark Cockpit: the repo's web dashboard (BETA, branch webapp).
+"""Spark Cockpit: the repo's web dashboard.
 
-Single-file stdlib backend: no pip, no venv, nothing to break.
-Read-only phase: collectors + SSE stream + static UI. The action registry
-exists but every mutating action returns 501 until the actions phase lands.
+Single-file stdlib backend: no pip, no venv, nothing to break. Collectors, an
+SSE stream, a static UI, and a supervised action surface that runs one job at a
+time: unit start/stop/restart, lane switch, cache flush, abort, smoke probe.
+Belts on top of that: a real generation canary (a wedged engine still answers
+/health), a host memory floor, and an NVRM allocation-refusal counter.
 
 Run (dev):  python3 dashboard/cockpit.py
 Then open http://127.0.0.1:30090 and paste the API key from
@@ -42,7 +44,7 @@ PORT = int(os.environ.get("COCKPIT_PORT", "30090"))
 ENGINE_BASE = os.environ.get("COCKPIT_ENGINE", "http://127.0.0.1:30000")
 PROXY_BASE = os.environ.get("COCKPIT_PROXY", "http://127.0.0.1:30001")
 STATIC_DIR = HERE / "static"
-VERSION = "0.2.0-beta"
+VERSION = "1.0.0"
 # Dry run: every mutating action and every automatic belt is logged, audited and
 # shown exactly as usual, but nothing is executed. This is how the click-storm test
 # (tests/monkey-check.mjs) exercises the whole UI against a second cockpit instance.
@@ -393,7 +395,11 @@ def collect_engine_info():
 
 
 CANARY: dict = {"fails": 0, "last_ok": None, "last_err": "", "latency": None}
-AUTOHEAL = os.environ.get("COCKPIT_AUTOHEAL", "1") == "1"
+# Off by default, deliberately. This repo spends a README section on the ways a
+# GB10 box freezes, so an engine restarting itself is never something an install
+# should decide for the operator: arm it with COCKPIT_AUTOHEAL=1 once you know
+# what a wedge looks like on your box.
+AUTOHEAL = os.environ.get("COCKPIT_AUTOHEAL", "0") == "1"
 AUTOHEAL_COOLDOWN = 1800.0
 AUTOHEAL_GRACE = float(os.environ.get("COCKPIT_AUTOHEAL_GRACE", "0"))   # seconds to leave a wedged engine up for forensics
 WEDGED_SINCE: dict = {}

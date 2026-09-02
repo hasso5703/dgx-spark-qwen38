@@ -65,6 +65,7 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 | Ports | `PORT=`, `PROXY_PORT=` | 30000, 30001 | agent clients use the proxy port |
 | Storage | `HF_CACHE=`, `PLE_DIR=` | `~/.cache/huggingface`, `~/flashnext-ple` | checkpoints, and the 48 GB flash PLE backing file |
 | Clone location | `DIR=` (one-liner only) | `~/dgx-spark-qwen38` | must be a clone of this repo on `main` |
+| Cockpit dashboard | `dashboard/install-dashboard.sh`, `DASH_PORT=` | not installed | opt-in, never run by `install.sh`; installs a sudoers allowlist, see "The cockpit" |
 
 Combinations that make sense:
 
@@ -260,9 +261,9 @@ prompt after several large prompts left cached in the radix cache (prefill
 completes at 89 % usage, decode never starts). The frontend keeps answering
 `/health` while nothing is served, so a health probe is not enough. What this
 repo does about it: v1.5.2 serves one giant context at a time; `needle.sh`
-flushes the cache before each probe; the cockpit (branch `webapp`) runs a real
-generation probe, restarts a wedged engine, and flushes the cache when the
-engine idles with a mostly-held pool. Since v1.5.4 the keepalive proxy refuses prompts the lane cannot serve (v1.5.6: counted by the engine's tokenizer, capped by the per-lane ceiling; v1.5.8: an engine that is down answers `503 engine_unavailable`, never a size refusal) and aborts
+flushes the cache before each probe; the cockpit (`dashboard/`, opt-in, see
+below) runs a real generation probe, flushes the cache when the engine idles
+with a mostly-held pool, and can restart a wedged engine if you arm it. Since v1.5.4 the keepalive proxy refuses prompts the lane cannot serve (v1.5.6: counted by the engine's tokenizer, capped by the per-lane ceiling; v1.5.8: an engine that is down answers `503 engine_unavailable`, never a size refusal) and aborts
 the generation of a client that disappeared; between very large prompts, `curl -X POST
 127.0.0.1:30000/flush_cache -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)"`
 still avoids the eviction path on 9-slot boots.
@@ -355,6 +356,7 @@ and the keepalive proxy stay put.
 systemctl status qwen38-sglang          # 27B server state (target stock/uncensored)
 systemctl status qwen38-flash           # Flash-Next server state (target flash)
 systemctl status qwen38-keepalive       # keepalive proxy state
+systemctl status qwen38-dashboard       # cockpit state, if you installed it
 sudo systemctl restart qwen38-sglang    # 27B: ~5-7 min boot; the radix (prefix) cache starts empty
 sudo systemctl restart qwen38-flash     # flash: ~10 min boot (weight load + PLE prewarm)
 journalctl -u qwen38-sglang -f          # server logs (qwen38-flash for the flash target)
@@ -391,6 +393,64 @@ revisions cached, that metadata probe is the only network call.
 Notes: the server's own `watchdog_timeout=300` is a *hang* detector (kills a genuinely stuck forward so systemd restarts it); it does not limit generation length. Two concurrent generations share the memory bus (~half speed each): the GB10 is a batch-1-per-moment machine.
 
 **Idle power**: without `--sleep-on-idle`, SGLang's scheduler busy-spins a full CPU core while doing nothing (reported as +10-12 W at the wall by [alef204 and emX0r](https://forums.developer.nvidia.com/t/380257/56), diagnosed in [MiaAI-Lab issue #4](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark/issues/4)). The unit ships the flag since v1.2.6. A/B on the reference box: scheduler CPU 101 % -> 1.7 % at idle, module power 12.1 -> 10.5 W, and wake-up TTFT unchanged (0.234-0.240 s before, 0.234-0.239 s after, measured after 60 s and 300 s of idle), throughput in family (41.5 tok/s code, 52.8 math).
+
+## The cockpit (opt-in web dashboard)
+
+A local dashboard for this stack: what is served right now, whether it is
+healthy for real, and the handful of actions you would otherwise type by hand.
+Single-file stdlib backend, no pip and no venv. It is **not** part of
+`install.sh`; you install it on purpose:
+
+```bash
+dashboard/install-dashboard.sh          # DASH_PORT=30090 by default
+# open http://127.0.0.1:30090, the login is the API key from ~/.config/qwen38/api-key
+```
+
+It binds to `127.0.0.1` only. What it shows and does:
+
+- **Lane state that is not a lie.** A wedged SGLang still answers `/health`, so
+  the cockpit runs a real generation canary and reports `ready`, `loading`,
+  `wedged` or `stopped` from that, with the served checkpoint named from the
+  unit rather than guessed.
+- **Belts.** A host `MemAvailable` floor that aborts generations before the box
+  reaches the memory edge, and a counter of the kernel's `NVRM` allocation
+  refusals, which is how the memory-edge behaviour in the flash section was
+  found in the first place.
+- **Actions, one at a time.** Unit start/stop/restart, lane switch (the same
+  `switch-model.sh` you would run), cache flush, abort-all, smoke probe. Every
+  action is audited to `~/.config/qwen38/cockpit-audit.log` with its exact argv.
+- **Registry.** Which pinned checkpoints are actually on disk, which are stray,
+  which are missing, and what each costs you in bytes.
+
+**The privileged surface, stated plainly.** The unit actions need root, so the
+installer writes `/etc/sudoers.d/qwen38-cockpit`: an exact argv allowlist,
+nothing wildcarded except the rendered unit path, validated with `visudo -c`
+from a temp file before it lands so a bad render can never brick sudo. It covers
+start/stop/restart and enable/disable of this repo's units, `daemon-reload`, the
+writes `switch-model.sh` performs, one read-only forensics wrapper and kernel
+journal reads. `./uninstall.sh` removes it along with the unit and the wrapper.
+If that surface is more than you want, do not install the cockpit: nothing else
+in this repo depends on it.
+
+**Self-restart is off by default** (`COCKPIT_AUTOHEAL=0` in the unit). This repo
+spends a whole section on how a GB10 box freezes, so an engine that restarts
+itself is not something an install should decide for you. Arm it once you know
+what a wedge looks like on your box:
+
+```bash
+sudo systemctl edit qwen38-dashboard    # [Service] Environment=COCKPIT_AUTOHEAL=1
+                                        # and Environment=COCKPIT_AUTOHEAL_GRACE=600
+                                        # to keep a wedge up for forensics first
+```
+
+Remove it with `./uninstall.sh` (which takes the whole stack) or on its own:
+
+```bash
+sudo systemctl disable --now qwen38-dashboard
+sudo rm -f /etc/systemd/system/qwen38-dashboard.service \
+           /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler
+sudo systemctl daemon-reload
+```
 
 ## Extras (opt-in)
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Spark Cockpit (qwen38 dashboard, BETA) on 127.0.0.1:__PORT__
+Description=Spark Cockpit (qwen38 dashboard) on 127.0.0.1:__PORT__
 After=network-online.target
 Wants=network-online.target
 
@@ -10,6 +10,9 @@ Group=__GROUP__
 Environment=COCKPIT_PORT=__PORT__
 Environment=COCKPIT_BIND=127.0.0.1
 Environment=COCKPIT_REPO_DIR=__REPO_DIR__
+# Self-restart of a wedged engine, off unless you ask for it. Pair it with
+# COCKPIT_AUTOHEAL_GRACE=<seconds> to keep the wedge up for forensics first.
+Environment=COCKPIT_AUTOHEAL=0
 ExecStart=/usr/bin/python3 __REPO_DIR__/dashboard/cockpit.py
 Restart=always
 RestartSec=3

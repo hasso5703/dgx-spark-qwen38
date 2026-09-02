@@ -1,6 +1,7 @@
-# Spark Cockpit: state of the branch for review (BETA)
+# Spark Cockpit: state at the v1.6 review
 
-Branch `webapp`, never pushed. Everything below was built, run and validated
+Written while this was the unreleased `webapp` branch; shipped in v1.6.
+Everything below was built, run and validated
 live on the reference box on 2026-08-28, with screenshots taken through a
 CDP-driven Chromium at every step.
 
@@ -35,7 +36,7 @@ the unit start/stop buttons; everything else runs unprivileged.
   the PLE backing file).
 - Live logs panel: container logs and keepalive journal tail.
 - opencode card with the one-command handoff.
-- Login page, house palette light/dark, BETA badge, canvas sparklines,
+- Login page, house palette light/dark, version badge, canvas sparklines,
   zero external dependencies anywhere (stdlib backend, vanilla frontend).
 - Hardening: CSP + nosniff + no-referrer on every response, login rate
   limiting (5 tries per minute per address, audited), tested live
