@@ -313,8 +313,13 @@ chat template, MTP + vision intact, ~22 GB). It refuses the least while keeping
 the stock NVFP4 serving path.
 
 The FP8 pair is Qwen's own release and huihui-ai's abliteration of it in the
-same format. No flag changes: SGLang reads the scheme from the checkpoint's
-config. Take it when you want the quantization question off the table, and know
+same format. SGLang reads the weight scheme from the checkpoint's config, but
+one flag does change: **the FP8 targets are served with `--kv-cache-dtype
+fp8_e4m3`**. The whole 27B lane runs an fp8 KV cache; the NVFP4 checkpoints
+carry their own KV scales so SGLang picks it up on its own, while Qwen's FP8
+release does not and would otherwise fall back to a bf16 KV cache costing about
+half the pool (measured on the same 1m unit: 771,139 tokens with the flag,
+382,706 without). `install.sh` and `run.sh` add it for these two targets only. Take it when you want the quantization question off the table, and know
 what it costs: the weights are **30.9 GB against 21 GB** for NVFP4, SGLang takes
 that out of the KV pool: the same 1m unit measures **863,398 tokens on NVFP4 and
 771,139 on FP8**, about 92,000 fewer, and decode is bandwidth bound on GB10 so it

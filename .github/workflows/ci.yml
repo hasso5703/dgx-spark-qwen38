@@ -38,10 +38,10 @@ jobs:
           python3 tests/test_lifecycle.py
           python3 tests/test_recipes.py
 
-      - name: Pin contracts (run.sh reads 15, switch-model.sh reads 16)
+      - name: Pin contracts (run.sh reads 19, switch-model.sh reads 16)
         run: |
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 15 ] || { echo "run.sh pin contract broken: $n != 15"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 19 ] || { echo "run.sh pin contract broken: $n != 19"; exit 1; }
           n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
           [ "$n" -eq 16 ] || { echo "switch-model.sh pin contract broken: $n != 16"; exit 1; }
           # This check must mirror the grep switch-model.sh actually runs, or a
@@ -75,7 +75,7 @@ jobs:
             sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" \
                 -e "s|__PORT__|30000|g" -e "s|__PROXY_PORT__|30001|g" -e "s|__IMAGE__|img:v|g" \
                 -e "s|__HF_CACHE__|/hf|g" -e "s|__DRAFT2_REV__|deadbeef|g" -e "s|__PLE_DIR__|/ple|g" -e "s|__PROMPT_CEILING__|0|g" \
-                -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL_REV__|cafe|g" -e "s|__MODEL__|org/repo|g" "$1"
+                -e "s|__KV_CACHE_ARGS__||g" -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL_REV__|cafe|g" -e "s|__MODEL__|org/repo|g" "$1"
           }
           for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template qwen38-flash.service.template qwen38-keepalive.service.template; do
             render "$t" > /tmp/unit.rendered
@@ -86,6 +86,21 @@ jobs:
           render qwen38-sglang-1m.service.template | grep -q -- '--context-length 1010000'
           render qwen38-sglang-1m.service.template | grep -q 'HF_HUB_OFFLINE=1'
           render qwen38-sglang.service.template | grep -q 'Restart=always'
+          # The FP8 pair must ask for an fp8 KV cache and the NVFP4 pair must not:
+          # Qwen's FP8 checkpoint carries no KV scales, so without the flag the KV
+          # cache falls back to bf16 and costs about half the pool (measured: 771,139
+          # with, 382,706 without, same 1m unit). The NVFP4 checkpoints get it from
+          # their own quant config and must stay untouched.
+          kv() { sed -e "s|__KV_CACHE_ARGS__|$2|g" "$1" | grep -c -- '--kv-cache-dtype fp8_e4m3' || true; }
+          for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template; do
+            [ "$(kv "$t" '--kv-cache-dtype fp8_e4m3 ')" -eq 1 ] || { echo "$t: FP8 render lost the fp8 KV cache"; exit 1; }
+            [ "$(kv "$t" '')" -eq 0 ] || { echo "$t: NVFP4 render must not force a KV dtype"; exit 1; }
+            grep -q '__KV_CACHE_ARGS__' "$t" || { echo "$t: lost the KV cache placeholder"; exit 1; }
+          done
+          for f in install.sh run.sh; do
+            grep -qE 'fp8\|uncensored-fp8\) +KV_CACHE_ARGS="--kv-cache-dtype fp8_e4m3' "$f" \
+              || { echo "$f: the fp8 targets no longer request an fp8 KV cache"; exit 1; }
+          done
           # Flash: the unit is a thin pointer at the rendered launch script
           # (an argument in ExecStart bash -c would go through systemd's own
           # unescaping first, learned live on the reference box). The GB10 and

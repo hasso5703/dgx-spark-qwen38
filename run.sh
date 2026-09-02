@@ -9,14 +9,22 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── Same pins as install.sh (read from it: single source of truth) ──
-PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
 [ "$(printf '%s\n' "$PINS" | wc -l)" -eq 15 ] || die "could not read the 15 pinned variables from install.sh (repo layout changed?)"
 eval "$PINS"
 case "${MODEL_CHOICE}" in
   stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
   uncensored) MODEL_REPO="$UNC_REPO";   MODEL_REV="${MODEL_REV:-$UNC_REV}" ;;
+  fp8)        MODEL_REPO="$FP8_REPO";   MODEL_REV="${MODEL_REV:-$FP8_REV}" ;;
+  uncensored-fp8) MODEL_REPO="$UNCFP8_REPO"; MODEL_REV="${MODEL_REV:-$UNCFP8_REV}" ;;
   flash)      die "MODEL_CHOICE=flash is service-only in this release: MODEL_CHOICE=flash ./install.sh (./run.sh covers the 27B targets)" ;;
-  *) die "MODEL_CHOICE must be stock, uncensored or flash (got: ${MODEL_CHOICE})" ;;
+  *) die "MODEL_CHOICE must be stock, uncensored, fp8, uncensored-fp8 or flash (got: ${MODEL_CHOICE})" ;;
+esac
+# See install.sh: Qwen's FP8 checkpoint carries no KV scales, so without this the
+# KV cache falls back to bf16 and costs about half the pool.
+case "${MODEL_CHOICE}" in
+  fp8|uncensored-fp8) KV_CACHE_ARGS="--kv-cache-dtype fp8_e4m3" ;;
+  *)                  KV_CACHE_ARGS="" ;;
 esac
 if [ "${CONTEXT_MODE}" = "1m" ]; then
   die "CONTEXT_MODE=1m needs the systemd path (keepalive proxy + YaRN service units): run CONTEXT_MODE=1m ./install.sh. ./run.sh serves the native 262144 config only."
@@ -86,7 +94,7 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
   python3 -m sglang.launch_server \
     --trust-remote-code --model-path "$MODEL_REPO" --revision "$MODEL_REV" --tp-size 1 \
     --served-model-name qwen3.8-27b \
-    --mem-fraction-static 0.50 \
+    --mem-fraction-static 0.50 ${KV_CACHE_ARGS} \
     --attention-backend flashinfer --chunked-prefill-size 8192 \
     --disable-prefill-cuda-graph --cuda-graph-max-bs 8 \
     --disable-flashinfer-autotune \

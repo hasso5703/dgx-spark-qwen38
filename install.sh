@@ -671,6 +671,17 @@ if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
 else
   MODEL_REV_ARGS="--revision $MODEL_REV"
 fi
+# The 27B lane serves with an fp8 KV cache. The NVFP4 checkpoints carry their own
+# KV scales so SGLang picks it up from the checkpoint; Qwen's FP8 release does not,
+# and defaults to a bf16 KV cache that costs about half the pool (measured on the
+# reference box, same 1m unit: 771,139 tokens with the flag, 382,706 without). So
+# the FP8 pair asks for it explicitly, which is what the reference box has served
+# since 2026-08-31 and what every FP8 pool number in this repo was measured on.
+case "$MODEL_CHOICE" in
+  fp8|uncensored-fp8) KV_CACHE_ARGS="--kv-cache-dtype fp8_e4m3 " ;;
+  *)                  KV_CACHE_ARGS="" ;;
+esac
+
 render_tpl() {  # $1 template file; substituted result on stdout
   sed -e "s|__HOME__|$HOME|g" \
       -e "s|__USER__|$(id -un)|g" \
@@ -683,6 +694,7 @@ render_tpl() {  # $1 template file; substituted result on stdout
       -e "s|__MODEL__|$MODEL_REPO|g" \
       -e "s|__PLE_DIR__|$PLE_DIR|g" \
       -e "s|__MODEL_REV__|$MODEL_REV|g" \
+      -e "s|__KV_CACHE_ARGS__|$KV_CACHE_ARGS|g" \
       "$1"
 }
 if [ "$LANE" = "flash" ]; then

@@ -28,6 +28,19 @@
   and shellcheck, and the two cockpit suites run as their own step. Before this,
   the repo's largest component was reached by exactly one gate, the typography
   check, and only because that one walks `git ls-files`.
+- **The FP8 targets are served with an fp8 KV cache, as they were measured.**
+  The reference box has served `--kv-cache-dtype fp8_e4m3` since 2026-08-31 and
+  every FP8 pool figure in this repo was measured with it, but the flag was in
+  nobody's template: an `install.sh` from this repo produced a bf16 KV cache and
+  about half the pool (measured, same 1m unit: 771,139 with, 382,706 without),
+  which the 1m limits above would then have overflowed on the first long
+  session. The NVFP4 checkpoints carry KV scales in their own quant config and
+  are untouched. CI renders both templates for both cases and fails if the FP8
+  path loses the flag or the NVFP4 path gains one.
+- **`./run.sh` accepts the FP8 targets.** `install.sh --no-service` installed
+  them happily and `run.sh` then died with "MODEL_CHOICE must be stock,
+  uncensored or flash", because its own target map and its pin list both
+  predated them. The documented no-service path works for all four 27B targets.
 - **An upgrade on an FP8 box no longer demotes it to a custom model.** install.sh
   maps the installed `--model-path` back to a MODEL_CHOICE so a re-run keeps your
   target; that map knew stock and uncensored only, so either FP8 checkpoint fell

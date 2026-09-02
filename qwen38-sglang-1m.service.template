@@ -19,7 +19,7 @@ ExecStart=/bin/bash -c 'exec /usr/bin/docker run --rm --name qwen38-sglang --gpu
   python3 -m sglang.launch_server \
     --trust-remote-code --context-length 1010000 --model-path __MODEL__ __MODEL_REV_ARGS__ --tp-size 1 \
     --served-model-name qwen3.8-27b \
-    --mem-fraction-static 0.70 \
+    --mem-fraction-static 0.70 __KV_CACHE_ARGS__\
     --attention-backend flashinfer --chunked-prefill-size 8192 \
     --disable-prefill-cuda-graph --cuda-graph-max-bs 8 \
     --disable-flashinfer-autotune \
