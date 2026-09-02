@@ -273,6 +273,18 @@ needle-in-haystack passing at 100K with fresh content):
 | decode at depth | slows with context: field reports put it near 28-31 tok/s around 100K, ~22 tok/s at 240K (hashd1ve) |
 | memory | fraction 0.81 + docker cap 110g (the cap does not see CUDA unified allocations). Host MemAvailable: ~24 GiB idle after boot, 16.6 GiB during a 120K prompt, 12.6 GiB at 135K (measured 29/08); the earlier "headroom unchanged at ~23 GB" note was an idle measurement |
 
+**Why the flash lane keeps a bf16 KV cache.** The 27B FP8 target asks for
+`--kv-cache-dtype fp8_e4m3` and gains about half its pool for free, so the same
+trick looks tempting here, and it works: an fp8 KV cache on the QSA path
+([blazux, 2026-08-30](https://github.com/blazux/qwen3.8-Flash-DGX), by
+@Nanetnounou) measures **x1.9 KV pool and 1M context on one box**. It also costs
+**9 % of decode, 30 % of prefill, and quality**: their `b3_itinerary` check drops
+to **2/6 against 6/6 in bf16**, and they keep bf16 as their own production
+setting. The difference from the 27B case is calibration: the NVFP4 and FP8 27B
+checkpoints carry KV scales the engine applies, while nothing calibrates the QSA
+path's cache. A bigger pool is not worth a measured quality drop, so this lane
+stays bf16 and the 128K one-prompt ceiling stays the memory answer.
+
 The NEXTN speculative head is the model's own next-token module (its 31
 tensors ship in the checkpoint in BF16, hence `unquant` for the draft): drafts
 are verified by the target, so output quality is exactly the target's.

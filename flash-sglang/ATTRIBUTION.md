@@ -115,5 +115,24 @@ change, in this order:
    That needs the flash lane installed (~230 GB free) and one giant-context run,
    so it is a deliberate campaign, not a drive-by bump.
 
-Until one of those happens, the vendored file stays as it is and this note is
-the record of why.
+**Update, 2026-09-03.** The evidence moved, and it is now strong enough that this
+should be the next thing done to the flash lane rather than a someday item.
+hashd1ve, whose patch set this directory vendors, adopted the merged kernel on
+2026-08-30 (`4f425ca5`): the KDA implementation measures **4 to 5 times the
+2026-08-28 Triton revision on a GB10 at decode batch 1-4, with identical
+numerics**, and it is routed inside its exact contract with the 2026-08-28 kernel
+kept as the fallback for anything outside it. Their validation is on one DGX
+Spark: needle retrieval **9/9 exact at 120k, 190k and 210k**, decode after those
+prompts **46-92 tok/s where it was 30-48**, short-context decode unchanged.
+
+That is the same hardware, the same depths and the same author whose kernel is
+already in this directory. What is still missing is our own run: the flash lane
+needs about 230 GB free and this box does not have it today, and a
+correctness-critical kernel does not get swapped on someone else's needle test,
+however good. So the file is unchanged and the upgrade is now a named, costed
+task rather than an open question: install the flash lane, vendor
+`patches/kda_kernels/` and `patches/qsa_sm121_kda.py` at their pinned revision,
+re-run `./needle.sh --mem` at 120k/190k/210k plus the quality canaries, and keep
+the 2026-08-28 kernel as the documented fallback exactly as they do.
+
+Until then, the vendored file stays as it is and this note is the record of why.
