@@ -59,13 +59,17 @@ main() {
   fi
 
   # Invariant: if this script completes, you ARE on the latest origin/main.
-  if [ -n "$(git -C "$DIR" status --porcelain)" ]; then
+  # Only TRACKED modifications can make the checkout stale or altered. Untracked
+  # files cannot, and `git reset --hard` below leaves them alone, so blocking on
+  # them turned an unrelated notes file into a failed install and, under
+  # FORCE_UPDATE, swept it into a stash the user never asked for.
+  if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no)" ]; then
     if [ "${FORCE_UPDATE:-0}" = "1" ]; then
-      echo "── FORCE_UPDATE=1: stashing your local changes (recoverable: git stash list)"
-      git -C "$DIR" stash push -u -m "get.sh auto-stash before update"
+      echo "── FORCE_UPDATE=1: stashing your tracked changes (recoverable: git stash list)"
+      git -C "$DIR" stash push -m "get.sh auto-stash before update"
     else
-      echo "ERROR: $DIR has local modifications, refusing to install a stale or altered version." >&2
-      git -C "$DIR" status --short | head -10 >&2
+      echo "ERROR: $DIR has modified tracked files, refusing to install a stale or altered version." >&2
+      git -C "$DIR" status --short --untracked-files=no | head -10 >&2
       echo "Fix with ONE of:" >&2
       echo "  keep your changes aside :  FORCE_UPDATE=1  then rerun this command (recover later: git -C $DIR stash pop)" >&2
       echo "  discard your changes    :  git -C $DIR checkout -- . && git -C $DIR clean -fd  then rerun" >&2
@@ -83,6 +87,13 @@ main() {
       echo "  keep your commits aside :  FORCE_UPDATE=1  then rerun (they stay on a backup branch)" >&2
       exit 1
     fi
+  fi
+  # Untracked files are kept, but say so: if one of them is a path that origin/main
+  # now tracks, the reset below writes over it.
+  UNTRACKED=$(git -C "$DIR" ls-files --others --exclude-standard)
+  if [ -n "$UNTRACKED" ]; then
+    echo "── Untracked files kept in place (not part of the update):"
+    printf '%s\n' "$UNTRACKED" | head -5 | sed 's/^/     /'
   fi
   # Tree verified clean and no local commits (or backed up): hard sync is lossless
   # and, unlike ff-only, immune to shallow-clone ancestry gaps.

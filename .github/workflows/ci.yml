@@ -262,6 +262,9 @@ jobs:
       - name: opencode limits fit the served pool (offline)
         run: python3 tests/test_oc_fit_limits.py
 
+      - name: get.sh guards (git fixture, stubbed installer)
+        run: python3 tests/test_get_sh.py
+
       - name: Vendored DFlash2 overlay integrity
         run: cd dflash2 && sha256sum -c MANIFEST.sha256
 
