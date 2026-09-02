@@ -1,11 +1,13 @@
 # Qwen3.8 on DGX Spark (GB10): 27B at 50 tok/s, Flash-Next 176B on one box
 
-One command installs a boot-persistent, hardened serving stack for the Qwen3.8 family on a single DGX Spark, with **three switchable targets** and **zero quality loss** on each (NVFP4 quantization floor everywhere; every speculative path is lossless by construction):
+One command installs a boot-persistent, hardened serving stack for the Qwen3.8 family on a single DGX Spark, with **five switchable targets** and **zero quality loss** on each (NVFP4 is the quantization floor, Qwen's own FP8 is available above it; every speculative path is lossless by construction):
 
 | target | model | engine | headline (measured here) |
 |---|---|---|---|
 | `stock` (default) | Qwen3.8-27B NVFP4 | SGLang + DFlash2 | **50 tok/s** greedy median, 148+ aggregate at 8 streams, optional 1M context |
 | `uncensored` | Qwen3.8-27B abliterated NVFP4 | SGLang + DFlash2 | same speed and serving path as stock |
+| `fp8` | Qwen3.8-27B FP8, Qwen's own release | SGLang + DFlash2 | the quantization reference: 108 tok/s aggregate at 8 streams, ~200K less KV pool |
+| `uncensored-fp8` | Qwen3.8-27B abliterated FP8 | SGLang + DFlash2 | same serving path and same cost as `fp8` |
 | `flash` | **Qwen3.8-Flash-Next 176B** hybrid MoE NVFP4 | SGLang + NEXTN | **34-42 tok/s decode, working prefix caching (30K re-serve: 0.5 s), vision**, 262K on ONE box |
 
 The 27B path is the fastest configuration measured so far on GB10 (**SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels**): **50 tok/s greedy median on `./bench.sh` (code 41-47, reasoning 52-57, math peak 60)**, free prose 17-23 in any language, **135-148 tok/s aggregate at 8 concurrent streams, 258 at 32**. Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
@@ -55,7 +57,7 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 
 | Choice | How | Default | Notes |
 |---|---|---|---|
-| Model | `MODEL_CHOICE=stock`, `uncensored`, `flash` | `stock` | 27B stock, 27B abliterated, or Flash-Next 176B (see the three targets) |
+| Model | `MODEL_CHOICE=stock`, `uncensored`, `fp8`, `uncensored-fp8`, `flash` | `stock` | 27B NVFP4 stock or abliterated, the same pair in Qwen's FP8, or Flash-Next 176B (see the five targets) |
 | Context mode (27B) | `CONTEXT_MODE=native` or `1m` | `native` | `1m` = 1,010,000 window, mem-fraction 0.70, proxy required (see the 1M section) |
 | systemd service | default, or `--no-service` | service | `--no-service`: foreground with `./run.sh`, no sudo, 27B native only |
 | Start now | default, or `--no-start` | starts | install everything, start later with `sudo systemctl start` |
@@ -281,12 +283,14 @@ request) caps it to one running request anyway. The 48 GB mmap backing file
 (`PLE_DIR`, default `~/flashnext-ple`) is rewritten on every boot up to v1.5.2
 (issue #7); v1.5.3 reuses it.
 
-## The three targets, and switching between them
+## The five targets, and switching between them
 
 | choice | checkpoint | revision | engine, unit |
 |---|---|---|---|
 | `stock` (default) | `RadixArk/Qwen3.8-27B-NVFP4` | `52d1adc` | SGLang, `qwen38-sglang` |
 | `uncensored` | `edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4` | `21565d3` | SGLang, `qwen38-sglang` |
+| `fp8` | `Qwen/Qwen3.8-27B-FP8` | `017b9c7` | SGLang, `qwen38-sglang` |
+| `uncensored-fp8` | `edp1096/Huihui-Qwen3.8-27B-abliterated-FP8` | `603028a` | SGLang, `qwen38-sglang` |
 | `flash` | `RadixArk/Qwen3.8-Flash-Next-NVFP4` | `7b71922` | SGLang, `qwen38-flash` |
 
 The uncensored target is huihui-ai's abliteration of Qwen3.8-27B re-quantized
@@ -294,6 +298,26 @@ with the identical RadixArk modelopt NVFP4 recipe (verified: same
 `text_config`, same mixed 8-bit attention / 4-bit MLP quant groups, same
 chat template, MTP + vision intact, ~22 GB). It refuses the least while keeping
 the stock NVFP4 serving path.
+
+The FP8 pair is Qwen's own release and huihui-ai's abliteration of it in the
+same format. No flag changes: SGLang reads the scheme from the checkpoint's
+config. Take it when you want the quantization question off the table, and know
+what it costs: the weights are **30.9 GB against 21 GB** for NVFP4, SGLang takes
+that out of the KV pool, so expect roughly **200,000 fewer tokens of pool**, and
+decode is bandwidth bound on GB10 so it is also slower (**108 tok/s aggregate at
+8 streams** against 135-148 for the NVFP4 default). The abliterated FP8 was
+checked against Qwen's official FP8 file by file before pinning: 66 weight names
+in common and not one shared hash, so the abliteration is real and not a rename,
+and `lm_head` is left out of the quantization, which is what keeps an FP8
+checkpoint loadable by SGLang.
+
+Two honest gaps on the FP8 pair, both being closed: it does not yet carry a full
+`./bench-matrix.sh` run the way the other three targets do (the 108 tok/s figure
+is a single aggregate probe), and **the memory ceiling of FP8 combined with
+`CONTEXT_MODE=1m` is not measured**. The "27B lane measured flat at 100K, 200K
+and 300K" result quoted elsewhere in this README was measured on NVFP4, and FP8
+puts about 10 GB more in residence. Until that curve exists, run the FP8 pair at
+native context, or watch host `MemAvailable` if you run it at 1M.
 
 The flash target is Qwen3.8-Flash-Next (Qwen4-generation preview: 176B hybrid
 MoE, 6B active, QSA sparse attention, multimodal) in RadixArk's NVFP4, served
@@ -305,14 +329,15 @@ and the keepalive proxy stay put.
 - Fresh install: `MODEL_CHOICE=uncensored ./install.sh` or
   `MODEL_CHOICE=flash ./install.sh` (one-liner: `curl -fsSL .../get.sh |
   MODEL_CHOICE=flash bash`). Upgrades keep the installed choice.
-- Existing install, 27B pair (`stock` ↔ `uncensored`): `./switch-model.sh
-  uncensored` (or `stock`), as many times as you like. It downloads the
+- Existing install, within the 27B lane (`stock`, `uncensored`, `fp8`,
+  `uncensored-fp8`, in any direction): `./switch-model.sh uncensored` (or
+  `stock`, `fp8`, `uncensored-fp8`), as many times as you like. It downloads the
   checkpoint (cached after the first time), applies the 1M YaRN config patch if
   the installed unit uses `--context-length 1010000`, regenerates the patched
   chat template from the target's own snapshot, rewrites **only** the
   `--model-path` line of `/etc/systemd/system/qwen38-sglang.service` and
   daemon-reloads.
-- Existing install, across lanes (`flash` ↔ either 27B target): install each
+- Existing install, across lanes (`flash` ↔ any 27B target): install each
   stack once (`MODEL_CHOICE=flash ./install.sh` downloads the image and
   checkpoint and builds the overlay); after that `./switch-model.sh flash` /
   `./switch-model.sh stock` is surgical too: it re-verifies the checkpoint,

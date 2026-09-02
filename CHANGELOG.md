@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.6 (2026-09-02): Qwen's own FP8 joins the 27B lane
+
+- Two new targets on the 27B lane, switchable like the others and served by the
+  same unit: `fp8` (`Qwen/Qwen3.8-27B-FP8`, Qwen's own release) and
+  `uncensored-fp8` (`edp1096/Huihui-Qwen3.8-27B-abliterated-FP8`, huihui-ai's
+  abliteration in the same format). `MODEL_CHOICE=fp8 ./install.sh` on a fresh
+  box, `./switch-model.sh fp8` on an existing one. No flag changes: SGLang reads
+  the quantization scheme from the checkpoint's own config.
+- What FP8 costs, measured here: the weights are 30.9 GB against 21 GB for
+  NVFP4, which SGLang takes out of the KV pool (about 200,000 fewer tokens of
+  pool, at the measured ratio of 1 GB of pool per 20,000 tokens), and decode is
+  bandwidth bound on GB10 so it is slower too, 108 tok/s aggregate at 8 streams
+  against 135-148 for the NVFP4 default. What it buys is the quantization
+  question off the table.
+- Checked before pinning the abliterated FP8: architecture
+  `Qwen3_5ForConditionalGeneration`, vision tower present, not gated, 30.9 GB,
+  and the weights compared against Qwen's official FP8 file by file, 66 names in
+  common and not one shared hash, so the abliteration is real rather than a
+  rename. `lm_head` is left out of the quantization, which is what keeps an FP8
+  checkpoint loadable by SGLang (the unsloth and RedHat FP8 builds quantize it
+  and their own cards say SGLang cannot load them).
+- `oc-fit-limits.py`: the generated opencode config asks for no more than the
+  served engine can actually hold, and the switch names the checkpoint behind
+  the opencode entry it writes.
+- 27B overlay: vendors the upstream mrope fix for the fused Qwen3.5 rope kernel.
+- Two gaps stated in the README rather than papered over. The FP8 pair does not
+  yet carry a full `./bench-matrix.sh` run the way the other three targets do
+  (108 tok/s is a single aggregate probe), and **the memory ceiling of FP8
+  combined with `CONTEXT_MODE=1m` is not measured**: the "27B lane measured flat
+  at 100K, 200K and 300K" result was measured on NVFP4, and FP8 puts about 10 GB
+  more in residence. Run the FP8 pair at native context until that curve exists,
+  or watch host `MemAvailable` if you run it at 1M.
+
 ## v1.5.9 (2026-08-30): opencode is a choice, and every choice is written down
 
 - `./install.sh --no-opencode` (one-liner: `| bash -s -- --no-opencode`): API only. No
