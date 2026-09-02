@@ -206,6 +206,39 @@ def record_boot(history: dict, unit: str, seconds: float,
     return history
 
 
+def pool_key(unit: str, target: str | None) -> str:
+    """History key for one unit's KV pool, per served target.
+
+    The pool is a boot lottery AND it depends on the checkpoint: mixing an NVFP4
+    boot with an FP8 one produces a spread that means nothing. Keyed by target,
+    each series answers a question you can act on, which is what this repo's two
+    disagreeing 1m pool campaigns needed and did not have.
+    """
+    return f"{unit}:pool:{target or 'unknown'}"
+
+
+def record_pool(history: dict, unit: str, target: str | None, pool: int,
+                keep: int = 12) -> dict:
+    """Append one boot's KV pool, ignoring the zero an engine reports before ready."""
+    if not pool or pool <= 0:
+        return history
+    key = pool_key(unit, target)
+    lst = list(history.get(key, []))
+    lst.append(int(pool))
+    history[key] = lst[-keep:]
+    return history
+
+
+def pool_spread(history: dict, unit: str, target: str | None) -> dict | None:
+    """min/max/last/n for a target's recorded pools, or None below two boots."""
+    lst = [int(x) for x in history.get(pool_key(unit, target), []) if x]
+    if len(lst) < 2:
+        return {"n": len(lst), "last": lst[-1]} if lst else None
+    lo, hi = min(lst), max(lst)
+    return {"n": len(lst), "last": lst[-1], "min": lo, "max": hi,
+            "spread_pct": round((hi - lo) * 100.0 / hi, 1)}
+
+
 # ── Wedge detection: health says yes, generation says no ────────────────────
 def decide_wedge(*, health_ok: bool, canary_fails: int, num_reqs: int,
                  progress_age: float | None, threshold: int = 3,

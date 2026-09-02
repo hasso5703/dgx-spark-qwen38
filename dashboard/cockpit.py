@@ -821,7 +821,8 @@ def collect_lifecycle():
                          "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,
                          "eta": eta, "overdue": overdue,
                          "boots": history.get(unit, [])[-5:],
-                         "boots_rebuild": history.get(f"{unit}:rebuild", [])[-3:]}
+                         "boots_rebuild": history.get(f"{unit}:rebuild", [])[-3:],
+                         "pools": lc.pool_spread(history, unit, unit_target(unit).get("target"))}
         states[unit] = st["state"]
         # transitions: events + boot-duration learning
         was = prev.get(unit)
@@ -829,7 +830,14 @@ def collect_lifecycle():
             add_event("state", f"{unit}: {was} -> {st['state']}")
             if st["state"] == "ready" and elapsed and witnessed \
                     and was in lc.TRANSITIONAL:
-                save_history(lc.record_boot(history, unit, elapsed, rebuild))
+                history = lc.record_boot(history, unit, elapsed, rebuild)
+                # The KV pool this boot won, kept per target: it is a lottery and
+                # it decides whether the declared opencode limits can be served.
+                with STATE_LOCK:
+                    _info = ((STATE.get("engine_info") or {}).get("data") or {}).get("info") or {}
+                history = lc.record_pool(history, unit, unit_target(unit).get("target"),
+                                         int(_info.get("max_total_num_tokens") or 0))
+                save_history(history)
                 with LIFE_LOCK:
                     LIFE["witnessed"][unit] = False
     with LIFE_LOCK:

@@ -405,3 +405,55 @@ class OpencodeDefault(unittest.TestCase):
     def test_nothing_serving(self):
         ok, why = lc.opencode_default_follows("qwen38/qwen3.8-27b", {"qwen38-sglang.service": "stopped", "qwen38-flash.service": "failed"})
         self.assertIsNone(ok); self.assertIn("no engine", why)
+
+
+class PoolHistory(unittest.TestCase):
+    """The KV pool a boot wins, kept per target.
+
+    It is a lottery (this box measured 863,398 / 893,479 / 913,334 for one
+    checkpoint) and it also depends on the checkpoint (about 863k on NVFP4
+    against 778k on FP8), so one series per target is the only kind that answers
+    a question. The repo carries two disagreeing 1m pool campaigns precisely
+    because nobody was recording this."""
+
+    def test_key_separates_targets_and_units(self):
+        a = lc.pool_key("qwen38-sglang.service", "stock")
+        b = lc.pool_key("qwen38-sglang.service", "fp8")
+        c = lc.pool_key("qwen38-flash.service", "flash")
+        self.assertEqual(len({a, b, c}), 3, "keys must not collide")
+        self.assertEqual(lc.pool_key("u", None), "u:pool:unknown")
+
+    def test_record_ignores_a_pool_the_engine_has_not_reported(self):
+        # Before ready, get_server_info answers 0; recording it would poison the
+        # spread with a floor no boot ever had.
+        h = {}
+        for bad in (0, -1, None):
+            self.assertEqual(lc.record_pool(h, "u", "fp8", bad), {})
+
+    def test_record_and_spread(self):
+        h = {}
+        for p in (863398, 893479, 913334):
+            lc.record_pool(h, "qwen38-sglang.service", "stock", p)
+        self.assertIsNone(lc.pool_spread(h, "qwen38-sglang.service", "fp8"),
+                          "another target's series must stay empty")
+        s = lc.pool_spread(h, "qwen38-sglang.service", "stock")
+        self.assertEqual((s["n"], s["min"], s["max"], s["last"]),
+                         (3, 863398, 913334, 913334))
+        self.assertEqual(s["spread_pct"], 5.5)
+
+    def test_one_boot_reports_no_spread_yet(self):
+        h = {}
+        lc.record_pool(h, "u", "fp8", 778343)
+        s = lc.pool_spread(h, "u", "fp8")
+        self.assertEqual(s, {"n": 1, "last": 778343})
+
+    def test_history_is_bounded(self):
+        h = {}
+        for i in range(40):
+            lc.record_pool(h, "u", "fp8", 700000 + i)
+        self.assertEqual(len(h[lc.pool_key("u", "fp8")]), 12)
+        self.assertEqual(lc.pool_spread(h, "u", "fp8")["last"], 700039)
+
+
+if __name__ == "__main__":
+    unittest.main()

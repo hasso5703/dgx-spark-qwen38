@@ -41,6 +41,20 @@
   them happily and `run.sh` then died with "MODEL_CHOICE must be stock,
   uncensored or flash", because its own target map and its pin list both
   predated them. The documented no-service path works for all four 27B targets.
+- **58 cockpit tests were never running.** `dashboard/tests/test_lifecycle.py`
+  declares 58 tests across 14 classes and had no `__main__` block, so the CI
+  step that invoked it as a script executed nothing and exited 0. The repo's
+  largest suite, covering the lifecycle state machine, wedge detection and the
+  autoheal decision, was green because it was inert. All 58 pass now that they
+  run. CI compares the number of tests unittest reports against the number the
+  files declare, both in aggregate and per file when each is invoked directly,
+  so a missing entry point or an uncollected class fails instead of passing
+  silently.
+- **The cockpit records the KV pool each boot wins, per target.** The pool is a
+  lottery and it depends on the checkpoint, which is why this repo carries two
+  disagreeing 1m measurement campaigns: nobody was recording it. Every
+  transition into ready now appends the served pool under its own target key,
+  and the lane panel reports min, max, last and spread once two boots exist.
 - **A 27B install stops downloading 6 GB it never serves.** The DSpark drafter
   was fetched by every 27B install since v1.2 replaced it with DFlash2, and
   `run.sh` refused to start when it was missing, but no serving path had

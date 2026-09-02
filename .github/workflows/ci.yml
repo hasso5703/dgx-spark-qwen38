@@ -35,8 +35,26 @@ jobs:
       - name: Cockpit unit tests (lifecycle state machine, recipe generation)
         run: |
           cd dashboard
-          python3 tests/test_lifecycle.py
-          python3 tests/test_recipes.py
+          # Count what unittest actually runs against what the files declare.
+          # test_lifecycle.py had 58 tests and no __main__ block, so running it
+          # as a script executed nothing and exited 0: the largest suite in the
+          # repo was green because it never ran. Silence is not a pass.
+          declared=$(cat tests/test_lifecycle.py tests/test_recipes.py | grep -c 'def test_')
+          out=$(python3 -m unittest tests.test_lifecycle tests.test_recipes 2>&1)
+          echo "$out" | tail -5
+          ran=$(echo "$out" | grep -oE '^Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
+          echo "declared $declared, ran $ran"
+          [ "$ran" = "$declared" ] || { echo "unittest ran $ran of $declared declared tests"; exit 1; }
+          # Each file must also RUN its tests when invoked directly, the way a
+          # human and the old CI step do. A file without a __main__ block exits 0
+          # having run nothing, so only the reported count proves anything.
+          for f in test_lifecycle test_recipes; do
+            d=$(grep -c 'def test_' "tests/$f.py")
+            o=$(python3 "tests/$f.py" 2>&1 || true)
+            r=$(echo "$o" | grep -oE 'Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
+            echo "  $f.py run directly: ran $r of $d"
+            [ "$r" = "$d" ] || { echo "$f.py ran $r of its $d tests when invoked directly"; exit 1; }
+          done
 
       - name: Pin contracts (run.sh reads 17, switch-model.sh reads 16)
         run: |
