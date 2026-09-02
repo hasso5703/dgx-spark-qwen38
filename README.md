@@ -131,6 +131,17 @@ measured crashing** under 3 concurrent requests (2 GiB free, Triton `CUDA operat
 permitted`), and the 25-40 GB invisible-allocation bursts above all belong to native runs and
 the autotuner. Treat anything past 0.70 as livelock territory.
 
+**The SGLang cookbook pins 0.80 on DGX Spark, and that is not a contradiction.**
+Its GB10 cells ran 48 configurations at ISL 8192 / OSL 1024, **concurrency 1**,
+boot-and-serve only, and 0.80 served every cell on every attempt; it rejects 0.85
+because 0.85 of 128 GB leaves about 8 GB for the OS, exactly DGX OS earlyoom's
+SIGTERM threshold, and 15 of 48 cells were killed there (exit -15, no traceback,
+visible in `journalctl -u earlyoom`). This repo's 0.80 failure was measured under
+**three concurrent requests** on a box that also runs the operator's tools. One
+number is a single-stream boot-and-serve bound, the other is a multi-client
+operating point, and this repo optimises for the second. If you serve one stream
+on a dedicated box, the cookbook's 0.80 is the better-evidenced pin.
+
 ## opencode integration
 
 The installer writes a complete, ready-to-use [opencode](https://opencode.ai) config at `~/.config/qwen38/opencode.json` (the API key is referenced via `{file:...}`, no secret inside). It contains one provider per installed engine (`qwen38` for the 27B pair, `flashnext` for flash), each with `low` / `medium` / `xhigh` reasoning-effort variants (no variant = the template's own default, xhigh), and its default model follows the installed target (`./switch-model.sh` re-points it on every switch):
@@ -319,7 +330,16 @@ fp8_e4m3`**. The whole 27B lane runs an fp8 KV cache; the NVFP4 checkpoints
 carry their own KV scales so SGLang picks it up on its own, while Qwen's FP8
 release does not and would otherwise fall back to a bf16 KV cache costing about
 half the pool (measured on the same 1m unit: 771,139 tokens with the flag,
-382,706 without). `install.sh` and `run.sh` add it for these two targets only. Take it when you want the quantization question off the table, and know
+382,706 without). `install.sh` and `run.sh` add it for these two targets only.
+
+The [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)
+states the mechanism directly: "Both NVFP4 checkpoints declare
+`kv_cache_quant_algo: FP8`; SGLang's default `--kv-cache-dtype auto` honors it,
+so the KV pool runs in fp8_e4m3 with the checkpoint's calibration scales
+automatically." Qwen's FP8 release carries no such declaration, which is why it
+is the one target that has to ask. The cookbook also prices the difference at
+32.8 KB per token in fp8 against 65.5 KB in bf16, exactly the factor of two this
+box measures between a flagged and an unflagged FP8 pool. Take it when you want the quantization question off the table, and know
 what it costs: the weights are **30.9 GB against 21 GB** for NVFP4, SGLang takes
 that out of the KV pool: the same 1m unit measures **863,398 tokens on NVFP4 and
 771,139 on FP8**, about 92,000 fewer, and decode is bandwidth bound on GB10 so it
