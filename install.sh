@@ -68,6 +68,8 @@ esac
 # 6 GB and a few minutes on every 27B install). The pin stays so the cockpit's
 # registry can still recognise a copy left on disk, and `git checkout v1.1 &&
 # ./install.sh` fetches it through that release's own installer.
+# shellcheck disable=SC2034  # read externally: dashboard/registry.py pairs DRAFT_REV
+# with this repo id to classify a leftover DSpark copy, and uninstall.sh lists it.
 DRAFT_REPO="RadixArk/Qwen3.8-27B-DSpark"
 DRAFT_REV="${DRAFT_REV:-85ef153be924f17ce4bf62726954eeaa4a73e854}"
 DRAFT2_REPO="z-lab/Qwen3.8-27B-DFlash2"
