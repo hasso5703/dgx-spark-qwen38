@@ -118,7 +118,7 @@ Usage: ./install.sh [--no-start] [--no-service] [--no-opencode | --with-opencode
   --with-opencode       re-enable it after a --no-opencode
 
 Re-running over an existing install keeps the operator's choices: the target
-model (stock/uncensored), the context mode (native/1m), the port, the HF
+model (any of the five), the context mode (native/1m), the port, the HF
 cache location and the opencode on/off choice are read from the installed
 unit (or the marker file) unless the env var or flag is passed explicitly.
 
@@ -128,6 +128,9 @@ Env overrides (defaults are pinned to the validated 2026-08-15 versions):
   DRAFT2_REV=main                    latest DFlash2 draft revision
   MODEL_CHOICE=uncensored            serve the huihui-abliterated model
                                      (edp1096 NVFP4) instead of the stock base
+  MODEL_CHOICE=fp8                   serve Qwen's own FP8 release (30.9 GB, about
+                                     200k fewer tokens of KV pool, slower decode)
+  MODEL_CHOICE=uncensored-fp8        the huihui abliteration in that same FP8 format
   MODEL_CHOICE=flash                 serve Qwen3.8-Flash-Next (176B hybrid MoE,
                                      NVFP4, SGLang engine, ~136 GB download; the
                                      51B N-gram table is mmap-served from NVMe,
@@ -150,7 +153,7 @@ done
 
 # ── Converge on the operator's installed choices ──
 # Re-running the installer (or the get.sh one-liner) must never silently reset
-# a choice that is already serving: the target model (stock/uncensored/flash),
+# a choice that is already serving: the target model (any of the five targets),
 # the port, and the HF cache location are read from the installed units and
 # kept, unless the corresponding env var was passed explicitly on this
 # invocation. Everything else (image digest, checkpoint revisions, launch
@@ -230,15 +233,17 @@ elif [ "$INSTALLED_CHOICE" = "27b" ]; then
   CUR_HF="$(grep -oE -- '-v [^ :]+:/root/\.cache/huggingface' "$UNIT_PATH" | head -1 | sed -e 's/^-v //' -e 's|:/root/\.cache/huggingface$||' || true)"
   if [ -z "$_ENV_MODEL_CHOICE" ] && [ -n "$CUR_MODEL" ] && [ "$CUR_MODEL" != "$MODEL_REPO" ]; then
     case "$CUR_MODEL" in
-      "$STOCK_REPO") MODEL_CHOICE=stock;      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$STOCK_REV}" ;;
-      "$UNC_REPO")   MODEL_CHOICE=uncensored; MODEL_REPO="$UNC_REPO";   MODEL_REV="${_ENV_MODEL_REV:-$UNC_REV}" ;;
+      "$STOCK_REPO")  MODEL_CHOICE=stock;          MODEL_REPO="$STOCK_REPO";  MODEL_REV="${_ENV_MODEL_REV:-$STOCK_REV}" ;;
+      "$UNC_REPO")    MODEL_CHOICE=uncensored;     MODEL_REPO="$UNC_REPO";    MODEL_REV="${_ENV_MODEL_REV:-$UNC_REV}" ;;
+      "$FP8_REPO")    MODEL_CHOICE=fp8;            MODEL_REPO="$FP8_REPO";    MODEL_REV="${_ENV_MODEL_REV:-$FP8_REV}" ;;
+      "$UNCFP8_REPO") MODEL_CHOICE=uncensored-fp8; MODEL_REPO="$UNCFP8_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$UNCFP8_REV}" ;;
       *) KEEP_MODEL_VERBATIM=1; MODEL_CHOICE=custom; MODEL_REPO="$CUR_MODEL" ;;
     esac
     LANE=27b; UNIT_NAME="qwen38-sglang.service"
     if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
       echo "NOTE: keeping the custom --model-path already installed ($CUR_MODEL)."
       echo "      Its download and template steps are skipped (it is already serving from cache)."
-      echo "      Pass MODEL_CHOICE=stock or MODEL_CHOICE=uncensored to override."
+      echo "      Pass MODEL_CHOICE=stock, uncensored, fp8 or uncensored-fp8 to override."
     else
       echo "Keeping the installed target model: $MODEL_CHOICE ($MODEL_REPO). Pass MODEL_CHOICE= to change."
     fi
@@ -286,7 +291,7 @@ if [ "$NO_SERVICE" -eq 1 ] && [ "$CONTEXT_MODE" = "1m" ]; then
   printf -- 'CONTEXT_MODE=1m needs the systemd path (keepalive proxy service); ./run.sh serves the native config only.\nEither drop --no-service, or pass CONTEXT_MODE=native explicitly.\n' >&2; exit 1
 fi
 if [ "$NO_SERVICE" -eq 1 ] && [ "$MODEL_CHOICE" = "flash" ]; then
-  printf -- 'MODEL_CHOICE=flash is service-only in this release (the vLLM path was validated as a systemd unit).\nDrop --no-service, or install one of the 27B targets for the foreground ./run.sh path.\n' >&2; exit 1
+  printf -- 'MODEL_CHOICE=flash is service-only in this release (the lane was validated as a systemd unit).\nDrop --no-service, or install one of the 27B targets for the foreground ./run.sh path.\n' >&2; exit 1
 fi
 
 step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
@@ -450,7 +455,7 @@ TEMPLATE_OUT="$CONFIG_DIR/chat-template-sglang.jinja"
 [ "$LANE" = "flash" ] && TEMPLATE_OUT="$CONFIG_DIR/chat-template-flashnext.jinja"
 if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
   [ -s "$TEMPLATE_OUT" ] \
-    || die "custom model kept, but no patched template at $TEMPLATE_OUT. Pass MODEL_CHOICE=stock or MODEL_CHOICE=uncensored to regenerate it."
+    || die "custom model kept, but no patched template at $TEMPLATE_OUT. Pass MODEL_CHOICE=stock, uncensored, fp8 or uncensored-fp8 to regenerate it."
   echo "custom target model kept: existing patched template left untouched"
 else
   python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$TEMPLATE_OUT" "$MODEL_REV" "$MODEL_REPO" \

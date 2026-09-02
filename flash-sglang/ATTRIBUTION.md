@@ -89,3 +89,31 @@ sm_121 decode now uses a dedicated Triton packed-varlen kernel:
   The PR later moved to a KDA-optimized kernel package (`kda_kernels/qwen38_qsa_sm121`,
   2026-08-29); our copy is the Triton varlen revision of 2026-08-28, sha256-pinned in
   MANIFEST.sha256, field-validated on the reference box (BENCHMARKS, 29/08).
+
+**Upstream status, checked 2026-09-02.** PR #36845 **merged** on 2026-08-30
+(merge commit `78c5024e`), in its restructured form: the kernel now lives at
+`python/sglang/kernels/kda_kernels/qwen38_qsa_sm121/kernel.py` (274 lines, a
+split-K `_qsa_split_kernel` with a scratch-buffer helper), not at the
+`srt/layers/attention/qsa/sm121_varlen.py` path we vendored, and it arrived with
+a registered test (`test/registered/kernels/test_kda_qsa_sm121.py`). It is a
+reimplementation rather than a revision of what is in this directory.
+
+We keep the 2026-08-28 copy on purpose, for now. It is the version that was
+field-validated here by exact needle retrieval at 120k, 190k and 210k, and
+swapping a kernel whose whole job is long-context correctness is not something
+to do on the strength of an upstream merge alone. Two conditions gate the
+change, in this order:
+
+1. An official image ships it. Our flash base is pinned to the
+   `qwen38flashnext` digest of 2026-08-26, which predates the merge, and the
+   only tags carrying post-merge code today are `nightly-*` and `dev-*`, which
+   this repo does not pin. When a stable tag contains it, the overlay drops
+   `sm121_varlen.py` entirely and the backend patch with it, exactly as this
+   repo plans to drop the DFlash2 overlay once an official image ships DFLASH2.
+2. Failing that, a swap has to be re-validated here the way the current copy
+   was: `./needle.sh --mem` at 120k, 190k and 210k, plus the quality canaries.
+   That needs the flash lane installed (~230 GB free) and one giant-context run,
+   so it is a deliberate campaign, not a drive-by bump.
+
+Until one of those happens, the vendored file stays as it is and this note is
+the record of why.

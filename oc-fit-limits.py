@@ -61,6 +61,26 @@ def fit(pool: int, ceiling: int = 0) -> tuple[int, int]:
     return (context // 1000) * 1000, (output // 1000) * 1000
 
 
+def ceiling_from_env(text: str) -> int:
+    """PROMPT_CEILING_TOKENS out of `systemctl show -p Environment` output.
+
+    systemd prints every variable on one line behind a single `Environment=`
+    prefix, so the FIRST variable carries that prefix and the rest do not. The
+    naive startswith() missed the ceiling whenever it happened to be listed
+    first, which is one template reordering away and fails silently: a flash
+    lane would then get 27B-sized opencode limits and refuse a prompt
+    mid-conversation, the exact failure this tool exists to prevent.
+    """
+    for part in text.split():
+        part = part[len("Environment="):] if part.startswith("Environment=") else part
+        if part.startswith("PROMPT_CEILING_TOKENS="):
+            try:
+                return int(part.split("=", 1)[1] or 0)
+            except ValueError:
+                return 0
+    return 0
+
+
 def main(argv: list[str]) -> int:
     dry = "--dry-run" in argv
     base = "http://127.0.0.1:30000"
@@ -81,13 +101,18 @@ def main(argv: list[str]) -> int:
     if not pool or not provider:
         print(f"cannot fit: pool={pool}, served model={served!r} is not one of {sorted(LANE_MODEL)}")
         return 1
-    ceiling = 0
     env = subprocess.run(["systemctl", "show", "qwen38-keepalive.service", "-p", "Environment"],
                          capture_output=True, text=True).stdout
-    for part in env.split():
-        if part.startswith("PROMPT_CEILING_TOKENS="):
-            ceiling = int(part.split("=", 1)[1] or 0)
+    ceiling = ceiling_from_env(env)
     context, output = fit(pool, ceiling)
+    # Rounding to the kilo bottoms out at zero on an implausibly small pool, and
+    # writing "context": 0 into opencode's config would break it far more loudly
+    # than not writing anything. No real engine gets here (the smallest pool this
+    # repo has measured is 382,706), so say so rather than invent a floor.
+    if context <= 0 or output <= 0:
+        print(f"cannot fit: pool {pool:,} is too small to derive usable limits "
+              f"(computed context {context}, output {output}); nothing written")
+        return 1
     print(f"engine: {info.get('model_path')} serving as {served}")
     print(f"pool {pool:,} tokens, usable share {USABLE:.0%}, boot margin {BOOT_MARGIN:.0%}"
           + (f", lane ceiling {ceiling:,}" if ceiling else ""))

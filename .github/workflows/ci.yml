@@ -38,12 +38,29 @@ jobs:
           python3 tests/test_lifecycle.py
           python3 tests/test_recipes.py
 
-      - name: Pin contracts (run.sh expects 15, switch-model.sh expects 8)
+      - name: Pin contracts (run.sh reads 15, switch-model.sh reads 16)
         run: |
           n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
           [ "$n" -eq 15 ] || { echo "run.sh pin contract broken: $n != 15"; exit 1; }
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 12 ] || { echo "switch-model.sh pin contract broken: $n != 12"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 16 ] || { echo "switch-model.sh pin contract broken: $n != 16"; exit 1; }
+          # This check must mirror the grep switch-model.sh actually runs, or a
+          # renamed pin passes CI and breaks the switch at runtime. It did: the
+          # four FP8 names were read by the script and guarded by nothing.
+          # What makes a pin reach switch-model.sh is its presence in that
+          # script's own PINS grep, which eval defines. Testing for the name
+          # anywhere in the file proves nothing: it also appears in the case
+          # arms that consume it.
+          SW_PAT="$(grep -E '^PINS=' switch-model.sh)"
+          for v in IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV \
+                   UNCFP8_REPO UNCFP8_REV FLASH_REPO FLASH_REV FLASH_IMAGE \
+                   FLASH_SERVE_IMAGE MODEL_CHOICE HF_CACHE CONFIG_DIR; do
+            grep -qE "^$v=" install.sh || { echo "install.sh no longer defines $v"; exit 1; }
+            case "|$SW_PAT|" in
+              *"|$v|"*|*"($v|"*|*"|$v)"*) ;;
+              *) echo "switch-model.sh PINS grep no longer selects $v"; exit 1 ;;
+            esac
+          done
           PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)"
           eval "$PINS"
           [ -n "$UNC_REV" ] && [ -n "$STOCK_REV" ] && [ "$MODEL_CHOICE" = "stock" ] && [ "$CONTEXT_MODE" = "native" ]
@@ -176,6 +193,9 @@ jobs:
         run: python3 tests/test_patch_template.py
       - name: keepalive proxy oversize guard (offline, fake /tokenize)
         run: python3 tests/test_proxy_guard.py
+
+      - name: opencode limits fit the served pool (offline)
+        run: python3 tests/test_oc_fit_limits.py
 
       - name: Vendored DFlash2 overlay integrity
         run: cd dflash2 && sha256sum -c MANIFEST.sha256

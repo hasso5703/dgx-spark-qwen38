@@ -46,6 +46,12 @@ case "$CHOICE" in
   flash)      TARGET_REPO="$FLASH_REPO"; TARGET_REV="$FLASH_REV"; TARGET_LANE=flash ;;
 esac
 
+# The pins come from install.sh through eval, so a pin renamed or emptied there
+# would otherwise reach the download step as an empty repo or revision. CI
+# guards the names; this guards the values on a box that already diverged.
+[ -n "${TARGET_REPO:-}" ] && [ -n "${TARGET_REV:-}" ] \
+  || die "target '$CHOICE' resolved to an empty checkpoint or revision; install.sh is missing its pin"
+
 if [ "$TARGET_LANE" = "27b" ]; then
   [ -f "$SGL_UNIT" ] || die "the 27B stack is not installed on this box (no $SGL_UNIT). Install it once first: MODEL_CHOICE=$CHOICE ./install.sh"
   TARGET_UNIT="$SGL_UNIT"; TARGET_UNIT_NAME="qwen38-sglang"
