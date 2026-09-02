@@ -479,7 +479,16 @@ function rLifecycle(d){
     c.why.textContent = blocked ? 'start blocked: ' + blocked[0] : (e.state === 'failed' ? 'the unit failed: read its journal in the Logs tab, then start it again' : '');
     c.why.className = 'why' + (blocked || e.state === 'failed' ? ' warn' : '');
     const boots = (e.boots || []).slice().reverse().map(fmtDur).join(', ');
-    c.hist.textContent = !TRANSITIONAL.has(e.state) && boots ? 'last boots: ' + boots + ((e.boots_rebuild || []).length ? ` (with table rebuild: ${e.boots_rebuild.slice().reverse().map(fmtDur).join(', ')})` : '') : '';
+    let hist = !TRANSITIONAL.has(e.state) && boots ? 'last boots: ' + boots + ((e.boots_rebuild || []).length ? ` (with table rebuild: ${e.boots_rebuild.slice().reverse().map(fmtDur).join(', ')})` : '') : '';
+    // The KV pool this target won, boot after boot. It is a lottery and it sets
+    // what the declared opencode limits can actually be served, so the spread is
+    // the number to watch, not any single boot's.
+    if (!TRANSITIONAL.has(e.state) && e.pools && e.pools.last){
+      const p = e.pools;
+      hist += (hist ? ' · ' : '') + 'KV pool ' + fmtK(p.last)
+        + (p.n > 1 ? ` (${fmtK(p.min)}-${fmtK(p.max)}, ${p.spread_pct}% spread over ${p.n} boots)` : ' (first boot recorded)');
+    }
+    c.hist.textContent = hist;
     // the animated block is rebuilt only when its shape changes, its numbers every tick
     const sig = TRANSITIONAL.has(e.state) ? 'boot' : e.state === 'stopping' ? 'stop' : 'none';
     if (sig !== c.sig || sig !== 'none'){ clear(c.extra); if (sig === 'boot') c.extra.append(bootBlock(e)); if (sig === 'stop') c.extra.append(stoppingBlock(e)); c.sig = sig; }
