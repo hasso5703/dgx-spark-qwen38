@@ -28,7 +28,6 @@
   and shellcheck, and the two cockpit suites run as their own step. Before this,
   the repo's largest component was reached by exactly one gate, the typography
   check, and only because that one walks `git ls-files`.
-
 - Two new targets on the 27B lane, switchable like the others and served by the
   same unit: `fp8` (`Qwen/Qwen3.8-27B-FP8`, Qwen's own release) and
   `uncensored-fp8` (`edp1096/Huihui-Qwen3.8-27B-abliterated-FP8`, huihui-ai's

@@ -18,7 +18,7 @@ Whatever the target, you get the same surface: an **OpenAI-compatible API** on p
 
 ## Quickstart
 
-Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). Free disk: **~90 GB** for a 27B target (~45 under `$HOME` for checkpoints and caches, ~45 on the Docker partition for the 39 GB image; keeping both 27B targets cached adds ~22 GB), **~230 GB** for the flash target (~195 under `$HOME`: the ~136 GB checkpoint plus a ~48 GB mmap backing file for the N-gram table, written once at first boot; ~35 on the Docker partition for the 30 GB image).
+Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). Free disk: **~90 GB** for a 27B target (~45 under `$HOME` for checkpoints and caches, ~45 on the Docker partition for the 39 GB image; caching the other 27B targets adds ~21 GB per NVFP4 target and ~31 GB per FP8 one), **~230 GB** for the flash target (~195 under `$HOME`: the ~136 GB checkpoint plus a ~48 GB mmap backing file for the N-gram table, written once at first boot; ~35 on the Docker partition for the 30 GB image).
 
 One command, first install and updates alike (clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer):
 
