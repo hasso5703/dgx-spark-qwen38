@@ -2,39 +2,60 @@
 # Install Spark Cockpit as a systemd service. Opt-in: install.sh never runs this.
 # Idempotent. Installs: qwen38-dashboard.service (DASH_BIND:DASH_PORT) and the
 # narrow sudoers allowlist for the unit start/stop/restart buttons.
-# DASH_BIND defaults to 127.0.0.1. Set it to reach the cockpit from another
-# machine, e.g. DASH_BIND=0.0.0.0 (every interface) or DASH_BIND=<tailscale ip>
-# (that interface only). The API key is the only gate, so keep it on a private
-# network: a Tailscale tailnet or a LAN you trust, never the open internet.
+# DASH_BIND defaults to 127.0.0.1 on a first install. Set it to reach the cockpit
+# from another machine, e.g. DASH_BIND=0.0.0.0 (every interface) or
+# DASH_BIND=<tailscale ip> (that interface only). The API key is the only gate, so
+# keep it on a private network: a Tailscale tailnet or a LAN you trust, never the
+# open internet.
+# A re-run keeps what the installed unit says (bind, port, agent relay) unless the
+# variable is set again: an upgrade must never flip a cockpit back to loopback.
+# The Agent tab's relay (DASH_AGENT_PORT, DASH_AGENT_BIND, DASH_AGENT_UPSTREAM) is
+# normally set by dashboard/install-agent.sh, which calls this script.
 # The sudoers file is validated with visudo -c BEFORE it lands, from a temp
 # path, so a broken render can never brick sudo.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$HERE")"
-PORT="${DASH_PORT:-30090}"
-BIND="${DASH_BIND:-127.0.0.1}"
 UNIT=qwen38-dashboard.service
+INSTALLED="/etc/systemd/system/$UNIT"
+die(){ printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# What the installed unit says, so a re-run without variables changes nothing.
+installed(){ { grep -m1 -E "^Environment=$1=" "$INSTALLED" 2>/dev/null || true; } | cut -d= -f3-; }
+PORT="${DASH_PORT:-$(installed COCKPIT_PORT)}"; PORT="${PORT:-30090}"
+BIND="${DASH_BIND:-$(installed COCKPIT_BIND)}"; BIND="${BIND:-127.0.0.1}"
+AGENT_PORT="${DASH_AGENT_PORT:-$(installed COCKPIT_AGENT_PORT)}"; AGENT_PORT="${AGENT_PORT:-0}"
+AGENT_BIND="${DASH_AGENT_BIND:-$(installed COCKPIT_AGENT_BIND)}"; AGENT_BIND="${AGENT_BIND:-tailscale}"
+AGENT_UPSTREAM="${DASH_AGENT_UPSTREAM:-$(installed COCKPIT_AGENT_UPSTREAM)}"; AGENT_UPSTREAM="${AGENT_UPSTREAM:-http://127.0.0.1:4096}"
+[[ "$PORT" =~ ^[0-9]+$ ]] || die "DASH_PORT must be a number (got '$PORT')"
+[[ "$AGENT_PORT" =~ ^[0-9]+$ ]] || die "DASH_AGENT_PORT must be a number (got '$AGENT_PORT')"
+[ "$AGENT_PORT" != "$PORT" ] || die "the agent relay cannot share the cockpit port $PORT"
+case "$BIND$AGENT_BIND$AGENT_UPSTREAM" in *'|'*|*' '*) die "bind and upstream values must not contain spaces or |" ;; esac
+
 # The health probe below needs an address to dial, and 0.0.0.0 is not one.
 case "$BIND" in
   0.0.0.0) PROBE=127.0.0.1 ;;
   ::|'[::]') PROBE='[::1]' ;;
   *) PROBE="$BIND" ;;
 esac
-die(){ printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v python3 >/dev/null || die "python3 required"
-python3 - "$HERE/cockpit.py" <<'EOF' || die "cockpit.py does not parse"
+for f in cockpit.py agent_relay.py; do
+  python3 - "$HERE/$f" <<'EOF' || die "$f does not parse"
 import ast, sys
 ast.parse(open(sys.argv[1]).read())
 EOF
+done
 
 TMP_UNIT="$(mktemp)"
 sed -e "s|__PORT__|$PORT|g" -e "s|__BIND__|$BIND|g" -e "s|__USER__|$(id -un)|g" \
     -e "s|__GROUP__|$(id -gn)|g" -e "s|__REPO_DIR__|$REPO_DIR|g" \
     -e "s|__HOME__|$HOME|g" \
+    -e "s|__AGENT_PORT__|$AGENT_PORT|g" -e "s|__AGENT_BIND__|$AGENT_BIND|g" \
+    -e "s|__AGENT_UPSTREAM__|$AGENT_UPSTREAM|g" \
     "$HERE/qwen38-dashboard.service.template" > "$TMP_UNIT"
 grep -q '__[A-Z_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in unit"
-sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT"; rm -f "$TMP_UNIT"
+sudo install -m 644 "$TMP_UNIT" "$INSTALLED"; rm -f "$TMP_UNIT"
 
 TMP_SUDO="$(mktemp)"
 # read-only forensics wrapper (scheduler stack dump), referenced by the sudoers line below
@@ -60,4 +81,9 @@ if [ "$BIND" != "127.0.0.1" ] && [ "$BIND" != "localhost" ] && [ "$BIND" != "::1
   [ -s "$HOME/.config/qwen38/api-key" ] \
     || echo "WARNING: $HOME/.config/qwen38/api-key is missing or empty, so nobody can log in."
 fi
-echo "Remove with: sudo systemctl disable --now $UNIT; sudo rm -f /etc/systemd/system/$UNIT /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler"
+if [ "$AGENT_PORT" != "0" ]; then
+  echo "Agent relay: $AGENT_BIND:$AGENT_PORT -> $AGENT_UPSTREAM (Agent tab; a cockpit session is required)"
+fi
+REMOVE="sudo systemctl disable --now $UNIT; sudo rm -f $INSTALLED /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler"
+[ -f /etc/systemd/system/opencode-web.service ] && REMOVE="$REMOVE; sudo systemctl disable --now opencode-web.service; sudo rm -f /etc/systemd/system/opencode-web.service"
+echo "Remove with: $REMOVE"

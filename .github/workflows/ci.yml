@@ -16,12 +16,12 @@ jobs:
 
       - name: Shell syntax
         run: |
-          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh; do
+          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/install-agent.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh; do
             bash -n "$f"
           done
 
       - name: shellcheck (warning severity)
-        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh
+        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/install-agent.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh
 
       - name: opencode plugin syntax (node)
         run: node --check extras/opencode/auto-continue.js
@@ -30,17 +30,17 @@ jobs:
         run: |
           pip install 'ruff==0.5.0'
           ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py tests/*.py dashboard/*.py dashboard/tests/*.py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-fit-limits.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-fit-limits.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
 
-      - name: Cockpit unit tests (lifecycle state machine, recipe generation)
+      - name: Cockpit unit tests (lifecycle state machine, recipe generation, agent relay)
         run: |
           cd dashboard
           # Count what unittest actually runs against what the files declare.
           # test_lifecycle.py had 58 tests and no __main__ block, so running it
           # as a script executed nothing and exited 0: the largest suite in the
           # repo was green because it never ran. Silence is not a pass.
-          declared=$(cat tests/test_lifecycle.py tests/test_recipes.py | grep -c 'def test_')
-          out=$(python3 -m unittest tests.test_lifecycle tests.test_recipes 2>&1)
+          declared=$(cat tests/test_lifecycle.py tests/test_recipes.py tests/test_agent_relay.py | grep -c 'def test_')
+          out=$(python3 -m unittest tests.test_lifecycle tests.test_recipes tests.test_agent_relay 2>&1)
           echo "$out" | tail -5
           ran=$(echo "$out" | grep -oE '^Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
           echo "declared $declared, ran $ran"
@@ -48,7 +48,7 @@ jobs:
           # Each file must also RUN its tests when invoked directly, the way a
           # human and the old CI step do. A file without a __main__ block exits 0
           # having run nothing, so only the reported count proves anything.
-          for f in test_lifecycle test_recipes; do
+          for f in test_lifecycle test_recipes test_agent_relay; do
             d=$(grep -c 'def test_' "tests/$f.py")
             o=$(python3 "tests/$f.py" 2>&1 || true)
             r=$(echo "$o" | grep -oE 'Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
@@ -341,6 +341,46 @@ jobs:
                   print("  " + b)
               sys.exit(1)
           print(f"switch-model.sh privileged calls: all covered ({len(allowed)} allowlist entries)")
+          PY
+
+      - name: Cockpit and agent unit templates render, and their installers know every placeholder
+        run: |
+          r() { sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" -e "s|__PORT__|30090|g" \
+                    -e "s|__BIND__|127.0.0.1|g" -e "s|__REPO_DIR__|/r|g" -e "s|__AGENT_PORT__|30091|g" \
+                    -e "s|__AGENT_BIND__|tailscale|g" -e "s|__AGENT_UPSTREAM__|http://127.0.0.1:4096|g" \
+                    -e "s|__OPENCODE_BIN__|/home/u/.opencode/bin/opencode|g" -e "s|__OPENCODE_PORT__|4096|g" \
+                    -e "s|__PATH__|/usr/bin:/bin|g" -e "s|__OUTPUT_TOKEN_MAX__|160000|g" "$1"; }
+          for t in dashboard/qwen38-dashboard.service.template dashboard/opencode-web.service.template; do
+            r "$t" > /tmp/u.rendered
+            if grep -q '__[A-Z_]*__' /tmp/u.rendered; then echo "unsubstituted placeholder in $t:"; grep '__[A-Z_]*__' /tmp/u.rendered; exit 1; fi
+          done
+          # opencode stays on loopback: the relay is the one way in
+          r dashboard/opencode-web.service.template | grep -q -- 'serve --hostname 127.0.0.1 --port 4096'
+          r dashboard/opencode-web.service.template | grep -q 'EnvironmentFile=/home/u/.config/qwen38/opencode-web.env'
+          r dashboard/opencode-web.service.template | grep -q 'OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=160000'
+          r dashboard/qwen38-dashboard.service.template | grep -q 'COCKPIT_AGENT_PORT=30091'
+          for ph in $(grep -ohE '__[A-Z_]+__' dashboard/qwen38-dashboard.service.template | sort -u); do
+            grep -q "$ph" dashboard/install-dashboard.sh || { echo "install-dashboard.sh does not render $ph"; exit 1; }
+          done
+          for ph in $(grep -ohE '__[A-Z_]+__' dashboard/opencode-web.service.template | sort -u); do
+            grep -q "$ph" dashboard/install-agent.sh || { echo "install-agent.sh does not render $ph"; exit 1; }
+          done
+
+      - name: Every unit the cockpit can start, stop or restart is in the sudoers allowlist
+        run: |
+          # The unit action takes its unit from a closed set; each member needs its
+          # three exact sudoers lines or the button fails with "a password is required".
+          cd dashboard
+          COCKPIT_DRY_RUN=1 python3 - <<'PY'
+          import re, sys, pathlib
+          sys.path.insert(0, ".")
+          import cockpit
+          allowed = set(re.findall(r"NOPASSWD:\s*(/usr/bin/systemctl \S+ \S+)", pathlib.Path("sudoers-cockpit.template").read_text()))
+          bad = sorted(f"/usr/bin/systemctl {v} {u}" for u in cockpit.SERVING_UNITS for v in cockpit.UNIT_VERBS
+                       if f"/usr/bin/systemctl {v} {u}" not in allowed)
+          if bad:
+              print("not in dashboard/sudoers-cockpit.template:", *bad, sep="\n  "); sys.exit(1)
+          print(f"cockpit unit actions: all {len(cockpit.SERVING_UNITS) * len(cockpit.UNIT_VERBS)} covered")
           PY
 
       - name: House typography (no em/en dashes in tracked files)

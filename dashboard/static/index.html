@@ -299,6 +299,21 @@
     .actbar .grp + .grp{padding-left:0; border-left:0}
     .jobstrip{top:auto; position:static}
   }
+  /* Agent tab: the frame takes what the viewport leaves under the bar and the head */
+  .agenthead{display:flex; align-items:flex-start; justify-content:space-between; gap:var(--s3); flex-wrap:wrap; margin-bottom:var(--s3)}
+  .agenthead .tabhead{margin:0}
+  .agentbar{display:flex; align-items:center; gap:var(--s2); flex-wrap:wrap; padding-top:2px}
+  .agentbar a.btn{text-decoration:none; display:inline-flex; align-items:center}
+  .agentline{color:var(--mut); font-size:12px}
+  .agentnote{margin:0 0 var(--s3)}
+  .agentframe{position:relative; height:calc(100vh - var(--top) - 118px); min-height:440px; border:1px solid var(--line);
+    border-radius:var(--r-card); overflow:hidden; background:var(--card); box-shadow:var(--shadow)}
+  .agentnote:not([hidden]) + .agentframe{height:calc(100vh - var(--top) - 160px)}
+  .agentframe iframe{display:block; width:100%; height:100%; border:0}
+  .agentmsg{position:absolute; inset:0; display:grid; place-items:center; padding:var(--s6); text-align:center; background:var(--card)}
+  .agentmsg .empty{max-width:62ch; margin:0 auto}
+  .agentmsg .cmd{margin:var(--s3) auto 0; text-align:left; display:inline-block}
+  body[data-tab="agent"] .content{padding-bottom:var(--s5)}
 </style>
 </head>
 <body>
@@ -350,6 +365,7 @@
 <div class="shell">
   <nav class="rail" id="rail" aria-label="Sections">
     <button class="nav" data-tab="overview" aria-current="page"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg><span class="lab">Overview</span><span class="bdg" id="bdg-overview"></span></button>
+    <button class="nav" data-tab="agent"><svg viewBox="0 0 24 24"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg><span class="lab">Agent</span><span class="bdg" id="bdg-agent"></span></button>
     <button class="nav" data-tab="engines"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg><span class="lab">Engines</span><span class="bdg" id="bdg-engines"></span></button>
     <button class="nav" data-tab="requests"><svg viewBox="0 0 24 24"><path d="M4 7h13l-3-3M20 17H7l3 3"/></svg><span class="lab">Requests</span><span class="bdg" id="bdg-requests"></span></button>
     <button class="nav" data-tab="machine"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg><span class="lab">Machine</span><span class="bdg" id="bdg-machine"></span></button>
@@ -578,6 +594,7 @@
                 <option value="qwen38-sglang">qwen38-sglang (container)</option>
                 <option value="qwen38-flash">qwen38-flash (container)</option>
                 <option value="qwen38-keepalive.service">keepalive proxy (journal)</option>
+                <option value="opencode-web.service" id="logopt-agent" hidden>opencode web server (journal)</option>
               </select>
               <label style="font-size:11.5px;color:var(--mut);display:flex;align-items:center;gap:5px"><input type="checkbox" id="logfollow"> follow</label>
               <button class="btn mini ghost" id="logbtn">Tail</button>
@@ -595,6 +612,24 @@
           <pre id="jobhistlog" class="joblog" style="margin-top:10px" hidden></pre>
           <p class="note">The complete record is the audit log: <code class="num">~/.config/qwen38/cockpit-audit.log</code></p>
         </section>
+      </div>
+    </div>
+
+    <!-- ── Agent ── -->
+    <div class="tab" id="tab-agent">
+      <div class="agenthead">
+        <div class="tabhead"><h2>Agent</h2><p>opencode in the browser, behind this login</p></div>
+        <div class="agentbar" id="agentbar">
+          <span class="chip skel" id="agchip">...</span>
+          <span class="agentline" id="agline"></span>
+          <a class="btn mini ghost" id="agopen" target="_blank" rel="noopener" hidden title="The same interface in its own browser tab">Open in a tab</a>
+          <button class="btn mini ghost" id="agreload" hidden title="Reload the panel">Reload</button>
+          <button class="btn mini ghost" id="agrestart" data-act="unit" data-unit="opencode-web.service" data-verb="restart" hidden title="systemctl restart opencode-web.service (after an opencode upgrade)">Restart server</button>
+        </div>
+      </div>
+      <p class="note agentnote" id="agnote" hidden></p>
+      <div class="agentframe" id="agframe">
+        <div class="agentmsg" id="agmsg"><div><p class="empty" id="agmsgtext">...</p><pre class="cmd" id="agcmd" hidden></pre></div></div>
       </div>
     </div>
 

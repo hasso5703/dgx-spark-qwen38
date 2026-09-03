@@ -48,6 +48,32 @@ else
   echo "  skip gate deux moteurs (aucun moteur actif)"
 fi
 
+echo "── agent (relais opencode):"
+AG=$(curl -s -b "$J" "$BASE/api/state" | python3 -c 'import json,sys; a=(json.load(sys.stdin).get("agent") or {}).get("data") or {}; r=a.get("relay") or {}; print("1" if a.get("enabled") else "0", r.get("bind") or "-", r.get("port") or "-", "1" if r.get("listening") else "0")')
+read -r AG_ON AG_BIND AG_PORT AG_LISTEN <<<"$AG"
+if [ "$AG_ON" = "1" ] && [ "$AG_LISTEN" = "1" ]; then
+  # the session cookie is per host: log in again through the relay's own address
+  CB="http://$AG_BIND:${BASE##*:}"; R="http://$AG_BIND:$AG_PORT"; J2="$(mktemp)"
+  if [ "$(code -c "$J2" -X POST "$CB/api/login" -H 'Content-Type: application/json' -d "{\"key\":\"$KEY\"}")" = "200" ]; then
+    ck "relais sans session"        401 "$(code "$R/global/health")"
+    ck "relais page de connexion"   401 "$(code -H 'Accept: text/html' "$R/")"
+    ck "relais origine etrangere"   403 "$(code -b "$J2" -H 'Origin: http://evil.example' "$R/global/health")"
+    ck "relais avec session"        200 "$(code -b "$J2" "$R/global/health")"
+    ck "relais sante opencode"      true "$(curl -s -b "$J2" "$R/global/health" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("healthy")).lower())')"
+    ck "relais interface"           200 "$(code -b "$J2" -H 'Accept: text/html' "$R/")"
+    ck "relais frame-ancestors"     1 "$(curl -s -D - -o /dev/null -b "$J2" "$R/global/health" | grep -ci 'frame-ancestors')"
+    ck "relais nosniff"             1 "$(curl -s -D - -o /dev/null -b "$J2" "$R/global/health" | grep -ci 'x-content-type-options: nosniff')"
+    ck "cockpit CSP frame-src"      1 "$(curl -s -D - -o /dev/null -b "$J2" "$CB/" | grep -ci 'frame-src http://')"
+    ck "journal opencode-web"       200 "$(code -b "$J2" "$CB/api/logs/opencode-web.service")"
+    ck "relais websocket sans session" 401 "$(code -H 'Upgrade: websocket' -H 'Connection: Upgrade' -H 'Sec-WebSocket-Key: dGVzdA==' -H 'Sec-WebSocket-Version: 13' "$R/pty/x/connect")"
+  else
+    echo "  skip agent: le cockpit ne repond pas sur $CB (le relais et le cockpit doivent partager un hote)"
+  fi
+  rm -f "$J2"
+else
+  echo "  skip agent (relais non installe ou pas encore lie)"
+fi
+
 echo "── en-tetes:"
 H=$(curl -s -D - -o /dev/null -b "$J" "$BASE/api/state")
 echo "$H" | grep -qi 'content-security-policy' && ck "CSP presente" 1 1 || ck "CSP presente" 1 0

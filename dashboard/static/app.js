@@ -40,11 +40,13 @@ const TRANSITIONAL = new Set(['starting', 'loading-weights', 'loading-draft', 'a
 const STAGE_LABEL = {'init': 'init', 'loading-weights': 'weights', 'loading-draft': 'draft', 'allocating-kv': 'KV', 'capturing-graphs': 'graphs', 'warming-up': 'warmup'};
 const ALL_STAGES = Object.keys(STAGE_LABEL);
 const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B'};
+const AGENT_UNIT = 'opencode-web.service';
 // The three 27B targets share one unit, so the lane name alone ("27B") does not say
 // which checkpoint is loaded. Every control that names the lane says the checkpoint too.
 const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8',
                       'uncensored-fp8': 'FP8 uncensored', flash: ''};
 function laneLabel(unit){
+  if (unit === AGENT_UNIT) return 'the opencode web server';
   const base = LANE_NAME[unit] || unit.replace('.service', '');
   // the unit file says what it is configured to serve, and it can be read while the
   // engine is still loading; the live engine only confirms it once it answers
@@ -60,17 +62,20 @@ const stateChipCls = st => (STATE_CHIP[st] ?? 'warn') + (st === 'stopping' || TR
 // ── tabs and the collapsible rail ─────────────────────────────────────────────
 // declared here, not next to its loader: showTab() runs at parse time and reads it
 const loaded = {recipes: false};
-const TABS = ['overview', 'engines', 'requests', 'machine', 'models', 'logs', 'setup'];
+const TABS = ['overview', 'agent', 'engines', 'requests', 'machine', 'models', 'logs', 'setup'];
 let activeTab = 'overview';
 function showTab(name, push = true){
   if (!TABS.includes(name)) name = 'overview';
-  activeTab = name;
+  activeTab = name; document.body.dataset.tab = name;
   TABS.forEach(t => { const p = $('tab-' + t); if (p) p.classList.toggle('active', t === name); });
   document.querySelectorAll('.rail .nav').forEach(b => {
     if (b.dataset.tab === name) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
   if (push && location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
   if (name === 'models' && !loaded.recipes) loadRecipes();
+  // at parse time the agent helpers below are not initialised yet; the first state
+  // tick mounts the frame in that case, a later click mounts it at once
+  if (name === 'agent' && document.readyState === 'complete') mountAgent();
 }
 document.querySelectorAll('.rail .nav').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
 window.addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'overview', false));
@@ -734,10 +739,81 @@ function renderLaneAction(why){
   }
 }
 
+// ── agent tab: opencode's web interface framed from the relay ─────────────────
+// The relay lives on this same host (cookies ignore ports), so the frame carries the
+// cockpit session and opencode never asks for its own password. The frame is created
+// the first time the tab opens and then kept: hiding a tab must not lose a session.
+const AG = {mounted: false, wasReady: null};
+const agentUrl = () => F.agent && F.agent.relay && F.agent.relay.port ? `http://${location.hostname}:${F.agent.relay.port}/` : null;
+const agentReady = () => !!(F.agent && F.agent.enabled && F.agent.relay && F.agent.relay.listening && F.agent.server && F.agent.server.healthy);
+function agentMessage(text, cmd){
+  $('agmsg').hidden = false; setText('agmsgtext', text);
+  const c = $('agcmd'); c.hidden = !cmd; if (cmd) c.textContent = cmd;
+}
+function mountAgent(){
+  if (!agentReady()) return;
+  if (!AG.mounted){
+    const f = document.createElement('iframe');
+    f.id = 'agiframe'; f.title = 'opencode'; f.src = agentUrl();
+    f.setAttribute('allow', 'clipboard-read; clipboard-write'); f.setAttribute('referrerpolicy', 'no-referrer');
+    $('agframe').append(f); AG.mounted = true;
+  }
+  $('agmsg').hidden = true;
+}
+function reloadAgent(){ const f = $('agiframe'); if (f) f.src = agentUrl(); else mountAgent(); }
+function rAgent(d){
+  F.agent = d;
+  const opt = $('logopt-agent'); if (opt) opt.hidden = !d.enabled;
+  if (!d.enabled){
+    setChip('agchip', 'not installed', '');
+    setText('agline', 'one install on the box adds opencode here, behind this login');
+    ['agopen', 'agreload', 'agrestart'].forEach(id => { $(id).hidden = true; });
+    $('agnote').hidden = true;
+    agentMessage('The Agent tab is not installed on this cockpit. On the box, with opencode on your PATH, run:',
+                 ((F.config || {}).terminal_only || {}).install_agent || 'dashboard/install-agent.sh');
+    badge('agent', '', ''); return;
+  }
+  const r = d.relay || {}, sv = d.server || {}, u = d.unit || {};
+  const ready = agentReady(), unitOn = u.active === 'active';
+  const [chip, cls] = ready ? ['ready', 'ok'] : !r.listening ? ['relay waiting', 'warn']
+                    : !unitOn ? [u.active === 'failed' ? 'server failed' : 'server stopped', 'err'] : ['server starting', 'warn live'];
+  setChip('agchip', chip, cls);
+  const parts = [];
+  if (sv.version) parts.push('opencode ' + sv.version);
+  if (r.listening) parts.push(`relay ${r.bind}:${r.port}`); else if (r.error) parts.push(r.error);
+  if (d.binary && sv.version && d.binary !== sv.version) parts.push(`binary ${d.binary} installed, restart to serve it`);
+  else if (unitOn && u.enabled) parts.push(u.enabled === 'enabled' ? 'starts at boot' : u.enabled);
+  if (!ready && unitOn && sv.error) parts.push(sv.error);
+  setText('agline', parts.join(' · '));
+  $('agopen').hidden = !ready; $('agreload').hidden = !ready; $('agrestart').hidden = !d.unit_installed;
+  if (agentUrl()) $('agopen').href = agentUrl();
+  // the relay answers on one address and the session cookie lives on the host the
+  // browser typed: both have to be the same name for the frame to load
+  const note = $('agnote');
+  if (r.listening && r.bind && location.hostname !== r.bind){
+    note.hidden = false;
+    note.textContent = `You reached the cockpit as ${location.hostname}; the agent relay answers on ${r.bind} only. If the panel stays blank, open http://${r.bind}:${location.port || 80}/#agent instead.`;
+  } else note.hidden = true;
+  if (ready){
+    if (activeTab === 'agent') mountAgent();
+    if (AG.wasReady === false && AG.mounted) reloadAgent();   // the server came back: reconnect the panel
+  } else {
+    agentMessage(!r.listening ? `The relay is not listening yet: ${r.error || 'waiting for its address'}.`
+               : !unitOn ? `The opencode server is ${u.active === 'failed' ? 'failed' : 'stopped'}. Start it from a terminal (sudo systemctl start ${AGENT_UNIT}) or read its journal in the Logs tab.`
+               : `The opencode server is not answering yet${sv.error ? ` (${sv.error})` : ''}. The panel reconnects by itself.`, null);
+  }
+  AG.wasReady = ready;
+  badge('agent', ready ? '' : 'down', 'err');
+}
+$('agreload').addEventListener('click', reloadAgent);
+$('agrestart').addEventListener('click', () => askAction('unit', {verb: 'restart', unit: AGENT_UNIT},
+  ['sudo', '-n', '/usr/bin/systemctl', 'restart', AGENT_UNIT],
+  ['a generation in flight in the agent is lost; the panel reconnects when the server is back']));
+
 // ── apply: freshness, banners, isolation ──────────────────────────────────────
 const RENDER = {machine: rMachine, gpu: rGpu, engine_info: rEngineInfo, engine_fast: rEngineFast, decode: rDecode,
                 canary: rCanary, kernel: rKernel, units: rUnits, containers: rContainers, repo: rRepo,
-                lifecycle: rLifecycle, feed: rFeed, opencode: rOpencode, config: rConfig, job: rJob};
+                lifecycle: rLifecycle, feed: rFeed, opencode: rOpencode, config: rConfig, job: rJob, agent: rAgent};
 document.querySelectorAll('dd, .chip, .num').forEach(e => { if (e.textContent.trim() === '...') e.classList.add('skel'); });
 let lastMsgAt = 0, lastState = null, lastAges = {}, lastErrors = {};
 const lastGood = {};   // per collector: the last sample that was NOT an error
@@ -902,7 +978,10 @@ function askAction(name, params, argv, warns){
   const TITLES = {unit: p => `${p.verb} ${laneLabel(p.unit)}`,
                   switch: p => `switch the target model to ${TARGET_NAME[p.target] || p.target}`,
                   flush_cache: () => 'flush the engine cache', abort_all: () => 'abort every in-flight generation', smoke: () => 'run a smoke generation through the proxy', diag_bundle: () => 'write a diagnostics bundle'};
-  const EXPLAIN = {unit: p => p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : 'systemd starts the unit; the engine loads its weights and is ready in about 9 minutes (watch the boot bar).',
+  const AGENT_EXPLAIN = {stop: 'systemd stops opencode serve: the Agent tab goes dark until the server is started again.',
+                         start: 'systemd starts opencode serve on loopback; the Agent tab is back within seconds.',
+                         restart: 'systemd restarts opencode serve, which picks up an upgraded binary; the Agent tab reconnects by itself within seconds.'};
+  const EXPLAIN = {unit: p => p.unit === AGENT_UNIT ? AGENT_EXPLAIN[p.verb] || '' : p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : 'systemd starts the unit; the engine loads its weights and is ready in about 9 minutes (watch the boot bar).',
                    switch: p => (TARGET_NOTE[p.target] ? TARGET_NOTE[p.target] + '\n\n' : '')
                      + 'switch-model.sh rewrites the unit for the chosen target, updates the boot enablement, the proxy ceiling and the opencode default model. It never restarts anything: stop and start the engines afterwards.',
                    flush_cache: () => 'Empties the radix cache. Harmless; refused by the engine if requests are running.',

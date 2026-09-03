@@ -1,0 +1,31 @@
+[Unit]
+Description=opencode web server for the Spark Cockpit Agent tab (loopback :__OPENCODE_PORT__)
+Documentation=https://github.com/hasso5703/dgx-spark-qwen38
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__HOME__
+Environment=HOME=__HOME__
+# Your PATH at install time, so the agent's tools (git, node, uvx for the MCP
+# servers, opencode itself) resolve the way they do in your terminal.
+Environment=PATH=__PATH__
+# The Basic credentials the cockpit relay presents (OPENCODE_SERVER_USERNAME and
+# OPENCODE_SERVER_PASSWORD), generated once by install-agent.sh, mode 0600.
+EnvironmentFile=__HOME__/.config/qwen38/opencode-web.env
+# Same cap as the oc launcher: without it long thinking is cut at 32000 tokens
+# and the turn ends silently.
+Environment=OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=__OUTPUT_TOKEN_MAX__
+# Loopback only: the cockpit relay is the one thing that reaches this server.
+ExecStart=__OPENCODE_BIN__ serve --hostname 127.0.0.1 --port __OPENCODE_PORT__ --print-logs --log-level INFO
+Restart=always
+RestartSec=3
+# A stop takes the MCP servers and any tool the agent still runs down with it.
+KillMode=control-group
+TimeoutStopSec=20
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

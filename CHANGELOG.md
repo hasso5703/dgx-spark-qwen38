@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.7.0 (2026-09-03): opencode in the cockpit
+
+- **Agent tab: opencode's web interface inside the cockpit, behind the cockpit login.**
+  `dashboard/install-agent.sh` (opt-in) installs `opencode-web.service`, which runs
+  `opencode serve` as you on `127.0.0.1:4096` with Basic credentials generated once into
+  `~/.config/qwen38/opencode-web.env` (0600), and re-installs the cockpit with a relay
+  (`dashboard/agent_relay.py`, stdlib) on one address, the tailnet address by default.
+  The relay is the only thing that reaches opencode: it accepts a request only with a
+  valid cockpit session cookie, refuses foreign origins, strips the cookie, adds the
+  credentials, and streams plain answers, the event stream and the terminal's WebSocket.
+  Its responses carry `frame-ancestors` naming the cockpit. Browsers see one host for
+  the cockpit and the relay, so the tab needs no second login and Chrome's block on
+  Basic-auth prompts inside cross-origin frames never comes up. The tab reports the
+  server, the relay and the served version, offers **Open in a tab**, **Reload** and
+  **Restart server** (three more exact sudoers lines), and the Logs tab reads the
+  server's journal. Verified on the reference box: a prompt sent through the relay
+  reached the served lane and came back, a `bash` tool call ran and returned, the
+  terminal WebSocket tunnels, the relay is unreachable from the LAN and the docker
+  bridge, and it answers 401 on the tailnet address without a session.
+- **`install-dashboard.sh` remembers.** A re-run without variables now keeps the bind,
+  the port and the relay settings it finds in the installed unit; before this, a re-run
+  without `DASH_BIND` flipped a cockpit back to loopback.
+- Tests: 25 offline tests for the relay (header hygiene, byte-exact bodies, chunked and
+  server-sent events streamed as emitted, keep-alive framing, HTTP/1.0 clients,
+  WebSocket tunnel, gates), a headless check of the tab against a live cockpit
+  (`dashboard/tests/agent-check.mjs`), the HTTP smoke gains eleven relay checks, the
+  monkey check covers the new tab (a deep link to `#agent` crashed the first build at
+  parse time; caught by that check, fixed). CI renders both cockpit unit templates and
+  proves every unit the cockpit can act on has its sudoers lines.
+
 ## v1.6.2 (2026-09-03): the flash pool is the same on every boot
 
 - **The flash lane's KV pool is the same on every boot.** SGLang sizes the pool from

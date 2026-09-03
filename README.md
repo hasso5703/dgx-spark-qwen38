@@ -66,6 +66,7 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 | Storage | `HF_CACHE=`, `PLE_DIR=` | `~/.cache/huggingface`, `~/flashnext-ple` | checkpoints, and the 48 GB flash PLE backing file |
 | Clone location | `DIR=` (one-liner only) | `~/dgx-spark-qwen38` | must be a clone of this repo on `main` |
 | Cockpit dashboard | `dashboard/install-dashboard.sh`, `DASH_PORT=`, `DASH_BIND=` | not installed, loopback when installed | opt-in, never run by `install.sh`; installs a sudoers allowlist, see "The cockpit" |
+| Agent tab (opencode in the cockpit) | `dashboard/install-agent.sh`, `AGENT_PORT=`, `AGENT_BIND=`, `OPENCODE_PORT=` | not installed; relay on the tailnet address when installed | opt-in, needs the cockpit and opencode on your PATH; opencode itself stays on loopback, see "The Agent tab" |
 
 Combinations that make sense:
 
@@ -548,6 +549,67 @@ sudo systemctl disable --now qwen38-dashboard
 sudo rm -f /etc/systemd/system/qwen38-dashboard.service \
            /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler
 sudo systemctl daemon-reload
+```
+
+### The Agent tab: opencode in the browser, behind the cockpit login
+
+Since v1.7.0 the cockpit can hold opencode's own web interface, so a session on the
+box runs from the laptop without a terminal: sessions, the project picker, file
+diffs, the terminal panel, the same config, plugins, skills and MCP servers as the
+`oc` command. It is opt-in and needs the cockpit installed and opencode 1.18 or
+newer on your PATH:
+
+```bash
+dashboard/install-agent.sh
+```
+
+Two pieces land, and the shape is the security model:
+
+- **`opencode-web.service`** runs `opencode serve` as you on `127.0.0.1:4096`
+  (`OPENCODE_PORT=`), with Basic credentials generated once into
+  `~/.config/qwen38/opencode-web.env` (mode 0600). Nothing else ever reaches it,
+  and the password never leaves the box. The unit carries your PATH and the same
+  output-token cap as the `oc` launcher, so long thinking is not cut at 32,000.
+- **The relay** inside the cockpit process listens on ONE address, the tailnet
+  address by default (`AGENT_BIND=`, port `AGENT_PORT=30091`), never on the LAN.
+  It answers a request only with a valid cockpit session cookie, refuses any
+  foreign `Origin`, strips the cookie before forwarding, adds the credentials,
+  and streams everything back: plain answers, the event stream, the WebSocket of
+  the terminal panel. Its responses carry `frame-ancestors` naming the cockpit,
+  so no other page can frame the interface.
+
+The browser therefore sees one host for the cockpit and the relay (cookies ignore
+ports): the Agent tab frames the interface with no second login and no Basic-auth
+prompt, which Chrome would block inside a cross-origin frame anyway. That is also
+the one rule: open the cockpit through the address the relay binds. With the
+cockpit on `0.0.0.0` or on the tailnet address, that is
+`http://<tailnet address>:30090/#agent`; the tab says so when you arrive by
+another name. A cockpit bound to `127.0.0.1` gets a loopback relay, usable on the
+box itself.
+
+What the tab shows: the state of the server and the relay, the served opencode
+version and, after `opencode upgrade`, that a newer binary is installed with a
+**Restart server** button (systemd restart, through the same exact-argv sudoers
+allowlist as the other units, three more lines). **Open in a tab** gives the
+interface its own browser tab through the same relay. The Logs tab reads the
+server's journal.
+
+Permissions are opencode's own: the interface shows a prompt when opencode asks
+for one, and opencode's `permission` config applies to the web server as it does
+to the TUI. Measured on the reference box with opencode 1.18.27 and no
+`permission` block: a `bash` tool call ran without a prompt. The `--yolo` flag of
+the `oc` launcher has no equivalent for `opencode serve` (it rejects the flag).
+
+Variables: `OPENCODE_PORT` (4096), `AGENT_PORT` (30091), `AGENT_BIND` (an address,
+or `tailscale`), `AGENT_OUTPUT_TOKEN_MAX` (the `oc` launcher's cap, else 160000),
+`AGENT_PATH` (the PATH the service gets; yours by default). Re-running
+`dashboard/install-dashboard.sh` alone keeps the relay settings, the bind and the
+port it finds in the installed unit. Remove with:
+
+```bash
+sudo systemctl disable --now opencode-web.service
+sudo rm -f /etc/systemd/system/opencode-web.service
+DASH_AGENT_PORT=0 dashboard/install-dashboard.sh       # the cockpit without the relay
 ```
 
 ## Extras (opt-in)

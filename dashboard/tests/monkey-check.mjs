@@ -81,7 +81,7 @@ await goto('/');
 ok('page boots and applies a first state', await waitFor(BOOTED), 'lanename still "..." after 12 s');
 ok('no exception on first load', jsErrors().length === 0, jsErrors().join(' | '));
 
-const TABS = ['overview', 'engines', 'requests', 'machine', 'models', 'logs', 'setup'];
+const TABS = ['overview', 'agent', 'engines', 'requests', 'machine', 'models', 'logs', 'setup'];
 for (const t of TABS) {
   await click(`.rail .nav[data-tab="${t}"]`);
   await sleep(120);

@@ -31,6 +31,7 @@ import urllib.request
 from pathlib import Path
 from collections import deque
 
+import agent_relay as ar
 import lifecycle as lc
 import registry as rg
 import recipes as rp
@@ -43,8 +44,15 @@ BIND = os.environ.get("COCKPIT_BIND", "127.0.0.1")
 PORT = int(os.environ.get("COCKPIT_PORT", "30090"))
 ENGINE_BASE = os.environ.get("COCKPIT_ENGINE", "http://127.0.0.1:30000")
 PROXY_BASE = os.environ.get("COCKPIT_PROXY", "http://127.0.0.1:30001")
+# Agent tab: a relay to opencode's web interface, gated by the cockpit session
+# (dashboard/agent_relay.py). Port 0 = no relay, no tab content. The bind is
+# "tailscale" (the tailnet address, resolved when the interface is up) or an address.
+AGENT_PORT = int(os.environ.get("COCKPIT_AGENT_PORT", "0") or 0)
+AGENT_BIND = os.environ.get("COCKPIT_AGENT_BIND", "tailscale")
+AGENT_UPSTREAM = os.environ.get("COCKPIT_AGENT_UPSTREAM", "http://127.0.0.1:4096")
+AGENT_UNIT = "opencode-web.service"
 STATIC_DIR = HERE / "static"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 # Dry run: every mutating action and every automatic belt is logged, audited and
 # shown exactly as usual, but nothing is executed. This is how the click-storm test
 # (tests/monkey-check.mjs) exercises the whole UI against a second cockpit instance.
@@ -54,6 +62,7 @@ DRY_RUN = os.environ.get("COCKPIT_DRY_RUN", "0") == "1"
 MASKED_FIELDS = {"api_key", "admin_api_key"}
 
 UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-keepalive.service")
+JOURNAL_UNITS = UNITS + (AGENT_UNIT,)   # what the Logs tab may read
 CONTAINERS = ("qwen38-sglang", "qwen38-flash")
 
 UNIT2CONT = {"qwen38-sglang.service": "qwen38-sglang",
@@ -590,6 +599,84 @@ def collect_opencode():
     return out
 
 
+
+# ── Agent tab: opencode web behind the cockpit session ───────────────────────
+AGENT_ENV_FILE = CONFIG_DIR / "opencode-web.env"
+AGENT_UNIT_PATH = Path("/etc/systemd/system") / AGENT_UNIT
+AGENT = {"bind": None, "port": AGENT_PORT, "listening": False, "error": None, "since": None}
+AGENT_BINARY: dict = {"key": None, "version": None}
+
+
+def cookie_authed(cookie_header: str | None) -> bool:
+    c = http.cookies.SimpleCookie(cookie_header or "")
+    tok = c.get("cockpit")
+    return bool(tok and check_token(tok.value, "sess"))
+
+
+def agent_config() -> "ar.RelayConfig":
+    return ar.RelayConfig(upstream=ar.split_upstream(AGENT_UPSTREAM),
+                          credentials=lambda: ar.read_credentials(AGENT_ENV_FILE),
+                          is_authed=cookie_authed, cockpit_port=PORT)
+
+
+def agent_binary_version() -> str | None:
+    """The version of the opencode binary the unit points at, re-read only when the
+    file changes: `opencode upgrade` replaces the file, the running server keeps the
+    old code until a restart, and the panel should say so."""
+    try:
+        exec_line = next(ln for ln in AGENT_UNIT_PATH.read_text().splitlines() if ln.startswith("ExecStart="))
+        binary = Path(exec_line.split("=", 1)[1].split()[0])
+        key = (str(binary), binary.stat().st_mtime_ns)
+    except (OSError, StopIteration, IndexError):
+        return None
+    if AGENT_BINARY["key"] != key:
+        out = run([str(binary), "--version"], timeout=15).strip().splitlines()
+        AGENT_BINARY.update(key=key, version=(out[-1].strip() if out else None) or None)
+    return AGENT_BINARY["version"]
+
+
+@guard
+def collect_agent():
+    out = {"node_id": "local", "enabled": AGENT_PORT > 0, "relay": dict(AGENT),
+           "upstream": AGENT_UPSTREAM, "unit": None, "server": None, "binary": None,
+           "credentials": AGENT_ENV_FILE.is_file(), "unit_installed": AGENT_UNIT_PATH.is_file()}
+    if AGENT_PORT <= 0:
+        return out
+    raw = run(["systemctl", "show", AGENT_UNIT, "-p", "ActiveState,SubState,UnitFileState,ExecMainStartTimestamp"])
+    d = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
+    out["unit"] = {"active": d.get("ActiveState", "?"), "sub": d.get("SubState", "?"),
+                   "enabled": d.get("UnitFileState", "?"), "since": d.get("ExecMainStartTimestamp", "")}
+    out["server"] = ar.health(agent_config())
+    out["binary"] = agent_binary_version()
+    return out
+
+
+def agent_relay_thread():
+    """Bind the relay once the address exists (tailscale may come up after the
+    cockpit at boot), then serve for the life of the process."""
+    cfg = agent_config()
+    delay, said = 5.0, None
+    while True:
+        bind = ar.resolve_bind(AGENT_BIND)
+        if not bind:
+            AGENT["error"] = f"no address for {AGENT_BIND!r} yet (is tailscale up?)"
+        else:
+            try:
+                srv = ar.serve(cfg, bind, AGENT_PORT)
+            except OSError as e:
+                AGENT["error"] = f"cannot bind {bind}:{AGENT_PORT}: {e.strerror or e}"
+            else:
+                AGENT.update(bind=bind, listening=True, error=None, since=time.time())
+                print(f"agent relay on http://{bind}:{AGENT_PORT} -> {AGENT_UPSTREAM} "
+                      "(cockpit session required, opencode stays on loopback)")
+                srv.serve_forever()
+                return
+        if AGENT["error"] != said:
+            print(f"agent relay: {AGENT['error']}; retrying")
+            said = AGENT["error"]
+        time.sleep(delay)
+        delay = min(delay * 1.5, 30.0)
+
 @guard
 def collect_repo():
     def g(*args):
@@ -917,7 +1004,7 @@ TIERS = [
     (90.0, {"canary": collect_canary}),
     (3.0, {"gpu": collect_gpu, "decode": collect_decode_telemetry}),
     (5.0, {"units": collect_units, "containers": collect_containers,
-           "feed": collect_feed}),
+           "feed": collect_feed, "agent": collect_agent}),
     (30.0, {"engine_info": collect_engine_info, "repo": collect_repo, "kernel": collect_kernel,
             "opencode": collect_opencode}),
 ]
@@ -927,7 +1014,9 @@ TIERS = [
 PERIODS = {name: period for period, cols in TIERS for name in cols}
 STATE["config"] = {"data": {"usable_frac": USABLE_FRAC, "version": VERSION, "dry_run": DRY_RUN,
                             "repo_dir": str(REPO_DIR), "periods": PERIODS,
-                            "terminal_only": {"update_stack": f"cd {REPO_DIR} && ./install.sh"}},
+                            "agent_port": AGENT_PORT,
+                            "terminal_only": {"update_stack": f"cd {REPO_DIR} && ./install.sh",
+                                              "install_agent": f"cd {REPO_DIR} && dashboard/install-agent.sh"}},
                    "ts": time.time()}
 
 
@@ -950,7 +1039,7 @@ def sampler(period: float, collectors: dict):
 AUDIT_LOG = CONFIG_DIR / "cockpit-audit.log"
 
 SERVING_UNITS = {"qwen38-sglang.service", "qwen38-flash.service",
-                 "qwen38-keepalive.service"}
+                 "qwen38-keepalive.service", AGENT_UNIT}
 UNIT_VERBS = {"start", "stop", "restart"}
 
 ACTIONS = {
@@ -1191,7 +1280,7 @@ def job_diag_bundle(job: Job):
             (tdp / f"docker-{cont}.txt").write_text(run(["docker", "logs", "--tail", "600", cont], timeout=15, merge_err=True))
         (tdp / "nvidia-smi.txt").write_text(run(["nvidia-smi"], timeout=10))
         (tdp / "system.txt").write_text(run(["uname", "-a"]) + run(["free", "-g"]) + run(["df", "-h", str(Path.home())]) + run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}} {{.ID}}"], timeout=10))
-        (tdp / "units.txt").write_text("".join(run(["systemctl", "show", u, "--no-pager"], timeout=5) + "\n" for u in UNITS))
+        (tdp / "units.txt").write_text("".join(run(["systemctl", "show", u, "--no-pager"], timeout=5) + "\n" for u in JOURNAL_UNITS))
         try:
             info = http_json(ENGINE_BASE + "/get_server_info", timeout=6)
             for f in MASKED_FIELDS:
@@ -1470,12 +1559,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def security_headers(self):
-        # Zero external origins by construction; say so to the browser too.
+        # Zero external origins by construction; say so to the browser too. The one
+        # frame the page may hold is the agent relay, on this same host as the
+        # browser named it (cookies are per host, so that is also the only host on
+        # which the relay accepts the session).
+        frames = "'none'"
+        if AGENT_PORT > 0:
+            name = ar.host_name(self.headers.get("Host")) or "127.0.0.1"
+            frames = f"http://{name}:{AGENT_PORT}"
+            if AGENT["bind"] and AGENT["bind"] != name:
+                frames += f" http://{AGENT['bind']}:{AGENT_PORT}"
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; img-src 'self' data:; "
                          "style-src 'self' 'unsafe-inline'; "
                          "script-src 'self'; "
-                         "connect-src 'self'; frame-ancestors 'none'")
+                         f"connect-src 'self'; frame-src {frames}; frame-ancestors 'none'")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
 
@@ -1490,9 +1588,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def authed(self) -> bool:
-        c = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
-        tok = c.get("cockpit")
-        return bool(tok and check_token(tok.value, "sess"))
+        return cookie_authed(self.headers.get("Cookie"))
 
     # ---- routes ----
     def do_GET(self):
@@ -1550,7 +1646,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if name in CONTAINERS:
                 txt = run(["docker", "logs", "--tail", "120", name],
                           timeout=8, merge_err=True)
-            elif name in UNITS:
+            elif name in JOURNAL_UNITS:
                 txt = run(["journalctl", "-u", name, "-n", "120",
                            "--no-pager", "-o", "cat"], timeout=8)
             else:
@@ -1672,6 +1768,8 @@ def main():
         print("note: nvidia-smi not found, GPU panel will degrade")
     for period, cols in TIERS:
         threading.Thread(target=sampler, args=(period, cols), daemon=True).start()
+    if AGENT_PORT > 0:
+        threading.Thread(target=agent_relay_thread, daemon=True).start()
     srv = Server((BIND, PORT), Handler)
     print(f"Spark Cockpit {VERSION} on http://{BIND}:{PORT} (repo: {REPO_DIR})"
           + ("  [DRY RUN: nothing is executed]" if DRY_RUN else ""))

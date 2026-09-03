@@ -45,6 +45,14 @@ fixed argv template.
 | Chat templates | patch-template.py outputs | Template panel: which file, patched markers present, regenerate job |
 | Repo state | git status/log/tags | Repo panel: version, latest upstream tag, CHANGELOG view, update available badge |
 
+## Agent tab (v1.7.0)
+| capability | shell today | UI |
+|---|---|---|
+| opencode from the laptop | `oc` in a terminal on the box | Agent tab: opencode's web interface framed from the relay, behind the cockpit login (no second login, no Basic prompt) |
+| Server state | `systemctl status opencode-web`, `journalctl -u opencode-web` | chip (ready, starting, stopped, relay waiting), served version, installed binary if newer, Logs tab source |
+| Restart after `opencode upgrade` | `sudo systemctl restart opencode-web` | Restart server button (exact-argv sudoers lines, confirmed like every action) |
+| Reach it on its own | none | Open in a tab (same relay, same session) |
+
 ## Explicitly out of scope now (groundwork only)
 Multi-node, multi-GPU, clusters: the collector/action registries carry
 `node_id` and capability flags from day one, UI stays single-node.

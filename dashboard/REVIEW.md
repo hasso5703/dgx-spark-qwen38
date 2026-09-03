@@ -288,3 +288,43 @@ and without probing the real engine.
 - `tests/smoke-http.sh` 18/18 (19 with both lanes installed and one active), 70 unit tests,
   `tests/headless-check.mjs` with zero console exception.
 
+## 2026-09-03 evening: the Agent tab (opencode in the cockpit)
+
+### Shape
+- `agent_relay.py` (stdlib): one gate (cockpit session cookie, Origin check), one
+  forwarder (exact Content-Length passthrough, re-chunking for unknown lengths so an
+  event reaches the browser when opencode emits it, close-delimited for a 1.0 client),
+  one tunnel (WebSocket for the terminal panel). Request hygiene: Cookie, Authorization,
+  Referer and Host never pass; the relay's Basic credentials are added. Response hygiene:
+  hop-by-hop, Date and Server dropped, a Set-Cookie named like the session dropped,
+  `frame-ancestors` added.
+- `opencode-web.service.template` + `install-agent.sh`: loopback server as the user,
+  credentials generated once (0600), the user's PATH and the `oc` output cap in the unit.
+  `install-dashboard.sh` now reads bind, port and relay settings from the installed unit
+  when the variables are not given.
+- The tab: state chip, version line (with "binary X installed, restart to serve it"),
+  Open in a tab, Reload, Restart server; the frame is created on first open and kept.
+
+### Defects found while building (each fixed with a test)
+- A deep link to `#agent` threw at parse time (`showTab` ran before the agent helpers
+  existed) and killed the whole script. The monkey check's tab list did not include the
+  new tab, so it passed; it does now, and `showTab` only mounts on a live click.
+- Browsers fetch the web app manifest without credentials: it went 401 through the
+  relay. `/site.webmanifest` (GET) passes without a session; it holds a name and icons.
+- `cmd | grep -q` under `pipefail` in the installer turned a perfectly good `serve
+  --help` into "no --hostname option" (grep exits early, the writer gets SIGPIPE).
+  Captured into variables instead.
+
+### Tests (all green on 2026-09-03)
+- `tests/test_agent_relay.py`: 25 tests with a fake opencode (Basic auth, plain, chunked,
+  server-sent events, WebSocket echo). Run with `-W error::ResourceWarning`: clean.
+- `tests/agent-check.mjs`: 24 checks against the live cockpit through the tailnet
+  address (tab framed and loaded through the relay, event stream up, no 4xx, direct
+  open, gates).
+- `tests/smoke-http.sh` 30/30 (eleven relay checks), `tests/monkey-check.mjs` 43/43
+  including the `#agent` deep link, `tests/headless-check.mjs` zero exception, local CI
+  26/26.
+- End to end on the box: a prompt through the relay reached the flash lane and came
+  back; a `bash` tool call ran (`echo cockpit-ok`) with no permission prompt under
+  opencode 1.18.27's defaults; the relay refused from the LAN and the docker bridge
+  (no listener), 401 on the tailnet address without a session.

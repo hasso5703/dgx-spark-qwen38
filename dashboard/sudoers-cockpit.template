@@ -2,7 +2,8 @@
 # Rendered by the dashboard installer to /etc/sudoers.d/qwen38-cockpit
 # (validated with visudo -c before install; removed by uninstall).
 # The cockpit runs unprivileged; these lines are the entire privileged
-# surface: start/stop/restart of the three units of this repo, the
+# surface: start/stop/restart of the units of this repo (the three serving
+# units and the opencode web server of the Agent tab), the
 # operations switch-model.sh performs (unit install, enable/disable,
 # daemon-reload, the keepalive ceiling edit), one read-only forensics
 # wrapper, and kernel-journal reads.
@@ -15,6 +16,9 @@ __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-flash.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start qwen38-keepalive.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop qwen38-keepalive.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-keepalive.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start opencode-web.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop opencode-web.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart opencode-web.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl enable qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl enable qwen38-flash.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-sglang.service

@@ -51,6 +51,13 @@ GET for the fallback path. Actions are POST with JSON, CSRF-protected.**
 - Read paths are allowlisted absolute prefixes (repo dir, config dir, HF cache
   metadata); no path traversal possible (resolved + prefix-checked).
 - Rate limiting on actions; idempotency keys on switches.
+- Agent relay (v1.7.0): opencode's web server stays on loopback with a generated
+  Basic password (0600, never leaves the box). The relay binds one address (the
+  tailnet address by default), requires the cockpit session cookie, refuses any
+  foreign Origin, never forwards the cookie, adds the credentials, and sets
+  `frame-ancestors` to the cockpit. One host for cockpit and relay: the frame
+  carries the session, so there is no second login and no Basic prompt (which
+  Chrome blocks inside cross-origin frames).
 
 ## Data sources (verified live on the box, 2026-08-28)
 
