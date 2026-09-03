@@ -290,3 +290,30 @@ whose data is older than three refresh periods dims and says how old it is; a fi
 shimmers unless it has never been loaded, otherwise it names its state; an action that
 cannot work right now is disabled and says why in one sentence.
 
+
+
+## Design pass on the built app (2026-09-03)
+
+The first build shipped the information architecture; this pass fixed how it reads.
+Reviewed by screenshotting all seven tabs in both themes at 1512 px (a MacBook Air's
+default width) and at 1440, 1280, 1180 and 1024, then measuring the top bar's children
+against the header box.
+
+Rules the app follows from here:
+
+- **One spacing scale** (`--s1`..`--s6`, 4 to 30 px). No component invents padding.
+- **No tracked-out capitals.** Titles and labels are sentence case at reading weight;
+  a hairline separates a panel title from its content.
+- **The value column holds values.** Anything that is a sentence is shortened to a
+  phrase with the full text in the tooltip, so a definition list never wraps over four
+  ragged right-aligned lines.
+- **One primary action per surface.** In the action bar that is the switch; red is
+  reserved for stopping and aborting; everything else is neutral.
+- **Empty states are written.** A table that can be empty names what would fill it; a
+  panel with no data says why, once.
+- **The interface never prints its wire format.** Actions read as sentences from one
+  vocabulary (`ACTION_PHRASE` in app.js, `job_phrase` in cockpit.py), never as the
+  parameter dict that happens to carry them.
+- **Prose stops at 78 characters** whatever the panel width.
+- **The top bar is one row by construction**, and `--top` is measured, not assumed, so
+  a bar that wraps anyway takes the sticky rail and job strip with it.

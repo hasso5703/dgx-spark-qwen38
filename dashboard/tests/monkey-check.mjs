@@ -135,7 +135,7 @@ await click('[data-act="diag_bundle"]');
 await sleep(200);
 await click('#mgo');
 ok('the job strip appears', await waitFor("!document.getElementById('jobstrip').hidden", 6000));
-ok('the strip names the running action', /diag_bundle/.test(await evalJs("document.getElementById('jobwhat').textContent")));
+ok('the strip names the running action', /diagnostics bundle/.test(await evalJs("document.getElementById('jobwhat').textContent")));
 const disabled = await waitFor("document.querySelector('[data-act=\\\"switch\\\"]').disabled", 4000);
 ok('other actions are disabled while a job runs', disabled);
 // force the refusal server-side too: the button is disabled, so call the API directly

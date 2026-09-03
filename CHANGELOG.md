@@ -11,6 +11,38 @@
   supervised action at a time (unit start/stop/restart, lane switch, flush,
   abort, smoke) with every argv audited, and shows which pinned checkpoints are
   actually on disk. Full section in the README.
+- **A design pass over every cockpit surface**, done by reading the rendered pages
+  rather than the stylesheet. What it changed:
+  - **The top bar stops breaking.** A long lane name (`27B FP8 uncensored`) pushed
+    the action bar onto a second row inside a header with a fixed 58 px height, so
+    the second row was drawn above the top of the window. The bar now keeps one row
+    and shrinks in a stated order (the lane pill, then the target selector, then the
+    lane button), the action groups lost their boxes, the lane button names the unit
+    it stops instead of the whole checkpoint, and `--top` follows the measured header
+    height so a bar that does wrap takes the rail and the job strip with it.
+  - **Tracked-out capitals are gone.** Every panel title, table header and micro-label
+    was `text-transform: uppercase` with heavy letter-spacing. They are now sentence
+    case at reading weight, separated by a hairline instead of by shouting.
+  - **The interface says things in words.** The event feed printed
+    `unit started ({'verb': 'start', 'unit': 'qwen38-sglang.service'})` and the job
+    strip printed `unit verb=start unit=...`; both now say `start qwen38-sglang`, from
+    one vocabulary shared by the server and the page. State transitions use a real
+    arrow, so `->` stops splitting into `-` and `>` across a line break.
+  - **Empty is designed.** Every table that can legitimately be empty says what would
+    fill it instead of showing a bare header row, the served-engine panel says once
+    why it has no facts instead of repeating the same sentence down ten rows, and a
+    sparkline with nothing in its window says so.
+  - **Layout that fills the page.** The request feed and its pool, and the event list
+    and the job history, sit side by side; the Models and Setup tabs pair their panels
+    two per row; the safety belts explain themselves across the full width with prose
+    capped at a readable measure. Values that were sentences (the refresh periods, the
+    opencode fit, the repo head, the cockpit mode) are short in the column and complete
+    in the tooltip.
+  - **Colour carries meaning again.** Six buttons in six colours became one primary
+    (switch), the destructive ones in red, the rest neutral. Gauge tracks are visible
+    on a dark card at zero. Sparklines are drawn at device resolution.
+  - The click-storm test (`dashboard/tests/monkey-check.mjs`) still passes 41/41,
+    including no horizontal scrolling at 390 px.
 - **The cockpit's bind address is configurable.** It was hardcoded to
   `127.0.0.1` in the unit template, so the dashboard was only ever reachable
   from a browser running on the box itself, which is not where a headless GB10

@@ -16,6 +16,9 @@
     --flash:#c4a3f5; --lane27:#5cc8f2;
     --shadow:0 10px 30px rgba(0,0,0,.45);
     --rail:236px; --rail-min:64px; --top:58px;
+    /* One spacing scale for the whole app, so no component invents its own. */
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:22px; --s6:30px;
+    --r-card:14px; --r-ctl:9px;
   }
   @media (prefers-color-scheme: light){
     :root{ --paper:#f3f1eb; --card:#ffffff; --card2:#fbfaf6; --line:#e2ded4; --line2:#d3cec2;
@@ -34,13 +37,15 @@
   [hidden]{display:none !important}
 
   /* ── top bar: brand, lane at a glance, the actions, connection ── */
-  .top{position:sticky; top:0; z-index:30; height:var(--top); display:flex; align-items:center; gap:12px;
+  /* min-height, not height: a fixed box with wrappable content spills out of the
+     viewport instead of growing. app.js keeps --top on the measured height. */
+  .top{position:sticky; top:0; z-index:30; min-height:var(--top); display:flex; align-items:center; gap:12px;
        padding:0 16px 0 12px; border-bottom:1px solid var(--line);
        background:color-mix(in srgb, var(--paper) 86%, transparent); backdrop-filter:blur(14px)}
-  .top .brand{display:flex; align-items:center; gap:9px; min-width:0}
+  .top .brand{display:flex; align-items:center; gap:9px; min-width:0; flex:none}
   .top .brand img{width:26px; height:26px; filter:drop-shadow(0 0 10px var(--glow))}
   .top .brand h1{font-size:15px; font-weight:700; letter-spacing:.01em; white-space:nowrap}
-  .badge{font-size:9.5px; font-weight:800; letter-spacing:.14em; border-radius:6px; padding:2.5px 7px;
+  .badge{font-size:10px; font-weight:700; letter-spacing:.02em; border-radius:6px; padding:2.5px 7px;
          border:1px solid color-mix(in srgb, var(--flash) 55%, transparent); color:var(--flash);
          background:color-mix(in srgb, var(--flash) 12%, transparent); white-space:nowrap}
   .badge.dry{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 60%, transparent);
@@ -48,18 +53,25 @@
   .iconbtn{width:34px; height:34px; border-radius:9px; border:1px solid var(--line); background:transparent;
            display:grid; place-items:center; cursor:pointer; color:var(--mut)}
   .iconbtn:hover{color:var(--txt); border-color:var(--line2)}
+  /* Width order when the header runs out of room: the pill gives way first, then the
+     target selector, then the lane button. Nothing wraps, nothing leaves the bar. */
   .lanepill{display:flex; align-items:center; gap:8px; padding:5px 11px; border:1px solid var(--line);
             border-radius:999px; background:color-mix(in srgb, var(--card) 70%, transparent); font-size:12.5px;
-            white-space:nowrap; min-width:0; overflow:hidden; flex-shrink:1}
+            white-space:nowrap; min-width:0; overflow:hidden; flex-shrink:8}
   .lanepill b{font-weight:650; overflow:hidden; text-overflow:ellipsis}
   /* the sub-line is the first thing to give way on a narrow screen, never the state chip */
   .lanepill .sub{color:var(--mut); min-width:0; overflow:hidden; text-overflow:ellipsis}
   .lanepill .chip{flex:none}
-  .actbar{display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end}
-  .actbar .grp{display:flex; align-items:center; gap:6px; padding:4px 6px; border:1px solid var(--line);
-               border-radius:11px; background:color-mix(in srgb, var(--card) 55%, transparent)}
-  .conn{display:flex; align-items:center; gap:7px; color:var(--mut); font-size:11px; letter-spacing:.05em;
-        text-transform:uppercase; white-space:nowrap}
+  .actbar{display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:nowrap;
+          justify-content:flex-end; min-width:0; flex-shrink:1}
+  /* Grouping by a rule instead of by a box: three fewer frames in the busiest 60 px
+     of the app, and about 50 px given back to the lane pill. */
+  .actbar .grp{display:flex; align-items:center; gap:6px; min-width:0}
+  .actbar .grp + .grp{padding-left:10px; border-left:1px solid var(--line)}
+  .actbar .btn{white-space:nowrap}
+  #switchsel{min-width:7.5rem; max-width:15rem; flex-shrink:3; text-overflow:ellipsis}
+  #lanebtn{min-width:0; max-width:16rem; flex-shrink:1; overflow:hidden; text-overflow:ellipsis}
+  .conn{display:flex; align-items:center; gap:7px; color:var(--mut); font-size:11.5px; white-space:nowrap}
   .dot{width:8px; height:8px; border-radius:50%; background:var(--err); transition:background .25s}
   .dot.on{background:var(--ok); box-shadow:0 0 10px 1px color-mix(in srgb, var(--ok) 60%, transparent); animation:beat 2.4s ease-in-out infinite}
   .dot.warn{background:var(--warn)}
@@ -103,38 +115,51 @@
   .rail .nav:hover{color:var(--txt); background:color-mix(in srgb, var(--card2) 80%, transparent)}
   .rail .nav[aria-current="page"]{color:var(--acc); border-color:color-mix(in srgb, var(--acc) 40%, transparent);
                                   background:color-mix(in srgb, var(--acc) 9%, transparent)}
-  .rail .nav .lab{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis}
-  .rail .nav .bdg{font-size:10px; font-weight:800; padding:1px 7px; border-radius:999px; border:1px solid var(--line); color:var(--mut)}
+  .rail .nav .lab{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .rail .nav .bdg{flex:none; max-width:11ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                  font-size:10.5px; font-weight:700; padding:1px 8px; border-radius:999px; border:1px solid var(--line); color:var(--mut)}
   .rail .nav .bdg.warn{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 55%, transparent)}
   .rail .nav .bdg.err{color:var(--err); border-color:color-mix(in srgb, var(--err) 55%, transparent)}
   .rail .nav .bdg:empty{display:none}
   body.railmin .rail .nav .lab, body.railmin .rail .nav .bdg, body.railmin .rail .foot{display:none}
   body.railmin .rail .nav{justify-content:center; padding:10px 0}
   .rail .foot{margin-top:auto; color:var(--mut); font-size:11px; padding:10px 11px; line-height:1.6}
-  .content{padding:14px 18px 40px; min-width:0}
+  .content{padding:var(--s5) var(--s5) 48px; min-width:0}
   .tab{display:none}
   .tab.active{display:block}
-  .grid{display:grid; gap:14px; align-items:start; grid-template-columns:repeat(auto-fit, minmax(330px, 1fr))}
+  .grid{display:grid; gap:18px; align-items:start; grid-template-columns:repeat(auto-fit, minmax(min(330px, 100%), 1fr))}
   .grid .wide{grid-column:1 / -1}
-  .tabhead{display:flex; align-items:baseline; gap:12px; margin:4px 0 14px}
-  .tabhead h2{font-size:18px; font-weight:700; letter-spacing:-.01em}
+  /* Two panels that belong together fill the row instead of leaving a third of it empty. */
+  .grid.two{grid-template-columns:repeat(auto-fit, minmax(min(430px, 100%), 1fr))}
+  /* A main surface and its sidecar: the request feed and its pool, the events and the jobs. */
+  @media (min-width:1080px){ .grid.split{grid-template-columns:minmax(0,2fr) minmax(0,1fr)} }
+  .tabhead{display:flex; align-items:baseline; gap:12px; margin:0 0 var(--s5); flex-wrap:wrap}
+  .tabhead h2{font-size:19px; font-weight:700; letter-spacing:-.015em}
   .tabhead p{color:var(--mut); font-size:12.5px}
 
   /* ── panels ── */
-  section.panel{background:linear-gradient(180deg, var(--card2), var(--card)); border:1px solid var(--line); border-radius:15px;
-                padding:15px 18px; min-width:0; box-shadow:var(--shadow); position:relative}
+  section.panel{background:var(--card); border:1px solid var(--line); border-radius:var(--r-card);
+                padding:var(--s4) var(--s5) var(--s5); min-width:0; box-shadow:var(--shadow); position:relative}
   section.panel.stale{opacity:.72}
-  section.panel h3{font-size:10.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--mut);
-                   margin-bottom:12px; display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  /* Titles are read, not decoded: sentence case at reading weight, with a hairline
+     doing the separating that tracked-out capitals were doing before. */
+  section.panel h3{font-size:13px; font-weight:650; letter-spacing:0; color:var(--txt);
+                   margin:0 0 var(--s4); padding-bottom:11px; border-bottom:1px solid var(--line);
+                   display:flex; align-items:center; gap:var(--s2); flex-wrap:wrap}
   section.panel h3 .right{margin-left:auto; display:flex; align-items:center; gap:6px}
-  .age{font-size:10px; letter-spacing:.03em; text-transform:none; color:var(--mut); font-variant-numeric:tabular-nums}
+  .age{font-size:11px; font-weight:400; color:var(--mut); font-variant-numeric:tabular-nums}
   .age.stale{color:var(--warn)}
   .empty{color:var(--mut); font-size:12.5px; padding:8px 0}
-  .note{color:var(--mut); font-size:11.5px; margin-top:8px}
-  .kv{display:grid; grid-template-columns:auto 1fr; gap:5px 14px; font-size:13px}
-  .kv dt{color:var(--mut)} .kv dd{text-align:right; overflow-wrap:anywhere}
-  .chip{font-size:10.5px; font-weight:700; letter-spacing:.04em; border-radius:999px; padding:2.5px 10px; border:1px solid var(--line);
-        color:var(--mut); background:color-mix(in srgb, var(--card) 40%, transparent); white-space:nowrap; transition:all .25s}
+  td.empty{padding:14px 8px; text-align:center}
+  /* Prose stops at a readable measure even when its panel is 1200 px wide. */
+  .note{color:var(--mut); font-size:11.5px; margin-top:8px; max-width:78ch; line-height:1.65}
+  .kv{display:grid; grid-template-columns:auto 1fr; gap:9px var(--s5); font-size:13px}
+  .kv dt{color:var(--mut)} .kv dd{text-align:right; overflow-wrap:break-word; min-width:0}
+  /* A value that is a sentence, not a number: it reads left and wraps like prose. */
+  .kv dd.text{text-align:left; color:var(--mut); font-size:12.5px; grid-column:1 / -1; margin-top:-5px}
+  .chip{font-size:11px; font-weight:650; letter-spacing:.01em; border-radius:999px; padding:3px 10px; border:1px solid var(--line);
+        color:var(--mut); background:color-mix(in srgb, var(--card) 40%, transparent); white-space:nowrap;
+        transition:color .25s, border-color .25s, background .25s}
   .chip.ok{color:var(--ok); border-color:color-mix(in srgb, var(--ok) 50%, transparent); background:color-mix(in srgb, var(--ok) 10%, transparent)}
   .chip.err{color:var(--err); border-color:color-mix(in srgb, var(--err) 50%, transparent); background:color-mix(in srgb, var(--err) 12%, transparent)}
   .chip.warn{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 50%, transparent); background:color-mix(in srgb, var(--warn) 12%, transparent)}
@@ -149,7 +174,8 @@
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important} }
 
   .gauge{margin:6px 0 10px}
-  .gauge .bar{height:9px; border-radius:6px; background:var(--soft); overflow:hidden; border:1px solid var(--line)}
+  .gauge .bar{height:9px; border-radius:6px; background:color-mix(in srgb, var(--line) 60%, transparent);
+              overflow:hidden; border:1px solid var(--line)}
   .gauge .fill{height:100%; border-radius:6px; transition:width .6s ease-out; background:linear-gradient(90deg, var(--acc), color-mix(in srgb, var(--acc) 55%, var(--flash)))}
   .gauge.warn .fill{background:linear-gradient(90deg, var(--warn), #f97316)}
   .gauge.crit .fill{background:linear-gradient(90deg, var(--err), #f43f5e)}
@@ -157,22 +183,29 @@
   canvas.spark{width:100%; height:46px; display:block; margin-top:8px; opacity:.95}
 
   table{width:100%; border-collapse:collapse; font-size:12.5px; table-layout:fixed}
-  td{overflow-wrap:anywhere; padding:6px; border-top:1px solid var(--line)}
-  th{color:var(--mut); text-align:left; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:.09em; padding:3px 6px}
+  td{overflow-wrap:anywhere; padding:9px 8px; border-top:1px solid var(--line); vertical-align:top}
+  th{color:var(--mut); text-align:left; font-weight:600; font-size:11.5px; letter-spacing:.01em; padding:0 8px 9px}
+  tbody tr:hover{background:color-mix(in srgb, var(--card2) 70%, transparent)}
   td.r, th.r{text-align:right}
   td .chip{white-space:normal}
+  /* Presence chips read as a stack, never as a broken two-then-one row. */
+  td.chips{display:flex; flex-direction:column; align-items:flex-start; gap:5px}
+  #rcptable td:first-child{overflow-wrap:normal}
+  .chip:empty{display:none}
   .tablewrap{overflow-x:auto; max-width:100%}
   #feedtable td:nth-child(3){overflow-wrap:normal}
 
   .btn{border:1px solid color-mix(in srgb, var(--acc) 60%, transparent); color:var(--acc); background:color-mix(in srgb, var(--acc) 8%, transparent);
-       border-radius:9px; padding:6px 14px; font-size:12.5px; font-weight:650; cursor:pointer; transition:all .18s ease-out; white-space:nowrap}
+       border-radius:var(--r-ctl); padding:7px 14px; font-size:12.5px; font-weight:650; cursor:pointer; white-space:nowrap;
+       transition:background .18s ease-out, color .18s ease-out, border-color .18s ease-out, box-shadow .18s ease-out}
   .btn:hover:not(:disabled){background:var(--acc); color:#fff; box-shadow:0 4px 18px color-mix(in srgb, var(--acc) 40%, transparent)}
   .btn.low{border-color:color-mix(in srgb, var(--ok) 60%, transparent); color:var(--ok); background:color-mix(in srgb, var(--ok) 8%, transparent)}
   .btn.low:hover:not(:disabled){background:var(--ok); color:#04121c; box-shadow:0 4px 18px color-mix(in srgb, var(--ok) 35%, transparent)}
   .btn.danger{border-color:color-mix(in srgb, var(--err) 60%, transparent); color:var(--err); background:color-mix(in srgb, var(--err) 8%, transparent)}
   .btn.danger:hover:not(:disabled){background:var(--err); color:#fff; box-shadow:0 4px 18px color-mix(in srgb, var(--err) 35%, transparent)}
-  .btn.ghost{border-color:var(--line); color:var(--mut); background:transparent}
-  .btn.mini{padding:3.5px 10px; font-size:11px}
+  .btn.ghost{border-color:var(--line2); color:var(--mut); background:transparent}
+  .btn.ghost:hover:not(:disabled){background:var(--card2); color:var(--txt); border-color:var(--mut); box-shadow:none}
+  .btn.mini{padding:4px 10px; font-size:11.5px}
   .btn:disabled{opacity:.42; cursor:not-allowed}
   select{background:var(--soft); color:var(--txt); border:1px solid var(--line); border-radius:9px; padding:5px 10px; font-size:12.5px}
   select:disabled{opacity:.5}
@@ -181,8 +214,9 @@
   .res{display:grid; grid-template-columns:auto 1fr; gap:6px 22px; align-items:end}
   .res .big{font-size:34px; font-weight:700; letter-spacing:-.02em; line-height:1}
   .res .big small{font-size:13px; font-weight:500; color:var(--mut); letter-spacing:0; margin-left:6px}
-  .res .eyebrow{font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut)}
-  .tank{position:relative; height:26px; border-radius:8px; background:var(--soft); border:1px solid var(--line); overflow:hidden}
+  .res .eyebrow{font-size:12px; letter-spacing:0; color:var(--mut)}
+  .tank{position:relative; height:26px; border-radius:8px; background:color-mix(in srgb, var(--line) 45%, transparent);
+        border:1px solid var(--line); overflow:hidden}
   .tank .cap{position:absolute; inset:0 auto 0 0; background:repeating-linear-gradient(135deg, transparent 0 7px, color-mix(in srgb, var(--line) 70%, transparent) 7px 8px); border-right:1px dashed var(--mut)}
   .tank .level{position:absolute; inset:0 auto 0 0; border-radius:7px 0 0 7px; background:linear-gradient(90deg, color-mix(in srgb, var(--acc) 70%, var(--card)), var(--acc)); transition:width .8s cubic-bezier(.2,.8,.2,1)}
   .tank .level.hot{background:linear-gradient(90deg, var(--warn), var(--err))}
@@ -191,16 +225,25 @@
   .res .legend{display:flex; gap:16px; font-size:11px; color:var(--mut); margin-top:6px; flex-wrap:wrap}
   .res .legend b{color:var(--txt); font-weight:600}
 
+  /* A fact strip: the six things a person opens the cockpit to read, on one line. */
+  .facts{display:grid; grid-template-columns:repeat(auto-fit, minmax(155px, 1fr)); gap:14px var(--s5);
+         margin-top:var(--s4); padding-top:var(--s4); border-top:1px solid var(--line)}
+  .facts span{display:block; color:var(--mut); font-size:11.5px; margin-bottom:3px}
+  .facts b{font-weight:600; overflow-wrap:anywhere}
+  /* A chart needs a frame, otherwise a flat series reads as a stray rule. */
+  canvas.spark{background:var(--soft); border:1px solid var(--line); border-radius:var(--r-ctl)}
+
   /* ── engine cards ── */
   .eng{padding:13px 2px; border-top:1px solid var(--line)}
   .eng:first-child{border-top:0; padding-top:4px}
-  .eng .row{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
-  .eng .name{font-weight:700; font-size:14px}
-  .eng .since{color:var(--mut); font-size:11.5px; margin-left:auto}
+  .eng .row, #ovlane .row{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .eng .name, #ovlane .name{font-weight:700; font-size:14px}
+  .eng .since, #ovlane .since{color:var(--mut); font-size:11.5px; margin-left:auto}
   .eng .why{color:var(--mut); font-size:11.5px; padding:6px 2px 0}
   .eng .why.warn{color:var(--warn)}
   .boot{margin-top:10px}
-  .boot .bbar{height:9px; border-radius:6px; background:var(--soft); border:1px solid var(--line); overflow:hidden; position:relative}
+  .boot .bbar{height:9px; border-radius:6px; background:color-mix(in srgb, var(--line) 60%, transparent);
+              border:1px solid var(--line); overflow:hidden; position:relative}
   .boot .bfill{height:100%; border-radius:6px; transition:width 1s linear; position:relative; overflow:hidden; background:linear-gradient(90deg, var(--acc), var(--flash))}
   .boot .bfill::after{content:''; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent); animation:shimmer 1.4s infinite}
   @keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
@@ -211,14 +254,20 @@
   .boot .stage.done{color:var(--ok); border-color:color-mix(in srgb, var(--ok) 55%, transparent); background:color-mix(in srgb, var(--ok) 10%, transparent)}
   .boot .stage.now{color:var(--acc); border-color:color-mix(in srgb, var(--acc) 60%, transparent); background:color-mix(in srgb, var(--acc) 12%, transparent); animation:pulse 1.2s ease-in-out infinite}
   .boot .blab{display:flex; justify-content:space-between; font-size:11.5px; color:var(--mut); margin-top:6px; gap:10px; flex-wrap:wrap}
-  .evt{display:flex; gap:10px; padding:7px 0; border-top:1px solid var(--line); font-size:12px; align-items:baseline}
+  .evt{display:flex; gap:var(--s3); padding:9px 0; border-top:1px solid var(--line); font-size:12.5px; align-items:baseline}
   .evt:first-child{border-top:0}
-  .evt time{color:var(--mut); font-size:11px; white-space:nowrap; font-variant-numeric:tabular-nums}
-  .evt .k{font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); min-width:58px}
+  /* A fixed column, so a date-stamped row does not shift the kind column of every
+     row under it. */
+  .evt time{color:var(--mut); font-size:11px; white-space:nowrap; font-variant-numeric:tabular-nums;
+            min-width:78px; flex:none}
+  .evt .k{font-size:11px; font-weight:600; letter-spacing:0; color:var(--mut); min-width:54px}
   .hist{display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); font-size:12.5px; flex-wrap:wrap}
   .hist:first-child{border-top:0}
   .hist .m{color:var(--mut); font-size:11.5px}
-  .cmd{background:var(--soft); border:1px solid var(--line); border-radius:9px; padding:9px 12px; font:12.5px ui-monospace, monospace; overflow:auto; white-space:pre}
+  /* A command is there to be copied, so it wraps inside its card rather than
+     scrolling off the edge of one. */
+  .cmd{background:var(--soft); border:1px solid var(--line); border-radius:var(--r-ctl); padding:10px 12px;
+       font:12.5px/1.6 ui-monospace, monospace; white-space:pre-wrap; overflow-wrap:anywhere}
 
   /* ── modal ── */
   .modal{position:fixed; inset:0; background:rgba(3,6,14,.66); z-index:50; display:grid; place-items:center; backdrop-filter:blur(4px)}
@@ -234,12 +283,20 @@
   .toast.warn{border-color:color-mix(in srgb, var(--warn) 60%, transparent)}
   .toast.err{border-color:color-mix(in srgb, var(--err) 60%, transparent)}
 
+  /* A crushed pill says nothing. Drop its sub-line, then the pill itself, rather than
+     shrink it to a stub: the lane is also named on the lane button and in Overview. */
+  @media (max-width:1240px){ .lanepill .sub{display:none} }
+  @media (max-width:1120px){ .lanepill{display:none} }
+
   @media (max-width:980px){
     .shell{grid-template-columns:1fr}
     .rail{position:static; height:auto; flex-direction:row; flex-wrap:wrap; border-right:0; border-bottom:1px solid var(--line); padding:8px}
     .rail .foot{display:none}
     .rail .nav{width:auto}
     .top{height:auto; flex-wrap:wrap; padding:8px 12px}
+    /* One row is a desktop luxury: on a phone the bar wraps rather than scroll sideways. */
+    .actbar{flex-wrap:wrap; margin-left:0}
+    .actbar .grp + .grp{padding-left:0; border-left:0}
     .jobstrip{top:auto; position:static}
   }
 </style>
@@ -259,11 +316,11 @@
   <div class="actbar" id="actbar" aria-label="Actions">
     <div class="grp" title="Change which model the serving unit runs (the switch itself never restarts anything)">
       <select id="switchsel" aria-label="Target model to switch to">
-        <option value="stock">stock (27B, NVFP4)</option>
-        <option value="uncensored">uncensored (27B, NVFP4)</option>
-        <option value="fp8">FP8 (27B, Qwen official)</option>
-        <option value="uncensored-fp8">FP8 uncensored (27B, abliterated)</option>
-        <option value="flash">flash (176B)</option>
+        <option value="stock">27B stock (NVFP4)</option>
+        <option value="uncensored">27B uncensored (NVFP4)</option>
+        <option value="fp8">27B FP8 (Qwen)</option>
+        <option value="uncensored-fp8">27B FP8 uncensored</option>
+        <option value="flash">flash 176B</option>
       </select>
       <button class="btn mini" data-act="switch">Switch</button>
     </div>
@@ -271,10 +328,10 @@
       <button class="btn mini danger" id="lanebtn" data-act="lane" disabled>...</button>
     </div>
     <div class="grp">
-      <button class="btn mini low" data-act="flush_cache" title="Empty the radix cache so the next big prompt never waits for an eviction">Flush cache</button>
+      <button class="btn mini ghost" data-act="flush_cache" title="Empty the radix cache so the next big prompt never waits for an eviction">Flush cache</button>
       <button class="btn mini danger" data-act="abort_all" title="Abort every in-flight generation (orphans left by vanished clients)">Abort all</button>
-      <button class="btn mini low" data-act="smoke" title="One real generation through the proxy, the way a client uses it">Smoke</button>
-      <button class="btn mini" data-act="diag_bundle" title="Write a diagnostics tarball in your home (API key masked)">Bundle</button>
+      <button class="btn mini ghost" data-act="smoke" title="One real generation through the proxy, the way a client uses it">Smoke</button>
+      <button class="btn mini ghost" data-act="diag_bundle" title="Write a diagnostics tarball in your home (API key masked)">Bundle</button>
     </div>
   </div>
   <div class="conn" title="Live connection to the cockpit and age of the newest data"><span id="connlabel">connecting</span><span class="dot" id="conndot"></span></div>
@@ -330,6 +387,14 @@
         <section class="panel wide" data-src="lifecycle">
           <h3>Serving lane <span class="right"><span class="age"></span></span></h3>
           <div id="ovlane"></div>
+          <div class="facts" id="lanefacts">
+            <div><span>Model</span><b id="ovmodel">...</b></div>
+            <div><span>Revision</span><b class="num" id="ovrev">...</b></div>
+            <div><span>Context window</span><b class="num" id="ovctx">...</b></div>
+            <div><span>KV pool</span><b class="num" id="ovpool">...</b></div>
+            <div><span>Speculative</span><b id="ovspec">...</b></div>
+            <div><span>Serving image</span><b class="num" id="ovimage">...</b></div>
+          </div>
         </section>
 
         <section class="panel" data-src="engine_fast,decode,canary">
@@ -375,7 +440,8 @@
         </section>
         <section class="panel" data-src="engine_info">
           <h3>Served engine <span class="chip" id="engchip">...</span><span class="right"><span class="age"></span></span></h3>
-          <dl class="kv">
+          <p class="empty" id="engdown" hidden></p>
+          <dl class="kv" id="engkv">
             <dt>Model</dt><dd id="engmodel">...</dd>
             <dt>Revision</dt><dd class="num" id="engrev">...</dd>
             <dt>Quantization</dt><dd id="engquant">...</dd>
@@ -394,7 +460,7 @@
             <dt>Generation probe</dt><dd id="canary2">...</dd>
             <dt>Last probe</dt><dd class="num" id="canarylast">...</dd>
           </dl>
-          <table id="ctable" style="margin-top:10px"><thead><tr><th>Container</th><th class="r">CPU</th><th class="r">cgroup mem</th></tr></thead><tbody></tbody></table>
+          <table id="ctable" style="margin-top:14px" data-empty="No container of this repo is running."><thead><tr><th>Container</th><th class="r" style="width:20%">CPU</th><th class="r" style="width:36%">cgroup mem</th></tr></thead><tbody></tbody></table>
           <p class="note">cgroup memory excludes CUDA unified allocations; the unified memory panel is the real gauge.</p>
         </section>
       </div>
@@ -403,10 +469,10 @@
     <!-- ── Requests ── -->
     <div class="tab" id="tab-requests">
       <div class="tabhead"><h2>Requests</h2><p>what the keepalive proxy on :30001 sees, and how the engine is spending its pool</p></div>
-      <div class="grid">
-        <section class="panel wide" data-src="feed">
+      <div class="grid split">
+        <section class="panel" data-src="feed">
           <h3>Request feed <span class="chip" id="feedchip">...</span><span class="right"><span class="age"></span></span></h3>
-          <div class="tablewrap"><table id="feedtable"><thead><tr><th>Time</th><th>Client</th><th>Path</th><th class="r">Body</th><th class="r">Duration</th><th>Outcome</th></tr></thead><tbody></tbody></table></div>
+          <div class="tablewrap"><table id="feedtable" data-empty="No request through the proxy yet."><thead><tr><th>Time</th><th>Client</th><th>Path</th><th class="r">Body</th><th class="r">Duration</th><th>Outcome</th></tr></thead><tbody></tbody></table></div>
         </section>
         <section class="panel" data-src="engine_fast,decode">
           <h3>Pool and decode <span class="right"><span class="age"></span></span></h3>
@@ -447,7 +513,7 @@
             <dt>Temperature</dt><dd class="num" id="gputemp">...</dd>
           </dl>
           <canvas class="spark" id="powspark" width="600" height="92"></canvas>
-          <table id="gpuprocs"><thead><tr><th>GPU process</th><th>pid</th><th class="r">memory</th></tr></thead><tbody></tbody></table>
+          <table id="gpuprocs" data-empty="No process holds GPU memory."><thead><tr><th>GPU process</th><th>pid</th><th class="r">memory</th></tr></thead><tbody></tbody></table>
         </section>
         <section class="panel" data-src="machine">
           <h3>CPU <span class="chip" id="cpuchip">...</span><span class="right"><span class="age"></span></span></h3>
@@ -457,7 +523,7 @@
             <dt>Cores</dt><dd class="num" id="cores">...</dd>
           </dl>
         </section>
-        <section class="panel" data-src="kernel,engine_fast,lifecycle">
+        <section class="panel wide" data-src="kernel,engine_fast,lifecycle">
           <h3>Safety belts <span class="right"><span class="age"></span></span></h3>
           <dl class="kv">
             <dt>Memory floor</dt><dd class="num" id="memfloor2">...</dd>
@@ -472,30 +538,30 @@
     <!-- ── Models ── -->
     <div class="tab" id="tab-models">
       <div class="tabhead"><h2>Models, recipes and images</h2><p>what each lane serves as data, what is on disk, what moved upstream</p></div>
-      <div class="grid">
+      <div class="grid two">
         <section class="panel wide">
           <h3>Recipes <span class="right"><span class="age" id="rcpage"></span><button class="btn mini ghost" id="rcpbtn">reload</button></span></h3>
           <p class="note" style="margin:0 0 8px">Built-in recipes are read from the repo's own pins and templates; a custom recipe is a JSON file in <code id="rcpdir" class="num"></code>. Drift lists where the installed unit or launcher differs from the recipe.</p>
-          <div class="tablewrap"><table id="rcptable"><thead><tr><th>Recipe</th><th>Engine image</th><th>Model</th><th>Drafter</th><th>Serving</th><th>On this box</th><th>Drift</th></tr></thead><tbody></tbody></table></div>
+          <div class="tablewrap"><table id="rcptable" data-empty="No recipe read yet."><thead><tr><th style="width:15%">Recipe</th><th style="width:14%">Engine image</th><th style="width:16%">Model</th><th style="width:15%">Drafter</th><th style="width:16%">Serving</th><th style="width:11%">On this box</th><th style="width:13%">Drift</th></tr></thead><tbody></tbody></table></div>
           <p class="note" id="rcpline"></p>
         </section>
         <section class="panel wide">
           <h3>Registry <span class="right"><span class="age" id="regage"></span><button class="btn mini ghost" id="regbtn">scan</button></span></h3>
           <p class="note" style="margin:0 0 8px">Models, revisions and engine images on this box; pinned means a repo script serves exactly this revision. The scan reads metadata only.</p>
-          <div class="tablewrap"><table id="regmodels"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">Disk</th><th>Status</th></tr></thead><tbody></tbody></table></div>
-          <div class="tablewrap"><table id="regimages" style="margin-top:14px"><thead><tr><th>Engine image</th><th class="r">Size</th><th class="r">Id</th></tr></thead><tbody></tbody></table></div>
+          <div class="tablewrap"><table id="regmodels" data-empty="No scan yet. Run scan to read what is on disk."><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">Disk</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+          <div class="tablewrap"><table id="regimages" style="margin-top:14px" data-empty="No engine image found for this repo's lanes."><thead><tr><th>Engine image</th><th class="r">Size</th><th class="r">Id</th></tr></thead><tbody></tbody></table></div>
           <h3 style="margin-top:16px">Other cached models <span class="chip" id="otherchip"></span></h3>
-          <div class="tablewrap"><table id="othertable"><thead><tr><th>Model</th><th class="r">Disk</th></tr></thead><tbody></tbody></table></div>
+          <div class="tablewrap"><table id="othertable" data-empty="Nothing else in the Hugging Face cache."><thead><tr><th>Model</th><th class="r">Disk</th></tr></thead><tbody></tbody></table></div>
         </section>
         <section class="panel">
           <h3>Upstream watch <span class="right"><button class="btn mini ghost" id="upbtn">check</button></span></h3>
-          <div class="tablewrap"><table id="uptable"><thead><tr><th>Model</th><th>Pinned</th><th>Upstream</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+          <div class="tablewrap"><table id="uptable" data-empty="No check run yet. Run check to compare the pins with upstream."><thead><tr><th>Model</th><th>Pinned</th><th>Upstream</th><th>Status</th></tr></thead><tbody></tbody></table></div>
           <p class="note" id="upline">Compares every pinned revision with the upstream main branch and the local tag with the latest release. Read-only, never auto-bumps.</p>
         </section>
         <section class="panel">
           <h3>Inventory <span class="right"><button class="btn mini ghost" id="invbtn">scan</button></span></h3>
           <p class="note" style="margin:0 0 8px">Everything any version of this repo left on this box (uninstall.sh --list, read-only).</p>
-          <table id="invtable"><thead><tr><th style="width:92px">Kind</th><th>What</th></tr></thead><tbody></tbody></table>
+          <table id="invtable" data-empty="No scan yet. Run scan to list what this repo left on the box."><thead><tr><th style="width:92px">Kind</th><th>What</th></tr></thead><tbody></tbody></table>
           <p class="note" id="invline"></p>
         </section>
       </div>
@@ -504,7 +570,7 @@
     <!-- ── Logs ── -->
     <div class="tab" id="tab-logs">
       <div class="tabhead"><h2>Logs, events and jobs</h2><p>the raw material behind every state shown elsewhere</p></div>
-      <div class="grid">
+      <div class="grid split">
         <section class="panel wide">
           <h3>Live logs
             <span class="right">
@@ -535,7 +601,7 @@
     <!-- ── Setup ── -->
     <div class="tab" id="tab-setup">
       <div class="tabhead"><h2>Setup</h2><p>the repo, the proxy, the agent CLI and the cockpit itself</p></div>
-      <div class="grid">
+      <div class="grid two">
         <section class="panel" data-src="repo">
           <h3>Repo <span class="right"><span class="age"></span></span></h3>
           <dl class="kv">

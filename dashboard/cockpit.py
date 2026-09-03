@@ -69,6 +69,27 @@ LIFE_LOCK = threading.Lock()
 EVENTS_FILE_NAME = "cockpit-events.jsonl"
 
 
+# One phrase per action. The params dict is the wire format; printing it at a
+# reader ("unit started ({'verb': 'start', ...})") is not an event line.
+def job_phrase(action: str, params: dict) -> str:
+    p = params or {}
+    if action == "unit":
+        return f"{p.get('verb', 'act on')} {str(p.get('unit', '')).replace('.service', '')}"
+    if action == "switch":
+        return f"switch the 27B lane to {p.get('target', '')}"
+    if action == "flush_cache":
+        return "flush the radix cache"
+    if action == "abort_all":
+        return "abort every generation in flight"
+    if action == "smoke":
+        return "smoke probe through the proxy"
+    if action == "diag_bundle":
+        return "write a diagnostics bundle"
+    if action == "fit_opencode":
+        return "fit the opencode limits to this engine"
+    return action + (" " + ", ".join(f"{k} {v}" for k, v in p.items()) if p else "")
+
+
 def add_event(kind: str, msg: str):
     ev = {"ts": time.time(), "kind": kind, "msg": msg[:300]}
     with EVENTS_LOCK:
@@ -827,7 +848,7 @@ def collect_lifecycle():
         # transitions: events + boot-duration learning
         was = prev.get(unit)
         if was and was != st["state"]:
-            add_event("state", f"{unit}: {was} -> {st['state']}")
+            add_event("state", f"{unit.replace('.service', '')}: {was} \u2192 {st['state']}")
             if st["state"] == "ready" and elapsed and witnessed \
                     and was in lc.TRANSITIONAL:
                 history = lc.record_boot(history, unit, elapsed, rebuild)
@@ -1084,7 +1105,8 @@ def run_job(job: Job):
         job.ended = time.time()
         audit({"kind": "job_end", "action": job.action, "rc": job.rc,
                "status": job.status, "id": job.id, "dry_run": DRY_RUN})
-        add_event("job", f"{job.action} {job.status}" + (f" (rc={job.rc})" if job.argv else "")
+        add_event("job", f"{job_phrase(job.action, job.params)}: {job.status}"
+                  + (f" (exit code {job.rc})" if job.argv and job.rc else "")
                   + (" [dry run]" if DRY_RUN else ""))
         _prune_jobs()
         JOB_LOCK.release()
@@ -1228,7 +1250,7 @@ def start_action(name: str, params: dict, origin: str = "ui") -> tuple[int, dict
         JOB_CURRENT["id"] = job.id
         audit({"kind": "job_start", "action": name, "params": clean,
                "argv": argv, "id": job.id, "origin": origin, "dry_run": DRY_RUN})
-        add_event("job", f"{name} started" + (f" ({clean})" if clean else "")
+        add_event("job", f"{job_phrase(name, clean)}: started"
                   + (" [dry run]" if DRY_RUN else ""))
         threading.Thread(target=run_job, args=(job,), daemon=True).start()
     except Exception as e:  # noqa: BLE001 (the lock must never leak)

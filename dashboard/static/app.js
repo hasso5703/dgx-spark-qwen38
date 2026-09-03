@@ -19,6 +19,9 @@ const fmtDur = s => s == null ? '?' : s < 90 ? Math.round(s) + ' s'
   : s < 3600 ? Math.floor(s / 60) + ' min ' + String(Math.round(s % 60)).padStart(2, '0')
   : Math.floor(s / 3600) + ' h ' + String(Math.floor((s % 3600) / 60)).padStart(2, '0');
 const setText = (id, txt) => { const e = $(id); if (e) { e.textContent = txt; e.classList.remove('skel'); } };
+// Short in the column, complete on hover: a definition list stops reading like a
+// definition list once a value wraps over four ragged right-aligned lines.
+const setShort = (id, txt, full) => { const e = $(id); if (e){ e.textContent = txt; e.title = full || txt; e.classList.remove('skel'); } };
 const setChip = (id, txt, cls) => { const e = $(id); if (e) { e.textContent = txt; e.className = 'chip ' + (cls || ''); } };
 const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
 const clear = n => { while (n.firstChild) n.removeChild(n.firstChild); };
@@ -31,6 +34,8 @@ const STATE_LABEL = {
   'capturing-graphs': 'capturing CUDA graphs', 'warming-up': 'warming up', ready: 'ready',
   degraded: 'ready but not answering', stopping: 'stopping', wedged: 'wedged: no generation'};
 const STATE_CHIP = {ready: 'ok', degraded: 'warn', failed: 'err', stopped: '', stopping: 'warn', wedged: 'err'};
+// The rail badge sits next to a nav label in 236 px: one short word, never a state sentence.
+const STATE_BADGE = {failed: 'failed', degraded: 'degraded', wedged: 'wedged', stopping: 'stopping'};
 const TRANSITIONAL = new Set(['starting', 'loading-weights', 'loading-draft', 'allocating-kv', 'capturing-graphs', 'warming-up']);
 const STAGE_LABEL = {'init': 'init', 'loading-weights': 'weights', 'loading-draft': 'draft', 'allocating-kv': 'KV', 'capturing-graphs': 'graphs', 'warming-up': 'warmup'};
 const ALL_STAGES = Object.keys(STAGE_LABEL);
@@ -78,21 +83,55 @@ function setRail(min){
 try { setRail(localStorage.getItem('cockpit.rail') === 'min'); } catch { setRail(false); }
 $('railbtn').addEventListener('click', () => setRail(!document.body.classList.contains('railmin')));
 
+// The rail and the job strip hang off --top, so --top has to be the height the top bar
+// actually has. It normally stays one row (the CSS shrinks the pill, then the selector,
+// then the lane button), but a narrow window or a page zoom can still push it to two:
+// without this the second row is drawn above the viewport and the strip sits under it.
+const topbar = document.querySelector('header.top');
+if (topbar && window.ResizeObserver){
+  new ResizeObserver(() => {
+    const h = Math.round(topbar.getBoundingClientRect().height);
+    if (h) document.documentElement.style.setProperty('--top', h + 'px');
+  }).observe(topbar);
+}
+
 // ── sparklines (canvas, bounded series) ───────────────────────────────────────
 const series = {};
 function push(name, v, max = 120){ (series[name] = series[name] || []).push(v); if (series[name].length > max) series[name].shift(); }
 function drawSpark(canvas, name, color, yMax){
   if (!canvas) return;
-  const c = canvas.getContext('2d'), w = canvas.width, h = canvas.height;
+  // Draw at device resolution: a 600 px bitmap stretched over a 400 px box is the
+  // difference between a chart and a smudge.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = canvas.clientWidth || 600, cssH = canvas.clientHeight || 46;
+  if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)){
+    canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
+  }
+  const c = canvas.getContext('2d'), w = cssW, h = cssH;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
   const data = series[name] || [];
   c.clearRect(0, 0, w, h);
+  // A midline, so a flat series reads as "steady at half" instead of as an empty box.
+  c.strokeStyle = css('--line'); c.lineWidth = 1;
+  c.beginPath(); c.moveTo(0, h / 2 + .5); c.lineTo(w, h / 2 + .5); c.stroke();
   if (data.length < 2) return;
+  if (Math.max(...data) === 0){
+    c.fillStyle = css('--mut'); c.font = '11px system-ui, sans-serif'; c.textAlign = 'center';
+    c.fillText('nothing yet in this window', w / 2, h / 2 + 4);
+    return;
+  }
   const m = yMax || Math.max(...data, 1e-9);
+  const at = (v, i) => [i * (w / (data.length - 1)), h - Math.min(v / m, 1) * (h - 10) - 6];
   c.beginPath();
-  data.forEach((v, i) => { const x = i * (w / (data.length - 1)), y = h - Math.min(v / m, 1) * (h - 6) - 3; i ? c.lineTo(x, y) : c.moveTo(x, y); });
-  c.strokeStyle = color; c.lineWidth = 2.5; c.stroke();
+  data.forEach((v, i) => { const [x, y] = at(v, i); i ? c.lineTo(x, y) : c.moveTo(x, y); });
+  const line = new Path2D(); data.forEach((v, i) => { const [x, y] = at(v, i); i ? line.lineTo(x, y) : line.moveTo(x, y); });
   c.lineTo(w, h); c.lineTo(0, h); c.closePath();
-  c.globalAlpha = .12; c.fillStyle = color; c.fill(); c.globalAlpha = 1;
+  const g = c.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, color); g.addColorStop(1, 'transparent');
+  c.globalAlpha = .22; c.fillStyle = g; c.fill(); c.globalAlpha = 1;
+  c.strokeStyle = color; c.lineWidth = 2; c.lineJoin = 'round'; c.stroke(line);
+  const [lx, ly] = at(data[data.length - 1], data.length - 1);   // where it is now
+  c.fillStyle = color; c.beginPath(); c.arc(lx - 1.5, ly, 2.5, 0, 6.284); c.fill();
 }
 
 // ── shared facts between renderers (each guarded against missing data) ────────
@@ -142,7 +181,8 @@ function rEngineInfo(d){
   F.target = d.served_target || null;
   syncSelector();
   const i = d.info || {};
-  setText('engmodel', (i.model_path || '...').split('/').pop());
+  showEngineFacts(true);
+  setShort('engmodel', (i.model_path || '...').split('/').pop(), i.model_path || '');
   setText('engrev', (i.revision || '').slice(0, 12) || 'n/a');
   setText('engquant', i.quantization ?? 'n/a');
   setText('engctx', i.context_length ? fmtN(i.context_length) + ' tokens' : '...');
@@ -150,7 +190,12 @@ function rEngineInfo(d){
   setText('engspec', i.speculative_algorithm ? `${i.speculative_algorithm} ${i.speculative_num_steps}/${i.speculative_num_draft_tokens}` : 'none');
   setText('engattn', i.prefill_attention_backend ? `${i.prefill_attention_backend} / ${i.decode_attention_backend}` : (i.attention_backend ?? 'n/a'));
   setText('engradix', i.mamba_radix_cache_strategy ?? 'n/a');
-  setText('engver', i.version ?? 'n/a');
+  setShort('engver', String(i.version ?? 'n/a').split('+')[0], i.version ?? 'n/a');
+  setShort('ovmodel', (i.model_path || '...').split('/').pop(), i.model_path || '');
+  setText('ovrev', (i.revision || '').slice(0, 10) || 'n/a');
+  setText('ovctx', i.context_length ? fmtN(i.context_length) : '...');
+  setText('ovpool', i.max_total_num_tokens ? fmtN(i.max_total_num_tokens) : '...');
+  setText('ovspec', i.speculative_algorithm ? `${i.speculative_algorithm} ${i.speculative_num_steps}/${i.speculative_num_draft_tokens}` : 'none');
   setText('ckceiling', F.ceiling > 0 ? fmtN(F.ceiling) + ' tokens (proxy)' : 'none: pool share only');
   if (i.max_total_num_tokens) F.pool = i.max_total_num_tokens;
   if (i.context_length) F.window = i.context_length;
@@ -160,10 +205,18 @@ function rEngineInfo(d){
 const ENG_FIELDS = ['engmodel', 'engrev', 'engquant', 'engctx', 'engpool', 'engspec', 'engattn', 'engradix', 'engver'];
 function rEngineInfoDown(reason){
   // No lane is serving, so the facts of the PREVIOUS one must not survive (30/08: flash
-  // model and pool shown during the 27B boot). This says why instead of shimmering as if
-  // it were still loading.
-  ENG_FIELDS.forEach(id => setText(id, reason || 'no engine'));
+  // model and pool shown during the 27B boot). One line saying why, rather than the same
+  // sentence copied down ten rows of a table that has no values to show.
+  ENG_FIELDS.forEach(id => setText(id, '...'));
+  ['ovmodel', 'ovrev', 'ovctx', 'ovpool', 'ovspec'].forEach(id => setText(id, 'no engine'));
+  showEngineFacts(false, reason || 'no engine');
   F.pool = null; F.maxRun = null; rPool(); rReservoir();
+}
+function showEngineFacts(on, reason){
+  const kv = $('engkv'), down = $('engdown');
+  if (!kv || !down) return;
+  kv.hidden = !on; down.hidden = !!on;
+  if (!on) down.textContent = reason + ': these facts arrive from the engine itself, so they are blank until it answers.';
 }
 function servingReady(){
   const s = servingEngine();
@@ -226,7 +279,7 @@ function rEngineFast(d){
     series.req = [];
     const c = $('reqspark'); if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
   } else {
-    push('req', l.num_reqs || 0); drawSpark($('reqspark'), 'req', css('--flash'), 4);
+    push('req', l.num_reqs || 0); drawSpark($('reqspark'), 'req', css('--acc'), 4);
   }
   const serving = servingEngine();
   setChip('engchip', serving ? STATE_LABEL[serving[1].state] || serving[1].state : 'no engine', serving ? stateChipCls(serving[1].state) : '');
@@ -245,11 +298,12 @@ function rDecode(d){
 }
 function rCanary(d){
   let txt, cls = '';
-  if (d.skipped && d.last_ok == null) txt = 'not yet run (waits for a ready, idle engine)';
+  if (d.skipped && d.last_ok == null) txt = 'not yet run';
   else if (d.fails > 0){ txt = `${d.fails} consecutive failure${d.fails > 1 ? 's' : ''}: ${d.last_err || ''}`; cls = 'var(--err)'; }
   else if (d.last_ok) txt = `ok, ${d.latency} s` + (d.skipped ? ' (skipped this round: engine busy)' : '');
   else txt = 'idle';
-  setText('canary', txt); setText('canary2', txt);
+  const why = d.skipped && d.last_ok == null ? 'The probe waits for an engine that is ready and idle.' : txt;
+  setShort('canary', txt, why); setShort('canary2', txt, why);
   [$('canary'), $('canary2')].forEach(e => { if (e) e.style.color = cls; });
   setText('canarylast', d.last_ok ? clockTime(d.last_ok) : 'never in this cockpit life');
 }
@@ -289,6 +343,7 @@ function rContainers(d){
   F.containers = d.containers || {};
   const serving = Object.entries(F.containers).find(([n, c]) => c.image);
   setText('engimage', serving ? serving[1].image : 'no serving container');
+  setText('ovimage', serving ? serving[1].image : 'no serving container');
   const tb = $('ctable').tBodies[0]; clear(tb);
   Object.entries(F.containers).forEach(([n, c]) => {
     const tr = tb.insertRow();
@@ -345,9 +400,10 @@ function rOpencode(d){
     ? (d.launcher.ours ? `oc, output cap ${d.launcher.cap ? fmtN(d.launcher.cap) : '?'}` : 'a foreign oc command, launcher not installed')
     : 'missing (re-run ./install.sh)');
   const f = d.fit;
-  setText('ocfit', !f ? 'unknown until an engine is serving'
-    : f.ok ? `fits: prompt up to ${fmtN(f.context)} of ${fmtN(f.prompt_cap)}, worst case ${fmtN(f.worst)} of ${fmtN(f.usable)}`
-    : `too large: ${f.why} (${fmtN(f.worst)} asked, ${fmtN(f.usable)} servable)`);
+  setShort('ocfit', !f ? 'unknown until an engine is serving' : f.ok ? 'fits this pool' : 'too large for this pool',
+    !f ? 'The pool size arrives with the engine.'
+       : f.ok ? `Prompt up to ${fmtN(f.context)} of ${fmtN(f.prompt_cap)}; worst case ${fmtN(f.worst)} of ${fmtN(f.usable)}.`
+       : `${f.why}: ${fmtN(f.worst)} asked, ${fmtN(f.usable)} servable.`);
   const fe = $('ocfit'); if (fe) fe.style.color = f && !f.ok ? 'var(--warn)' : '';
   $('occmd').hidden = false;
   setText('ocnote', 'One command: the launcher lifts the output cap and auto-approves permissions. The default model follows every switch; existing sessions keep the model they started with.');
@@ -355,18 +411,23 @@ function rOpencode(d){
 }
 function rRepo(d){
   F.proxy = d.proxy || null;
-  setText('repotag', d.tag || 'n/a'); setText('repobranch', d.branch || 'n/a'); setText('repohead', (d.head || '').slice(0, 60) || 'n/a');
+  setText('repotag', d.tag || 'n/a'); setText('repobranch', d.branch || 'n/a');
+  const head = d.head || '';
+  setShort('repohead', head.split(' ')[0] || 'n/a', head || 'n/a');
   setText('repodirty', d.dirty ? 'modified (uncommitted changes)' : 'clean');
   setText('proxyver', F.proxy && F.proxy.version ? F.proxy.version + (F.proxy.same_as_repo === false ? ' · deployed file differs from the repo copy' : ' · repo copy') : 'unknown');
 }
 function rConfig(d){
   F.config = d; F.usable = d.usable_frac || F.usable;
   setText('ckver', d.version || '?'); $('verbadge').textContent = (d.version || '').includes('beta') ? 'BETA' : 'v' + (d.version || '');
-  setText('ckmode', d.dry_run ? 'DRY RUN: every action is logged and audited but nothing is executed' : 'live: actions execute after your confirmation');
+  setShort('ckmode', d.dry_run ? 'dry run' : 'live',
+           d.dry_run ? 'Every action is logged and audited, but nothing is executed.'
+                     : 'Actions execute after your confirmation.');
   $('drybadge').hidden = !d.dry_run;
   setText('ckusable', Math.round(F.usable * 100) + ' % of the KV pool for one prompt');
-  const per = d.periods || {};
-  setText('ckperiods', Object.entries(per).map(([k, v]) => `${k} ${v}s`).join(', '));
+  const per = d.periods || {}, pv = Object.values(per);
+  setShort('ckperiods', pv.length ? `${pv.length} collectors, ${Math.min(...pv)} s to ${Math.max(...pv)} s` : '...',
+           Object.entries(per).map(([k, v]) => `${k} ${v} s`).join(', '));
   setText('updatecmd', (d.terminal_only || {}).update_stack || 'cd <repo> && ./install.sh');
 }
 
@@ -458,7 +519,7 @@ function rLifecycle(d){
     setText('poolguard', !g.enabled ? 'off (COCKPIT_POOL_GUARD=0)'
       : g.fails ? `cannot flush since ${clockTime(g.last_fail)}: ${g.last_err}`
       : g.flushes ? `${g.flushes} flush${g.flushes > 1 ? 'es' : ''}, last ${clockTime(g.last)}, above ${Math.round(g.threshold * 100)} % held`
-      : `armed above ${Math.round(g.threshold * 100)} % held, never fired yet`);
+      : 'armed, never fired');
     const e = $('poolguard'); if (e) e.style.color = g.fails ? 'var(--warn)' : '';
   }
   const units = F.units || {};
@@ -514,7 +575,8 @@ function rLifecycle(d){
   }
   // events, twice (overview short, logs long)
   const evs = (d.events || []).slice().reverse();
-  [[$('evtlist'), 12], [$('evtlist2'), 30]].forEach(([box, n]) => {
+  // Overview keeps the last few: it is the alarm, not the archive (the Logs tab holds 30).
+  [[$('evtlist'), 7], [$('evtlist2'), 30]].forEach(([box, n]) => {
     if (!box) return; clear(box);
     if (!evs.length){ box.append(el('p', 'empty', 'no events yet in this cockpit session')); return; }
     evs.slice(0, n).forEach(ev => {
@@ -525,7 +587,7 @@ function rLifecycle(d){
   const states = Object.values(d.engines || {}).map(e => e.state);
   const bad = states.find(st => st === 'wedged' || st === 'failed' || st === 'degraded');
   const trans = states.find(st => TRANSITIONAL.has(st) || st === 'stopping');
-  badge('engines', bad ? STATE_LABEL[bad].split(':')[0] : trans ? STATE_LABEL[trans] : '', bad ? 'err' : trans ? 'warn' : '');
+  badge('engines', bad ? (STATE_BADGE[bad] || 'check') : trans ? 'booting' : '', bad ? 'err' : trans ? 'warn' : '');
   applyBusy();
 }
 function syncSelector(){
@@ -543,12 +605,29 @@ function badge(tab, txt, cls){ const b = $('bdg-' + tab); if (b){ b.textContent 
 
 // ── jobs: the strip everybody sees, the history, the busy lock in the UI ─────
 const JOBLINES = {id: null, lines: []};
+// Same vocabulary as the server's event feed: an action reads as a sentence, never
+// as the parameter dict that happens to be its wire format.
+const ACTION_PHRASE = {
+  unit: p => `${p.verb || 'act on'} ${String(p.unit || '').replace('.service', '')}`,
+  switch: p => `switch the 27B lane to ${TARGET_SHORT[p.target] || p.target || ''}`,
+  flush_cache: () => 'flush the radix cache',
+  abort_all: () => 'abort every generation in flight',
+  smoke: () => 'smoke probe through the proxy',
+  diag_bundle: () => 'write a diagnostics bundle',
+  fit_opencode: () => 'fit the opencode limits to this engine'};
+function actionPhrase(action, params){
+  const f = ACTION_PHRASE[action];
+  if (f) return f(params || {});
+  const p = params || {};
+  return action + (Object.keys(p).length ? ' ' + Object.entries(p).map(([k, v]) => `${k} ${v}`).join(', ') : '');
+}
+
 let stripPinned = false, lastFinished;
 function rJob(d){
   F.job = d;
   const strip = $('jobstrip'), cur = d.current, recent = (d.recent || [])[0];
   const now = Date.now() / 1000;
-  const describe = j => j.action + (j.params && Object.keys(j.params).length ? ' ' + Object.entries(j.params).map(([k, v]) => `${k}=${v}`).join(' ') : '') + (j.origin === 'autoheal' ? ' (started by the autoheal belt)' : '') + (j.dry_run ? ' [dry run]' : '');
+  const describe = j => actionPhrase(j.action, j.params) + (j.origin === 'autoheal' ? ' (started by the autoheal belt)' : '') + (j.dry_run ? ' [dry run]' : '');
   if (cur){
     strip.hidden = false; strip.className = 'jobstrip running';
     setChip('jobchip', 'running', 'warn live');
@@ -638,13 +717,19 @@ function renderLaneAction(why){
   const s = servingEngine();
   if (s){
     const [name, e] = s; const stopping = e.state === 'stopping';
-    b.textContent = stopping ? `${laneLabel(name)} stopping…` : `Stop ${laneLabel(name)}`;
-    b.className = 'btn mini danger'; b.disabled = !!(why || stopping); b.title = why || `systemctl stop ${name}`;
+    // The lane pill sits right next to this button and names the checkpoint; what the
+    // button has to name is the unit it stops, which is the lane. The full label stays
+    // in the tooltip and in the confirmation.
+    const lane = LANE_NAME[name] || name.replace('.service', '');
+    b.textContent = stopping ? `${lane} stopping…` : `Stop ${lane}`;
+    b.className = 'btn mini danger'; b.disabled = !!(why || stopping);
+    b.title = why || `Stop ${laneLabel(name)} (systemctl stop ${name})`;
     b.onclick = () => CARDS.get(name) ? CARDS.get(name).btn.click() : null;
   } else {
     const name = enabledUnit(); const bl = ((F.life || {}).blocked || {})[`unit:start:${name}`];
-    b.textContent = `Start ${laneLabel(name)}`; b.className = 'btn mini low';
-    b.disabled = !!(why || bl || !F.life); b.title = why || (bl ? bl[0] : `systemctl start ${name} (about 9 minutes to ready)`);
+    b.textContent = `Start ${LANE_NAME[name] || name.replace('.service', '')}`; b.className = 'btn mini low';
+    b.disabled = !!(why || bl || !F.life);
+    b.title = why || (bl ? bl[0] : `Start ${laneLabel(name)} (systemctl start ${name}, about 9 minutes to ready)`);
     b.onclick = () => askAction('unit', {verb: 'start', unit: name}, ['sudo', '-n', '/usr/bin/systemctl', 'start', name], []);
   }
 }
@@ -662,6 +747,23 @@ function warnOnce(name, msg){
   if (warned[name] === msg) return;
   warned[name] = msg; console.warn(name, msg);
 }
+// A table showing nothing but its own header reads as broken. Every table that can
+// legitimately be empty says so in a row, in the words of what would fill it.
+function emptyStates(){
+  document.querySelectorAll('table[data-empty]').forEach(t => {
+    const body = t.tBodies[0]; if (!body) return;
+    const rows = [...body.rows];
+    const placeholder = rows.length === 1 && rows[0].dataset.placeholder;
+    if (rows.length && !placeholder) return;
+    if (placeholder) return;
+    const tr = body.insertRow();
+    tr.dataset.placeholder = '1';
+    const td = tr.insertCell();
+    td.colSpan = t.tHead ? t.tHead.rows[0].cells.length : 1;
+    td.className = 'empty'; td.textContent = t.dataset.empty;
+  });
+}
+
 function apply(state){
   lastState = state; lastMsgAt = Date.now();
   const serverNow = Math.max(...Object.values(state).map(w => w && w.ts ? w.ts : 0));
@@ -690,6 +792,7 @@ function apply(state){
       warnOnce(name, e.message);
     }
   }
+  emptyStates();
   lastAges = ages; lastErrors = errors;
   freshness();
   banners(state, errors);
@@ -854,7 +957,7 @@ document.querySelectorAll('.actbar [data-act]').forEach(b => {
 
 // ── on-demand loaders (buttons say what happened) ─────────────────────────────
 function chip(text, cls){ return el('span', 'chip' + (cls ? ' ' + cls : ''), text); }
-function cellChips(tr, items){ const td = tr.insertCell(); items.forEach((it, i) => { if (i) td.append(' '); td.append(chip(it[0], it[1])); }); return td; }
+function cellChips(tr, items){ const td = tr.insertCell(); td.className = 'chips'; items.forEach(it => td.append(chip(it[0], it[1]))); return td; }
 function fmtServe(sv){
   const parts = [];
   if (sv.context_length) parts.push('ctx ' + fmtN(sv.context_length));
