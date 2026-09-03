@@ -311,6 +311,38 @@ jobs:
             kda_kernels/qwen38_qsa_sm121/__init__.py kda_kernels/qwen38_qsa_sm121/kernel.py
           grep -q 'SGLANG_QWEN4_PLE_MMAP_DIR' qwen4_exp.py
 
+      - name: Every privileged call of switch-model.sh is in the cockpit allowlist
+        run: |
+          # The cockpit runs switch-model.sh under an exact-argv sudoers allowlist.
+          # "qwen38-sglang" is not "qwen38-sglang.service" to sudo, and a blanket
+          # NOPASSWD hid that mismatch until the allowlist was tightened. Cross-check
+          # the two files instead of finding out from a failed switch.
+          python3 - <<'PY'
+          import re, sys, pathlib
+          script = pathlib.Path("switch-model.sh").read_text()
+          alw = pathlib.Path("dashboard/sudoers-cockpit.template").read_text()
+          allowed = set(re.findall(r"NOPASSWD:\s*(/usr/bin/systemctl \S+ \S+)", alw))
+          names = dict(re.findall(r'(TARGET_UNIT_NAME|OTHER_UNIT_NAME)="([^"]+)"', script))
+          units = set(re.findall(r'UNIT_NAME="([^"]+)"', script))
+          bad = []
+          for verb, var in re.findall(r"sudo systemctl (\w+) \"\$(\w+)\"", script):
+              if var.endswith("UNIT_NAME"):
+                  for unit in units:
+                      want = f"/usr/bin/systemctl {verb} {unit}"
+                      if want not in allowed:
+                          bad.append(want)
+          for line in re.findall(r"sudo systemctl (\w+) (qwen38-[\w.-]+)", script):
+              want = f"/usr/bin/systemctl {line[0]} {line[1]}"
+              if want not in allowed:
+                  bad.append(want)
+          if bad:
+              print("not in dashboard/sudoers-cockpit.template:")
+              for b in sorted(set(bad)):
+                  print("  " + b)
+              sys.exit(1)
+          print(f"switch-model.sh privileged calls: all covered ({len(allowed)} allowlist entries)")
+          PY
+
       - name: House typography (no em/en dashes in tracked files)
         run: |
           if git ls-files -z | xargs -0 grep -nP '[\x{2014}\x{2013}\x{2212}]' 2>/dev/null; then

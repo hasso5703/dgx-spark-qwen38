@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The cockpit can switch lanes again.** `switch-model.sh` passed bare unit names to
+  sudo (`systemctl disable qwen38-sglang`), while the cockpit's sudoers allowlist pins
+  exact argv (`/usr/bin/systemctl disable qwen38-sglang.service`). To sudo those are two
+  different commands. It had always been wrong and never showed, because a leftover
+  blanket `NOPASSWD: /usr/bin/systemctl` on the reference box matched anything; the day
+  that file was tightened, every switch from the dashboard died on `sudo: a terminal is
+  required to read the password`, half-applied, with the target lane enabled and the old
+  one still enabled too. Unit names are fully qualified now, and a CI step cross-checks
+  every privileged call in `switch-model.sh` against
+  `dashboard/sudoers-cockpit.template`, so the next mismatch fails a build instead of a
+  switch. The gate was verified against the broken version: it names the four missing
+  entries.
+
 - **A switch says when the serving image is behind the repo.** `switch-model.sh` changes
   the checkpoint, never the serving image: only `install.sh` builds that. So a box that
   pulled a repo whose image pin had moved would keep serving the old image without a

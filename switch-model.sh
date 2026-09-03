@@ -54,13 +54,13 @@ esac
 
 if [ "$TARGET_LANE" = "27b" ]; then
   [ -f "$SGL_UNIT" ] || die "the 27B stack is not installed on this box (no $SGL_UNIT). Install it once first: MODEL_CHOICE=$CHOICE ./install.sh"
-  TARGET_UNIT="$SGL_UNIT"; TARGET_UNIT_NAME="qwen38-sglang"
-  OTHER_UNIT="$FLASH_UNIT"; OTHER_UNIT_NAME="qwen38-flash"
+  TARGET_UNIT="$SGL_UNIT"; TARGET_UNIT_NAME="qwen38-sglang.service"
+  OTHER_UNIT="$FLASH_UNIT"; OTHER_UNIT_NAME="qwen38-flash.service"
   DL_IMAGE="$IMAGE"
 else
   [ -f "$FLASH_UNIT" ] || die "the Flash-Next stack is not installed on this box (no $FLASH_UNIT). Install it once first: MODEL_CHOICE=flash ./install.sh (~136 GB download + image build)"
-  TARGET_UNIT="$FLASH_UNIT"; TARGET_UNIT_NAME="qwen38-flash"
-  OTHER_UNIT="$SGL_UNIT"; OTHER_UNIT_NAME="qwen38-sglang"
+  TARGET_UNIT="$FLASH_UNIT"; TARGET_UNIT_NAME="qwen38-flash.service"
+  OTHER_UNIT="$SGL_UNIT"; OTHER_UNIT_NAME="qwen38-sglang.service"
   DL_IMAGE="$FLASH_IMAGE"
 fi
 docker image inspect "$DL_IMAGE" >/dev/null 2>&1 \
