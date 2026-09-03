@@ -418,6 +418,7 @@ systemctl status qwen38-sglang          # 27B server state (any of the four 27B 
 systemctl status qwen38-flash           # Flash-Next server state (target flash)
 systemctl status qwen38-keepalive       # keepalive proxy state
 systemctl status qwen38-dashboard       # cockpit state, if you installed it
+python3 conc-check.py                   # does this lane still answer correctly at concurrency 8
 sudo systemctl restart qwen38-sglang    # 27B: ~5-7 min boot; the radix (prefix) cache starts empty
 sudo systemctl restart qwen38-flash     # flash: ~10 min boot (weight load + PLE prewarm)
 journalctl -u qwen38-sglang -f          # server logs (qwen38-flash for the flash target)

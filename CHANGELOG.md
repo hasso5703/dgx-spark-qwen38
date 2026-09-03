@@ -11,6 +11,17 @@
   supervised action at a time (unit start/stop/restart, lane switch, flush,
   abort, smoke) with every argv audited, and shows which pinned checkpoints are
   actually on disk. Full section in the README.
+- **`conc-check.py`: does this lane still answer correctly when requests share the
+  engine?** sglang#36548 reports DFlash2 corrupting state under concurrency, and a DGX
+  Spark measurement on this repo's own cookbook-cell issue (sglang#35860) puts numbers on
+  it: with the packed-FP4-head NVFP4 target at concurrency 8, **111 of 304 greedy answers
+  were wrong**, against 0 of 100 served one at a time, 1 of 304 with the dense BF16-head
+  export, and 0 of 304 with speculation off. The default target of this repo is a
+  packed-FP4-head checkpoint served with `--max-running-requests 8`, so this ships as a
+  probe you can run in two minutes rather than as a claim. On the reference box, the FP8
+  abliterated target with DFlash2 x8 measured **60/60 serial and 304/304 at concurrency
+  8**: the FP8-head lanes are clean at this shape. The NVFP4 targets are not measured
+  here yet, and the README says so.
 - **The proxy refuses to relay a corrupted answer** (v6.11). A decode path that loses
   its state on this hardware keeps generating: it emits runs of token id 0, which is
   `!` in the Qwen tokenizer, so the client reads a wall of exclamation marks and has no
