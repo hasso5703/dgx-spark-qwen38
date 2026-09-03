@@ -72,6 +72,8 @@ function showTab(name, push = true){
     if (b.dataset.tab === name) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
   if (push && location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+  // the maximised frame covers every other tab: leaving the tab always shrinks it back
+  if (name !== 'agent' && document.body.classList.contains('agentmax')) setAgentMax(false, false);
   if (name === 'models' && !loaded.recipes) loadRecipes();
   // at parse time the agent helpers below are not initialised yet; the first state
   // tick mounts the frame in that case, a later click mounts it at once
@@ -743,7 +745,16 @@ function renderLaneAction(why){
 // The relay lives on this same host (cookies ignore ports), so the frame carries the
 // cockpit session and opencode never asks for its own password. The frame is created
 // the first time the tab opens and then kept: hiding a tab must not lose a session.
-const AG = {mounted: false, wasReady: null};
+const AG = {mounted: false, wasReady: null, restoreMax: false};
+try { AG.restoreMax = localStorage.getItem('cockpit.agent.max') === '1'; } catch { /* storage may be unavailable */ }
+// Fullscreen: the frame covers the window; the corner button or Escape brings the cockpit
+// back. Remembered, so a reload on #agent comes back the way it was left.
+function setAgentMax(on, persist = true){
+  document.body.classList.toggle('agentmax', on);
+  const b = $('agmax'); if (b){ b.textContent = on ? 'Exit fullscreen' : 'Fullscreen'; b.setAttribute('aria-pressed', String(on)); }
+  if (on) mountAgent();
+  if (persist){ try { localStorage.setItem('cockpit.agent.max', on ? '1' : '0'); } catch { /* storage may be unavailable */ } }
+}
 const agentUrl = () => F.agent && F.agent.relay && F.agent.relay.port ? `http://${location.hostname}:${F.agent.relay.port}/` : null;
 const agentReady = () => !!(F.agent && F.agent.enabled && F.agent.relay && F.agent.relay.listening && F.agent.server && F.agent.server.healthy);
 function agentMessage(text, cmd){
@@ -787,7 +798,7 @@ function rAgent(d){
   if (d.auto != null && d.auto_live != null && d.auto !== d.auto_live) parts.push('permission mode changed in the unit, restart to apply');
   if (!ready && unitOn && sv.error) parts.push(sv.error);
   setText('agline', parts.join(' · '));
-  $('agopen').hidden = !ready; $('agreload').hidden = !ready; $('agrestart').hidden = !d.unit_installed;
+  $('agopen').hidden = !ready; $('agreload').hidden = !ready; $('agmax').hidden = !ready; $('agrestart').hidden = !d.unit_installed;
   if (agentUrl()) $('agopen').href = agentUrl();
   // the relay answers on one address and the session cookie lives on the host the
   // browser typed: both have to be the same name for the frame to load
@@ -799,6 +810,7 @@ function rAgent(d){
   if (ready){
     if (activeTab === 'agent') mountAgent();
     if (AG.wasReady === false && AG.mounted) reloadAgent();   // the server came back: reconnect the panel
+    if (AG.restoreMax && activeTab === 'agent'){ AG.restoreMax = false; setAgentMax(true, false); }
   } else {
     agentMessage(!r.listening ? `The relay is not listening yet: ${r.error || 'waiting for its address'}.`
                : !unitOn ? `The opencode server is ${u.active === 'failed' ? 'failed' : 'stopped'}. Start it from a terminal (sudo systemctl start ${AGENT_UNIT}) or read its journal in the Logs tab.`
@@ -808,6 +820,11 @@ function rAgent(d){
   badge('agent', ready ? '' : 'down', 'err');
 }
 $('agreload').addEventListener('click', reloadAgent);
+$('agmax').addEventListener('click', () => setAgentMax(!document.body.classList.contains('agentmax')));
+$('agexit').addEventListener('click', () => setAgentMax(false));
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.body.classList.contains('agentmax') && $('modal').hidden) setAgentMax(false);
+});
 $('agrestart').addEventListener('click', () => askAction('unit', {verb: 'restart', unit: AGENT_UNIT},
   ['sudo', '-n', '/usr/bin/systemctl', 'restart', AGENT_UNIT],
   ['a generation in flight in the agent is lost; the panel reconnects when the server is back']));

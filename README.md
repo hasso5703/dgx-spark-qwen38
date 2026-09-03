@@ -590,9 +590,13 @@ box itself.
 What the tab shows: the state of the server and the relay, the served opencode
 version and, after `opencode upgrade`, that a newer binary is installed with a
 **Restart server** button (systemd restart, through the same exact-argv sudoers
-allowlist as the other units, three more lines). **Open in a tab** gives the
-interface its own browser tab through the same relay. The Logs tab reads the
-server's journal.
+allowlist as the other units, three more lines). **Fullscreen** makes the
+interface cover the whole browser window; the corner button or Escape brings the
+cockpit back, and a reload on the tab comes back the way it was left. Prefer it
+to opening more browser tabs: every tab of the interface holds one permanent
+event stream, browsers allow six connections per origin, and a sixth tab freezes
+them all (the interface handles any number of sessions in one tab). **Open in a
+tab** still exists for a second screen. The Logs tab reads the server's journal.
 
 Permissions are opencode's own. Its defaults (opencode 1.18) allow most tool
 calls and ask before a tool touches a path outside the session's project and

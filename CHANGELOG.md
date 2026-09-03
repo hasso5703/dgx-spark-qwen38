@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.7.2 (2026-09-04): the Agent tab goes fullscreen
+
+- **Fullscreen in the Agent tab.** The frame covers the whole browser window; the
+  corner button or Escape brings the cockpit back, leaving the tab shrinks it back, and
+  a reload on `#agent` comes back the way it was left. Field lesson behind it: every
+  browser tab of the interface holds one permanent event stream that receives the
+  events of every running session, browsers allow six connections per origin over
+  HTTP/1.1, so six tabs froze the interface everywhere while the server answered in
+  milliseconds. One tab, fullscreen when wanted, any number of sessions inside.
+
 ## v1.7.1 (2026-09-03): the Agent tab can run autonomous
 
 - **`AGENT_AUTO=1 dashboard/install-agent.sh`: every tool call approved in the Agent tab.**

@@ -52,7 +52,7 @@ AGENT_BIND = os.environ.get("COCKPIT_AGENT_BIND", "tailscale")
 AGENT_UPSTREAM = os.environ.get("COCKPIT_AGENT_UPSTREAM", "http://127.0.0.1:4096")
 AGENT_UNIT = "opencode-web.service"
 STATIC_DIR = HERE / "static"
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 # Dry run: every mutating action and every automatic belt is logged, audited and
 # shown exactly as usual, but nothing is executed. This is how the click-storm test
 # (tests/monkey-check.mjs) exercises the whole UI against a second cockpit instance.

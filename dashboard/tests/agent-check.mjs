@@ -92,6 +92,25 @@ ok('tab: the frame opened the event stream', frameNet.some(n => n.url.endsWith('
 ok('tab: no 4xx/5xx from the relay', !frameNet.some(n => n.status >= 400), frameNet.filter(n => n.status >= 400).map(n => `${n.status} ${n.url}`).join(' | '));
 await shot('/tmp/cockpit-agent-tab.png');
 
+// 1b. fullscreen: the frame covers the window, Escape and the corner button bring the cockpit back
+await evalJs(`document.getElementById('agmax').click()`); await sleep(400);
+const mx = JSON.parse(await evalJs(`JSON.stringify({ on: document.body.classList.contains('agentmax'), r: document.getElementById('agframe').getBoundingClientRect().toJSON(),
+  exitVisible: getComputedStyle(document.getElementById('agexit')).display !== 'none', label: document.getElementById('agmax').textContent,
+  stored: (() => { try { return localStorage.getItem('cockpit.agent.max'); } catch { return null; } })(), w: innerWidth, h: innerHeight })`) || '{}');
+ok('fullscreen: the body carries the mode', mx.on);
+ok('fullscreen: the frame covers the window', mx.r && Math.round(mx.r.width) === mx.w && Math.round(mx.r.height) === mx.h && mx.r.top === 0 && mx.r.left === 0, JSON.stringify(mx.r));
+ok('fullscreen: the corner button is visible and the bar button says exit', mx.exitVisible && mx.label === 'Exit fullscreen', mx.label);
+ok('fullscreen: the choice is remembered', mx.stored === '1', mx.stored);
+await shot('/tmp/cockpit-agent-fullscreen.png');
+await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+await sleep(300);
+ok('fullscreen: Escape brings the cockpit back', (await evalJs(`document.body.classList.contains('agentmax')`)) === false);
+await evalJs(`document.getElementById('agmax').click()`); await sleep(200);
+await evalJs(`document.getElementById('agexit').click()`); await sleep(200);
+const after = JSON.parse(await evalJs(`JSON.stringify({ on: document.body.classList.contains('agentmax'), h: document.getElementById('agframe').getBoundingClientRect().height, stored: localStorage.getItem('cockpit.agent.max'), label: document.getElementById('agmax').textContent })`) || '{}');
+ok('fullscreen: the corner button brings the cockpit back and the frame is embedded again', after.on === false && after.h < 900 && after.label === 'Fullscreen' && after.stored === '0', JSON.stringify(after));
+
 // 2. the relay opened directly (the "Open in a tab" button)
 net.length = 0; consoleErrors.length = 0;
 await send('Page.navigate', { url: `${RELAY}/` }, sessionId);

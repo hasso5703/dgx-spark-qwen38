@@ -314,6 +314,15 @@
   .agentmsg .empty{max-width:62ch; margin:0 auto}
   .agentmsg .cmd{margin:var(--s3) auto 0; text-align:left; display:inline-block}
   body[data-tab="agent"] .content{padding-bottom:var(--s5)}
+  /* fullscreen: the frame covers the whole window (above the bar and the rail, under the
+     confirm modal and the toasts); one small corner button, or Escape, brings the cockpit back */
+  body.agentmax{overflow:hidden}
+  body.agentmax .agentframe{position:fixed; inset:0; height:auto; min-height:0; border:0; border-radius:0; box-shadow:none; z-index:40}
+  .agexit{position:absolute; top:6px; right:14px; z-index:3; display:none; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+    border:1px solid var(--line2); background:color-mix(in srgb, var(--card) 86%, transparent); color:var(--mut); font-family:inherit; font-size:11.5px;
+    cursor:pointer; opacity:.62; backdrop-filter:blur(6px); transition:opacity .15s}
+  .agexit:hover, .agexit:focus-visible{opacity:1; color:var(--txt)}
+  body.agentmax .agexit{display:inline-flex}
 </style>
 </head>
 <body>
@@ -624,11 +633,13 @@
           <span class="agentline" id="agline"></span>
           <a class="btn mini ghost" id="agopen" target="_blank" rel="noopener" hidden title="The same interface in its own browser tab">Open in a tab</a>
           <button class="btn mini ghost" id="agreload" hidden title="Reload the panel">Reload</button>
+          <button class="btn mini ghost" id="agmax" hidden title="Fill the browser window with the agent; Escape or the corner button brings the cockpit back">Fullscreen</button>
           <button class="btn mini ghost" id="agrestart" data-act="unit" data-unit="opencode-web.service" data-verb="restart" hidden title="systemctl restart opencode-web.service (after an opencode upgrade)">Restart server</button>
         </div>
       </div>
       <p class="note agentnote" id="agnote" hidden></p>
       <div class="agentframe" id="agframe">
+        <button class="agexit" id="agexit" title="Back to the cockpit (Escape)"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 20v-5h5M4 9l5-5M20 15l-5 5"/></svg>Back to cockpit</button>
         <div class="agentmsg" id="agmsg"><div><p class="empty" id="agmsgtext">...</p><pre class="cmd" id="agcmd" hidden></pre></div></div>
       </div>
     </div>
