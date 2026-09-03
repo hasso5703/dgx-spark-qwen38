@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.6 (2026-09-02): Qwen's own FP8 joins the 27B lane, and the cockpit ships
+## v1.6 (2026-09-03): the cockpit ships, Qwen's own FP8 joins the 27B lane, and the flash lane gets the merged kernel
 
 - **Spark Cockpit**, the local web dashboard, is now part of the repo instead of
   living on a branch the CHANGELOG kept pointing at. Opt-in and never run by
