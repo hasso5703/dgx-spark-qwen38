@@ -1370,7 +1370,9 @@ def recipes_snapshot(max_age: float = 60.0) -> dict:
                     "installed": bool(inst) and inst["model"].get("revision") == rec["model"]["revision"]
                     and inst["model"].get("repo") == rec["model"]["repo"]}
 
-        builtin = [enrich(r) for r in rp.builtins(assigns, templates)]
+        # derive the 27B recipes from the unit template this box actually runs
+        mode = rp.context_mode_of(installed.get("27b"))
+        builtin = [enrich(r) for r in rp.builtins(assigns, templates, mode)]
         custom = []
         for item in rp.load_custom(CONFIG_DIR / "recipes"):
             row = {"file": item["file"], "errors": item["errors"]}

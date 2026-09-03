@@ -307,5 +307,57 @@ class KvCacheDtype(unittest.TestCase):
             blob = json.dumps(rec)
             self.assertNotIn("__KV_CACHE_ARGS__", blob, f"{rid} kept the KV placeholder")
 
+
+
+class ContextModeRecipes(unittest.TestCase):
+    """The 27B lane has two unit templates and a box runs one. A recipe derived from
+    the wrong one reports the other mode's own settings as drift, forever."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.assigns = rc.parse_assignments((REPO / "install.sh").read_text())
+        cls.templates = rc.load_templates(REPO)
+
+    def test_both_27b_templates_are_loaded(self):
+        self.assertIn("qwen38-sglang.service.template", self.templates)
+        self.assertIn("qwen38-sglang-1m.service.template", self.templates)
+
+    def test_native_mode_is_the_native_template(self):
+        # the native unit sets no --context-length at all: the checkpoint's own window
+        r = rc.builtin("stock", self.assigns, self.templates, "native")
+        self.assertNotIn("context_length", r["serve"])
+        self.assertNotIn("SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN", r["env"])
+
+    def test_1m_mode_carries_the_1m_settings(self):
+        r = rc.builtin("stock", self.assigns, self.templates, "1m")
+        self.assertEqual(r["serve"]["context_length"], 1010000)
+        self.assertEqual(r["serve"]["mem_fraction"], 0.70)
+        self.assertEqual(r["env"].get("SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN"), "1")
+
+    def test_an_unknown_mode_is_refused(self):
+        with self.assertRaises(ValueError):
+            rc.builtin("stock", self.assigns, self.templates, "enormous")
+
+    def test_the_flash_lane_ignores_the_mode(self):
+        a = rc.builtin("flash", self.assigns, self.templates, "native")
+        b = rc.builtin("flash", self.assigns, self.templates, "1m")
+        self.assertEqual(a, b)
+
+    def test_mode_is_read_off_the_installed_invocation(self):
+        self.assertEqual(rc.context_mode_of({"serve": {"context_length": 1010000}}), "1m")
+        self.assertEqual(rc.context_mode_of({"serve": {"context_length": 262144}}), "native")
+        self.assertEqual(rc.context_mode_of({"serve": {}}), "native")
+        self.assertEqual(rc.context_mode_of(None), "native")
+
+    def test_a_1m_box_shows_no_drift_on_those_three_keys(self):
+        # the exact false alarm this fixes: the served lane on the reference box
+        installed = rc.profile_from_text((REPO / "qwen38-sglang-1m.service.template").read_text())
+        rec = rc.builtin("uncensored-fp8", self.assigns, self.templates, "1m")
+        keys = {d["key"] for d in rc.drift(rec, installed)}
+        for k in ("serve.context_length", "serve.mem_fraction",
+                  "env.SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN"):
+            self.assertNotIn(k, keys)
+
+
 if __name__ == "__main__":
     unittest.main()

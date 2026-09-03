@@ -29,6 +29,15 @@
   0.70 and a 8192 chunked prefill, against the cookbook cell's plain 0.80 / 2048. A
   negative result is not a proof of absence, so the probe ships with a `--pad` mode and
   a cross-contamination detector rather than a claim.
+- **The cockpit stopped crying drift on a lane that has none.** The 27B lane has two
+  unit templates, native and 1M, and `install.sh` remembers which one a box runs. The
+  recipe generator always derived from the native one, so a 1M installation reported
+  its own three markers (`--context-length 1010000`, `--mem-fraction-static 0.70`,
+  `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`) as drift, permanently, with a warning
+  badge on the rail to match. Recipes are now derived from the mode the box actually
+  runs, read off the installed unit. On the reference box the served lane went from
+  three differences to none, and the recipes that are not installed still differ where
+  they truly do, by model and KV dtype. Seven tests, including the exact false alarm.
 - **The flash lane serves the merged SM121 kernel now** (`qwen38-flash:v1.6.0-kda`).
   sglang#36845 was merged on 2026-08-30 as a different implementation than the
   2026-08-28 Triton revision this repo vendored: a KDA kernel package under

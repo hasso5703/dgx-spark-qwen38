@@ -18,8 +18,14 @@ from pathlib import Path
 LANES = ("27b", "flash")
 FAMILIES = ("sglang",)
 ALGORITHMS = ("DFLASH", "NEXTN", "none")
+# The 27B lane has two context modes and install.sh remembers which one is on the
+# box. Comparing a 1M installation against the native template reported the three
+# markers of 1M (context length, mem fraction, the overwrite env) as drift forever,
+# which is a false alarm on the one panel whose job is to raise true ones.
 LANE_TEMPLATE = {"27b": "qwen38-sglang.service.template",
+                 "27b-1m": "qwen38-sglang-1m.service.template",
                  "flash": "qwen38-flash-launch.sh.template"}
+CONTEXT_MODES = ("native", "1m")
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -114,12 +120,19 @@ def _subst(value, mapping: dict[str, str]):
     return value
 
 
-def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str]) -> dict:
-    """One built-in recipe from install.sh assignments + the lane's template."""
+def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str],
+            context_mode: str = "native") -> dict:
+    """One built-in recipe from install.sh assignments + the lane's template.
+
+    context_mode picks which 27B unit template the recipe is derived from, because
+    both are this repo's, and a box runs one of them."""
     if recipe_id not in BUILTIN_IDS:
         raise KeyError(recipe_id)
+    if context_mode not in CONTEXT_MODES:
+        raise ValueError(f"context_mode: {context_mode!r} not in {CONTEXT_MODES}")
     lane = "flash" if recipe_id == "flash" else "27b"
-    prof = profile_from_text(templates[LANE_TEMPLATE[lane]])
+    key = "27b-1m" if (lane == "27b" and context_mode == "1m") else lane
+    prof = profile_from_text(templates[LANE_TEMPLATE[key]])
     if lane == "flash":
         repo, rev, image = assigns["FLASH_REPO"], assigns["FLASH_REV"], assigns["FLASH_SERVE_IMAGE"]
         base = assigns.get("FLASH_IMAGE")
@@ -157,8 +170,16 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str]) 
     }
 
 
-def builtins(assigns: dict[str, str], templates: dict[str, str]) -> list[dict]:
-    return [builtin(i, assigns, templates) for i in BUILTIN_IDS]
+def builtins(assigns: dict[str, str], templates: dict[str, str],
+             context_mode: str = "native") -> list[dict]:
+    return [builtin(i, assigns, templates, context_mode) for i in BUILTIN_IDS]
+
+
+def context_mode_of(profile: dict | None) -> str:
+    """Which 27B context mode an installed invocation is: the 1M unit is the one
+    that asks for more than the checkpoint's native window."""
+    ctx = (profile or {}).get("serve", {}).get("context_length")
+    return "1m" if isinstance(ctx, int) and ctx > 262144 else "native"
 
 
 def validate(recipe: dict, reserved_ids: tuple = ()) -> list[str]:
