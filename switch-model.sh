@@ -155,6 +155,17 @@ else
   bash -n "$TMP_UNIT" || die "rewritten launch script does not parse"
   diff "$TMP_UNIT" "$FLASH_LAUNCH" || true   # show exactly what changes
   install -m 755 "$TMP_UNIT" "$FLASH_LAUNCH"
+  # A switch changes the checkpoint, never the serving image: only install.sh builds
+  # that. So a box that pulled a repo whose image pin moved would keep serving the old
+  # one, silently, and the image is where the kernel fixes live (v1.6: the merged
+  # sm_121 kernel). Say so instead of letting it pass.
+  LAUNCH_IMAGE="$(grep -oE '^[[:space:]]*qwen38-flash:[A-Za-z0-9._-]+' "$FLASH_LAUNCH" | tr -d '[:space:]' | head -1)"
+  if [ -n "$LAUNCH_IMAGE" ] && [ -n "${FLASH_SERVE_IMAGE:-}" ] && [ "$LAUNCH_IMAGE" != "$FLASH_SERVE_IMAGE" ]; then
+    printf '\n\033[1;33mWARNING:\033[0m this box serves flash from %s, but this repo pins %s.\n' \
+      "$LAUNCH_IMAGE" "$FLASH_SERVE_IMAGE"
+    printf '         The serving image is where the kernel fixes live, and only the installer builds it.\n'
+    printf '         Run ./install.sh to build and adopt the pinned image before relying on this lane.\n'
+  fi
 fi
 
 # 4) exactly one serving unit enabled at boot; the opencode default model

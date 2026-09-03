@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **A switch says when the serving image is behind the repo.** `switch-model.sh` changes
+  the checkpoint, never the serving image: only `install.sh` builds that. So a box that
+  pulled a repo whose image pin had moved would keep serving the old image without a
+  word, and the image is where the kernel fixes live (v1.6 moved the flash lane to the
+  merged sm_121 kernel). The flash branch now compares the installed launcher's image
+  with the repo's `FLASH_SERVE_IMAGE` and prints what to run if they differ. Silent when
+  they match.
+
 ## v1.6 (2026-09-03): the cockpit ships, Qwen's own FP8 joins the 27B lane, and the flash lane gets the merged kernel
 
 - **Spark Cockpit**, the local web dashboard, is now part of the repo instead of
