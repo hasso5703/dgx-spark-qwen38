@@ -254,5 +254,156 @@ class PoolCacheInvalidation(unittest.TestCase):
         self.assertLess(small, big, "the flash lane must not inherit the 27B limit")
 
 
+
+
+class CorruptionRun(unittest.TestCase):
+    """v6.11 tripwire: runs of token id 0 ("!") are a decode-state failure, not prose."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.argv = ["keepalive-proxy.py"]
+        cls.k = importlib.util.module_from_spec(SPEC)
+        SPEC.loader.exec_module(cls.k)
+
+    def setUp(self):
+        self.k = type(self).k
+
+    def test_a_run_grows_across_events(self):
+        run = 0
+        for _ in range(10):
+            run = self.k.marker_run("!", run)
+        self.assertEqual(run, 10)
+
+    def test_any_real_character_resets_the_run(self):
+        run = self.k.marker_run("!!!!", 0)
+        self.assertEqual(run, 4)
+        self.assertEqual(self.k.marker_run(" hello", run), 0)
+
+    def test_a_trailing_run_survives_its_own_event(self):
+        self.assertEqual(self.k.marker_run("wait!!!", 5), 3)
+
+    def test_prose_exclamations_never_reach_the_threshold(self):
+        run = 0
+        for word in ("Done", "!", " Great", "!", "!", " Ship it", "!"):
+            run = self.k.marker_run(word, run)
+        self.assertLess(run, self.k.CORRUPTION_RUN)
+
+    def test_delta_text_reads_both_dialects(self):
+        self.assertEqual(self.k.delta_text(
+            {"choices": [{"delta": {"content": "hi"}}]}), "hi")
+        self.assertEqual(self.k.delta_text(
+            {"choices": [{"delta": {"reasoning_content": "think"}}]}), "think")
+        self.assertEqual(self.k.delta_text(
+            {"type": "content_block_delta", "delta": {"text": "hey"}}), "hey")
+        self.assertEqual(self.k.delta_text({"choices": [{"delta": {}}]}), "")
+
+    def test_tool_arguments_are_not_scanned(self):
+        # a JSON blob of exclamation marks inside tool arguments is the model's
+        # business, not a decode failure
+        self.assertEqual(self.k.delta_text(
+            {"choices": [{"delta": {"tool_calls": [{"function": {"arguments": "!" * 80}}]}}]}), "")
+
+    def test_scan_trips_only_past_the_threshold(self):
+        h = self.k.H.__new__(self.k.H)
+        ev = b'data: {"choices":[{"delta":{"content":"!"}}]}\n\n'
+        fired = [h._scan_corruption(ev) for _ in range(self.k.CORRUPTION_RUN)]
+        self.assertEqual(fired.count(True), 1)
+        self.assertTrue(fired[-1])
+        self.assertFalse(any(fired[:-1]))
+
+    def test_scan_ignores_done_and_keepalive_events(self):
+        h = self.k.H.__new__(self.k.H)
+        self.assertFalse(h._scan_corruption(b"data: [DONE]\n\n"))
+        self.assertFalse(h._scan_corruption(
+            b'data: {"id":"keepalive","choices":[]}\n\n'))
+        self.assertEqual(getattr(h, "_crun", 0), 0)
+
+    def test_the_error_event_names_the_cause_in_both_dialects(self):
+        oa = self.k.sse_error_openai("boom").decode()
+        self.assertIn("corrupted_output", oa)
+        self.assertTrue(oa.startswith("data: "))
+        an = self.k.sse_error("boom").decode()
+        self.assertIn("event: error", an)
+
+
+class CorruptingEngine(http.server.BaseHTTPRequestHandler):
+    """Streams the failure this guard exists for: one "!" per SSE event, forever.
+    /abort_request records that the proxy asked it to stop."""
+    aborted = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n) if n else b"{}"
+        if self.path == "/abort_request":
+            CorruptingEngine.aborted.append(json.loads(body or b"{}").get("rid"))
+            self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers()
+            self.wfile.write(b"{}"); return
+        if self.path == "/tokenize":
+            out = json.dumps({"tokens": [1, 2, 3]}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out))); self.end_headers()
+            self.wfile.write(out); return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        first = json.dumps({"id": "rid-corrupt", "choices": [{"delta": {"content": "Here goes"}}]})
+        self.wfile.write(b"data: " + first.encode() + b"\n\n"); self.wfile.flush()
+        bang = json.dumps({"id": "rid-corrupt", "choices": [{"delta": {"content": "!"}}]})
+        try:
+            for _ in range(4000):
+                self.wfile.write(b"data: " + bang.encode() + b"\n\n"); self.wfile.flush()
+        except Exception:
+            pass
+
+
+class CorruptionTripwireEndToEnd(unittest.TestCase):
+    """The whole path: a stream that degenerates into token id 0 is cut, the client is told
+    why, and the engine is asked to stop generating."""
+
+    @classmethod
+    def setUpClass(cls):
+        import socket, subprocess, time
+        CorruptingEngine.aborted = []
+        cls.eng = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CorruptingEngine)
+        threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}",
+                   CORRUPTION_RUN="48", PROMPT_CEILING_TOKENS="0")
+        cls.proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
+                                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", cls.port), timeout=0.2).close(); break
+            except OSError:
+                time.sleep(0.05)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate(); cls.proc.wait(timeout=10)
+        cls.eng.shutdown(); cls.eng.server_close()
+
+    def test_the_stream_is_cut_and_the_client_is_told_why(self):
+        import time
+        body = json.dumps({"model": "m", "stream": True,
+                           "messages": [{"role": "user", "content": "hi"}]}).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions",
+                                     data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            text = r.read().decode("utf-8", "ignore")
+        self.assertIn("corrupted_output", text)
+        self.assertIn("decode-state failure", text)
+        # the guard cut the stream well before the engine's 4000 events
+        self.assertLess(text.count('"!"'), 400, "the wall of exclamation marks was relayed")
+        for _ in range(40):                     # the abort is fired on its own thread
+            if CorruptingEngine.aborted: break
+            time.sleep(0.05)
+        self.assertEqual(CorruptingEngine.aborted, ["rid-corrupt"])
+
+
 if __name__ == "__main__":
     unittest.main()

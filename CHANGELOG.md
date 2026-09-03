@@ -11,6 +11,17 @@
   supervised action at a time (unit start/stop/restart, lane switch, flush,
   abort, smoke) with every argv audited, and shows which pinned checkpoints are
   actually on disk. Full section in the README.
+- **The proxy refuses to relay a corrupted answer** (v6.11). A decode path that loses
+  its state on this hardware keeps generating: it emits runs of token id 0, which is
+  `!` in the Qwen tokenizer, so the client reads a wall of exclamation marks and has no
+  way to tell it from an answer. This is the visible face of sglang#36537 / #36558 /
+  #36806 / #36845, and on the flash lane it is why that lane is still beta. The proxy
+  now counts marker characters across the stream and, past `CORRUPTION_RUN` in a row
+  (48 by default, `0` disables), aborts the generation upstream and sends an explicit
+  `corrupted_output` error in the client's own dialect. It reads only the delta text it
+  already relays, never tool-call arguments; prose with `!!!` in it is untouched.
+  Covered by nine unit tests plus an end-to-end test whose fake engine streams 4,000
+  exclamation marks and must be cut short and aborted.
 - **A design pass over every cockpit surface**, done by reading the rendered pages
   rather than the stylesheet. What it changed:
   - **The top bar stops breaking.** A long lane name (`27B FP8 uncensored`) pushed

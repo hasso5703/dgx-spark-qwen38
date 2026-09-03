@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.10). No content logging, no rewriting.
+"""Keepalive proxy in front of SGLang (v6.11). No content logging, no rewriting.
 
 Three roles, nothing else:
 1. fill the silences of the SSE stream (SGLang's tool-call parser buffers the
@@ -18,6 +18,12 @@ Three roles, nothing else:
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
    cold cache), hence the 3600 s default.
 
+v6.11: a corruption tripwire. A decode kernel that loses its state on this hardware
+      emits runs of token id 0, which is "!" in the Qwen tokenizer (sglang#36537,
+      #36558, #36806, #36845). The proxy counts consecutive marker characters across
+      the stream and, past CORRUPTION_RUN of them, aborts the generation upstream and
+      sends the client an explicit error instead of a wall of exclamation marks. It
+      reads only the delta text it already relays; nothing is logged or rewritten.
 v6.10: the cached KV pool is dropped whenever the engine proves unreachable or a
       refresh read fails. It was cached for 600 s and invalidated nowhere, so after
       an engine restart the oversize guard enforced the previous engine's limit for
@@ -73,6 +79,10 @@ def prompt_limit(pool):
 
 MEDIA_BLOCKS = ("image", "image_url", "input_audio", "video_url", "document", "audio_url")
 TOKENS_PER_MEDIA = int(os.environ.get("TOKENS_PER_MEDIA", "4096"))   # generous per image/audio part
+# Corruption tripwire: consecutive "!" (token id 0) that mean the decode path lost
+# its state rather than the model writing prose. 0 disables the guard.
+CORRUPTION_RUN = int(os.environ.get("CORRUPTION_RUN", "48") or 0)
+CORRUPTION_MARK = "!"
 
 
 def _anthropic_as_openai(j, media):
@@ -205,6 +215,42 @@ HOP = {"host", "content-length", "connection", "keep-alive", "transfer-encoding"
 def log(msg):
     sys.stderr.write(f"[proxy] {msg}\n"); sys.stderr.flush()
 
+def delta_text(j):
+    """The visible text of one SSE event, in either dialect. Never the arguments of a
+    tool call: a JSON blob of exclamation marks is not what this guard is about."""
+    try:
+        ch = (j.get("choices") or [{}])[0]
+        d = ch.get("delta") or {}
+        for k in ("content", "reasoning_content"):
+            v = d.get(k)
+            if isinstance(v, str) and v:
+                return v
+    except Exception:
+        pass
+    d = j.get("delta")
+    if isinstance(d, dict):
+        for k in ("text", "thinking"):
+            v = d.get(k)
+            if isinstance(v, str) and v:
+                return v
+    return ""
+
+
+def marker_run(text, run):
+    """Extend a run of marker characters across event boundaries."""
+    if not text:
+        return run
+    stripped = text.rstrip(CORRUPTION_MARK)
+    tail = len(text) - len(stripped)
+    return (run + tail) if not stripped else tail
+
+
+def sse_error_openai(msg):
+    data = json.dumps({"error": {"type": "corrupted_output", "code": "corrupted_output",
+                                 "message": f"keepalive-proxy: {msg}"}})
+    return b"data: " + data.encode() + b"\n\n"
+
+
 def sse_error(msg):
     data = json.dumps({"type": "error",
                        "error": {"type": "api_error", "message": f"keepalive-proxy: {msg}"}})
@@ -329,6 +375,27 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             return
 
+    def _scan_corruption(self, rec: bytes) -> bool:
+        """True once the stream has produced CORRUPTION_RUN marker characters in a row."""
+        if not CORRUPTION_RUN:
+            return False
+        run = getattr(self, "_crun", 0)
+        for line in rec.split(b"\n"):
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[5:].strip()
+            if not payload or payload == b"[DONE]":
+                continue
+            try:
+                run = marker_run(delta_text(json.loads(payload)), run)
+            except Exception:
+                continue
+            if run >= CORRUPTION_RUN:
+                self._crun = run
+                return True
+        self._crun = run
+        return False
+
     def _abort_upstream(self, why: str):
         """Tell SGLang to stop generating for a client that is gone."""
         rid = getattr(self, "_rid", None)
@@ -351,17 +418,30 @@ class H(BaseHTTPRequestHandler):
         sse = "text/event-stream" in (resp.headers.get("Content-Type") or "")
         self._begin(resp.status, resp.headers)
         if not sse:
+            # A non-streamed answer is relayed as it arrives, so it cannot be withheld;
+            # what the guard can do here is name it in the log instead of leaving a wall
+            # of exclamation marks to be explained later.
+            worst = 0
             try:
                 while True:
                     c = resp.read(65536)
                     if not c: break
+                    if CORRUPTION_RUN:
+                        run = 0
+                        for ch in c.decode("utf-8", "ignore"):
+                            run = run + 1 if ch == CORRUPTION_MARK else 0
+                            if run > worst: worst = run
                     self._chunk(c)
             except Exception:
                 pass
             finally:
                 try: resp.close()
                 except Exception: pass
-            self._finish(); self._done("ok non-sse"); return
+            self._finish()
+            if worst >= CORRUPTION_RUN:
+                log(f"corrupted output in a non-streamed answer ({worst} marker chars)")
+                self._done("ok non-sse CORRUPTED"); return
+            self._done("ok non-sse"); return
 
         q = queue.Queue(maxsize=1024)
         stop = threading.Event()
@@ -443,6 +523,16 @@ class H(BaseHTTPRequestHandler):
             if self._first is None: self._first = now
             self._last = now; self._bytes += len(val)
             self._note_rid(val)
+            if self._scan_corruption(val):
+                # The decode path lost its state; everything after this point is noise.
+                # Say so, rather than let the client read a wall of exclamation marks.
+                log(f"corrupted output after {self._crun} marker chars, aborting rid={getattr(self, '_rid', None)}")
+                drop_upstream("corrupted output")
+                why = (f"the engine emitted {self._crun} consecutive '{CORRUPTION_MARK}' characters, "
+                       "which is a decode-state failure, not an answer. The generation was aborted; retry.")
+                try: self._chunk(sse_error(why) if anthropic else sse_error_openai(why))
+                except Exception: pass
+                self._finish(); self._done("REFUSED corrupted output"); return
             try: self._chunk(val)
             except Exception:
                 drop_upstream(); self._done("CLIENT GONE on write"); return
@@ -542,5 +632,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.10 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.11 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     Server(("0.0.0.0", port), H).serve_forever()

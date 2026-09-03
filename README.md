@@ -208,6 +208,17 @@ daily since 2026-08-22:
   checkpoint and silently undo the YaRN-patched configs (see "Operations" below).
 - **`Restart=always`**: a crash that exits 0 (a Triton compile crash measured 2026-08-22
   ended in `SystemExit: 0`) still gets relaunched; `on-failure` would not.
+- **A corruption tripwire** (proxy v6.11). When a decode path loses its state on this
+  hardware it does not stop: it emits runs of token id 0, which is `!` in the Qwen
+  tokenizer, and the client reads a wall of exclamation marks as if it were an answer
+  (sglang [#36537](https://github.com/sgl-project/sglang/issues/36537),
+  [#36558](https://github.com/sgl-project/sglang/issues/36558),
+  [#36806](https://github.com/sgl-project/sglang/pull/36806),
+  [#36845](https://github.com/sgl-project/sglang/pull/36845)). The proxy counts those
+  characters across the stream and, past `CORRUPTION_RUN` of them in a row (48 by
+  default, `0` disables), aborts the generation upstream and sends an explicit
+  `corrupted_output` error instead. It reads only the delta text it already relays,
+  never tool-call arguments, so a model writing `!!!` in prose is untouched.
 - The generated opencode config switches to `context/input 700000, output 200000`
   (compaction fires at 680000; worst case 880000, under the worst measured pool).
 
