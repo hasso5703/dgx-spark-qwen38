@@ -11,6 +11,21 @@
   supervised action at a time (unit start/stop/restart, lane switch, flush,
   abort, smoke) with every argv audited, and shows which pinned checkpoints are
   actually on disk. Full section in the README.
+- **The cockpit's bind address is configurable.** It was hardcoded to
+  `127.0.0.1` in the unit template, so the dashboard was only ever reachable
+  from a browser running on the box itself, which is not where a headless GB10
+  keeps its browser. `dashboard/install-dashboard.sh` now takes `DASH_BIND`
+  (default unchanged, `127.0.0.1`): `DASH_BIND=0.0.0.0` for every interface,
+  `DASH_BIND=$(tailscale ip -4)` for the tailnet only. The health probe dials a
+  real address when the bind is a wildcard, the installer warns when a non
+  loopback bind has no API key to gate it, and the cockpit prints the exposure
+  in its own startup line. Access stays plain HTTP behind the API key, so this
+  is for a tailnet, not the open internet. Two things had to be fixed for a
+  re-run to actually change anything: `enable --now` leaves an already running
+  unit alone, so the installer now follows it with `try-restart` (a bind change
+  used to report success while the old process kept the old socket), and the
+  unit sets `PYTHONUNBUFFERED=1`, without which Python block buffered stdout
+  into the journal pipe and no cockpit startup line was ever readable there.
 - **Cockpit self-restart is off by default.** `COCKPIT_AUTOHEAL` defaulted to
   `1`, so an install would have restarted a wedged engine on its own. For a repo
   with a section on how this box freezes that is the wrong default; the unit now

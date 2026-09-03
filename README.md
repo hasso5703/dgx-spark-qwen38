@@ -65,7 +65,7 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 | Ports | `PORT=`, `PROXY_PORT=` | 30000, 30001 | agent clients use the proxy port |
 | Storage | `HF_CACHE=`, `PLE_DIR=` | `~/.cache/huggingface`, `~/flashnext-ple` | checkpoints, and the 48 GB flash PLE backing file |
 | Clone location | `DIR=` (one-liner only) | `~/dgx-spark-qwen38` | must be a clone of this repo on `main` |
-| Cockpit dashboard | `dashboard/install-dashboard.sh`, `DASH_PORT=` | not installed | opt-in, never run by `install.sh`; installs a sudoers allowlist, see "The cockpit" |
+| Cockpit dashboard | `dashboard/install-dashboard.sh`, `DASH_PORT=`, `DASH_BIND=` | not installed, loopback when installed | opt-in, never run by `install.sh`; installs a sudoers allowlist, see "The cockpit" |
 
 Combinations that make sense:
 
@@ -456,7 +456,26 @@ dashboard/install-dashboard.sh          # DASH_PORT=30090 by default
 # open http://127.0.0.1:30090, the login is the API key from ~/.config/qwen38/api-key
 ```
 
-It binds to `127.0.0.1` only. What it shows and does:
+It binds to `127.0.0.1` by default. To open it on your laptop instead of on the
+box, set `DASH_BIND` at install time:
+
+```bash
+DASH_BIND=0.0.0.0 dashboard/install-dashboard.sh        # every interface
+DASH_BIND=$(tailscale ip -4) dashboard/install-dashboard.sh   # that interface only
+```
+
+Then browse `http://<the box's tailnet or LAN address>:30090`. The login is the
+same API key, over plain HTTP: the session cookie is `HttpOnly` and
+`SameSite=Strict` and every mutating POST carries a CSRF token, but there is no
+TLS, so this belongs on a tailnet or a LAN you trust and never on the open
+internet. On an already installed cockpit, change it in place:
+
+```bash
+sudo systemctl edit qwen38-dashboard    # [Service] Environment=COCKPIT_BIND=0.0.0.0
+sudo systemctl restart qwen38-dashboard
+```
+
+What it shows and does:
 
 - **Lane state that is not a lie.** A wedged SGLang still answers `/health`, so
   the cockpit runs a real generation canary and reports `ready`, `loading`,

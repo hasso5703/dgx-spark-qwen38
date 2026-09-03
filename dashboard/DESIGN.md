@@ -34,7 +34,9 @@ GET for the fallback path. Actions are POST with JSON, CSRF-protected.**
 
 ## Security model (NASA mode)
 
-- Binds 127.0.0.1 by default; LAN exposure is an explicit config flag.
+- Binds 127.0.0.1 by default; reaching it from another machine is an explicit
+  choice (`DASH_BIND` at install, `COCKPIT_BIND` on the unit), announced in the
+  journal at startup, and still gated by the API key.
 - Session auth: the app reuses the repo's api-key file as its bearer secret
   (cookie session after a login page; the key never appears in URLs).
 - CSRF token on every mutating POST; same-origin checked.

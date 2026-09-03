@@ -51,7 +51,8 @@ the unit start/stop buttons; everything else runs unprivileged.
 - Structured per-request feed (parsing proxy lines into a table): the raw
   journal view covers it today.
 - Bench runner and canary/needle buttons in the UI (backend patterns exist).
-- LAN exposure flag + HTTPS story (localhost-only today by design).
+- HTTPS story. The bind is configurable since `DASH_BIND` (loopback by default),
+  but off-box access is plain HTTP, so it assumes a tailnet.
 
 ## Field notes from building it
 

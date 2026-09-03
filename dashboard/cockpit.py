@@ -1631,6 +1631,12 @@ def main():
     srv = Server((BIND, PORT), Handler)
     print(f"Spark Cockpit {VERSION} on http://{BIND}:{PORT} (repo: {REPO_DIR})"
           + ("  [DRY RUN: nothing is executed]" if DRY_RUN else ""))
+    if BIND not in ("127.0.0.1", "localhost", "::1"):
+        # Say it in the journal too: an action surface that reaches off the box
+        # should never be a surprise found later in ss output.
+        print(f"note: bound to {BIND}, so the cockpit is reachable from other "
+              "machines. The API key is the only gate; keep this on a private "
+              "network (a tailnet, a LAN you trust), not the open internet.")
     srv.serve_forever()
 
 
