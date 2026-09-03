@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.6.1 (2026-09-03): the dashboard can switch lanes again
 
 - **The cockpit can switch lanes again.** `switch-model.sh` passed bare unit names to
   sudo (`systemctl disable qwen38-sglang`), while the cockpit's sudoers allowlist pins
