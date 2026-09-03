@@ -397,6 +397,7 @@ class CorruptionTripwireEndToEnd(unittest.TestCase):
             text = r.read().decode("utf-8", "ignore")
         self.assertIn("corrupted_output", text)
         self.assertIn("decode-state failure", text)
+        self.assertTrue(text.rstrip().endswith("data: [DONE]"), "the OpenAI stream must end with [DONE]")
         # the guard cut the stream well before the engine's 4000 events
         self.assertLess(text.count('"!"'), 400, "the wall of exclamation marks was relayed")
         for _ in range(40):                     # the abort is fired on its own thread

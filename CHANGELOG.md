@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.6.2 (2026-09-03): the flash pool is the same on every boot
+
+- **The flash lane's KV pool is the same on every boot.** SGLang sizes the pool from
+  the host's `MemAvailable` at the instant it profiles (it uses `psutil` on an
+  integrated GPU, not `cudaMemGetInfo`), so anything holding memory right then shrinks
+  the pool for the life of the boot. Two boots of the identical launcher and image
+  drew **189,056 and 249,408 tokens** on 2026-09-03; the bigger draw left 17.2 GiB of
+  idle host headroom against 23.7, and a 120k prompt spends about 9 GiB of it, so the
+  "better" draw was the one nearer the livelock edge. The launcher now pins
+  `--max-total-tokens 190000` (SGLang serves it as 189,952 after page alignment), the
+  envelope every needle and canary result in this repo was measured in, and it waits up
+  to 180 s for `MemAvailable` to clear 96 GiB before starting (measured: the memory of a
+  stopping lane is back within one second of the container exit, so the wait costs
+  nothing on a normal switch and only bites when something else is busy). SGLang treats
+  the pin as a ceiling, so a boot that still profiles less serves less: the cockpit now
+  says so in its event feed, with both numbers. Verified on the reference box after the
+  change: pool 189,952, idle 23.7 GiB, needle 2/2 at 120k with a 14.9 GiB floor,
+  canaries 4/4, and the KDA kernel is the only QSA kernel that compiled in the container.
+- **The cockpit actually records the pool each boot wins.** v1.6 announced that; it
+  recorded one boot in five. The recording read the `engine_info` collector's cache at
+  the moment the lane turned ready, and at that moment the cache holds either the
+  boot's connection errors (nothing recorded) or the previous engine's facts (the wrong
+  pool recorded). It reads the engine directly now.
+- **A flag named in a comment is not a flag.** The recipe parser scanned the whole
+  launcher text, comments included, so a comment reading "--max-total-tokens below
+  pins the ceiling" became `max_total_tokens = "below"` and failed the built-in recipe
+  as invalid. Full-line comments are dropped before scanning; regression test added.
+- **Proxy v6.12: the corruption tripwire trips at 128 marker characters, not 48.** A
+  run of 48 exclamation marks is a plausible banner line in a code block; a run of 128
+  is not something a model writes. Real corruption runs to `max_tokens`, so the later
+  trip costs about two seconds. The OpenAI dialect also gets `data: [DONE]` after the
+  error event, so strict clients see a terminated stream rather than a truncated one.
+- The v1.6 GitHub release notes were cut at 9,000 characters mid-sentence and the v1.6.1
+  notes began with a fragment of the heading line; both are republished whole.
+
 ## v1.6.1 (2026-09-03): the dashboard can switch lanes again
 
 - **The cockpit can switch lanes again.** `switch-model.sh` passed bare unit names to

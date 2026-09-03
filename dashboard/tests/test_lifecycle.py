@@ -455,5 +455,27 @@ class PoolHistory(unittest.TestCase):
         self.assertEqual(lc.pool_spread(h, "u", "fp8")["last"], 700039)
 
 
-if __name__ == "__main__":
+class PoolShortfall(unittest.TestCase):
+    """A pinned pool is a ceiling: a boot that profiles less serves less, in silence."""
+
+    def test_no_pin_says_nothing(self):
+        self.assertIsNone(lc.pool_shortfall(None, 189056))
+
+    def test_no_pool_yet_says_nothing(self):
+        self.assertIsNone(lc.pool_shortfall(190000, 0))
+        self.assertIsNone(lc.pool_shortfall(190000, None))
+
+    def test_at_or_above_the_pin_says_nothing(self):
+        self.assertIsNone(lc.pool_shortfall(190000, 190000))
+        self.assertIsNone(lc.pool_shortfall(190000, 189952))  # page alignment is not a shortfall
+        self.assertIsNone(lc.pool_shortfall(189952, 249408))
+
+    def test_below_the_pin_names_both_numbers(self):
+        msg = lc.pool_shortfall(190000, 150016)
+        self.assertIn("150,016", msg)
+        self.assertIn("190,000", msg)
+        self.assertIn("restart", msg.lower())
+
+
+if __name__ == '__main__':
     unittest.main()

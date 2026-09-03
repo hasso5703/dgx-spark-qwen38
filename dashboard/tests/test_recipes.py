@@ -47,6 +47,7 @@ class ProfileFromText(unittest.TestCase):
         self.assertEqual(p["serve"]["mem_fraction"], 0.81)
         self.assertEqual(p["serve"]["context_length"], 262144)
         self.assertEqual(p["serve"]["max_running_requests"], 1)
+        self.assertEqual(p["serve"]["max_total_tokens"], 190000)
         self.assertEqual(p["serve"]["chunked_prefill"], 1024)
         self.assertEqual(p["serve"]["prefill_attention"], "triton")
         self.assertEqual(p["serve"]["decode_attention"], "trtllm_mha")
@@ -55,6 +56,17 @@ class ProfileFromText(unittest.TestCase):
         self.assertEqual(p["drafter"]["draft_tokens"], 4)
         self.assertEqual(p["env"]["SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK"], "1")
         self.assertEqual(p["env"]["SGLANG_QWEN4_PLE_TAG"], "__MODEL_REV__")
+
+    def test_a_flag_named_in_a_comment_is_not_a_flag(self):
+        # 2026-09-03: a comment saying "--max-total-tokens below pins the ceiling" was
+        # parsed as max_total_tokens="below" and failed the recipe as invalid
+        text = ("# the --max-total-tokens below pins the ceiling\n"
+                "  # --mem-fraction-static 0.99 is what NOT to do\n"
+                "python3 -m sglang.launch_server --max-total-tokens 190000 "
+                "--mem-fraction-static 0.81 --port 1")
+        p = rc.profile_from_text(text)
+        self.assertEqual(p["serve"]["max_total_tokens"], 190000)
+        self.assertEqual(p["serve"]["mem_fraction"], 0.81)
 
     def test_27b_template(self):
         p = rc.profile_from_text(TEMPLATES["qwen38-sglang.service.template"])

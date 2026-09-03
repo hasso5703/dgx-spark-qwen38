@@ -963,6 +963,7 @@ function fmtServe(sv){
   if (sv.context_length) parts.push('ctx ' + fmtN(sv.context_length));
   if (sv.mem_fraction != null) parts.push('mem ' + sv.mem_fraction);
   if (sv.max_running_requests) parts.push('run ' + sv.max_running_requests);
+  if (sv.max_total_tokens) parts.push('pool ' + fmtN(sv.max_total_tokens));
   if (sv.chunked_prefill) parts.push('chunk ' + sv.chunked_prefill);
   const attn = sv.attention_backend || [sv.prefill_attention, sv.decode_attention].filter(Boolean).join('/');
   if (attn) parts.push(attn);

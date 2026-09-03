@@ -215,7 +215,7 @@ daily since 2026-08-22:
   [#36558](https://github.com/sgl-project/sglang/issues/36558),
   [#36806](https://github.com/sgl-project/sglang/pull/36806),
   [#36845](https://github.com/sgl-project/sglang/pull/36845)). The proxy counts those
-  characters across the stream and, past `CORRUPTION_RUN` of them in a row (48 by
+  characters across the stream and, past `CORRUPTION_RUN` of them in a row (128 by
   default, `0` disables), aborts the generation upstream and sends an explicit
   `corrupted_output` error instead. It reads only the delta text it already relays,
   never tool-call arguments, so a model writing `!!!` in prose is untouched.
@@ -269,10 +269,18 @@ and two kernel-resolver fixes, all vendored, sha256-verified and pinned in
   author measures 9/9 at 120k, 190k and 210k on their own Spark. It also removes the
   token-ID-0 tool-call loop of
   [#36537](https://github.com/sgl-project/sglang/issues/36537).
-  **The pool is a hard wall on this lane.** It holds 189,056 tokens, and a prompt
-  larger than that, sent direct to the engine port past the proxy, is queued and never
-  admitted, which wedges the scheduler for every request after it (`/abort_request`
-  answers `not found in rid_to_state`:
+  **The pool is a hard wall on this lane, and since v1.6.2 it is the same wall on
+  every boot.** SGLang sizes the KV pool from the memory free at the instant it
+  profiles, so two boots of the identical launcher drew 189,056 and 249,408 tokens on
+  2026-09-03, and the bigger draw cost 6 GiB of host headroom (idle `MemAvailable`
+  17.2 GiB against 23.7), which is the headroom a 120k prompt spends. The launcher now
+  pins `--max-total-tokens 190000` (served as 189,952 after page alignment), the
+  envelope every needle and canary result in this repo was measured in, and waits
+  for a busy box to go quiet before it starts (bounded, never blocks a boot). The
+  cockpit says so when a boot still comes up short. A prompt larger than the pool,
+  sent direct to the engine port past the proxy, is queued and never admitted, which
+  wedges the scheduler for every request after it (`/abort_request` answers
+  `not found in rid_to_state`:
   [sglang#36333](https://github.com/sgl-project/sglang/issues/36333), unfixed
   upstream). Only a restart clears it. Use the proxy port.
 

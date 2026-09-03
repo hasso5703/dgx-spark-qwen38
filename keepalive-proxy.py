@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.11). No content logging, no rewriting.
+"""Keepalive proxy in front of SGLang (v6.12). No content logging, no rewriting.
 
 Three roles, nothing else:
 1. fill the silences of the SSE stream (SGLang's tool-call parser buffers the
@@ -18,6 +18,10 @@ Three roles, nothing else:
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
    cold cache), hence the 3600 s default.
 
+v6.12: the tripwire trips at 128 marker characters (48 is a plausible banner line in a
+      code block; 128 is not something a model writes, and real corruption runs to
+      max_tokens), and the OpenAI dialect gets "data: [DONE]" after the error event so a
+      strict client sees a terminated stream, not a truncated one.
 v6.11: a corruption tripwire. A decode kernel that loses its state on this hardware
       emits runs of token id 0, which is "!" in the Qwen tokenizer (sglang#36537,
       #36558, #36806, #36845). The proxy counts consecutive marker characters across
@@ -81,7 +85,7 @@ MEDIA_BLOCKS = ("image", "image_url", "input_audio", "video_url", "document", "a
 TOKENS_PER_MEDIA = int(os.environ.get("TOKENS_PER_MEDIA", "4096"))   # generous per image/audio part
 # Corruption tripwire: consecutive "!" (token id 0) that mean the decode path lost
 # its state rather than the model writing prose. 0 disables the guard.
-CORRUPTION_RUN = int(os.environ.get("CORRUPTION_RUN", "48") or 0)
+CORRUPTION_RUN = int(os.environ.get("CORRUPTION_RUN", "128") or 0)
 CORRUPTION_MARK = "!"
 
 
@@ -530,7 +534,8 @@ class H(BaseHTTPRequestHandler):
                 drop_upstream("corrupted output")
                 why = (f"the engine emitted {self._crun} consecutive '{CORRUPTION_MARK}' characters, "
                        "which is a decode-state failure, not an answer. The generation was aborted; retry.")
-                try: self._chunk(sse_error(why) if anthropic else sse_error_openai(why))
+                try:
+                    self._chunk(sse_error(why) if anthropic else sse_error_openai(why) + b"data: [DONE]\n\n")
                 except Exception: pass
                 self._finish(); self._done("REFUSED corrupted output"); return
             try: self._chunk(val)
@@ -632,5 +637,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.11 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.12 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     Server(("0.0.0.0", port), H).serve_forever()

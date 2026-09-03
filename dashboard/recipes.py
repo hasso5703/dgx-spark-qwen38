@@ -42,6 +42,11 @@ FLAGS = {
     "context_length": ("--context-length", int, (4096, 1_010_000)),
     "mem_fraction": ("--mem-fraction-static", float, (0.30, 0.95)),
     "max_running_requests": ("--max-running-requests", int, (1, 64)),
+    # Pins the KV pool instead of letting the boot profile it: what SGLang measures at
+    # boot depends on the memory free at that instant, and on unified memory a boot
+    # launched seconds after the other lane stopped draws a smaller pool (the flash
+    # lane measured 189,056 against 249,408, same launcher, 2026-09-03).
+    "max_total_tokens": ("--max-total-tokens", int, (4096, 1_100_000)),
     "chunked_prefill": ("--chunked-prefill-size", int, (256, 32768)),
     "max_mamba_cache_size": ("--max-mamba-cache-size", int, (1, 4096)),
     "attention_backend": ("--attention-backend", str, ("flashinfer", "triton", "trtllm_mha", "fa3")),
@@ -82,6 +87,9 @@ def profile_from_text(text: str) -> dict:
 
     Placeholders (__X__) survive as-is; builtin() substitutes them, drift()
     ignores them. Unknown flags are not represented (drift is on known keys)."""
+    # Full-line comments are prose, and prose names flags: "the --max-total-tokens
+    # pin below" is not a flag with the value "pin". Only the invocation counts.
+    text = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
     lines = text.splitlines()
     image = None
     for i, ln in enumerate(lines):

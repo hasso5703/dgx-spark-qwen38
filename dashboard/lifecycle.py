@@ -229,6 +229,20 @@ def record_pool(history: dict, unit: str, target: str | None, pool: int,
     return history
 
 
+def pool_shortfall(pinned: int | None, served: int | None) -> str | None:
+    """One sentence when a boot's KV pool came up short of the pin in its launcher.
+
+    SGLang treats --max-total-tokens as a ceiling: a boot that profiles less (something
+    else held memory at that instant) silently serves the smaller pool for its whole
+    life. That is the one thing a pin cannot fix on its own, so it is said out loud."""
+    # SGLang aligns the pin down to its page (64 tokens, or 128 with the c128 layout):
+    # 190,000 serves as 189,952, and that is the pin honoured, not a shortfall.
+    if not pinned or not served or served >= pinned - 128:
+        return None
+    return (f"KV pool {served:,} is short of the {pinned:,} pinned in the launcher: something "
+            f"held memory when the engine profiled. A restart on a quiet box restores it.")
+
+
 def pool_spread(history: dict, unit: str, target: str | None) -> dict | None:
     """min/max/last/n for a target's recorded pools, or None below two boots."""
     lst = [int(x) for x in history.get(pool_key(unit, target), []) if x]

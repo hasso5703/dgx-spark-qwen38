@@ -161,7 +161,8 @@ Validation on the reference box, image `qwen38-flash:v1.6.0-kda`:
 | runs of token id 0 | none, in any of the above |
 
 The depths above 120k were **not** measured, and cannot be on this lane as it is
-configured: its KV pool is 189,056 tokens, so a 190k prompt does not fit. Sending
+configured: its KV pool was 189,056 tokens on that boot (pinned to 190,000 since
+v1.6.2; see the README), so a 190k prompt does not fit. Sending
 one anyway, direct to the engine past the proxy's guard, queued it forever
 (`#queue-req: 1, #running-req: 0`) and wedged the scheduler for every request after
 it; `/abort_request` answered `not found in rid_to_state`, which is sglang#36333,

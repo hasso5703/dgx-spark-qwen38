@@ -852,13 +852,22 @@ def collect_lifecycle():
             if st["state"] == "ready" and elapsed and witnessed \
                     and was in lc.TRANSITIONAL:
                 history = lc.record_boot(history, unit, elapsed, rebuild)
-                # The KV pool this boot won, kept per target: it is a lottery and
-                # it decides whether the declared opencode limits can be served.
-                with STATE_LOCK:
-                    _info = ((STATE.get("engine_info") or {}).get("data") or {}).get("info") or {}
-                history = lc.record_pool(history, unit, unit_target(unit).get("target"),
-                                         int(_info.get("max_total_num_tokens") or 0))
+                # The KV pool this boot won, kept per target: it decides whether the
+                # declared opencode limits can be served. Read from the engine now, not
+                # from the engine_info collector: at this instant that cache holds either
+                # the boot's connection errors (so nothing was recorded, 4 boots in 5 on
+                # 2026-09-03) or the previous engine's facts (so the wrong pool would be).
+                served_pool = 0
+                try:
+                    served_pool = int((http_json(ENGINE_BASE + "/get_server_info", timeout=8)
+                                       or {}).get("max_total_num_tokens") or 0)
+                except Exception:  # noqa: BLE001 (a slow first answer is not worth a crash here)
+                    pass
+                history = lc.record_pool(history, unit, unit_target(unit).get("target"), served_pool)
                 save_history(history)
+                short = lc.pool_shortfall(pinned_pool(unit), served_pool)
+                if short:
+                    add_event("pool", f"{unit.replace('.service', '')}: {short}")
                 with LIFE_LOCK:
                     LIFE["witnessed"][unit] = False
     with LIFE_LOCK:
@@ -1342,6 +1351,17 @@ def upstream_snapshot(max_age: float = 3600.0) -> dict:
 
 RECIPES_CACHE: dict = {"ts": 0.0, "data": None}
 RECIPES_LOCK = threading.Lock()
+def pinned_pool(unit: str) -> int | None:
+    """The --max-total-tokens the installed launcher or unit asks for, if any."""
+    lane = "flash" if unit == "qwen38-flash.service" else "27b"
+    try:
+        prof = rp.profile_from_text(INSTALLED_INVOCATION[lane].read_text())
+    except (OSError, KeyError):
+        return None
+    v = prof.get("serve", {}).get("max_total_tokens")
+    return v if isinstance(v, int) else None
+
+
 INSTALLED_INVOCATION = {"27b": Path("/etc/systemd/system/qwen38-sglang.service"),
                         "flash": CONFIG_DIR / "launch-flash.sh"}
 
