@@ -20,8 +20,15 @@
   packed-FP4-head checkpoint served with `--max-running-requests 8`, so this ships as a
   probe you can run in two minutes rather than as a claim. On the reference box, the FP8
   abliterated target with DFlash2 x8 measured **60/60 serial and 304/304 at concurrency
-  8**: the FP8-head lanes are clean at this shape. The NVFP4 targets are not measured
-  here yet, and the README says so.
+  8**. The packed-FP4-head target that produced the 111/304 upstream measures
+  **60/60 serial and 304/304 concurrent here too**, and **303/304 with 3,000 tokens of
+  context unique to each request** (the one miss was verbose, not wrong, and no answer
+  ever carried another request's content). This repo's configuration does not reproduce
+  the failure on the same hardware and the same checkpoint. What differs is the rest of
+  the recipe: a pinned DFlash2 image and drafter revision, an fp8 KV cache, mem fraction
+  0.70 and a 8192 chunked prefill, against the cookbook cell's plain 0.80 / 2048. A
+  negative result is not a proof of absence, so the probe ships with a `--pad` mode and
+  a cross-contamination detector rather than a claim.
 - **The proxy refuses to relay a corrupted answer** (v6.11). A decode path that loses
   its state on this hardware keeps generating: it emits runs of token id 0, which is
   `!` in the Qwen tokenizer, so the client reads a wall of exclamation marks and has no
