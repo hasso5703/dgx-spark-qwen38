@@ -16,6 +16,7 @@ docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 || { echo "base image not pre
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 cp "$DIR/qwen4_exp.py" "$DIR/qwen_sparse_attn_backend.py" "$DIR/sm121_varlen.py" "$STAGE/"
+cp -r "$DIR/kda_kernels" "$STAGE/kda_kernels"
 cat > "$STAGE/Dockerfile" <<'DEOF'
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
@@ -23,6 +24,7 @@ ARG SGL=/sgl-workspace/sglang/python/sglang
 COPY qwen4_exp.py ${SGL}/srt/models/qwen4_exp.py
 COPY qwen_sparse_attn_backend.py ${SGL}/srt/layers/attention/qwen_sparse_attn_backend.py
 COPY sm121_varlen.py ${SGL}/srt/layers/attention/qsa/sm121_varlen.py
+COPY kda_kernels ${SGL}/kernels/kda_kernels
 RUN touch ${SGL}/srt/layers/attention/qsa/__init__.py
 RUN python3 - <<'PYEOF'
 import ast
@@ -34,8 +36,21 @@ for p in (f"{sgl}/srt/models/qwen4_exp.py",
 qsa = open(f"{sgl}/srt/layers/attention/qwen_sparse_attn_backend.py").read()
 assert "is_sm100_supported() or is_sm120_supported()" not in qsa, \
     "widened trtllm gate present: that path routes GB10 decode to XQA, which corrupts long-context output (v1.5 bug)"
-assert "qsa.sm121_varlen" in qsa, "QSA sm_121 Triton varlen route missing"
+assert "qsa.sm121_varlen" in qsa, "QSA sm_121 Triton varlen fallback route missing"
+assert "kda_kernels.qwen38_qsa_sm121" in qsa, "QSA sm_121 KDA route missing"
 ast.parse(open(f"{sgl}/srt/layers/attention/qsa/sm121_varlen.py").read())
+for p in (f"{sgl}/kernels/kda_kernels/__init__.py",
+          f"{sgl}/kernels/kda_kernels/qwen38_qsa_sm121/__init__.py",
+          f"{sgl}/kernels/kda_kernels/qwen38_qsa_sm121/kernel.py"):
+    ast.parse(open(p).read())
+# the route resolves for real, imports and all: a missing symbol here would only
+# surface as a decode crash after a nine-minute boot
+from sglang.kernels.kda_kernels.qwen38_qsa_sm121 import (  # noqa: F401
+    can_use_qwen38_qsa_sm121, qwen38_qsa_sm121,
+)
+from sglang.srt.layers.attention.qsa.sm121_varlen import (  # noqa: F401
+    qsa_sm121_varlen_attention,
+)
 from sglang.srt.utils import is_sm121  # noqa: F401 (the route's gate must exist)
 q4 = open(f"{sgl}/srt/models/qwen4_exp.py").read()
 assert "SGLANG_QWEN4_PLE_MMAP_DIR" in q4, "PLE mmap hook missing"

@@ -74,11 +74,30 @@ def _resolve_flash_attn_varlen_func():
     from sglang.srt.utils import is_sm121
 
     if is_sm121():
+        from sglang.kernels.kda_kernels.qwen38_qsa_sm121 import (
+            can_use_qwen38_qsa_sm121,
+            qwen38_qsa_sm121,
+        )
         from sglang.srt.layers.attention.qsa.sm121_varlen import (
             qsa_sm121_varlen_attention,
         )
 
-        return qsa_sm121_varlen_attention
+        def _qsa_sm121_kda_varlen(
+            q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q=1, max_seqlen_k=0,
+            softmax_scale=1.0, causal=True, **_,
+        ):
+            if max_seqlen_q == 1 and can_use_qwen38_qsa_sm121(
+                q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_k
+            ):
+                return qwen38_qsa_sm121(
+                    q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_k, softmax_scale
+                )
+            return qsa_sm121_varlen_attention(
+                q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q=max_seqlen_q,
+                max_seqlen_k=max_seqlen_k, softmax_scale=softmax_scale, causal=causal,
+            )
+
+        return _qsa_sm121_kda_varlen
     try:
         from flash_attn import flash_attn_varlen_func
 
@@ -624,7 +643,7 @@ class QwenSparseAttnBackend(AttentionBackend):
             # DP attention runs IDLE dummy forwards on ranks without work, and
             # the MTP multi-step wrapper forwards them as zero-row DECODE
             # steps.  Model layers skip attention for these batches, but
-            # metadata init is still invoked: return zero-row metadata instead
+            # metadata init is still invoked, so return zero-row metadata instead
             # of falling into the extend/decode paths on empty tensors.
             return self._empty_metadata(forward_batch)
         original_mode = getattr(forward_batch, "_original_forward_mode", None)

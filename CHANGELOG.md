@@ -29,6 +29,29 @@
   0.70 and a 8192 chunked prefill, against the cookbook cell's plain 0.80 / 2048. A
   negative result is not a proof of absence, so the probe ships with a `--pad` mode and
   a cross-contamination detector rather than a claim.
+- **The flash lane serves the merged SM121 kernel now** (`qwen38-flash:v1.6.0-kda`).
+  sglang#36845 was merged on 2026-08-30 as a different implementation than the
+  2026-08-28 Triton revision this repo vendored: a KDA kernel package under
+  `sglang/kernels/kda_kernels/`. No stable tag carries it (v0.5.18 predates the merge
+  and the stable `qwen38flashnext` image is still the 2026-08-26 digest), so the repo
+  vendors it the way it vendored the last one: verbatim from hashd1ve's pinned
+  `4f425ca5`, sha256-pinned, with the 2026-08-28 Triton kernel kept as the fallback the
+  route calls outside the KDA contract. The image build now imports both routes for
+  real, so a missing symbol fails the build instead of surfacing as a decode crash nine
+  minutes into a boot. Validated on the reference box: **needle retrieval 11/11 exact at
+  120k prompt tokens** (nine on the build under test, two more on the image that ships
+  after a comments-only edit; fresh passphrase each, host memory floor 14.6 GiB),
+  **quality canaries 4/4 on both builds**, decode 38.8 / 36.7 / 26.5 tok/s on code, math
+  and prose, and no run of token id 0 anywhere in the campaign.
+- **Do not send a prompt bigger than the pool to the engine port.** Establishing the
+  above cost one wedged engine, and the mechanism is worth writing down. This lane's KV
+  pool is 189,056 tokens; a 190k prompt sent direct to `:30000`, past the proxy's
+  oversize guard, is queued and never admitted (`#queue-req: 1, #running-req: 0`), and
+  from then on the engine answers `/get_load` and `/health` while generating nothing for
+  anyone. `POST /abort_request` replies `not found in rid_to_state`, which is
+  sglang#36333, whose fix (#36418) is still not merged. Only a restart clears it. The
+  proxy refused that prompt correctly; the direct port has no guard, and that is now
+  stated where the ceiling is documented.
 - **The proxy refuses to relay a corrupted answer** (v6.11). A decode path that loses
   its state on this hardware keeps generating: it emits runs of token id 0, which is
   `!` in the Qwen tokenizer, so the client reads a wall of exclamation marks and has no

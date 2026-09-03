@@ -50,7 +50,7 @@ UNC_REV="21565d389fe573a32c1c425e0c7ade204ddb2263"
 FLASH_REPO="RadixArk/Qwen3.8-Flash-Next-NVFP4"
 FLASH_REV="7b719225242aacd3dbd3f9407468c2ee9a9d2594"
 FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"  # = lmsysorg/sglang:qwen38flashnext, 2026-08-26
-FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-qwen38-flash:v1.5.3}"
+FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-qwen38-flash:v1.6.0-kda}"
 # Backing store for the flash target's mmap-served 51B PLE table (~48 GiB,
 # written once at first boot, reused afterwards; delete it to reclaim).
 PLE_DIR="${PLE_DIR:-$HOME/flashnext-ple}"

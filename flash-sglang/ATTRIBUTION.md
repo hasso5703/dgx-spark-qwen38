@@ -15,7 +15,8 @@ The two files are the image's own modules with two small patches applied, by
 patches) over Apache-2.0 (the underlying SGLang sources). Verified locally:
 each vendored file diffs against the module extracted from the pinned image in
 exactly the patched region, nothing else (4 em/en dashes in comments replaced
-with house punctuation, AST-verified).
+with house punctuation, AST-verified; 2 more in the 2026-09-03 KDA revision of
+`qwen_sparse_attn_backend.py`, same treatment).
 
 - `qwen4_exp.py` (patch 1, "PLE table to NVMe"): with `SGLANG_QWEN4_PLE_MMAP_DIR`
   set, the PLE table's backing store becomes a file-backed mmap
@@ -135,4 +136,38 @@ task rather than an open question: install the flash lane, vendor
 re-run `./needle.sh --mem` at 120k/190k/210k plus the quality canaries, and keep
 the 2026-08-28 kernel as the documented fallback exactly as they do.
 
-Until then, the vendored file stays as it is and this note is the record of why.
+**Done, 2026-09-03.** The swap was made and validated here, and this directory now
+ships the merged kernel:
+
+- `kda_kernels/` is the KDA package of sglang#36845 as vendored by hashd1ve at
+  `4f425ca5`, verbatim, sha256-pinned in MANIFEST.sha256. It mounts at
+  `sglang/kernels/kda_kernels/`, which is where the merge put it.
+- `qwen_sparse_attn_backend.py` is the pristine file of the pinned image with
+  `patches/qsa_sm121_kda.py` applied, so sm_121 decode calls the KDA kernel inside
+  its exact contract (bf16, head dim 256, 24Q/2KV or 12Q/1KV, batch <= 128,
+  selected KV <= 2055) and the 2026-08-28 Triton kernel everywhere else.
+- `sm121_varlen.py` is unchanged: it is now the documented fallback, not the route.
+- The image build imports both routes for real, so a missing symbol fails the build
+  instead of surfacing as a decode crash nine minutes into a boot.
+
+Validation on the reference box, image `qwen38-flash:v1.6.0-kda`:
+
+| check | result |
+|---|---|
+| needle retrieval at 120k prompt tokens | **11/11 exact** (9 on the build under test, then 2 more on the shipped image after a comments-only edit; fresh passphrase each) |
+| host memory floor during those prompts | 14.6 GiB, about 9 GiB below idle |
+| quality canaries (merge, logic, fr, primes) | **4/4**, twice (both builds) |
+| decode, 700 tokens, short prompt | 38.8 / 36.7 / 26.5 tok/s (code, math, prose) |
+| runs of token id 0 | none, in any of the above |
+
+The depths above 120k were **not** measured, and cannot be on this lane as it is
+configured: its KV pool is 189,056 tokens, so a 190k prompt does not fit. Sending
+one anyway, direct to the engine past the proxy's guard, queued it forever
+(`#queue-req: 1, #running-req: 0`) and wedged the scheduler for every request after
+it; `/abort_request` answered `not found in rid_to_state`, which is sglang#36333,
+whose fix (#36418) is not merged. That is a second reason agent clients must go
+through the proxy, and it is why the author's 9/9 at 190k and 210k stays their
+measurement rather than ours.
+
+The 2026-08-28 Triton kernel stays in the tree as the fallback the route calls,
+exactly as upstream's own adopter keeps it.

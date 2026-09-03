@@ -257,15 +257,24 @@ and two kernel-resolver fixes, all vendored, sha256-verified and pinned in
   `madvise(MADV_RANDOM)` so a cold row costs one 4K page instead of a
   readahead window. On GB10's coherent memory the gather kernel dereferences
   the pageable pointer directly. Measured overhead: under 3%.
-- **QSA decode on sm_121 runs a dedicated Triton kernel.** Upstream gates GB10
+- **QSA decode on sm_121 runs the merged upstream kernel.** Upstream gates GB10
   out of the trtllm sparse-decode path and the generic fallback does not compile
   there; the v1.5 workaround (widening that gate) silently corrupted long
-  contexts (see the warning above). Since v1.5.2 the resolver routes sm_121 to
-  the packed varlen kernel of
-  [PR #36845](https://github.com/sgl-project/sglang/pull/36845), validated by
-  exact needle retrieval at 120k/190k/210k by its independent reviewer, which
-  also removes the token-ID-0 tool-call loop of
+  contexts (see the warning above). Since v1.6 the resolver routes sm_121 to the
+  **merged** kernel of
+  [PR #36845](https://github.com/sgl-project/sglang/pull/36845), the KDA package it
+  landed as, with the 2026-08-28 Triton kernel it replaced kept as the fallback for
+  calls outside the KDA contract. Validated here by exact needle retrieval **9/9 at
+  120k prompt tokens**, quality canaries 4/4, no run of token id 0; the kernel's
+  author measures 9/9 at 120k, 190k and 210k on their own Spark. It also removes the
+  token-ID-0 tool-call loop of
   [#36537](https://github.com/sgl-project/sglang/issues/36537).
+  **The pool is a hard wall on this lane.** It holds 189,056 tokens, and a prompt
+  larger than that, sent direct to the engine port past the proxy, is queued and never
+  admitted, which wedges the scheduler for every request after it (`/abort_request`
+  answers `not found in rid_to_state`:
+  [sglang#36333](https://github.com/sgl-project/sglang/issues/36333), unfixed
+  upstream). Only a restart clears it. Use the proxy port.
 
 Measured on the reference box (two-call wall-clock, quality canaries 4/4,
 needle-in-haystack passing at 100K with fresh content):

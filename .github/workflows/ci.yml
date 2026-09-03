@@ -301,7 +301,14 @@ jobs:
           # the two upstream-fix edits can never silently vanish
           ! grep -q 'is_sm100_supported() or is_sm120_supported()' qwen_sparse_attn_backend.py
           grep -q 'qsa.sm121_varlen' qwen_sparse_attn_backend.py
+          grep -q 'kda_kernels.qwen38_qsa_sm121' qwen_sparse_attn_backend.py
           test -f sm121_varlen.py
+          # the KDA route and the Triton fallback it calls must both be shipped
+          test -f kda_kernels/__init__.py
+          test -f kda_kernels/qwen38_qsa_sm121/__init__.py
+          test -f kda_kernels/qwen38_qsa_sm121/kernel.py
+          python3 -c 'import ast,sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]' \
+            kda_kernels/qwen38_qsa_sm121/__init__.py kda_kernels/qwen38_qsa_sm121/kernel.py
           grep -q 'SGLANG_QWEN4_PLE_MMAP_DIR' qwen4_exp.py
 
       - name: House typography (no em/en dashes in tracked files)
