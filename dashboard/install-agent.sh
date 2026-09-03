@@ -22,7 +22,10 @@
 # upgrade` is not needed: the unit points at the opencode command as found on
 # your PATH (a symlink stays a symlink), the cockpit's Restart button serves the
 # new version. Variables: OPENCODE_PORT, AGENT_PORT, AGENT_BIND (an address, or
-# "tailscale"), AGENT_OUTPUT_TOKEN_MAX, AGENT_PATH (the PATH the service gets).
+# "tailscale"), AGENT_AUTO=1 (approve every tool call, like the oc launcher's
+# --yolo; opencode serve has no such flag, so the unit sets OPENCODE_PERMISSION),
+# AGENT_OUTPUT_TOKEN_MAX, AGENT_PATH (the PATH the service gets). A re-run keeps
+# the AGENT_AUTO choice of the installed unit unless you set it again (0 or 1).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT=opencode-web.service
@@ -92,6 +95,17 @@ fi
 OUT_MAX="${OUT_MAX:-160000}"
 [[ "$OUT_MAX" =~ ^[0-9]+$ ]] || die "AGENT_OUTPUT_TOKEN_MAX must be a number"
 
+# ── permissions: opencode's defaults, or every tool call approved ──────────
+if [ -z "${AGENT_AUTO:-}" ] && grep -q "^Environment='OPENCODE_PERMISSION=" "/etc/systemd/system/$UNIT" 2>/dev/null; then
+  AGENT_AUTO=1      # remembered from the installed unit
+fi
+case "${AGENT_AUTO:-0}" in
+  1) AUTO_LINE="Environment='OPENCODE_PERMISSION={\"*\":\"allow\"}'"
+     note "AGENT_AUTO=1: the web server approves every tool call (opencode's deny rules still apply)." ;;
+  0|"") AUTO_LINE="# (opencode's own permission defaults; re-run with AGENT_AUTO=1 to approve every tool call)" ;;
+  *) die "AGENT_AUTO must be 1 or 0" ;;
+esac
+
 # ── PATH for the service: yours, deduplicated, the opencode dir first ──────
 # (AGENT_PATH= overrides it, for an install run from a wrapper or an odd shell)
 SVC_PATH="${AGENT_PATH:-$(printf '%s:%s' "$(dirname "$OPENCODE_BIN")" "$PATH" | tr ':' '\n' | awk 'NF && !seen[$0]++' | paste -sd: -)}"
@@ -102,6 +116,7 @@ TMP_UNIT="$(mktemp)"
 sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" -e "s|__HOME__|$HOME|g" \
     -e "s|__OPENCODE_BIN__|$OPENCODE_BIN|g" -e "s|__OPENCODE_PORT__|$OPENCODE_PORT|g" \
     -e "s|__PATH__|$SVC_PATH|g" -e "s|__OUTPUT_TOKEN_MAX__|$OUT_MAX|g" \
+    -e "s|__AUTO_LINE__|$AUTO_LINE|g" \
     "$HERE/opencode-web.service.template" > "$TMP_UNIT"
 grep -q '__[A-Z_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in the unit render"
 sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT"; rm -f "$TMP_UNIT"

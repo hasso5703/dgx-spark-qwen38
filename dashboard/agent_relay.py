@@ -193,6 +193,33 @@ def health(cfg: RelayConfig, timeout: float = 3.0) -> dict:
         conn.close()
 
 
+def upstream_json(cfg: RelayConfig, path: str, timeout: float = 3.0):
+    """One authenticated GET on the upstream, parsed; None when it cannot be had."""
+    creds = cfg.credentials()
+    if not creds:
+        return None
+    conn = http.client.HTTPConnection(*cfg.upstream, timeout=timeout)
+    try:
+        conn.request("GET", path, headers={"Authorization": basic_auth(*creds)})
+        resp = conn.getresponse()
+        raw = resp.read(1024 * 1024)
+        if resp.status != 200:
+            return None
+        return json.loads(raw or b"null")
+    except (OSError, http.client.HTTPException, ValueError):
+        return None
+    finally:
+        conn.close()
+
+
+def permission_is_auto(permission) -> bool:
+    """opencode's permission config, as served: "allow" or {"*": "allow"} means every
+    tool call runs without a prompt (deny rules aside)."""
+    if permission == "allow":
+        return True
+    return isinstance(permission, dict) and permission.get("*") == "allow"
+
+
 # ── the relay ────────────────────────────────────────────────────────────────
 SIGN_IN_PAGE = """<!doctype html><meta charset="utf-8"><title>Spark Cockpit</title>
 <style>body{{font:15px/1.5 system-ui,sans-serif;background:#0e1014;color:#ece9e1;display:grid;place-items:center;min-height:100vh;margin:0}}

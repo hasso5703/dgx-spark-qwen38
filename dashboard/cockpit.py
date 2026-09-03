@@ -52,7 +52,7 @@ AGENT_BIND = os.environ.get("COCKPIT_AGENT_BIND", "tailscale")
 AGENT_UPSTREAM = os.environ.get("COCKPIT_AGENT_UPSTREAM", "http://127.0.0.1:4096")
 AGENT_UNIT = "opencode-web.service"
 STATIC_DIR = HERE / "static"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 # Dry run: every mutating action and every automatic belt is logged, audited and
 # shown exactly as usual, but nothing is executed. This is how the click-storm test
 # (tests/monkey-check.mjs) exercises the whole UI against a second cockpit instance.
@@ -646,8 +646,18 @@ def collect_agent():
     d = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
     out["unit"] = {"active": d.get("ActiveState", "?"), "sub": d.get("SubState", "?"),
                    "enabled": d.get("UnitFileState", "?"), "since": d.get("ExecMainStartTimestamp", "")}
-    out["server"] = ar.health(agent_config())
+    cfg = agent_config()
+    out["server"] = ar.health(cfg)
     out["binary"] = agent_binary_version()
+    # permission mode: what the unit file says (applies at the next start) and what
+    # the running server actually serves; they differ until a restart
+    try:
+        out["auto"] = any(ln.startswith("Environment=") and "OPENCODE_PERMISSION=" in ln
+                          for ln in AGENT_UNIT_PATH.read_text().splitlines())
+    except OSError:
+        out["auto"] = None
+    served = ar.upstream_json(cfg, "/config") if out["server"].get("healthy") else None
+    out["auto_live"] = ar.permission_is_auto(served.get("permission")) if isinstance(served, dict) else None
     return out
 
 

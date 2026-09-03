@@ -66,6 +66,8 @@ if [ "$AG_ON" = "1" ] && [ "$AG_LISTEN" = "1" ]; then
     ck "cockpit CSP frame-src"      1 "$(curl -s -D - -o /dev/null -b "$J2" "$CB/" | grep -ci 'frame-src http://')"
     ck "journal opencode-web"       200 "$(code -b "$J2" "$CB/api/logs/opencode-web.service")"
     ck "relais websocket sans session" 401 "$(code -H 'Upgrade: websocket' -H 'Connection: Upgrade' -H 'Sec-WebSocket-Key: dGVzdA==' -H 'Sec-WebSocket-Version: 13' "$R/pty/x/connect")"
+    # the permission mode the unit declares is the one the running server applies
+    ck "mode permissions unite = serveur" "same" "$(curl -s -b "$J2" "$CB/api/state" | python3 -c 'import json,sys; a=json.load(sys.stdin)["agent"]["data"]; print("same" if a.get("auto") is not None and a.get("auto")==a.get("auto_live") else "%s vs %s" % (a.get("auto"), a.get("auto_live")))')"
   else
     echo "  skip agent: le cockpit ne repond pas sur $CB (le relais et le cockpit doivent partager un hote)"
   fi

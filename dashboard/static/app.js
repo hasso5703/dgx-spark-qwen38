@@ -783,6 +783,8 @@ function rAgent(d){
   if (r.listening) parts.push(`relay ${r.bind}:${r.port}`); else if (r.error) parts.push(r.error);
   if (d.binary && sv.version && d.binary !== sv.version) parts.push(`binary ${d.binary} installed, restart to serve it`);
   else if (unitOn && u.enabled) parts.push(u.enabled === 'enabled' ? 'starts at boot' : u.enabled);
+  if (d.auto_live != null) parts.push(d.auto_live ? 'auto-approve: every tool call runs' : 'asks before risky tool calls');
+  if (d.auto != null && d.auto_live != null && d.auto !== d.auto_live) parts.push('permission mode changed in the unit, restart to apply');
   if (!ready && unitOn && sv.error) parts.push(sv.error);
   setText('agline', parts.join(' · '));
   $('agopen').hidden = !ready; $('agreload').hidden = !ready; $('agrestart').hidden = !d.unit_installed;

@@ -18,6 +18,11 @@ EnvironmentFile=__HOME__/.config/qwen38/opencode-web.env
 # Same cap as the oc launcher: without it long thinking is cut at 32000 tokens
 # and the turn ends silently.
 Environment=OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=__OUTPUT_TOKEN_MAX__
+# Tool permissions. opencode's own defaults ask before a tool touches a path outside
+# the session's project and on a repeated identical call; AGENT_AUTO=1 at install
+# approves every tool call instead (explicit deny rules of your opencode config
+# still apply), the same autonomy as the oc launcher's --yolo.
+__AUTO_LINE__
 # Loopback only: the cockpit relay is the one thing that reaches this server.
 ExecStart=__OPENCODE_BIN__ serve --hostname 127.0.0.1 --port __OPENCODE_PORT__ --print-logs --log-level INFO
 Restart=always

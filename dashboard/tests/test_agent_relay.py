@@ -101,6 +101,8 @@ class FakeOpencode(http.server.BaseHTTPRequestHandler):
                                                     ("Set-Cookie", "theme=dark; Path=/")))
         if path == "/global/health":
             return self._json({"healthy": True, "version": "9.9.9"})
+        if path == "/config":
+            return self._json({"permission": {"*": "allow"}, "model": "x/y"})
         self._json({"error": "not found"}, 404)
 
     def do_HEAD(self):
@@ -423,6 +425,17 @@ class RelayTests(unittest.TestCase):
         s.close()
         self.assertTrue(head.startswith(b"HTTP/1.1 401"), head[:40])
         self.assertEqual(SEEN, [])
+
+    def test_upstream_json_and_permission_mode(self):
+        self.assertEqual(ar.upstream_json(self.cfg, "/config")["permission"], {"*": "allow"})
+        self.assertIsNone(ar.upstream_json(self.cfg, "/missing"), "a non-200 answer is None, never an exception")
+        type(self).creds = None
+        self.assertIsNone(ar.upstream_json(self.cfg, "/config"))
+        self.assertTrue(ar.permission_is_auto("allow"))
+        self.assertTrue(ar.permission_is_auto({"*": "allow", "edit": "deny"}))
+        self.assertFalse(ar.permission_is_auto({"*": "ask", "bash": "allow"}))
+        self.assertFalse(ar.permission_is_auto(None))
+        self.assertFalse(ar.permission_is_auto("ask"))
 
     # ---- health probe ----
     def test_health_uses_the_credentials(self):

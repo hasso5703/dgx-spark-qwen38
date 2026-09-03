@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.7.1 (2026-09-03): the Agent tab can run autonomous
+
+- **`AGENT_AUTO=1 dashboard/install-agent.sh`: every tool call approved in the Agent tab.**
+  `opencode serve` rejects the `--yolo` and `--auto` flags of the TUI, so the unit sets
+  `OPENCODE_PERMISSION` to allow everything instead, which opencode honours (verified on
+  the reference box: the served config reads `{"*": "allow"}`). opencode's defaults
+  otherwise allow most calls and ask before a tool touches a path outside the session's
+  project or on a repeated identical call. Explicit deny rules of your config still
+  apply, your `opencode.json` is not touched, and a re-run of the installer remembers
+  the choice (`AGENT_AUTO=0` turns it off). The tab reports the mode the running server
+  applies and says when the unit was changed but the server not yet restarted.
+
 ## v1.7.0 (2026-09-03): opencode in the cockpit
 
 - **Agent tab: opencode's web interface inside the cockpit, behind the cockpit login.**

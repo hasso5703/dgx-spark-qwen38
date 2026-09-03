@@ -349,7 +349,8 @@ jobs:
                     -e "s|__BIND__|127.0.0.1|g" -e "s|__REPO_DIR__|/r|g" -e "s|__AGENT_PORT__|30091|g" \
                     -e "s|__AGENT_BIND__|tailscale|g" -e "s|__AGENT_UPSTREAM__|http://127.0.0.1:4096|g" \
                     -e "s|__OPENCODE_BIN__|/home/u/.opencode/bin/opencode|g" -e "s|__OPENCODE_PORT__|4096|g" \
-                    -e "s|__PATH__|/usr/bin:/bin|g" -e "s|__OUTPUT_TOKEN_MAX__|160000|g" "$1"; }
+                    -e "s|__PATH__|/usr/bin:/bin|g" -e "s|__OUTPUT_TOKEN_MAX__|160000|g" \
+                    -e "s|__AUTO_LINE__|Environment='OPENCODE_PERMISSION={\"*\":\"allow\"}'|g" "$1"; }
           for t in dashboard/qwen38-dashboard.service.template dashboard/opencode-web.service.template; do
             r "$t" > /tmp/u.rendered
             if grep -q '__[A-Z_]*__' /tmp/u.rendered; then echo "unsubstituted placeholder in $t:"; grep '__[A-Z_]*__' /tmp/u.rendered; exit 1; fi
@@ -358,6 +359,8 @@ jobs:
           r dashboard/opencode-web.service.template | grep -q -- 'serve --hostname 127.0.0.1 --port 4096'
           r dashboard/opencode-web.service.template | grep -q 'EnvironmentFile=/home/u/.config/qwen38/opencode-web.env'
           r dashboard/opencode-web.service.template | grep -q 'OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=160000'
+          # AGENT_AUTO=1 renders a single-quoted assignment so the JSON's double quotes survive systemd's parser
+          r dashboard/opencode-web.service.template | grep -qF "Environment='OPENCODE_PERMISSION={\"*\":\"allow\"}'"
           r dashboard/qwen38-dashboard.service.template | grep -q 'COCKPIT_AGENT_PORT=30091'
           for ph in $(grep -ohE '__[A-Z_]+__' dashboard/qwen38-dashboard.service.template | sort -u); do
             grep -q "$ph" dashboard/install-dashboard.sh || { echo "install-dashboard.sh does not render $ph"; exit 1; }

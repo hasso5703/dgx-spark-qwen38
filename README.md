@@ -594,15 +594,24 @@ allowlist as the other units, three more lines). **Open in a tab** gives the
 interface its own browser tab through the same relay. The Logs tab reads the
 server's journal.
 
-Permissions are opencode's own: the interface shows a prompt when opencode asks
-for one, and opencode's `permission` config applies to the web server as it does
-to the TUI. Measured on the reference box with opencode 1.18.27 and no
-`permission` block: a `bash` tool call ran without a prompt. The `--yolo` flag of
-the `oc` launcher has no equivalent for `opencode serve` (it rejects the flag).
+Permissions are opencode's own. Its defaults (opencode 1.18) allow most tool
+calls and ask before a tool touches a path outside the session's project and
+when the same call repeats three times; the interface shows those prompts. For
+the autonomy of the `oc` launcher's `--yolo` (a flag `opencode serve` rejects),
+install with `AGENT_AUTO=1`: the unit then carries `OPENCODE_PERMISSION` set to
+allow everything, which opencode honours (verified: the served config reads
+`{"*": "allow"}`), explicit `deny` rules of your config still apply, and your
+`opencode.json` is not touched. The tab says which mode the running server
+applies. Re-runs remember the choice; `AGENT_AUTO=0` turns it back off.
+
+```bash
+AGENT_AUTO=1 dashboard/install-agent.sh
+```
 
 Variables: `OPENCODE_PORT` (4096), `AGENT_PORT` (30091), `AGENT_BIND` (an address,
-or `tailscale`), `AGENT_OUTPUT_TOKEN_MAX` (the `oc` launcher's cap, else 160000),
-`AGENT_PATH` (the PATH the service gets; yours by default). Re-running
+or `tailscale`), `AGENT_AUTO` (0 or 1), `AGENT_OUTPUT_TOKEN_MAX` (the `oc`
+launcher's cap, else 160000), `AGENT_PATH` (the PATH the service gets; yours by
+default). Re-running
 `dashboard/install-dashboard.sh` alone keeps the relay settings, the bind and the
 port it finds in the installed unit. Remove with:
 
