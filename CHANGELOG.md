@@ -1,5 +1,269 @@
 # Changelog
 
+## v1.8.0 (2026-09-08): the official image, a reduced draft vocabulary, and a seventh target
+
+Upstream caught up with this repo on the flash lane, and then this repo found
+one lever upstream already had. The SGLang cookbook now carries a verified
+single-DGX-Spark cell for Qwen3.8-Flash-Next, and the image it points this
+hardware at ships everything this repo used to graft on locally. So that lane
+serves the official image directly, builds nothing, gains concurrency, loses two
+workarounds, and gets **14 to 25% of its decode back from one flag**. The 27B
+lane stays where it is, for one measured reason given below.
+`OVERLAY_FLASH=1 ./install.sh` rebuilds the v1.7 flash path as the rollback.
+
+### The lane
+
+- **The flash lane runs `lmsysorg/sglang:dev-qwen38-next-local`** (the
+  `qwen4-main-squashed` build, `4ccff141db`, pinned by digest), which brings four
+  things at once: the file-backed PLE table backend
+  ([#37068](https://github.com/sgl-project/sglang/pull/37068)) replacing this
+  repo's mmap patch, the merged KDA QSA sm_121 decode kernel
+  ([#36845](https://github.com/sgl-project/sglang/pull/36845)) replacing the
+  vendored copy, the **root cause of the wall of `!`**
+  ([#36811](https://github.com/sgl-project/sglang/pull/36811) via
+  [#38308](https://github.com/sgl-project/sglang/pull/38308) and
+  [#38290](https://github.com/sgl-project/sglang/pull/38290): a zero-bias
+  allocation in the fused softmax routing kernel collapsed every running MTP
+  request to token id 0 at the same instant on GB10), and the mixed-precision
+  loader ([#38121](https://github.com/sgl-project/sglang/pull/38121)). The proxy
+  keeps its `!` detector as a backstop; it was never the fix.
+- **`--speculative-token-map`: 14 to 25% of decode, and it changes nothing about
+  what the model can say.** A speculative step's draft reads the model's
+  `lm_head` in full, 1.18 GiB at 248,320 x 2560 in BF16, three times in an MTP-3
+  engine step. SGLang can hand the draft that head sliced to a list of token ids
+  (`EAGLEWorkerV2.init_lm_head`, and the proposal path maps the local ids back),
+  which removes 2.6 GiB from every step on a lane that is memory-bandwidth
+  bound. The target still verifies every drafted token over the whole
+  vocabulary, so the reachable outputs are unchanged by construction.
+  `build-token-map.py` (new) builds the list inside the serving image, so the
+  tokenizer that ranks it is the served model's: specials first, then corpus
+  frequencies if a `corpus.jsonl` is present, then the tokenizer's own BPE
+  construction order, which is a frequency ranking that needs no corpus at all.
+  A/B on one boot each, three repeats after a discarded warm-up: **code 39.8 ->
+  47.9, math 39.0 -> 47.1, prose EN 23.4 -> 29.3, prose FR 27.2 -> 30.9 tok/s**,
+  agent loop median 30.3 -> 27.0 ms/tok, acceptance unchanged, needle 2/2 exact
+  at 120K, canaries 4/4. On by default (`SPEC_TOKEN_MAP_SIZE=65536`; `0` is off).
+  Two independent single-Spark projects reached the same lever by patching vLLM
+  and report the same order of gain; here it is a flag.
+- **The lane serves 4 concurrent requests instead of 1**, and single-stream
+  decode is not the price: at the same protocol it is 47.9 on code and 47.1 on
+  math, against 38.8 and 36.7 on v1.6.0-kda. The two GB10-specific
+  attention-backend flags that used to buy that speed are **gone**: they existed
+  because the QSA resolver rejected sm_121, and the merged kernel owns that route
+  now. Prefix caching still works: 27K re-served in 2.1 s against 11.8 s cold,
+  27,008 of 27,026 tokens from the cache.
+- **`FLASH_TIER`: three cookbook-derived tiers, and the default keeps the
+  context.** Every mamba state slot costs 0.206 GiB of the pool the KV cache
+  comes out of, and the model reserves 5 per running request (4 on
+  `extra_buffer_lazy`), so concurrency and the longest servable prompt trade one
+  for one. `context` (default) is 4 requests and a KV pool measured between 279,872 and
+  463,488 tokens across boots, every one of them above the 262,144-token window,
+  so a full-context prompt always fits;
+  `concurrency` is the cookbook's low-latency cell, 8 requests and a
+  129,792-token pool on the boot measured; `throughput` is its high-throughput
+  cell, 24 requests without speculation.
+- **The one-prompt ceiling goes from 128,000 to 200,000 tokens**, and the reason
+  is #37068's resident-set trimmer. A 120K prompt used to cost ~9 GiB of host
+  headroom; it now costs 0.0 to 1.3 GiB, and a 200,058-token prompt costs 3.5 GiB
+  and retrieves its needle exactly, leaving 12.6 GiB against the ~10 GiB livelock
+  edge. Past 200K is deliberately unmeasured: 262K would land near that edge and
+  a livelock here costs a power cycle. The opencode limits follow per tier
+  (190000/64000 on `context`).
+- **`--max-total-tokens 190000` and the poisoned-table guard are gone.** The pin
+  answered a boot lottery with two mechanisms and only one is fixed: the table's
+  mapping no longer climbs (seen live: `PLE table: trimmed resident set 10.6 ->
+  0.2 GiB`), while boot-time profiling still varies, which is why the launcher
+  keeps waiting for a busy box to go quiet. The difference is that a big pool is
+  no longer the dangerous outcome: 454,016 and 463,488-token boots both left the
+  host 16.6-16.9 GiB idle. And the table is rewritten from scratch every boot
+  (the launcher deletes the previous file), so it cannot be half-written from a
+  previous one. Boot to `/health`: 10 min 40 s to 12 min 21 s.
+
+### Two more targets, seven in all
+
+- **`flash-uncensored`: `dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4`.** Chosen
+  on evidence, not popularity: of the abliterated Flash-Next exports published
+  for this architecture, this one has **206 shards with the same names as the
+  stock export and 205 of them byte-identical in size**, the same index, the same
+  `hf_quant_config` and the same chat template, so it is an abliteration OF the
+  export this lane already serves and every serving flag transfers unchanged.
+  Validated on the box: boot 10 min 40 s, KV pool 473,664, decode 45.4-46.4 on
+  code, canaries 4/4, needle 1/1 exact at 120K, prefix caching x5.9, and
+  **0 refusals of 5 blunt probes**. Two alternatives were rejected for stated
+  reasons: `orcarouter/...-Uncensored-NVFP4` is a different packaging (18 shards,
+  170.9 GiB, no `hf_quant_config`, a separate `model-mtp.safetensors`), and the
+  Mia/Keys splice cannot be served here at all, because it is built on the vLLM
+  tree (`Qwen3_8FlashNextForConditionalGeneration`) and SGLang registers only
+  `Qwen4ExpForConditionalGeneration`, with zero mentions of the other name
+  anywhere in the image.
+- **`flash-nvda`: `nvidia/Qwen3.8-Flash-Next-NVFP4`**, the ModelOpt
+  MIXED_PRECISION export. Served with **no `--quantization`** (it resolves to
+  `modelopt_mixed`) and `--moe-runner-backend flashinfer_cutlass` pinned, because
+  the auto-default picks `flashinfer_trtllm` on GB10 and the NVFP4 MoE method
+  rejects it at autotune. Measured here at the same protocol as the others: code
+  47.9/47.2/48.1, math 47.1/47.9/47.6, prose 30.6/29.8/31.9, canaries 4/4, KV
+  pool 388,672. So it **ties the stock export inside the spread** and its pool
+  came out smaller: the cookbook's 174K-against-93K comparison is an advantage of
+  its smaller fp8 draft, and the reduced draft vocabulary removes the
+  disadvantage it was measured against. Kept as a target, checkpoint evicted for
+  disk.
+- All three flash checkpoints have **byte-identical tokenizer files** (same git
+  oids) and the same 248,320-token vocabulary, verified, which is what makes one
+  draft vocabulary valid across them.
+
+### The 27B lane does not move, and the reason is measured
+
+There is now an official multi-arch DFLASH2 image for this hardware
+(`lmsysorg/sglang:dev-qwen38-27b-dflash2`, built from `1cf2b8c`), and it ships
+two DFlash2 improvements our 2026-08-15 base predates, which the pinned
+`z-lab/Qwen3.8-27B-DFlash2` checkpoint has been asking for all along since its
+config declares `conv_kernel_size`, `conv_group_size`, `selector_rank` and
+`selector_top_k`: the grouped dynamic convolution and the candidate selector
+([#35371](https://github.com/sgl-project/sglang/pull/35371), published acceptance
+5.46 on GSM8K against MTP's 5.02), and the quantized target lm_head the selector
+projects through ([#35496](https://github.com/sgl-project/sglang/pull/35496)).
+
+It was **built on 2026-08-22, and the mrope fix this repo's 27B overlay carries
+([#34446](https://github.com/sgl-project/sglang/pull/34446)) merged on
+2026-08-30**, so serving it as it stands would rotate every image token as if it
+sat at its temporal position on all three axes: text unaffected, image inputs
+silently wrong. Verified in the image rather than assumed (its
+`fused_qk_rmsnorm_rope_gate.py` still loads one position per token), and the port
+is not mechanical, also verified rather than assumed: between the two bases
+`mrope.py` changed API (`get_exec()` to `attention_backends()`) and `qwen3_5.py`
+changed by 398 lines. So the 27B lane keeps building its overlay, the official
+image is pinned as `DFLASH2_OFFICIAL_IMAGE` for the day the fix lands in a build
+for sm_121, and the task is written up in `dflash2/ATTRIBUTION.md`.
+`lmsysorg/sglang:v0.5.19` has both fixes and is not an answer either: its
+`torch.cuda.get_arch_list()` stops at `sm_120` and its `sgl_kernel` ships only
+sm90 and sm100 variants, while GB10 is sm_121, which is exactly why the cookbook
+points DGX Spark at `dev-*` images.
+
+`#35496` does settle one parked question: the packed NVFP4 head is supported
+upstream, so there is nothing to switch to on compatibility grounds. A third
+party's paired-NLL measurement on this family says an NVFP4 head costs 2.4% of
+NLL against a loss-neutral FP8 one, so the question is a quality trade and not a
+compatibility one; it stays parked with that noted.
+
+### Eight bugs, each with a gate that would have caught it
+
+Every one of these was found by running the thing, not by reading it, and each
+fix ships with a test or a CI gate that fails when the bug is reintroduced
+(verified by mutation, one at a time).
+
+- **A switch between flash checkpoints left the previous one's quantization
+  flags.** The rewrite patched fragments of the flag line, and the two
+  checkpoints' flag strings hold a different number of flags, so returning to
+  the NVFP4 tree dropped `--speculative-draft-model-quantization unquant`, which
+  loads BF16 MTP tensors as if they were quantized. The line is now rebuilt whole
+  by `rewrite_flash_launcher()`, sourced by the tests so no copy can drift.
+- **A switch never updated the opencode limits, and the picker lied about two
+  targets.** opencode compacts a conversation when it reaches `limit.context`,
+  so a limit above what the lane serves means the keepalive proxy answers 400
+  *before* opencode ever decides to compact: a hard failure mid-session rather
+  than a compaction. Only the installer knew the limits table, so switching a
+  27B box in 1M mode (700,000 context) to the flash lane (200,000 ceiling) left
+  the old numbers in place. And `switch-model.sh`'s picker labels had no entry
+  for the two new flash targets, so the model list kept saying NVFP4 while the
+  box served the abliterated build, which is the field case its own comment
+  describes for the FP8 pair. The table now lives once, in **`oc-limits.sh`**,
+  read by install.sh with the tier or mode it knows and by switch-model.sh from
+  the invocation it just wrote; CI exercises every target and every tier through
+  it, refuses nonsense rather than defaulting, and fails if either caller grows
+  its own copy of a number or if a target has no picker label. Verified live on
+  the reference box, which also repaired a pre-existing drift there: its 27B
+  entry was carrying the FP8 budget under an NVFP4 label.
+- **A switch to Qwen's FP8 release dropped the fp8 KV cache.** Same family, worse
+  consequence: the 27B branch rewrote only the model path and the revision, and
+  that checkpoint carries no KV scales, so `auto` falls back to a bf16 KV cache
+  and the pool halves (771,139 tokens against 382,706, measured by this repo).
+  `rewrite_27b_unit()` now carries the dtype and preserves the box's own memory
+  fraction, tested in both directions on both unit templates.
+- **The cockpit reported "image missing" about the image the lane was running.**
+  Its scan asked docker for `{{.Repository}}:{{.Tag}}`, and an image pulled by
+  digest carries no tag; docker also hides untagged images from the default
+  listing, so the digest pass needs `-a`. Both shapes are read now.
+- **Two targets' presence read "unknown".** `registry.py`'s `PIN_MODELS` is a
+  fifth list of the served checkpoints and the new ones were not in it, so the
+  cockpit could not say whether switching to them would work. A test now derives
+  the list from install.sh.
+- **A pin added to install.sh broke both consumers at once.** `run.sh` and
+  `switch-model.sh` asserted a hardcoded COUNT of matched pin lines. They now
+  check that every name they use is defined, by name, and CI runs each script's
+  own pin block against the real install.sh under `set -u`, which also catches
+  the second half of that bug: an assignment interpolating a pin the grep did not
+  select is unbound and dies.
+- **A plain `./install.sh` on a flash box wrote a launcher that could not boot.**
+  The worst of the seven, and the one an upgrading user would have hit first. The
+  per-checkpoint flags were computed from `MODEL_CHOICE` once, at the top, and the
+  convergence block below can *change* `MODEL_CHOICE`: run with no variables on a
+  box already serving flash and it converges from the default `stock` to `flash`,
+  but the flags kept the empty value `stock` had chosen. The launcher went out
+  without `--quantization modelopt_fp4`, the engine then resolved its MoE runner
+  to `flashinfer_trtllm`, and it died **ten minutes into the boot** with
+  `NotImplementedError: Unsupported moe_runner_backend for NVFP4 MoE`, into a
+  `Restart=always` loop. Found by running the installer the way a user would,
+  not by reading it. The resolution is now a function called again after
+  convergence and before any render, install.sh **refuses to write** a flash
+  launcher with no checkpoint flags rather than let it fail later, and CI asserts
+  both the function and the order of the call.
+- **The installer rendered `token-map-0.pt`.** The file name interpolated
+  `SPEC_TOKEN_MAP_SIZE` nine lines above where it was set, and `${x:-0}` turned
+  an ordering bug into a silently mis-named file instead of an error. CI now
+  asserts the order.
+
+### The cockpit
+
+- **Three new targets in the switch selector, and one list instead of five.** The
+  selector's options, the closed enum the action layer validates against,
+  install.sh's `MODEL_CHOICE` case, switch-model.sh's guard and `BUILTIN_IDS` are
+  five independent spellings of the same set; nothing checked that they agreed. A
+  CI step now derives them all from install.sh and fails naming the odd one out.
+- **The cockpit says when it is running code older than the repo.** It imports
+  this repo's python once, at start, and serves its html from disk on every
+  request, so a `git pull` underneath a running process shows new controls backed
+  by old logic: that is how the switch selector came to offer two targets the
+  action layer refused. It now fingerprints its own sources and reports which
+  changed, and install.sh restarts the unit after an update.
+- Recipes know the new flags (`--page-size`, `--fp4-gemm-backend`,
+  `--ple-offload-backend`, `--moe-runner-backend`, `--speculative-token-map`,
+  the draft's own quantization, `extra_buffer_lazy`) and `builtin()` now refuses
+  to build a recipe that left a flag-bearing placeholder unrendered, which is what
+  made every flash recipe report a drift the box did not have.
+- Two bugs in the recipe parser: it read the closing parenthesis of a bash array
+  as part of the last flag's value, and it took the LAST assignment of a name, so
+  install.sh's convergence branches were being read as the repo's pins.
+
+### New tools
+
+- **`bench-agent.py`**: the agent-loop benchmark. A growing conversation on a
+  shared prefix, one short answer per turn, work pinned with `ignore_eos` so
+  ms/tok compares engines and not answer lengths, and it refuses its own summary
+  if the turns did unequal work. It reports TTFT per 1,000 added prompt tokens,
+  which is the number that says whether the prefix cache is actually being
+  reused: -1 ms here, against a published vLLM measurement where MTP had the best
+  decode and the worst agent loop for exactly that reason.
+- **`build-token-map.py`**: builds the reduced draft vocabulary, with a coverage
+  report and self-checks that read the map back the way SGLang will.
+- **`oc-limits.sh`**: the opencode limits table, extracted so the installer and
+  the switch cannot disagree about it. Two ways in, one table: explicit
+  (`oc-limits.sh flash context`) for a caller that knows, derived
+  (`oc-limits.sh flash --from <invocation>`) for one that has to read the box.
+- **`check-pins.sh`**: asks, over the network, whether every pinned revision and
+  image digest still resolves. Not in CI, because a green build must not depend
+  on Hugging Face being up. All 13 resolve today.
+
+### Tests
+
+159 unit tests (four files, discovered rather than listed, because a fifth file
+nobody runs is worse than no fifth file), 27 CI steps, and the live suites:
+HTTP smoke 31/31, headless render of all seven targets with no exception,
+click-storm 47/47, resilience 16/16, Agent tab 30/30. The click-storm's
+engine-gate assertion was rewritten: it expected the switch button to stay
+enabled with no engine, which reads as a failure whenever a lane is booting, so
+it now asserts the rule the server actually states and checks both of its
+branches.
+
 ## v1.7.2 (2026-09-04): the Agent tab goes fullscreen
 
 - **Fullscreen in the Agent tab.** The frame covers the whole browser window; the

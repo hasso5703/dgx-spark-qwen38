@@ -57,8 +57,63 @@ Verification performed before vendoring (2026-08-30, reference box): upstream's 
 files from the PR pass inside the built image; the built image boots, serves, and answers text
 byte-identically to the unpatched image at the same speed (64.1 vs 64.6 tok/s, within noise).
 
+
+## The 27B migration, and what blocks it (2026-09-08, v1.8)
+
+An official image ships DFLASH2: `lmsysorg/sglang:dev-qwen38-27b-dflash2`, built
+from `1cf2b8c` and multi-arch, so GB10 pulls it natively. It is the image the
+[cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B) now
+points RTX PRO 6000, RTX 5090 and DGX Spark at, after
+[#35825](https://github.com/sgl-project/sglang/pull/35825) re-ran all 48 cells on
+it (and moved the DGX Spark base mem-fraction from 0.85 to 0.80: at 0.85, 15 of
+48 cells were killed by DGX OS earlyoom, which sits right where 0.85 of 128 GB
+leaves the host). It is also built after two DFlash2 changes this base predates,
+and the pinned `z-lab/Qwen3.8-27B-DFlash2` checkpoint has been asking for both
+all along, since its `dflash_config` declares `conv_kernel_size: 2`,
+`conv_group_size: 16`, `selector_rank: 256` and `selector_top_k: 16`:
+
+- **Grouped dynamic depthwise convolution and a candidate selector**
+  ([#35371](https://github.com/sgl-project/sglang/pull/35371), merged
+  2026-08-19). Both are switched on by the checkpoint, so a checkpoint that
+  declares them served by an engine that does not know them simply takes the old
+  path, which is what this box has been doing. Published evaluation on the
+  draft's model card: acceptance length 5.46 on GSM8K against MTP's 5.02 and
+  DSpark's 4.36, and 3.43x no-speculation throughput at batch 1.
+- **A quantized target lm_head in the selector**
+  ([#35496](https://github.com/sgl-project/sglang/pull/35496), merged
+  2026-08-20). The selector projects draft hidden states through the target's own
+  `lm_head`, which a packed NVFP4 head cannot serve by row slicing; the PR runs
+  `quant_method.apply` over the padded local vocab and masks the tail. This also
+  closes the BF16-lm_head question this repo parked on 2026-09-03: the packed
+  head is supported, so there is nothing this box needs to switch to.
+
+**It is not adopted, for one reason.** That image was built on 2026-08-22 and
+patch 2 below merged upstream on 2026-08-30, so it does not carry the mrope fix.
+Serving it as it stands would rotate every image token as if it sat at its
+temporal position on all three axes: text unaffected, image inputs silently
+wrong. Checked in the image rather than assumed, its
+`fused_qk_rmsnorm_rope_gate.py` still reads `pos = tl.load(positions_ptr +
+token)`, one position per token.
+
+**And the port is not mechanical.** Diffed against the pinned base rather than
+assumed: `kernels/ops/attention/fused_qk_rmsnorm_rope_gate.py` is byte-identical
+between the two bases, so that file drops in, but `mrope.py` changed API
+(`get_exec()` became `attention_backends()`, and the deterministic screen became
+`self._force_native`) and `qwen3_5.py` changed by 398 lines. Re-porting patch 2
+onto the newer copies of those two files, on a path whose failure mode is silent
+image corruption, is a named task with its own validation (upstream's two test
+files from #34446, a vision probe, the text canaries and a bench), not a
+drive-by bump.
+
+`install.sh` pins that image as `DFLASH2_OFFICIAL_IMAGE` so the day the fix
+lands in a build for sm_121 this is a one-line change. `lmsysorg/sglang:v0.5.19`
+has both fixes and is not the answer: its `torch.cuda.get_arch_list()` stops at
+`sm_120` and its `sgl_kernel` ships only sm90 and sm100 variants, while GB10 is
+sm_121, which is why the cookbook points DGX Spark at `dev-*` images at all.
+
 ## Retiring this overlay
 
-Each patch is deleted from the install path the day an official image ships it, and the repo
-pins that image digest instead. Patch 1 is already superseded upstream; patch 2 needs an image
-built after 2026-08-30 07:37 UTC.
+Each patch is deleted from the install path the day an official image ships it,
+and the repo pins that image digest instead. Patch 1 is superseded by the image
+above; patch 2 needs an image for sm_121 built after 2026-08-30 07:37 UTC. The
+flash lane crossed that line first: see flash-sglang/ATTRIBUTION.md.

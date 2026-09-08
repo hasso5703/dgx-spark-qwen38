@@ -163,6 +163,16 @@ ok('confirm storm starts one job, not three', !!during.current || (during.recent
 await waitFor("document.getElementById('jobstrip').className.indexOf('running') === -1", 15000);
 
 // ── the engine gate: what needs an engine follows the engine, in both directions ──
+// Wait for the server to be idle first. Every button is disabled while a job
+// runs ("another action is running"), which is correct and which made the
+// no-engine branch below fail whenever an earlier click storm was still
+// finishing: the assertion was reading the busy lock, not the engine gate.
+for (let i = 0; i < 60; i++) {
+  const st = await (await api('/api/state')).json();
+  if (!((st.job || {}).data || {}).current) break;
+  await sleep(500);
+}
+await sleep(700);   // let the page apply the idle state it just received
 const life = ((await (await api('/api/state')).json()).lifecycle || {}).data || {};
 const serving = Object.values(life.engines || {}).some(e => ['ready', 'degraded', 'wedged'].includes(e.state));
 const gated = await evalJs(`(()=>{const o={}; ['flush_cache','abort_all','smoke','diag_bundle','switch'].forEach(a=>{const b=document.querySelector('[data-act="'+a+'"]'); o[a]=b?{disabled:b.disabled,title:b.title}:null;}); return o;})()`);
@@ -173,8 +183,22 @@ if (serving) {
   ok('with no engine, engine actions are disabled',
      gated.flush_cache.disabled && gated.abort_all.disabled && gated.smoke.disabled, JSON.stringify(gated));
   ok('and they say why', /no engine/i.test(gated.smoke.title), gated.smoke.title);
-  ok('actions that need no engine stay available',
-     !gated.diag_bundle.disabled && !gated.switch.disabled, JSON.stringify(gated));
+  // diag_bundle never needs an engine, so it must stay clickable. The switch is
+  // different: switch-model.sh restarts nothing and works with no engine, but the
+  // cockpit blocks it while a lane is mid-boot ("wait for it to settle"). Assert
+  // the rule the server states, not a fixed expectation: this read as a failure
+  // for a whole afternoon because a lane happened to be booting.
+  ok('an action that needs no engine stays available',
+     !gated.diag_bundle.disabled, JSON.stringify(gated.diag_bundle));
+  const swBlocked = (life.blocked || {}).switch;
+  if (swBlocked) {
+    ok('a switch the server blocks is disabled and says why',
+       gated.switch.disabled && /\S/.test(gated.switch.title || ''),
+       JSON.stringify({ blocked: swBlocked, button: gated.switch }));
+  } else {
+    ok('with nothing blocking it, the switch stays available without an engine',
+       !gated.switch.disabled, JSON.stringify(gated.switch));
+  }
   const named = await evalJs("['reqrun','reqwait','reqtok','acclen'].map(i=>document.getElementById(i).textContent).join(' | ')");
   ok('the live-request fields name the empty state instead of shimmering', !named.includes('...'), named);
 }

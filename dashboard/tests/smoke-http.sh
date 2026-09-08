@@ -24,7 +24,29 @@ ck "state avec session"   200 "$(code -b "$J" "$BASE/api/state")"
 ck "registry"             200 "$(code -b "$J" "$BASE/api/registry")"
 ck "upstream (cache)"     200 "$(code -b "$J" "$BASE/api/upstream")"
 ck "recipes"              200 "$(code -b "$J" "$BASE/api/recipes")"
-ck "recipes: 5 builtin, flash sans derive" "5 0" "$(curl -s -b "$J" "$BASE/api/recipes" | python3 -c 'import json,sys; d=json.load(sys.stdin); f=[b for b in d["builtin"] if b["recipe"]["id"]=="flash"][0]; print(len(d["builtin"]), len(f["drift"] or []))')"
+# The count is not a magic number: it is however many targets install.sh defines,
+# read from install.sh itself. A target added to the installer and forgotten in
+# the cockpit is exactly the bug this line is here to catch.
+NTARGETS="$(python3 -c '
+import re, pathlib
+s = pathlib.Path("install.sh").read_text()
+m = re.search(r"^case \"\$MODEL_CHOICE\" in\n(.*?)^esac", s, re.M | re.S)
+arms = re.findall(r"^\s{2}([a-z0-9|-]+)\)", m.group(1), re.M)
+print(len({c for a in arms for c in a.split("|")} - {"*"}))')"
+ck "recipes: $NTARGETS builtin, flash sans derive" "$NTARGETS 0" "$(curl -s -b "$J" "$BASE/api/recipes" | python3 -c 'import json,sys; d=json.load(sys.stdin); f=[b for b in d["builtin"] if b["recipe"]["id"]=="flash"][0]; print(len(d["builtin"]), len(f["drift"] or []))')"
+# Every target the selector offers must be a target the action layer accepts.
+# The switch itself is not run here: this asks the validator, not the box.
+ck "chaque cible du selecteur est acceptee par l'action" "ok" "$(python3 - <<'PYEOF'
+import json, re, pathlib, subprocess, sys
+html = pathlib.Path("dashboard/static/index.html").read_text()
+m = re.search(r'<select id="switchsel".*?</select>', html, re.S)
+ui = re.findall(r'<option value="([^"]+)"', m.group(0))
+cock = pathlib.Path("dashboard/cockpit.py").read_text()
+m = re.search(r'"switch":\s*\{.*?"params":\s*\{"target":\s*\[(.*?)\]\}', cock, re.S)
+enum = re.findall(r'"([^"]+)"', m.group(1))
+print("ok" if sorted(ui) == sorted(enum) and ui else f"{ui} vs {enum}")
+PYEOF
+)"
 ck "inventory"            200 "$(code -b "$J" "$BASE/api/inventory")"
 ck "logs allowlist"       404 "$(code -b "$J" "$BASE/api/logs/etc-passwd")"
 ck "static traversal"     404 "$(code -b "$J" "$BASE/static/../cockpit.py")"

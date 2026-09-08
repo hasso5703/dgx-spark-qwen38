@@ -2,8 +2,12 @@
 # Qwen3.8 serving stack on DGX Spark (GB10): 27B (SGLang+DFlash2) or Flash-Next
 # 176B (SGLang+NEXTN, PLE table mmap-served from NVMe). Systemd, hardened.
 # Idempotent: safe to re-run at any time (uses local caches when present).
-# Everything is PINNED to the versions validated on 2026-08-15; override with
-# env vars if you want to try newer builds (see --help).
+# Everything is PINNED to the versions validated on 2026-09-08; override with
+# env vars if you want to try newer builds (see --help). Since v1.8 the flash
+# lane serves an OFFICIAL SGLang image with nothing added, because the cookbook's
+# own image for this hardware ships everything this repo used to graft on
+# locally; the 27B lane still builds its overlay, for the one reason named at
+# IMAGE below (see dflash2/ATTRIBUTION.md and flash-sglang/ATTRIBUTION.md).
 set -euo pipefail
 trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-running ./install.sh is safe: completed steps are skipped.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
@@ -13,10 +17,30 @@ trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-ru
 _ENV_MODEL_CHOICE="${MODEL_CHOICE:-}"; _ENV_MODEL_REV="${MODEL_REV:-}"
 _ENV_PORT="${PORT:-}"; _ENV_HF_CACHE="${HF_CACHE:-}"
 _ENV_CONTEXT_MODE="${CONTEXT_MODE:-}"; _ENV_PROXY_PORT="${PROXY_PORT:-}"
-_ENV_PLE_DIR="${PLE_DIR:-}"
+_ENV_PLE_DIR="${PLE_DIR:-}"; FLASH_TIER_ENV="${FLASH_TIER:-}"
+_ENV_SERVE_IMAGE="${SERVE_IMAGE:-}"; _ENV_FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-}"
 
 # ── Pinned, validated versions (override via env if you know what you do) ──
+# The 27B lane's base image, and it is deliberately still the 2026-08-15 one.
+# The cookbook now has an official multi-arch DFLASH2 image
+# (lmsysorg/sglang:dev-qwen38-27b-dflash2, built from 1cf2b8c) which would let
+# this lane drop its overlay the way the flash lane did in v1.8, and it ships
+# two DFlash2 improvements this base predates (the grouped dynamic convolution
+# and the candidate selector, sglang#35371, plus the quantized target lm_head
+# the selector projects through, sglang#35496). It is not adopted yet for one
+# reason: it was built on 2026-08-22 and the mrope fix this repo's overlay
+# carries (sglang#34446, "the fused Qwen3.5 RoPE kernel discards mrope height
+# and width") merged on 2026-08-30, so serving that image as it stands would
+# rotate every image token as if it sat at its temporal position on all three
+# axes. The port is not mechanical: between the two bases mrope.py changed API
+# (get_exec() -> attention_backends()) and qwen3_5.py changed by 398 lines. See
+# dflash2/ATTRIBUTION.md, "The 27B migration, and what blocks it".
 IMAGE="${IMAGE:-lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1}"  # = lmsysorg/sglang:qwen38-27b, 2026-08-15
+# The official DFLASH2 image, pinned so a box can pull and compare it, and so the
+# day the mrope fix lands in one of these builds this is a one-line change.
+# shellcheck disable=SC2034  # a documented pin, not a used value: it is what this
+# lane switches to the day the mrope fix lands in a build for this hardware.
+DFLASH2_OFFICIAL_IMAGE="lmsysorg/sglang@sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe"  # = lmsysorg/sglang:dev-qwen38-27b-dflash2 (1cf2b8c), 2026-08-22
 # Target model choice: "stock" (validated censored base, default) or "uncensored"
 # (huihui-ai abliteration re-quantized with the identical RadixArk modelopt
 # NVFP4 recipe: same architecture, chat template, MTP + vision, ~22 GB).
@@ -49,11 +73,60 @@ UNC_REV="21565d389fe573a32c1c425e0c7ade204ddb2263"
 # Anthropic endpoint. Serving flags validated on the reference box 2026-08-28.
 FLASH_REPO="RadixArk/Qwen3.8-Flash-Next-NVFP4"
 FLASH_REV="7b719225242aacd3dbd3f9407468c2ee9a9d2594"
-FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1}"  # = lmsysorg/sglang:qwen38flashnext, 2026-08-26
-FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-qwen38-flash:v1.6.0-kda}"
-# Backing store for the flash target's mmap-served 51B PLE table (~48 GiB,
-# written once at first boot, reused afterwards; delete it to reclaim).
+# Fifth checkpoint of the flash lane: NVIDIA's own ModelOpt MIXED_PRECISION
+# export of the same model (NVFP4 routed experts, FP8 N-gram table, FP8
+# block-scaled MTP experts). On one box its smaller fp8 draft leaves a much
+# larger KV pool than the RadixArk export at the same pins (upstream measured
+# 174k tokens against 93k with MTP). It needs the mixed-precision loader of
+# sglang#38121, which the image below has and the older qwen38flashnext tag
+# does not, and it must NOT be passed --quantization (it resolves to
+# modelopt_mixed on its own) while --moe-runner-backend has to be pinned to
+# flashinfer_cutlass, because the mixed-precision auto-default picks
+# flashinfer_trtllm on GB10 and the NVFP4 MoE method rejects it at autotune.
+FLASH_NVDA_REPO="nvidia/Qwen3.8-Flash-Next-NVFP4"
+FLASH_NVDA_REV="fc694b54fb0174e0913e6adf86691ef85a4ead47"
+# Sixth checkpoint of the flash lane: the abliterated build of the same model, in
+# the same tree. Chosen on evidence rather than on popularity: of the abliterated
+# Flash-Next exports published for this architecture, this one has 206 shards
+# with the same names as RadixArk's and 205 of them byte-identical in size, plus
+# the same index, the same hf_quant_config and the same chat template, so it is
+# an abliteration OF the export this lane already serves and every serving flag
+# transfers unchanged. It declares library_name sglang, keeps the MTP head and
+# stays multimodal. The alternative with more downloads
+# (orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4) was rejected here: 18 shards,
+# 170.9 GiB, no hf_quant_config and a separate model-mtp.safetensors, so a
+# different packaging and a different loader path, none of it validated on this
+# recipe. The Mia/Keys splice was rejected for a harder reason: it is built on
+# the vLLM tree (architecture Qwen3_8FlashNextForConditionalGeneration,
+# model_type qwen3_8_flash_next) and SGLang registers only
+# Qwen4ExpForConditionalGeneration, with zero mentions of the other name
+# anywhere in the image, so it cannot be served here at all.
+FLASH_UNC_REPO="dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4"
+FLASH_UNC_REV="be794b990578ef3031eccf9f28e675a289a09ee9"
+# The flash lane's image. Since v1.8 this is the image the cookbook points DGX
+# Spark at: the qwen4-main-squashed build, which carries the file-backed PLE
+# table backend (sglang#37068, replacing this repo's mmap overlay), the merged
+# KDA QSA sm_121 decode kernel (sglang#36845, replacing the vendored copy), the
+# router fix for the GB10 MTP output collapse (sglang#36811 via #38308/#38290,
+# which is the root cause of the wall of "!" the proxy learned to detect in
+# v1.6), and the mixed-precision loader (sglang#38121). OVERLAY_FLASH=1 rebuilds
+# the old locally-patched image instead.
+FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:9d2a843c706c74bc259c0d9abf360551eb2734e1e7d255ab012a6965f10480b6}"  # = lmsysorg/sglang:dev-qwen38-next-local (qwen4-main-squashed 4ccff141db), 2026-09-07
+# The base the flash overlay's files were verified against, kept so the rollback
+# still builds: OVERLAY_FLASH=1 must graft them onto THAT image, not onto the one
+# above, whose module layout they were never diffed against.
+OVERLAY_FLASH_BASE_IMAGE="lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1"  # = lmsysorg/sglang:qwen38flashnext, 2026-08-26
+# Backing store for the flash target's file-backed 47.7 GiB PLE table. The
+# server rewrites it on every boot (~10 min from a fresh sparse file, ~55 min
+# over a populated one), so the launcher deletes the previous file first.
 PLE_DIR="${PLE_DIR:-$HOME/flashnext-ple}"
+# Resident-set budget for the table's mapping (SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB,
+# upstream default 8 GiB, 0 disables). A row fault maps in a whole page-cache
+# folio, so the mapping's RSS climbs towards 47.7 GiB while a token reads a few
+# KB of it; on unified memory that is the same pool the KV cache is sized from,
+# which is why upstream trims it. This is the knob behind the pool lottery this
+# repo pinned --max-total-tokens for in v1.6.2.
+PLE_RSS_BUDGET_GB="${PLE_RSS_BUDGET_GB:-8}"
 MODEL_CHOICE="${MODEL_CHOICE:-stock}"
 case "$MODEL_CHOICE" in
   stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
@@ -61,8 +134,93 @@ case "$MODEL_CHOICE" in
   fp8)        MODEL_REPO="$FP8_REPO";   MODEL_REV="${MODEL_REV:-$FP8_REV}" ;;
   uncensored-fp8) MODEL_REPO="$UNCFP8_REPO"; MODEL_REV="${MODEL_REV:-$UNCFP8_REV}" ;;
   flash)      MODEL_REPO="$FLASH_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_REV}" ;;
-  *) printf 'ERROR: MODEL_CHOICE must be "stock", "uncensored", "fp8", "uncensored-fp8" or "flash" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
+  flash-nvda) MODEL_REPO="$FLASH_NVDA_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_NVDA_REV}" ;;
+  flash-uncensored) MODEL_REPO="$FLASH_UNC_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_UNC_REV}" ;;
+  *) printf 'ERROR: MODEL_CHOICE must be "stock", "uncensored", "fp8", "uncensored-fp8", "flash", "flash-nvda" or "flash-uncensored" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
 esac
+# Which flags the flash lane's checkpoint wants. The RadixArk export is plain
+# NVFP4 and says so; NVIDIA's is a mixed-precision export that resolves its own
+# scheme and needs the MoE runner pinned (see FLASH_NVDA_REPO above).
+# Both the target's scheme and the DRAFT's belong to the checkpoint, not to the
+# serving tier. RadixArk and its abliteration quantized only the routed experts,
+# so their 31 in-checkpoint MTP tensors are BF16 and the draft must be told not
+# to quantize them; NVIDIA's export ships FP8 block-scaled MTP experts and its
+# verified cell passes no draft quantization at all, so forcing "unquant" there
+# would load an fp8 head as if it were dense.
+#
+# A FUNCTION, and called again after the convergence block below, because that
+# block can change MODEL_CHOICE (a plain ./install.sh on a flash box converges
+# from the default "stock" to "flash"). Computed once, it kept the empty value
+# the default had chosen and the rendered launcher lost --quantization
+# modelopt_fp4 entirely: the engine then resolved its MoE runner to
+# flashinfer_trtllm and died ten minutes into the boot with "Unsupported
+# moe_runner_backend for NVFP4 MoE" (2026-09-08, on the reference box).
+resolve_flash_checkpoint_args() {
+  case "$MODEL_CHOICE" in
+    flash|flash-uncensored)
+      FLASH_QUANT_ARGS="--quantization modelopt_fp4 --speculative-draft-model-quantization unquant " ;;
+    flash-nvda)
+      FLASH_QUANT_ARGS="--moe-runner-backend flashinfer_cutlass " ;;
+    *)
+      FLASH_QUANT_ARGS="" ;;
+  esac
+}
+resolve_flash_checkpoint_args
+# Lane implied by the target model: the 27B pair and Flash-Next each have
+# their own unit and serving image (both SGLang since v1.5), same port,
+# never enabled together.
+LANE=27b; UNIT_NAME="qwen38-sglang.service"
+case "$MODEL_CHOICE" in
+  flash|flash-nvda|flash-uncensored) LANE=flash; UNIT_NAME="qwen38-flash.service" ;;
+esac
+# Serving tier of the flash lane. Every mamba state slot costs 0.206 GiB of the
+# same pool the KV cache comes out of (measured here), and the hybrid GDN/QSA
+# model reserves 5 slots per running request with extra_buffer, 4 with
+# extra_buffer_lazy, so concurrency and the longest servable prompt trade against
+# each other one for one:
+#   context      4 requests, 20 slots, MTP: KV pool 295,936 tokens, so a full
+#                262,144-token prompt fits. The default, because this lane exists
+#                for long context and an agent client runs one or two streams.
+#   concurrency  8 requests, 40 slots, MTP: the cookbook's low-latency cell.
+#                Measured here: pool 129,792 tokens (prompts stop near 119k),
+#                96.5 tok/s aggregate on prose at 8 streams, single stream
+#                unchanged. Upstream: 71.7 tok/s at 8, GSM8K 97.1% full set.
+#   throughput   24 requests, 96 lazy slots, no speculation: the cookbook's
+#                high-throughput cell, 83 tok/s of output at 24 upstream and a
+#                ~286k pool, at 15.9 tok/s single stream.
+FLASH_TIER="${FLASH_TIER:-context}"
+# Also a function, and for the same reason: the convergence block can adopt the
+# tier the installed launcher is already serving.
+resolve_flash_tier_args() {
+  case "$FLASH_TIER" in
+    context)
+      FLASH_TIER_ARGS="--max-running-requests 4 --max-mamba-cache-size 20 --mamba-radix-cache-strategy extra_buffer --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4" ;;
+    concurrency)
+      FLASH_TIER_ARGS="--max-running-requests 8 --max-mamba-cache-size 40 --mamba-radix-cache-strategy extra_buffer --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4" ;;
+    throughput)
+      FLASH_TIER_ARGS="--max-running-requests 24 --max-mamba-cache-size 96 --mamba-radix-cache-strategy extra_buffer_lazy" ;;
+    *) printf 'ERROR: FLASH_TIER must be "context", "concurrency" or "throughput" (got: %s)\n' "$FLASH_TIER" >&2; exit 1 ;;
+  esac
+}
+resolve_flash_tier_args
+# The cookbook's verified value for both single-Spark cells. Lower it if your box
+# runs co-tenants: the pools are sized from what the host has free at profiling.
+FLASH_MEM_FRACTION="${FLASH_MEM_FRACTION:-0.85}"
+# Reduced draft vocabulary, in token ids (0 = off). A speculative step's draft
+# reads the model's lm_head in full, and at 248,320 x 2560 in BF16 that is
+# 1.18 GiB read three times per MTP-3 engine step. SGLang can hand the draft a
+# sliced head instead (--speculative-token-map): the target still verifies over
+# the whole vocabulary, so this cannot change what the model is allowed to say.
+# build-token-map.py writes the list; install.sh builds it inside the serving
+# image, where the tokenizer version matches the served model by construction.
+# The size is a measured choice, not a guess: see BENCHMARKS.md.
+SPEC_TOKEN_MAP_SIZE="${SPEC_TOKEN_MAP_SIZE:-65536}"
+# The file name carries the size, so a box that changes SPEC_TOKEN_MAP_SIZE
+# builds a new map instead of serving the old one under a new intent. Defined
+# here and not earlier on purpose: the first version of this line sat above the
+# size it interpolates, and ${...:-0} turned that ordering bug into a silently
+# mis-named file rather than an error.
+TOKEN_MAP_NAME="token-map-${SPEC_TOKEN_MAP_SIZE}.pt"
 # The DSpark drafter. Served up to v1.1; DFlash2 replaced it in v1.2 and no
 # serving path has referenced it since, so it is no longer downloaded (it cost
 # 6 GB and a few minutes on every 27B install). The pin stays so the cockpit's
@@ -82,19 +240,41 @@ case "$CONTEXT_MODE" in
   native|1m) ;;
   *) printf 'ERROR: CONTEXT_MODE must be "native" or "1m" (got: %s)\n' "$CONTEXT_MODE" >&2; exit 1 ;;
 esac
-if [ "$MODEL_CHOICE" = "flash" ] && [ "$CONTEXT_MODE" = "1m" ]; then
+if [ "$LANE" = "flash" ] && [ "$CONTEXT_MODE" = "1m" ]; then
   printf 'ERROR: CONTEXT_MODE=1m is a 27B mode. Flash-Next serves its full native 262144 window\n' >&2
   printf '       by default; a validated long-context mode for it may come in a later release.\n' >&2
   exit 1
 fi
-# Lane implied by the target model: the 27B pair and Flash-Next each have
-# their own unit and serving image (both SGLang since v1.5), same port,
-# never enabled together.
-LANE=27b; UNIT_NAME="qwen38-sglang.service"
-[ "$MODEL_CHOICE" = "flash" ] && { LANE=flash; UNIT_NAME="qwen38-flash.service"; }
-# Served image = pinned base + the 8 sha256-verified overlay files (dflash2/, built locally,
-# offline). Replaced by an official image digest the day one ships DFLASH2.
-SERVE_IMAGE="${SERVE_IMAGE:-qwen38-dflash2:v1.2.3}"
+# What actually gets served. Until v1.7 both lanes served a locally built image:
+# the pinned official base plus sha256-verified overlay files (dflash2/ for the
+# 27B pair, flash-sglang/ for Flash-Next), because no official image carried
+# DFLASH2 or ran Flash-Next on one GB10. Both are upstream now, so the default
+# is the pinned base itself and no image is built on that lane. The overlay
+# stays the rollback: kept working, checksummed and CI-checked.
+# The two lanes differ here since v1.8, and the reason is above: everything the
+# flash overlay carried is upstream in an image built for this hardware, and one
+# thing the 27B overlay carries is not. So the flash lane serves the pinned
+# official image directly and builds nothing, while the 27B lane still builds
+# its overlay. OVERLAY= sets both at once; OVERLAY_27B= and OVERLAY_FLASH= set
+# one. OVERLAY_27B=0 is a real choice with a known cost: it drops the mrope fix,
+# so text is unaffected and image inputs are silently wrong.
+OVERLAY_27B="${OVERLAY_27B:-${OVERLAY:-1}}"
+OVERLAY_FLASH="${OVERLAY_FLASH:-${OVERLAY:-0}}"
+# The local tags of the overlay path. Every line below sits at column 0 and
+# refers only to names defined above it, because run.sh and switch-model.sh read
+# these assignments out of this file and eval them with nothing else bound.
+OVERLAY_SERVE_IMAGE="qwen38-dflash2:v1.2.3"
+OVERLAY_FLASH_SERVE_IMAGE="qwen38-flash:v1.6.0-kda"
+SERVE_IMAGE="${SERVE_IMAGE:-$OVERLAY_SERVE_IMAGE}"
+FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-$FLASH_IMAGE}"
+# The non-default overlay choices, applied only when the operator did not name a
+# serving image outright.
+if [ -z "$_ENV_SERVE_IMAGE" ] && [ "$OVERLAY_27B" != "1" ]; then
+  SERVE_IMAGE="$IMAGE"
+fi
+if [ -z "$_ENV_FLASH_SERVE_IMAGE" ] && [ "$OVERLAY_FLASH" = "1" ]; then
+  FLASH_SERVE_IMAGE="$OVERLAY_FLASH_SERVE_IMAGE"
+fi
 PORT="${PORT:-30000}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 CONFIG_DIR="$HOME/.config/qwen38"
@@ -127,12 +307,14 @@ Usage: ./install.sh [--no-start] [--no-service] [--no-opencode | --with-opencode
   --with-opencode       re-enable it after a --no-opencode
 
 Re-running over an existing install keeps the operator's choices: the target
-model (any of the five), the context mode (native/1m), the port, the HF
-cache location and the opencode on/off choice are read from the installed
-unit (or the marker file) unless the env var or flag is passed explicitly.
+model (any of the seven), the context mode (native/1m), the flash serving tier,
+the port, the HF cache location and the opencode on/off choice are read from
+the installed unit or launcher (or the marker file) unless the env var or flag
+is passed explicitly.
 
-Env overrides (defaults are pinned to the validated 2026-08-15 versions):
-  IMAGE=lmsysorg/sglang:qwen38-27b   use the moving tag instead of the digest
+Env overrides (defaults are pinned to the versions validated 2026-09-08):
+  IMAGE=lmsysorg/sglang:dev-qwen38-27b-dflash2
+                                     use the moving tag instead of the digest
   MODEL_REV=main                     use the latest target revision
   DRAFT2_REV=main                    latest DFlash2 draft revision
   MODEL_CHOICE=uncensored            serve the huihui-abliterated model
@@ -141,18 +323,40 @@ Env overrides (defaults are pinned to the validated 2026-08-15 versions):
                                      200k fewer tokens of KV pool, slower decode)
   MODEL_CHOICE=uncensored-fp8        the huihui abliteration in that same FP8 format
   MODEL_CHOICE=flash                 serve Qwen3.8-Flash-Next (176B hybrid MoE,
-                                     NVFP4, SGLang engine, ~136 GB download; the
-                                     51B N-gram table is mmap-served from NVMe,
-                                     with working prefix caching and vision)
-  PLE_DIR=~/flashnext-ple            flash only: where the ~48 GB mmap backing
-                                     file of the N-gram table lives
+                                     NVFP4, SGLang engine, ~126 GB download; the
+                                     47.7 GiB N-gram table is served from a file
+                                     on NVMe, with prefix caching and vision)
+  MODEL_CHOICE=flash-uncensored      the abliterated build of the same tree
+                                     (~126 GB): 205 of its 206 shards are
+                                     byte-identical in size to the stock export,
+                                     so every serving flag is the same one
+  MODEL_CHOICE=flash-nvda            the same model from NVIDIA's own mixed-
+                                     precision export (~124 GB download), served
+                                     with no --quantization and a pinned MoE
+                                     runner; measured here as a tie with stock
+  SPEC_TOKEN_MAP_SIZE=0              flash: serve without the reduced draft
+                                     vocabulary (it is worth 14 to 25% of decode
+                                     and cannot change what the model may say)
+  FLASH_TIER=concurrency             flash only: 8 concurrent requests with the
+                                     MTP head instead of 4, at a third of the KV
+                                     pool; "throughput" is 24 without speculation
+  FLASH_MEM_FRACTION=0.85            flash only: static memory fraction
+  PLE_RSS_BUDGET_GB=8                flash only: resident-set budget of the
+                                     N-gram table's mapping (0 disables the trim)
+  PLE_DIR=~/flashnext-ple            flash only: where the 47.7 GiB backing file
+                                     of the N-gram table lives
   CONTEXT_MODE=1m                    1,010,000-token context via YaRN static
                                      scaling, 27B targets only (README, "The 1M context mode")
   PROXY_PORT=30001                   keepalive proxy port (default: PORT+1)
-  SERVE_IMAGE=name:tag               local tag for the built 27B serving image
-  FLASH_SERVE_IMAGE=name:tag         local tag for the built Flash-Next serving image
+  OVERLAY_FLASH=1                    flash: serve the locally built overlay
+                                     image of v1.7 instead of the official one
+  OVERLAY_27B=0                      27B: serve the official base with no
+                                     overlay, which DROPS the mrope fix
+                                     (sglang#34446): image inputs go wrong
+  SERVE_IMAGE=ref                    serving image for the 27B lane
+  FLASH_SERVE_IMAGE=ref              serving image for the Flash-Next lane
   HF_CACHE=/path                     HuggingFace cache location (~28 GB for a 27B
-                                     target, ~136 GB for flash)
+                                     target, ~126 GB for flash)
   PORT=30000                         serving port
 HLP
       exit 0 ;;
@@ -162,7 +366,7 @@ done
 
 # ── Converge on the operator's installed choices ──
 # Re-running the installer (or the get.sh one-liner) must never silently reset
-# a choice that is already serving: the target model (any of the five targets),
+# a choice that is already serving: the target model (any of the seven targets),
 # the port, and the HF cache location are read from the installed units and
 # kept, unless the corresponding env var was passed explicitly on this
 # invocation. Everything else (image digest, checkpoint revisions, launch
@@ -222,15 +426,36 @@ if [ "$INSTALLED_CHOICE" = "flash" ]; then
       echo "      (working prefix caching; see CHANGELOG v1.5). Port/cache/model choices are kept."
     fi
     CUR_PLE="$(grep -oE -- '-v [^ :]+:/ple' "$FLASH_LAUNCH" | head -1 | sed -e 's/^-v //' -e 's|:/ple$||' || true)"
+    CUR_MODEL="$(grep -oE -- '--model-path [^ ]+' "$FLASH_LAUNCH" | head -1 | cut -d' ' -f2 || true)"
+    # The tier lives in the launcher as the concurrency it pins, so a re-run
+    # without FLASH_TIER keeps the tier the box is serving.
+    if [ -z "${FLASH_TIER_ENV:-}" ]; then
+      for t in concurrency throughput; do
+        case "$t" in
+          concurrency) mrr=8 ;;
+          throughput)  mrr=24 ;;
+        esac
+        if grep -q -- "--max-running-requests $mrr" "$FLASH_LAUNCH" 2>/dev/null; then
+          FLASH_TIER="$t"
+          echo "Keeping the installed flash tier: $t. Pass FLASH_TIER=context to change."
+        fi
+      done
+      resolve_flash_tier_args
+    fi
     if [ -z "${_ENV_PLE_DIR:-}" ] && [ -n "$CUR_PLE" ] && [ "$CUR_PLE" != "$PLE_DIR" ]; then
       PLE_DIR="$CUR_PLE"
       echo "Keeping the installed PLE table location: $PLE_DIR. Pass PLE_DIR= to change."
     fi
   fi
-  if [ -z "$_ENV_MODEL_CHOICE" ] && [ "$MODEL_CHOICE" != "flash" ]; then
+  if [ -z "$_ENV_MODEL_CHOICE" ] && [ "$LANE" != "flash" ]; then
     MODEL_CHOICE=flash; MODEL_REPO="$FLASH_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$FLASH_REV}"
+    if [ -n "${CUR_MODEL:-}" ] && [ "$CUR_MODEL" = "$FLASH_NVDA_REPO" ]; then
+      MODEL_CHOICE=flash-nvda; MODEL_REPO="$FLASH_NVDA_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$FLASH_NVDA_REV}"
+    elif [ -n "${CUR_MODEL:-}" ] && [ "$CUR_MODEL" = "$FLASH_UNC_REPO" ]; then
+      MODEL_CHOICE=flash-uncensored; MODEL_REPO="$FLASH_UNC_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$FLASH_UNC_REV}"
+    fi
     LANE=flash; UNIT_NAME="qwen38-flash.service"
-    echo "Keeping the installed target model: flash ($FLASH_REPO). Pass MODEL_CHOICE= to change."
+    echo "Keeping the installed target model: $MODEL_CHOICE ($MODEL_REPO). Pass MODEL_CHOICE= to change."
   fi
 elif [ "$INSTALLED_CHOICE" = "27b" ]; then
   UNIT_PATH="$SGL_UNIT_PATH"
@@ -267,7 +492,7 @@ if [ -n "$INSTALLED_CHOICE" ]; then
     HF_CACHE="$CUR_HF"
     echo "Keeping the installed HF cache location: $HF_CACHE. Pass HF_CACHE= to change."
   fi
-  if [ "$INSTALLED_CHOICE" = "27b" ] && [ "$MODEL_CHOICE" != "flash" ] \
+  if [ "$INSTALLED_CHOICE" = "27b" ] && [ "$LANE" != "flash" ] \
      && [ -z "$_ENV_CONTEXT_MODE" ] && grep -q -- '--context-length 1010000' "$SGL_UNIT_PATH"; then
     CONTEXT_MODE=1m
     echo "Keeping the installed context mode: 1m. Pass CONTEXT_MODE=native to change."
@@ -299,8 +524,8 @@ fi
 if [ "$NO_SERVICE" -eq 1 ] && [ "$CONTEXT_MODE" = "1m" ]; then
   printf -- 'CONTEXT_MODE=1m needs the systemd path (keepalive proxy service); ./run.sh serves the native config only.\nEither drop --no-service, or pass CONTEXT_MODE=native explicitly.\n' >&2; exit 1
 fi
-if [ "$NO_SERVICE" -eq 1 ] && [ "$MODEL_CHOICE" = "flash" ]; then
-  printf -- 'MODEL_CHOICE=flash is service-only in this release (the lane was validated as a systemd unit).\nDrop --no-service, or install one of the 27B targets for the foreground ./run.sh path.\n' >&2; exit 1
+if [ "$NO_SERVICE" -eq 1 ] && [ "$LANE" = "flash" ]; then
+  printf -- 'The flash targets are service-only in this release (the lane was validated as a systemd unit).\nDrop --no-service, or install one of the 27B targets for the foreground ./run.sh path.\n' >&2; exit 1
 fi
 
 step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
@@ -323,13 +548,14 @@ FREE_DISK_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
 # ~145 GB for Flash-Next (the NVFP4 checkpoint alone is ~136 GB and doubles as
 # the mmap-served PLE table). Upgrades with the big checkpoint already cached
 # only need working room.
-NEED_GB=45; DOCKER_NEED_GB=45; IMG_LABEL="39 GB Docker image"
-if [ "$MODEL_CHOICE" = "flash" ]; then
-  NEED_GB=195; DOCKER_NEED_GB=35; IMG_LABEL="30 GB Docker image"
+NEED_GB=45; DOCKER_NEED_GB=40; IMG_LABEL="39 GB Docker image"
+if [ "$LANE" = "flash" ]; then
+  NEED_GB=180; DOCKER_NEED_GB=35; IMG_LABEL="30 GB Docker image"
 fi
 ls -d "$HF_CACHE/hub/models--${MODEL_REPO//\//--}/snapshots/"*/ >/dev/null 2>&1 && NEED_GB=10
-if [ "$MODEL_CHOICE" = "flash" ] && ! ls "$PLE_DIR"/ple_table_*.bin >/dev/null 2>&1; then
-  # The ~48 GiB mmap backing file is written at first boot.
+if [ "$LANE" = "flash" ] && ! ls "$PLE_DIR"/ple_table_*.bin >/dev/null 2>&1; then
+  # The 47.7 GiB sparse backing file is written on every boot; the space has to
+  # be there whether or not a previous boot left one behind.
   NEED_GB=$((NEED_GB + 50))
 fi
 [ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free under \$HOME for the checkpoints and caches; found ${FREE_DISK_GB} GB. Free some space or set HF_CACHE to another disk."
@@ -359,8 +585,12 @@ echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
 
 if [ "$LANE" = "flash" ]; then
   step "2/9 Pulling the official SGLang Flash-Next image (~30 GB, one-time, resumable)"
-  docker pull "$FLASH_IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try FLASH_IMAGE=lmsysorg/sglang:qwen38flashnext ./install.sh"
-  PULLED_IMAGE="$FLASH_IMAGE"
+  # An OVERLAY_FLASH=1 install builds on the 2026-08-26 base, not on the image
+  # the lane serves by default, so it is that one that has to be here.
+  PULL_TARGET="$FLASH_IMAGE"
+  [ "$OVERLAY_FLASH" = "1" ] && PULL_TARGET="$OVERLAY_FLASH_BASE_IMAGE"
+  docker pull "$PULL_TARGET" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try FLASH_IMAGE=lmsysorg/sglang:dev-qwen38-next-local ./install.sh"
+  PULLED_IMAGE="$PULL_TARGET"
 else
   step "2/9 Pulling the SGLang image (~39 GB, one-time, resumable)"
   docker pull "$IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:qwen38-27b ./install.sh"
@@ -436,14 +666,57 @@ for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
 print("checkpoints ready", flush=True)
 PYEOF
 
-if [ "$LANE" = "flash" ]; then
-  step "5/9 Building the Flash-Next serving image (pinned base + 2 verified files + gate checks, offline, ~2 min)"
-  BASE_IMAGE="$FLASH_IMAGE" TAG="$FLASH_SERVE_IMAGE" "$REPO_DIR/flash-sglang/build-image.sh" \
-    || die "Flash overlay image build failed: see flash-sglang/ATTRIBUTION.md; the checksums and in-image checks run before tagging, so a failure means a corrupted checkout (git status) or an upstream image layout change."
+LANE_OVERLAY="$OVERLAY_27B"; [ "$LANE" = "flash" ] && LANE_OVERLAY="$OVERLAY_FLASH"
+if [ "$LANE_OVERLAY" != "1" ]; then
+  step "5/9 Serving image: the pinned official one, nothing to build"
+  echo "$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
+  if [ "$LANE" = flash ]; then
+    echo "OVERLAY_FLASH=1 ./install.sh rebuilds the local overlay image of v1.7 instead (the rollback)."
+  else
+    echo "WARNING: OVERLAY_27B=0 drops the mrope fix (sglang#34446): text is unaffected, image"
+    echo "         inputs are silently rotated wrong. See dflash2/ATTRIBUTION.md."
+  fi
+elif [ "$LANE" = "flash" ]; then
+  step "5/9 Building the Flash-Next overlay image (OVERLAY_FLASH=1: pinned base + verified files + gate checks, offline, ~2 min)"
+  BASE_IMAGE="$OVERLAY_FLASH_BASE_IMAGE" TAG="$FLASH_SERVE_IMAGE" "$REPO_DIR/flash-sglang/build-image.sh" \
+    || die "Flash overlay image build failed: see flash-sglang/ATTRIBUTION.md; the checksums and in-image checks run before tagging, so a failure means a corrupted checkout (git status) or an upstream image layout change. The overlay is the rollback path: the default install needs no build."
 else
-  step "5/9 Building the DFlash2 serving image (pinned base + 5 verified files, offline, ~1 min)"
+  step "5/9 Building the DFlash2 serving image (pinned base + 8 verified files, offline, ~1 min)"
   BASE_IMAGE="$IMAGE" TAG="$SERVE_IMAGE" "$REPO_DIR/dflash2/build-image.sh" \
     || die "DFlash2 image build failed: see dflash2/ATTRIBUTION.md; the checksums are verified before building, so a mismatch means a corrupted checkout (git status)."
+fi
+
+# The reduced draft vocabulary. Built inside the serving image, so the tokenizer
+# that ranks the ids is the one the served model ships, not whatever the host has
+# (the host has no transformers at all). Corpus-free by default: the ranking
+# falls back to the tokenizer's own construction order, which is a frequency
+# ranking learned over the tokenizer's training corpus. Drop a corpus.jsonl in
+# the config directory (one JSON object per line with a "text" field, ideally the
+# model's own output) and it is used as the primary ranking instead, which is
+# what the model's drafter actually has to predict.
+if [ "$LANE" = "flash" ] && [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ]; then
+  if [ -s "$CONFIG_DIR/$TOKEN_MAP_NAME" ]; then
+    echo "reduced draft vocabulary already built: $CONFIG_DIR/$TOKEN_MAP_NAME"
+  else
+    echo "building the reduced draft vocabulary ($SPEC_TOKEN_MAP_SIZE ids, ~30 s)"
+    SNAP_DIR="$(ls -d "$HF_CACHE/hub/models--${MODEL_REPO//\//--}/snapshots/$MODEL_REV" 2>/dev/null || true)"
+    if [ -z "$SNAP_DIR" ]; then
+      echo "NOTE: no snapshot at the pinned revision yet; the draft vocabulary is skipped this run."
+      echo "      Re-run ./install.sh after the checkpoint is in place to build and serve it."
+    else
+      MAP_CORPUS=""
+      [ -s "$CONFIG_DIR/corpus.jsonl" ] && MAP_CORPUS="--corpus /out/corpus.jsonl"
+      docker run --rm --entrypoint python3 \
+        -v "$HF_CACHE":/root/.cache/huggingface \
+        -v "$CONFIG_DIR":/out \
+        -v "$REPO_DIR":/repo:ro \
+        "$([ "$OVERLAY_FLASH" = "1" ] && echo "$FLASH_SERVE_IMAGE" || echo "$FLASH_IMAGE")" \
+        /repo/build-token-map.py \
+          --snapshot "/root/.cache/huggingface/hub/models--${MODEL_REPO//\//--}/snapshots/$MODEL_REV" \
+          --out "/out/$TOKEN_MAP_NAME" --size "$SPEC_TOKEN_MAP_SIZE" $MAP_CORPUS \
+        || die "building the reduced draft vocabulary failed. It is an optimization, not a requirement: re-run with SPEC_TOKEN_MAP_SIZE=0 to serve without it, and please open an issue with the output above."
+    fi
+  fi
 fi
 
 step "6/9 API key + patched chat template"
@@ -503,24 +776,19 @@ step "7/9 opencode provider config + oc launcher"
 # buffers tool-call arguments at any context length and agent CLIs abort
 # silent streams. --no-service has no proxy: direct server port for ./run.sh.
 # The key is referenced via {file:...}: no secret in the file.
-# opencode limits per context mode
+# opencode limits per context mode: one table, in oc-limits.sh, because
+# switch-model.sh has to write the same numbers and a second copy is how the two
+# drift. See that script for why the numbers matter (a limit above what the lane
+# serves turns a compaction into a 400 mid-session).
 if [ "${LANE:-27b}" = "flash" ]; then
-  OC_CTX=110000; OC_OUT=32000;  OC_LABEL="local"   # 110000+32000 = 142000 <= the 159,552-token KV pool (v1.5.2: one giant context at a time)
-elif [ "$CONTEXT_MODE" = "1m" ]; then
-  case "${MODEL_CHOICE:-}" in
-    fp8|uncensored-fp8)
-      # FP8 weights cost about 92,000 tokens of KV pool (measured, same 1m unit:
-      # 863,398 on NVFP4, 771,139 on FP8), and the NVFP4 numbers do not transfer:
-      # 680000 compaction + 200000 output is an 880,000 worst case against a
-      # 771,139 pool. These are what oc-fit-limits.py derived from the live FP8
-      # engine on the reference box; run it after a boot to fit yours exactly.
-      OC_CTX=480000; OC_OUT=160000; OC_LABEL="local, 1M" ;;
-    *)
-      OC_CTX=700000; OC_OUT=200000; OC_LABEL="local, 1M" ;;
-  esac
+  OC_SELECTOR="$FLASH_TIER"
 else
-  OC_CTX=194048; OC_OUT=64000;  OC_LABEL="local"
+  OC_SELECTOR="$CONTEXT_MODE"
 fi
+read -r OC_CTX OC_OUT OC_LABEL <<<"$("$REPO_DIR/oc-limits.sh" "$MODEL_CHOICE" "$OC_SELECTOR")" \
+  || die "oc-limits.sh refused MODEL_CHOICE=$MODEL_CHOICE with $OC_SELECTOR (repo bug: please open an issue)"
+[ -n "${OC_CTX:-}" ] && [ -n "${OC_OUT:-}" ] \
+  || die "oc-limits.sh returned no limits for $MODEL_CHOICE/$OC_SELECTOR"
 OC_PORT="$PROXY_PORT"
 [ "${NO_SERVICE:-0}" -eq 1 ] && OC_PORT="$PORT"
 # end oc mode
@@ -687,6 +955,27 @@ case "$MODEL_CHOICE" in
   *)                  KV_CACHE_ARGS="" ;;
 esac
 
+# The reduced draft vocabulary is a speculative-path flag: a tier that does not
+# speculate must not receive it. Rendered as a whole line so an off setting
+# leaves no dangling backslash in the launcher.
+SPEC_TOKEN_MAP_LINE=""
+case "$FLASH_TIER_ARGS" in
+  *--speculative-algorithm*)
+    if [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ] && [ -s "$CONFIG_DIR/$TOKEN_MAP_NAME" ]; then
+      SPEC_TOKEN_MAP_LINE="TIER+=(--speculative-token-map /out/$TOKEN_MAP_NAME)"
+    fi ;;
+esac
+
+# Whatever the convergence block decided, the per-checkpoint and per-tier args
+# are derived from it here, once, before anything is rendered.
+resolve_flash_checkpoint_args
+resolve_flash_tier_args
+# And a flash launcher without its checkpoint's own flags is a ten-minute boot
+# that dies at MoE autotune, so it never gets written.
+if [ "$LANE" = "flash" ] && [ -z "$FLASH_QUANT_ARGS" ]; then
+  die "internal error: the flash lane resolved no checkpoint flags for MODEL_CHOICE=$MODEL_CHOICE. Refusing to write a launcher that would fail ten minutes into its boot. Please open an issue with this line."
+fi
+
 render_tpl() {  # $1 template file; substituted result on stdout
   sed -e "s|__HOME__|$HOME|g" \
       -e "s|__USER__|$(id -un)|g" \
@@ -700,6 +989,11 @@ render_tpl() {  # $1 template file; substituted result on stdout
       -e "s|__PLE_DIR__|$PLE_DIR|g" \
       -e "s|__MODEL_REV__|$MODEL_REV|g" \
       -e "s|__KV_CACHE_ARGS__|$KV_CACHE_ARGS|g" \
+      -e "s|__FLASH_TIER_ARGS__|$FLASH_TIER_ARGS|g" \
+      -e "s|__FLASH_QUANT_ARGS__|$FLASH_QUANT_ARGS|g" \
+      -e "s|__FLASH_MEM_FRACTION__|$FLASH_MEM_FRACTION|g" \
+      -e "s|__PLE_RSS_BUDGET_GB__|$PLE_RSS_BUDGET_GB|g" \
+      -e "s|__SPEC_TOKEN_MAP_LINE__|$SPEC_TOKEN_MAP_LINE|g" \
       "$1"
 }
 if [ "$LANE" = "flash" ]; then
@@ -730,12 +1024,22 @@ if [ -n "$OTHER_UNIT" ] && systemctl is-enabled --quiet "$OTHER_UNIT" 2>/dev/nul
   sudo systemctl disable "$OTHER_UNIT"
 fi
 KEEPALIVE_UNIT="qwen38-keepalive.service"
-# One-prompt ceiling enforced by the proxy (tokens; 0 = pool share only). Flash lane: the
-# prefill of a long prompt grows the engine's memory by ~0.27 GiB per 1k tokens beyond ~90k
-# on a 128 GB box (measured 29/08: 135k served clean, GPU driver allocation refusals from
-# ~150k, two identical 150k runs 2 GiB apart). 128k keeps a margin for that variance.
+# One-prompt ceiling enforced by the proxy (tokens; 0 = pool share only). The proxy
+# always refuses a prompt above its share of the KV pool as well, so the smaller of
+# the two binds and a tier with a small pool needs no separate ceiling.
+#
+# Flash lane, 128,000 from v1.5.6 to v1.7: the prefill of a long prompt grew the
+# engine's memory by ~0.27 GiB per 1k tokens beyond ~90k (measured 29/08, a 120k
+# prompt cost ~9 GiB of host headroom), which put a 150k prompt at the memory edge.
+# That growth was the PLE table's mapping faulting in whole page-cache folios, and
+# v1.8 serves an engine that trims it: measured on the reference box at the context
+# tier, a 120k prompt now takes 0.0-0.1 GiB of headroom (3 trials, needle 3/3) and a
+# 200,058-token prompt takes 3.5 GiB and retrieves exactly, leaving 12.6 GiB free
+# against the ~10 GiB livelock edge. So the ceiling is 200,000. Above that is
+# deliberately unmeasured here: 262k would land near that edge, and on this box a
+# livelock costs a power cycle.
 PROMPT_CEILING=0
-[ "$LANE" = "flash" ] && PROMPT_CEILING="${PROMPT_CEILING_TOKENS:-128000}"
+[ "$LANE" = "flash" ] && PROMPT_CEILING="${PROMPT_CEILING_TOKENS:-200000}"
 # Every service install gets the keepalive proxy: SGLang buffers tool-call
 # arguments while they stream (127 s of measured silence on a 400-line write,
 # at native context) and agent CLIs abort a silent stream (~140-180 s for
@@ -773,7 +1077,7 @@ if [ "$NO_START" -eq 1 ]; then
 fi
 
 if [ "$LANE" = "flash" ]; then
-  step "9/9 Starting (first boot ≈ 15 min: weight load writes the 48 GiB PLE file, then CUDA graph capture; later boots ≈ 10 min)"
+  step "9/9 Starting (every boot ≈ 12-15 min: the weight load writes the whole 47.7 GiB PLE table into its file, then CUDA graph capture)"
 else
   step "9/9 Starting (first boot ≈ 9 min: torch.compile + CUDA graph capture; later boots are faster)"
 fi
@@ -814,13 +1118,30 @@ except Exception as e:
       done
     fi
     while IFS= read -r tagref; do
+      # Never offer to delete what is being served, nor either overlay tag: since
+      # v1.8 the flash overlay image IS the rollback for that lane, and the 27B
+      # overlay image is what that lane serves.
       [ -n "$tagref" ] && [ "$tagref" != "$SERVE_IMAGE" ] && [ "$tagref" != "$FLASH_SERVE_IMAGE" ] \
+        && [ "$tagref" != "$OVERLAY_SERVE_IMAGE" ] && [ "$tagref" != "$OVERLAY_FLASH_SERVE_IMAGE" ] \
         && case "$LEFTOVER_NOTES" in *"'$tagref'"*) ;; *) LEFTOVER_NOTES="${LEFTOVER_NOTES}      docker rmi '$tagref'\n" ;; esac
     done < <({ docker images --format '{{.Repository}}:{{.Tag}}' qwen38-dflash2 2>/dev/null; docker images --format '{{.Repository}}:{{.Tag}}' qwen38-flash 2>/dev/null; } || true)
     if [ -n "$LEFTOVER_NOTES" ]; then
       echo "  Note: earlier versions of this repo left superseded images; reclaim when you like:"
       printf '%b' "$LEFTOVER_NOTES"
       echo "      (full inventory anytime: ./uninstall.sh --list)"
+    fi
+    if [ "$LANE" = "flash" ] && [ "$OVERLAY_FLASH" != "1" ] \
+       && docker image inspect "$OVERLAY_FLASH_SERVE_IMAGE" >/dev/null 2>&1; then
+      echo "  Note: $OVERLAY_FLASH_SERVE_IMAGE is kept as this lane's rollback (OVERLAY_FLASH=1 ./install.sh)."
+    fi
+    # The cockpit imports this repo's python once, at start. An update that
+    # leaves it running serves the new html from disk against the old python in
+    # memory, which on 2026-09-08 meant the switch selector offered a target the
+    # action layer refused. If it is installed and running, it gets restarted.
+    if systemctl is-active --quiet qwen38-dashboard.service 2>/dev/null; then
+      echo "restarting the cockpit so it picks up this repo's code (it imports it at start)"
+      sudo systemctl restart qwen38-dashboard.service \
+        || echo "  NOTE: could not restart it; do it by hand or its controls and its checks disagree"
     fi
     printf '\n\033[1;32m✅ Installed, verified, and enabled at boot.\033[0m\n'
     echo "  OpenAI     : http://<host>:$PORT/v1/chat/completions"

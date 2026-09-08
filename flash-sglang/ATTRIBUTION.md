@@ -172,3 +172,67 @@ measurement rather than ours.
 
 The 2026-08-28 Triton kernel stays in the tree as the fallback the route calls,
 exactly as upstream's own adopter keeps it.
+
+## v1.8 (2026-09-08): the overlay is retired, upstream serves this box
+
+Everything in this directory is now in an official image, and the flash lane
+serves that image directly. `install.sh` builds nothing unless you ask for the
+old path with `OVERLAY_FLASH=1`, which is kept working and CI-checked as the
+rollback. The 27B lane still builds its own overlay: see dflash2/ATTRIBUTION.md
+for the one fix that is not upstream in an image built for this hardware.
+
+What replaced what, all of it merged into SGLang's `qwen4-main-squashed` branch
+and shipped in `lmsysorg/sglang:dev-qwen38-next-local` (`4ccff141db`), the image
+the cookbook itself points DGX Spark at:
+
+| this directory | upstream |
+|---|---|
+| `qwen4_exp.py` patch 1, the PLE table as a file-backed mmap under `SGLANG_QWEN4_PLE_MMAP_DIR` | [#37068](https://github.com/sgl-project/sglang/pull/37068), `--ple-offload-backend file` with `--ple-offload-dir`, and three things the vendored patch never had: `MADV_RANDOM` (which the patch did carry), a `posix_fadvise(WILLNEED)` prefetcher for prefill-sized gathers, and a resident-set trimmer |
+| `kda_kernels/` and the `qsa_sm121_kda` route in `qwen_sparse_attn_backend.py` | [#36845](https://github.com/sgl-project/sglang/pull/36845), merged 2026-08-30; the package lives at `sglang/kernels/kda_kernels/qwen38_qsa_sm121/` and the upstream backend routes sm_121 to it. Verified in the image: no `sm121_varlen.py` at the old path, and `qwen_sparse_attn_backend.py` names the kernel |
+| `sm121_varlen.py`, the 2026-08-28 Triton revision kept as the fallback | same PR: it is the fallback inside the merged package's contract |
+| the proxy's detector for a wall of `!` (v1.6.11), which is a symptom, not a fix | [#36811](https://github.com/sgl-project/sglang/pull/36811) via [#38308](https://github.com/sgl-project/sglang/pull/38308) and [#38290](https://github.com/sgl-project/sglang/pull/38290): a zero-bias allocation in the fused softmax routing kernel, which is what collapsed every running MTP request to token id 0 at the same instant on GB10 ([#37111](https://github.com/sgl-project/sglang/issues/37111)). The proxy keeps its detector as a backstop |
+
+The **resident-set trimmer** is the part worth reading twice, because it is the
+mechanism behind this repo's own pool lottery (v1.6.2, `--max-total-tokens
+190000`). A row fault maps in a whole page-cache folio, so the mapping's RSS
+climbs towards the full 47.7 GiB while a token reads a few KB of it; on unified
+memory that is the same pool SGLang sizes the KV cache from.
+`SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB` (default 8) drops the page-table entries
+in 1 GiB slices while the pages stay in the page cache. Observed on this box at
+first boot: `PLE table: trimmed resident set 10.6 -> 0.2 GiB (budget 8.0 GiB)`.
+
+Two things about the file-backed table changed the launcher:
+
+- The server **rewrites the whole table on every boot**. On a fresh sparse file
+  it fills at GB/s; over a populated one it is a read-modify-write per 4 KiB
+  page with readahead disabled, ~17 MB/s, ~55 minutes. So the launcher deletes
+  the previous `ple_table_*.bin` before every boot, which also retires the
+  poisoned-table guard: a table written from scratch cannot be half-written
+  from a previous boot.
+- The file name now encodes shape, dtype, size and the rank's vocabulary range
+  (`ple_table_320001536x160_float8_e4m3fn_51200245760B_rows0-320001536.bin`),
+  so a tensor-parallel shard can never read another rank's rows.
+
+Why the serving flags changed, and why some of ours did not survive:
+
+- `--prefill-attention-backend triton --decode-attention-backend trtllm_mha` is
+  **gone**. It existed because the QSA sparse-decode resolver rejected sm_121 and
+  sent decode to a kernel that does not compile there; the merged kernel owns
+  that route now and the cookbook's verified cells pass no attention backend at
+  all. The engine logs what it picked (`Attention backend not specified. Use
+  flashinfer backend by default.`) and the sm_121 QSA route is inside it.
+- `--page-size 64`, `--fp4-gemm-backend flashinfer_cutlass` and
+  `--chunked-prefill-size 4096` are the cookbook's values. The page size is not
+  really a choice: the engine sets 64 for compressed QSA by itself and says so.
+- `--max-mamba-cache-size` is new and it is not optional. The hybrid GDN/QSA
+  model reserves state slots per running request (5 with `extra_buffer`, 4 with
+  `extra_buffer_lazy`) and the scheduler silently caps `--max-running-requests`
+  to what the mamba pool admits, while `/get_server_info` still reports the
+  value you asked for. Requests x slots is what makes a tier deliver the
+  concurrency it advertises.
+- `--max-running-requests` went from **1 to 8**. One was a memory decision taken
+  when the table was pinned in the same pool as the weights; with the table out
+  of memory entirely there is room for the cookbook's pins.
+- `--max-total-tokens 190000` is **gone**: it pinned the pool against the
+  lottery the trimmer now removes, and at 8 running requests the pool is smaller
+  than that pin by construction.

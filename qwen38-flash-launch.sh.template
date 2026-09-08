@@ -2,42 +2,38 @@
 # Launch script for qwen38-flash.service, rendered by install.sh (a plain file
 # so no systemd-vs-bash double escaping can ever corrupt an argument;
 # regenerated on every install; the serve revision is refreshed by switch-model.sh).
-# Engine since v1.5: SGLang (same engine as the 27B pair), with the two-file
-# overlay that mmaps the 51B PLE table from NVMe and unblocks QSA decode on
-# sm_121. Every serving flag here is validated on the reference box; see
-# flash-sglang/ATTRIBUTION.md for why each GB10-specific one exists.
+#
+# Engine since v1.8: the OFFICIAL SGLang image for this hardware, with no local
+# overlay. Everything the overlay used to add is upstream now, and the flags
+# below are the cookbook's verified single-DGX-Spark cell
+# (docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-Flash-Next, "DGX Spark
+# notes"), plus this repo's serving surface (api key, patched template, tool
+# and reasoning parsers). See flash-sglang/ATTRIBUTION.md for what each
+# upstream PR replaced.
 set -euo pipefail
 
-# Poisoned-table guard. The 48 GiB PLE mmap backing file is written during
-# boot; a boot interrupted mid-write leaves a stale table that wedges every
-# later boot in a silent scheduler spin (root-caused live: regenerating the
-# table fixed it in one boot). Protocol: a .loading marker is set here and
-# removed by a detached waiter once /health answers; finding it at launch
-# means the previous boot never got there, so the table is wiped and rebuilt
-# (costs one longer boot, ~11 min, instead of a wedged lane).
+# The 47.7 GiB FP8 N-gram (PLE) table lives in a sparse file on the local NVMe
+# and the gather kernel reads its rows through the host page tables
+# (--ple-offload-backend file, sglang#37068). GB10 is the hardware that makes
+# this possible: it reports cudaDevAttrPageableMemoryAccessUsesHostPageTables.
+#
+# The server rewrites the whole table on every boot. On a fresh sparse file it
+# fills at GB/s and the boot takes ~10 min; on an already-populated file the
+# same write is a read-modify-write per 4 KiB page with readahead disabled
+# (MADV_RANDOM), which upstream measures at ~17 MB/s, so ~55 minutes. Until
+# that is fixed upstream the previous table goes before every boot. This also
+# retires the poisoned-table guard of v1.5-v1.7: a table written from scratch
+# every boot cannot be half-written from a previous one.
 PLE_DIR=__PLE_DIR__
-if [ -f "$PLE_DIR/.loading" ]; then
-  echo "qwen38-flash: previous boot never reached health; rebuilding the PLE table"
-  rm -f "$PLE_DIR"/ple_table_*
-fi
-touch "$PLE_DIR/.loading"
-(
-  for _ in $(seq 1 270); do
-    sleep 10
-    if curl -s -m 3 "http://127.0.0.1:__PORT__/health" >/dev/null 2>&1; then
-      rm -f "$PLE_DIR/.loading"
-      exit 0
-    fi
-  done
-) </dev/null >/dev/null 2>&1 &
+mkdir -p "$PLE_DIR"
+rm -f "$PLE_DIR"/ple_table_*.bin "$PLE_DIR"/ple_table_*.bin.complete
 
 # Memory pre-flight. On this integrated GPU, SGLang sizes the KV pool from the
 # host's MemAvailable at the moment it profiles, so anything else holding memory
-# right then shrinks the pool for the life of the boot: two boots of this same
-# launcher and image measured 189,056 and 249,408 tokens on 2026-09-03. The pool
-# pin in the server flags below makes the result the same on every boot that has
-# the memory; this loop keeps a busy box (a build, a bench, a lane still exiting)
-# from starting one that does not. Bounded: it never blocks a boot.
+# right then shrinks the pool for the life of the boot: two boots of the same
+# launcher and image measured 189,056 and 249,408 tokens on 2026-09-03. This
+# loop keeps a busy box (a build, a bench, a lane still exiting) from starting
+# one that comes up short. Bounded: it never blocks a boot.
 MEM_FLOOR_GIB="${QWEN38_FLASH_MEM_FLOOR_GIB:-96}"
 floor_kib=$((MEM_FLOOR_GIB * 1024 * 1024))
 avail_kib() { awk '/MemAvailable/{print $2}' /proc/meminfo; }
@@ -51,38 +47,42 @@ a=$(avail_kib)
 if [ "$a" -ge "$floor_kib" ]; then
   echo "qwen38-flash: host MemAvailable at launch $((a / 1048576)) GiB"
 else
-  echo "qwen38-flash: starting anyway after 180 s with $((a / 1048576)) GiB available; the KV pool may come up short of its pin"
+  echo "qwen38-flash: starting anyway after 180 s with $((a / 1048576)) GiB available; the KV pool may come up short"
 fi
+
+# Serving tier, pinned at install time by FLASH_TIER (latency | throughput) and
+# switchable by re-running install.sh. Both are cookbook-verified cells for one
+# GB10; the mamba pool is what sets the ceiling, at 5 state slots per running
+# request with extra_buffer and 4 with extra_buffer_lazy, so --max-mamba-cache-size
+# is requests x slots and the scheduler silently caps concurrency to what it admits.
+TIER=(__FLASH_TIER_ARGS__)
+
+# Reduced draft vocabulary, when install.sh built one and the tier speculates.
+# The draft gets the target's lm_head sliced to these rows; the target still
+# verifies over the whole vocabulary, so this changes speed, never output.
+__SPEC_TOKEN_MAP_LINE__
 
 exec /usr/bin/docker run --rm --name qwen38-flash --gpus all \
   --memory 110g --memory-swap 110g --shm-size 16g --network host --ipc=host \
   -v __HF_CACHE__:/root/.cache/huggingface \
   -v __HOME__/.config/qwen38:/out \
   -v __PLE_DIR__:/ple \
-  -e SGLANG_QWEN4_PLE_MMAP_DIR=/ple \
   -e SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1 \
-  -e SGLANG_QWEN4_PLE_TAG=__MODEL_REV__ \
+  -e SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB=__PLE_RSS_BUDGET_GB__ \
+  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e HF_HUB_OFFLINE=1 \
   __IMAGE__ \
   python3 -m sglang.launch_server \
     --model-path __MODEL__ __MODEL_REV_ARGS__ --tp-size 1 \
     --served-model-name qwen3.8-flash-next \
-    --quantization modelopt_fp4 \
-    --prefill-attention-backend triton \
-    --decode-attention-backend trtllm_mha \
-    --ple-offload-embedding \
-    --mamba-radix-cache-strategy extra_buffer \
-    --mem-fraction-static 0.81 \
+    __FLASH_QUANT_ARGS__--fp4-gemm-backend flashinfer_cutlass \
+    --page-size 64 \
+    --ple-offload-embedding --ple-offload-backend file --ple-offload-dir /ple \
+    --mem-fraction-static __FLASH_MEM_FRACTION__ \
     --context-length 262144 \
-    --chunked-prefill-size 1024 \
-    --max-running-requests 1 \
-    --max-total-tokens 190000 \
+    --chunked-prefill-size 4096 \
     --allow-auto-truncate \
-    --speculative-algorithm NEXTN \
-    --speculative-num-steps 3 \
-    --speculative-eagle-topk 1 \
-    --speculative-num-draft-tokens 4 \
-    --speculative-draft-model-quantization unquant \
+    "${TIER[@]}" \
     --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
     --chat-template /out/chat-template-flashnext.jinja \
     --api-key "$(cat __HOME__/.config/qwen38/api-key)" \

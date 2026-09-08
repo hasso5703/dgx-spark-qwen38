@@ -170,6 +170,155 @@ DFlash2 runs, 30 minutes apart, show the noise floor of single cells (code EN
 DFlash2 stays this repo's 27B drafter, which also keeps the prompt-injection
 resistance scenario it won in the tool-eval reproduction (issue #6).
 
+## The flash target on the official image (v1.8), measured (2026-09-08)
+
+Serving config: `lmsysorg/sglang:dev-qwen38-next-local` (`qwen4-main-squashed`
+`4ccff141db`) with nothing added, NVFP4, NEXTN 3/1/4, 262,144 context,
+mem-fraction 0.85, page size 64, chunked prefill 4096, radix cache
+`extra_buffer`, 4 running requests, the N-gram table file-backed on NVMe with
+its resident set capped at 8 GiB.
+
+**Protocol.** Every decode number below is the median of three repeats after a
+discarded warm-up, on the same three prompts. The warm-up matters more than it
+sounds: the first request after a boot measured 23.8 tok/s on code where the next
+three measured 40.0, 39.6 and 39.8, and on another boot 28.6 against 47.9, 47.2
+and 48.1. A single post-boot run is not a measurement, and two figures published
+earlier in this file's history were exactly that. Discard the first **batch**,
+not the first request: right after one boot here a whole three-prompt batch came
+in at 38.8 / 39.1 / 24.8 and the three batches after it at 47.7-49.1 / 47.6-48.2
+/ 30.2-31.4, which is the difference between reporting this lane at its speed and
+reporting it at two thirds of it.
+
+### The reduced draft vocabulary, A/B on one boot each
+
+The only difference between the two columns is `--speculative-token-map`, one
+line in the launcher. Both boots verified from the server's own args
+(`speculative_token_map=None` against `'/out/token-map-65536.pt'`).
+
+| probe | without | with | change |
+|---|---|---|---|
+| decode, code | 39.8 tok/s | **47.9** | **+20.4%** |
+| decode, math | 39.0 | **47.1** | **+20.8%** |
+| decode, prose FR | 27.2 | **30.9** | **+13.6%** |
+| decode, prose EN | 23.4 | **29.3** | **+25.2%** |
+| 4 streams, aggregate | 68.2 | **71.6** | +5.0% |
+| agent loop, median | 30.3 ms/tok | **27.0** | **-10.9%** |
+| KV pool | 463,488 tokens | 454,016 | equal inside the boot spread |
+
+Why it works, and why it is free: a speculative step's draft reads the model's
+`lm_head` in full, and at 248,320 x 2560 in BF16 that is 1.18 GiB read three
+times in an MTP-3 engine step. `--speculative-token-map` hands the draft the
+target's head sliced to 65,536 rows (0.31 GiB), so 2.6 GiB leave every step, and
+decode here is close enough to the memory-bandwidth wall that removed bytes
+convert almost one for one into time. The target still verifies every drafted
+token over the whole vocabulary, so **the reachable outputs do not change**: a
+token the draft can no longer propose is a draft that would have been rejected,
+not a wrong answer. Measured alongside: acceptance unchanged (2.15-2.65 per
+step, and rows up to 3.90 on predictable text), needle 2/2 exact at 120K,
+quality canaries 4/4, prefix caching x5.2. The map is built by
+`build-token-map.py` inside the serving image, so its tokenizer is the served
+model's; corpus coverage on this box's own output was 100.000% of 24,146
+occurrences.
+
+Two independent single-Spark projects reached the same lever by patching vLLM
+(MiaAI Lab's `MTP_DRAFT_VOCAB`, tonyd2wild's "reduced-vocabulary MTP draft"),
+both reporting about +25%. On SGLang it is a flag: `NEXTN` resolves to `EAGLE`
+(`speculative_hook.py`), `EAGLEWorkerV2.init_lm_head` slices the shared head,
+and the proposal path maps the draft's local ids back with
+`topk_index = hot_token_id[topk_index]`.
+
+### Where that puts this lane against the published single-Spark stacks
+
+Same hardware, one GB10, all with the reduced draft vocabulary. Theirs are vLLM
+with local patches; this column is SGLang with none, and with prefix caching on.
+
+| | tonyd2wild (vLLM) | this lane (SGLang) |
+|---|---|---|
+| code | 44.3 tok/s | **47.9** |
+| math / logic | 45.6 | **47.1** |
+| prose | 29.0 | 30.9 FR, 29.3 EN |
+| median of their 40-prompt set | 43.9 | not run here (their harness) |
+| prefix caching | off in their config | **on** |
+
+MiaAI Lab's widely quoted "46-48 tok/s prose, single stream" is not this number:
+their prose probe is far more predictable than a real prompt set, and their own
+count-to-100 ceiling is 49.4. Their "1M" is the **KV pool in tokens**, not the
+window: their README states plainly that a 1M context has never been run on
+their host, and their validated ceiling is 524,288.
+
+### The agent loop, which no published figure covers for SGLang
+
+`./bench-agent.py`: a growing conversation on a shared prefix, one short answer
+per turn, **work pinned** at 130 tokens (`ignore_eos`) so ms/tok compares engines
+and not answer lengths. This is the shape an agent client has, and it is the one
+none of this repo's other numbers measure.
+
+| | 8 turns, 8K prefix | 6 turns, 24K prefix |
+|---|---|---|
+| cold turn | 63.4 ms/tok, TTFT 4.65 s | 354.6 ms/tok, TTFT 8.70 s |
+| **loop median** | **27.0 ms/tok** | **40.6** (unpinned run) |
+| TTFT in the loop | 0.31-0.34 s | 0.30-0.35 s |
+| **TTFT per 1,000 added prompt tokens** | **-1 ms** | **+0 ms** |
+
+The last row is the one that matters. A prefix cache that is being reused keeps
+it near zero: the added tokens are the only ones prefilled. On vLLM a third
+party measured the opposite and the consequence of it: MTP had the best decode
+on their box (38.6-40.6 tok/s) and the **worst** agent loop, 47.8 ms/tok against
+43.4 with no speculation at all and 33.3 with an n-gram drafter, because vLLM's
+scheduler drops one cacheable block per request when a drafter is configured, so
+every turn re-prefills what it just cached (jschmied,
+`notes/which-drafter-for-agent-work.md` and `notes/mtp-vs-prefix-cache.md`,
+2026-08-31, work pinned the same way). This lane does not pay that: 27.0 ms/tok
+with MTP on, flat TTFT, and the same numbers on a 24K prefix.
+
+### The abliterated flash target, validated on this box
+
+`flash-uncensored` (`dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4`) was
+switched to with `./switch-model.sh flash-uncensored`, booted from the installed
+unit and measured with the same probes:
+
+| probe | measured |
+|---|---|
+| boot to `/health` | 10 min 40 s |
+| KV pool | **473,664 tokens** (above the stock export's 454,016 on that pair of boots) |
+| decode, code / math / prose FR | 45.4-46.4 / 43.7-46.6 / 27.3-27.7 tok/s (2 repeats after a warm-up) |
+| **refusals** | **0 of 5** deliberately blunt probes, which is the point of the variant |
+| quality canaries | 4/4 |
+| needle at ~120K | **1/1 exact**, host memory floor 14.7 GiB |
+| prefix caching, 27K re-serve | 13.0 s cold, 2.2 s cached (x5.9) |
+| agent loop, 6 turns on 8K | median 55.1 ms/tok unpinned, TTFT flat (-2 ms per 1k) |
+
+### NVIDIA's export, measured then evicted
+
+`flash-nvda` (`nvidia/Qwen3.8-Flash-Next-NVFP4`) was booted from the installed
+unit and measured at the same protocol: code 47.9 / 47.2 / 48.1, math 47.1 /
+47.9 / 47.6, prose FR 30.6 / 29.8 / 31.9, canaries 4/4, KV pool 388,672. So it
+**ties the RadixArk export inside the spread** and its pool came out smaller,
+which is worth stating because the cookbook's own comparison (174K against 93K
+with MTP) is what makes it look attractive: that advantage comes from its
+smaller fp8 draft, and the reduced draft vocabulary removes the disadvantage it
+was measured against. The 124 GiB checkpoint was then deleted for disk;
+`./switch-model.sh flash-nvda` downloads it again.
+
+Correctness and long context on the default target, `context` tier:
+
+| probe | measured |
+|---|---|
+| prefix caching, 27K identical re-serve | **11.8 s -> 2.1 s (x5.8)**, 27,008 of 27,026 tokens from the cache |
+| needle at ~120K, fresh passphrase, 2 trials | **2/2 exact**, 56 s each, host memory floor 14.7 GiB |
+| needle at 200,058 tokens, fresh passphrase | **1/1 exact**, 102.3 s, floor 12.6 GiB |
+| quality canaries (merge, logic, French, primes) | **4/4** |
+| runs of token id 0 | none, in any probe above |
+| cold prefill | ~2,250 tok/s at 27K, ~1,960 tok/s at 200K |
+| upstream, same cells, GSM8K full 1,319 questions | 97.1% (8 requests, MTP), 97.3% (24, no speculation) |
+
+The memory column is the release's real headline. On the v1.6 lane a 120K prompt
+cost about 9 GiB of host headroom, which is what forced a 128K one-prompt
+ceiling; the same prompt now costs 0.0-1.3 GiB, because the resident set of the
+N-gram table's mapping is trimmed instead of climbing towards 47.7 GiB. That is
+what makes a 200K prompt a measurement rather than a risk, and why the ceiling
+moved to 200,000.
+
 ## The flash target on SGLang (v1.5), measured (2026-08-28)
 
 Same box, same two-call instrument. Serving config: official SGLang image +

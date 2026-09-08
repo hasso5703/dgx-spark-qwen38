@@ -18,6 +18,8 @@ PIN_MODELS = {
     "FP8_REV": "Qwen/Qwen3.8-27B-FP8",
     "UNCFP8_REV": "edp1096/Huihui-Qwen3.8-27B-abliterated-FP8",
     "FLASH_REV": "RadixArk/Qwen3.8-Flash-Next-NVFP4",
+    "FLASH_NVDA_REV": "nvidia/Qwen3.8-Flash-Next-NVFP4",
+    "FLASH_UNC_REV": "dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4",
     "DRAFT_REV": "RadixArk/Qwen3.8-27B-DSpark",
     "DRAFT2_REV": "z-lab/Qwen3.8-27B-DFlash2",
 }
@@ -36,13 +38,25 @@ def parse_pins(text: str) -> dict[str, str]:
 
 
 def parse_docker_images(lines: list[str]) -> list[dict]:
-    """'repo:tag size id' rows -> engine-stack images, tagged as ours."""
+    """'ref size id' rows -> engine-stack images, tagged as ours.
+
+    The caller feeds BOTH shapes docker can print: repo:tag and repo@digest. An
+    image pulled by digest has no tag at all, so `{{.Repository}}:{{.Tag}}`
+    prints `<none>:<none>` for it and a digest-pinned recipe could never match
+    what is on the box: the cockpit said "image missing" about the very image
+    the lane was running (2026-09-08, when the flash lane moved to a digest pin).
+    Rows whose reference is unusable are dropped rather than carried as noise.
+    """
     rows = []
+    seen = set()
     for ln in lines:
         parts = ln.split()
         if len(parts) < 3:
             continue
         ref, size, iid = parts[0], parts[1], parts[2]
+        if "<none>" in ref or ref in seen:
+            continue
+        seen.add(ref)
         rows.append({"ref": ref, "size": size, "id": iid,
                      "engine": bool(ENGINE_IMAGE_RE.match(ref))})
     return rows

@@ -85,7 +85,7 @@ def job_phrase(action: str, params: dict) -> str:
     if action == "unit":
         return f"{p.get('verb', 'act on')} {str(p.get('unit', '')).replace('.service', '')}"
     if action == "switch":
-        return f"switch the 27B lane to {p.get('target', '')}"
+        return f"switch the served target to {p.get('target', '')}"
     if action == "flush_cache":
         return "flush the radix cache"
     if action == "abort_all":
@@ -97,6 +97,38 @@ def job_phrase(action: str, params: dict) -> str:
     if action == "fit_opencode":
         return "fit the opencode limits to this engine"
     return action + (" " + ", ".join(f"{k} {v}" for k, v in p.items()) if p else "")
+
+
+# The cockpit imports recipes.py and its own module once, at start. A repo that
+# is updated underneath a running process therefore serves NEW html from disk
+# against OLD python in memory: on 2026-09-08 that meant a target the selector
+# offered and the action layer refused, which is a button that errors. install.sh
+# now restarts this unit, but a plain `git pull` does not, so the process watches
+# its own sources and says so instead of lying quietly.
+CODE_FILES = ("cockpit.py", "recipes.py", "lifecycle.py", "registry.py",
+              "agent_relay.py", "static/index.html", "static/app.js")
+
+
+def code_fingerprint() -> dict:
+    """{name: "mtime:size"} for the files this process's behaviour comes from."""
+    out = {}
+    here = Path(__file__).resolve().parent
+    for name in CODE_FILES:
+        try:
+            st = (here / name).stat()
+            out[name] = f"{int(st.st_mtime)}:{st.st_size}"
+        except OSError:
+            out[name] = "missing"
+    return out
+
+
+CODE_AT_START = code_fingerprint()
+
+
+def code_is_stale() -> list:
+    """Which of this process's sources changed on disk since it started."""
+    now = code_fingerprint()
+    return sorted(n for n, v in now.items() if CODE_AT_START.get(n) != v)
 
 
 def add_event(kind: str, msg: str):
@@ -720,7 +752,8 @@ def _guard_failed(err: str):
 
 
 VAR2TARGET = {"STOCK_REV": "stock", "UNC_REV": "uncensored", "FP8_REV": "fp8",
-              "UNCFP8_REV": "uncensored-fp8", "FLASH_REV": "flash"}
+              "UNCFP8_REV": "uncensored-fp8", "FLASH_REV": "flash",
+              "FLASH_NVDA_REV": "flash-nvda", "FLASH_UNC_REV": "flash-uncensored"}
 UNIT_PATHS = {"qwen38-sglang.service": Path("/etc/systemd/system/qwen38-sglang.service"),
               "qwen38-flash.service": CONFIG_DIR / "launch-flash.sh"}
 UNIT_TARGET_CACHE: dict = {}
@@ -1064,7 +1097,8 @@ ACTIONS = {
     # model switch (repo script, itself never restarts anything)
     "switch": {
         "danger": "medium",
-        "params": {"target": ["stock", "uncensored", "fp8", "uncensored-fp8", "flash"]},
+        "params": {"target": ["stock", "uncensored", "fp8", "uncensored-fp8",
+                              "flash", "flash-nvda", "flash-uncensored"]},
         "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"]],
         "timeout": 1800,
     },
@@ -1443,6 +1477,9 @@ def upstream_snapshot(max_age: float = 3600.0) -> dict:
             except Exception:  # noqa: BLE001
                 rel["latest"] = None
                 rel["detail"] = str(e)[:80]
+        stale = code_is_stale()
+        if stale:
+            rel["stale_code"] = stale
         data = {"models": rows, "release": rel, "ts": time.time()}
         UPSTREAM_CACHE.update(ts=time.time(), data=data)
         return data
@@ -1526,10 +1563,18 @@ def registry_snapshot(max_age: float = 300.0) -> dict:
                 Path.home() / ".cache/huggingface/hub"), pins)
         except OSError:
             models = []
+        # Both shapes: a tag is how a built image is named, a digest is how a
+        # pinned one is. The flash lane serves a digest since v1.8, and asking
+        # docker only for repo:tag reported it as missing. The digest pass needs
+        # -a: an image pulled by digest carries no tag, and docker hides
+        # untagged images from the default listing (verified on docker 29.2.1).
         images = rg.parse_docker_images(
             run(["docker", "images", "--format",
                  "{{.Repository}}:{{.Tag}} {{.Size}} {{.ID}}"],
-                timeout=10).splitlines())
+                timeout=10).splitlines()
+            + run(["docker", "images", "-a", "--digests", "--format",
+                   "{{.Repository}}@{{.Digest}} {{.Size}} {{.ID}}"],
+                  timeout=10).splitlines())
         data = {"pins": pins, "managed_repos": sorted(set(rg.PIN_MODELS.values())),
                 "models": [m for m in models if m["managed"]],
                 "other_models": [{"repo_id": m["repo_id"],

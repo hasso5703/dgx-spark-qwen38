@@ -9,16 +9,23 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── Same pins as install.sh (read from it: single source of truth) ──
-PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
-[ "$(printf '%s\n' "$PINS" | wc -l)" -eq 15 ] || die "could not read the 15 pinned variables from install.sh (repo layout changed?)"
+PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|OVERLAY_SERVE_IMAGE|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+# A count of matched lines was the old check, and adding a pin broke both scripts
+# at once (it did, on 2026-09-08). What matters is not how many lines matched but
+# whether every name this script goes on to use is defined, so that is what is
+# asserted, and a failure says which one.
 eval "$PINS"
+for _v in IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV MODEL_CHOICE CONTEXT_MODE DRAFT2_REPO DRAFT2_REV OVERLAY_SERVE_IMAGE SERVE_IMAGE PORT HF_CACHE CONFIG_DIR; do
+  eval "[ -n \"\${$_v:-}\" ]" || die "install.sh no longer defines $_v (repo layout changed?)"
+done
+unset _v
 case "${MODEL_CHOICE}" in
   stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
   uncensored) MODEL_REPO="$UNC_REPO";   MODEL_REV="${MODEL_REV:-$UNC_REV}" ;;
   fp8)        MODEL_REPO="$FP8_REPO";   MODEL_REV="${MODEL_REV:-$FP8_REV}" ;;
   uncensored-fp8) MODEL_REPO="$UNCFP8_REPO"; MODEL_REV="${MODEL_REV:-$UNCFP8_REV}" ;;
-  flash)      die "MODEL_CHOICE=flash is service-only in this release: MODEL_CHOICE=flash ./install.sh (./run.sh covers the 27B targets)" ;;
-  *) die "MODEL_CHOICE must be stock, uncensored, fp8, uncensored-fp8 or flash (got: ${MODEL_CHOICE})" ;;
+  flash|flash-nvda|flash-uncensored) die "the flash targets are service-only in this release: MODEL_CHOICE=$MODEL_CHOICE ./install.sh (./run.sh covers the 27B targets)" ;;
+  *) die "MODEL_CHOICE must be stock, uncensored, fp8, uncensored-fp8, flash, flash-nvda or flash-uncensored (got: ${MODEL_CHOICE})" ;;
 esac
 # See install.sh: Qwen's FP8 checkpoint carries no KV scales, so without this the
 # KV cache falls back to bf16 and costs about half the pool.

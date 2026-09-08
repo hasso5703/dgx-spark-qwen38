@@ -162,6 +162,9 @@
         transition:color .25s, border-color .25s, background .25s}
   .chip.ok{color:var(--ok); border-color:color-mix(in srgb, var(--ok) 50%, transparent); background:color-mix(in srgb, var(--ok) 10%, transparent)}
   .chip.err{color:var(--err); border-color:color-mix(in srgb, var(--err) 50%, transparent); background:color-mix(in srgb, var(--err) 12%, transparent)}
+  /* the release line turns warn-coloured when the cockpit's own code is older
+     than the repo on disk: its controls and its checks then disagree */
+  #upline.warn{color:var(--warn)}
   .chip.warn{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 50%, transparent); background:color-mix(in srgb, var(--warn) 12%, transparent)}
   .chip.flash{color:var(--flash); border-color:color-mix(in srgb, var(--flash) 50%, transparent); background:color-mix(in srgb, var(--flash) 12%, transparent)}
   .chip.lane27{color:var(--lane27); border-color:color-mix(in srgb, var(--lane27) 50%, transparent); background:color-mix(in srgb, var(--lane27) 12%, transparent)}
@@ -344,7 +347,9 @@
         <option value="uncensored">27B uncensored (NVFP4)</option>
         <option value="fp8">27B FP8 (Qwen)</option>
         <option value="uncensored-fp8">27B FP8 uncensored</option>
-        <option value="flash">flash 176B</option>
+        <option value="flash">flash 176B (NVFP4)</option>
+        <option value="flash-uncensored">flash 176B uncensored</option>
+        <option value="flash-nvda">flash 176B (NVIDIA export)</option>
       </select>
       <button class="btn mini" data-act="switch">Switch</button>
     </div>

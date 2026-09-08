@@ -32,15 +32,20 @@ jobs:
           ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py tests/*.py dashboard/*.py dashboard/tests/*.py
           python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-fit-limits.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
 
-      - name: Cockpit unit tests (lifecycle state machine, recipe generation, agent relay)
+      - name: Cockpit unit tests (every tests/test_*.py, discovered)
         run: |
           cd dashboard
           # Count what unittest actually runs against what the files declare.
           # test_lifecycle.py had 58 tests and no __main__ block, so running it
           # as a script executed nothing and exited 0: the largest suite in the
           # repo was green because it never ran. Silence is not a pass.
-          declared=$(cat tests/test_lifecycle.py tests/test_recipes.py tests/test_agent_relay.py | grep -c 'def test_')
-          out=$(python3 -m unittest tests.test_lifecycle tests.test_recipes tests.test_agent_relay 2>&1)
+          # Discovered, not listed: a fourth test file that nobody runs is worse
+          # than no fourth file, and the list was hardcoded until 2026-09-08.
+          files=$(cd tests && ls test_*.py | sort | tr '\n' ' ')
+          mods=$(for f in $files; do printf 'tests.%s ' "${f%.py}"; done)
+          echo "suites: $mods"
+          declared=$(cd tests && cat $files | grep -c 'def test_')
+          out=$(python3 -m unittest $mods 2>&1)
           echo "$out" | tail -5
           ran=$(echo "$out" | grep -oE '^Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
           echo "declared $declared, ran $ran"
@@ -48,7 +53,7 @@ jobs:
           # Each file must also RUN its tests when invoked directly, the way a
           # human and the old CI step do. A file without a __main__ block exits 0
           # having run nothing, so only the reported count proves anything.
-          for f in test_lifecycle test_recipes test_agent_relay; do
+          for f in $(cd tests && ls test_*.py | sed 's/\.py$//' | sort); do
             d=$(grep -c 'def test_' "tests/$f.py")
             o=$(python3 "tests/$f.py" 2>&1 || true)
             r=$(echo "$o" | grep -oE 'Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
@@ -56,12 +61,12 @@ jobs:
             [ "$r" = "$d" ] || { echo "$f.py ran $r of its $d tests when invoked directly"; exit 1; }
           done
 
-      - name: Pin contracts (run.sh reads 17, switch-model.sh reads 16)
+      - name: Pin contracts (every consumer's own block runs against install.sh)
         run: |
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 17 ] || { echo "run.sh pin contract broken: $n != 17"; exit 1; }
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 16 ] || { echo "switch-model.sh pin contract broken: $n != 16"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|OVERLAY_SERVE_IMAGE|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 18 ] || { echo "run.sh pin contract broken: $n != 18"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_SERVE_IMAGE|OVERLAY_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 18 ] || { echo "switch-model.sh pin contract broken: $n != 18"; exit 1; }
           # This check must mirror the grep switch-model.sh actually runs, or a
           # renamed pin passes CI and breaks the switch at runtime. It did: the
           # four FP8 names were read by the script and guarded by nothing.
@@ -79,13 +84,58 @@ jobs:
               *) echo "switch-model.sh PINS grep no longer selects $v"; exit 1 ;;
             esac
           done
+          # Run each consumer's OWN pin block against the real install.sh, under
+          # set -u, and let its own name check speak. Two bugs shipped past a gate
+          # that only counted matching lines: a hardcoded count that adding a pin
+          # broke in both scripts, and an eval of an assignment interpolating
+          # another pin the grep did not select, which is unbound under set -u.
+          # A count sees neither; running the block sees both.
+          for consumer in run.sh switch-model.sh; do
+            awk '/^PINS=/{p=1} p{print} p && /^unset _v$/{exit}' "$consumer" > /tmp/pinblock.sh
+            [ -s /tmp/pinblock.sh ] || { echo "$consumer: no PINS block found"; exit 1; }
+            { echo 'die() { echo "$*" >&2; exit 1; }'; cat /tmp/pinblock.sh; } > /tmp/pincheck.sh
+            REPO_DIR=. bash -euo pipefail /tmp/pincheck.sh \
+              || { echo "$consumer: its own pin block does not run against install.sh"; exit 1; }
+          done
           PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)"
           eval "$PINS"
           [ -n "$UNC_REV" ] && [ -n "$STOCK_REV" ] && [ "$MODEL_CHOICE" = "stock" ] && [ "$CONTEXT_MODE" = "native" ]
-          PINS_F="$(grep -E '^(FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE)=' install.sh)"
+          PINS_F="$(grep -E '^(FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_BASE_IMAGE)=' install.sh)"
           eval "$PINS_F"
           [ "${#FLASH_REV}" -eq 40 ] || { echo "FLASH_REV is not a 40-char sha"; exit 1; }
           case "$FLASH_IMAGE" in *@sha256:*) ;; *) echo "FLASH_IMAGE is not digest-pinned"; exit 1 ;; esac
+          # The overlay's files were diffed against ONE base image. If the rollback
+          # ever builds on the image the lane serves by default, it grafts them
+          # onto a layout nobody checked them against.
+          case "$OVERLAY_FLASH_BASE_IMAGE" in *@sha256:*) ;; *) echo "OVERLAY_FLASH_BASE_IMAGE is not digest-pinned"; exit 1 ;; esac
+          [ "$OVERLAY_FLASH_BASE_IMAGE" != "$FLASH_IMAGE" ] || { echo "the flash overlay rollback must not build on the image the lane serves"; exit 1; }
+          grep -q 'BASE_IMAGE="$OVERLAY_FLASH_BASE_IMAGE"' install.sh || { echo "the flash overlay build no longer uses its pinned base"; exit 1; }
+          # Every flash target must resolve to the flash lane, or install.sh would
+          # render a 27B unit for a 126 GiB checkpoint.
+          grep -qE '^ *flash\|flash-nvda\|flash-uncensored\) LANE=flash' install.sh \
+            || { echo "install.sh: a flash target no longer selects the flash lane"; exit 1; }
+
+          # switch-model.sh rewrites the launcher's per-checkpoint flags in place, so
+          # its two strings must be install.sh's FLASH_QUANT_ARGS character for
+          # character. They drifted once: the switch dropped the draft's
+          # quantization when returning to the NVFP4 tree, which loads BF16 MTP
+          # tensors as if they were quantized, silently.
+          for pair in "flash-nvda" "flash\\|flash-uncensored"; do
+            inst=$(grep -A2 -E "^ *$pair\)$|^ *$pair\) " install.sh | sed -n 's/.*FLASH_QUANT_ARGS="\([^"]*\)".*/\1/p' | head -1)
+            [ -n "$inst" ] || { echo "install.sh: no FLASH_QUANT_ARGS for $pair"; exit 1; }
+            grep -qF "NEW_QUANT=\"$inst\"" switch-model.sh \
+              || { echo "switch-model.sh does not carry install.sh's flags for $pair: [$inst]"; exit 1; }
+          done
+          # Same invariant on the 27B lane, and the direction that matters is the
+          # harmful one: a switch to Qwen's FP8 release that drops the flag serves
+          # a bf16 KV cache and half the pool (771,139 tokens against 382,706,
+          # measured). Until 2026-09-08 the switch did not rewrite this at all.
+          kvi=$(grep -oE 'fp8\|uncensored-fp8\) +KV_CACHE_ARGS="[^"]*"' install.sh | sed -n 's/.*KV_CACHE_ARGS="\([^"]*\)".*/\1/p' | head -1)
+          [ -n "$kvi" ] || { echo "install.sh: no KV_CACHE_ARGS for the fp8 pair"; exit 1; }
+          grep -qF "NEW_KV=\"$kvi\"" switch-model.sh \
+            || { echo "switch-model.sh does not carry install.sh's KV args: [$kvi]"; exit 1; }
+          grep -q 'rewrite_27b_unit "$TARGET_UNIT"' switch-model.sh \
+            || { echo "the 27B switch no longer goes through rewrite_27b_unit"; exit 1; }
 
       - name: Every downloaded checkpoint is one something actually serves
         run: |
@@ -117,7 +167,11 @@ jobs:
             sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" \
                 -e "s|__PORT__|30000|g" -e "s|__PROXY_PORT__|30001|g" -e "s|__IMAGE__|img:v|g" \
                 -e "s|__HF_CACHE__|/hf|g" -e "s|__DRAFT2_REV__|deadbeef|g" -e "s|__PLE_DIR__|/ple|g" -e "s|__PROMPT_CEILING__|0|g" \
-                -e "s|__KV_CACHE_ARGS__||g" -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL_REV__|cafe|g" -e "s|__MODEL__|org/repo|g" "$1"
+                -e "s|__KV_CACHE_ARGS__||g" -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL_REV__|cafe|g" -e "s|__MODEL__|org/repo|g" \
+              -e "s|__FLASH_QUANT_ARGS__|--quantization modelopt_fp4 --speculative-draft-model-quantization unquant |g" \
+              -e "s|__FLASH_MEM_FRACTION__|0.85|g" -e "s|__PLE_RSS_BUDGET_GB__|8|g" \
+              -e "s|__SPEC_TOKEN_MAP_LINE__|TIER+=(--speculative-token-map /out/token-map-65536.pt)|g" \
+              -e "s|__FLASH_TIER_ARGS__|--max-running-requests 4 --max-mamba-cache-size 20 --mamba-radix-cache-strategy extra_buffer --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4|g" "$1"
           }
           for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template qwen38-flash.service.template qwen38-keepalive.service.template; do
             render "$t" > /tmp/unit.rendered
@@ -154,15 +208,21 @@ jobs:
           render qwen38-flash-launch.sh.template > /tmp/flash.rendered
           if grep -q '__[A-Z_]*__' /tmp/flash.rendered; then echo "unsubstituted placeholder in the flash launcher:"; grep '__[A-Z_]*__' /tmp/flash.rendered; exit 1; fi
           bash -n /tmp/flash.rendered
-          grep -q -- '--ple-offload-embedding' /tmp/flash.rendered
-          grep -q 'SGLANG_QWEN4_PLE_MMAP_DIR=/ple' /tmp/flash.rendered
+          # The table must be file-backed: pinned host RAM is the upstream default and
+          # frees nothing on unified memory, so a launcher that lost this pair does not
+          # boot at all on a 128 GB box (sglang#37068).
+          grep -q -- '--ple-offload-embedding --ple-offload-backend file' /tmp/flash.rendered
+          grep -q -- '--ple-offload-dir /ple' /tmp/flash.rendered
           grep -q -- '--mamba-radix-cache-strategy extra_buffer' /tmp/flash.rendered
-          grep -q -- '--prefill-attention-backend triton' /tmp/flash.rendered
-          grep -q -- '--decode-attention-backend trtllm_mha' /tmp/flash.rendered
           grep -q -- '--speculative-algorithm NEXTN' /tmp/flash.rendered
           grep -q -- '--speculative-eagle-topk 1' /tmp/flash.rendered
-          grep -q -- '--chunked-prefill-size 1024' /tmp/flash.rendered
-          grep -q -- '--mem-fraction-static 0.81' /tmp/flash.rendered   # v1.5.4: measured, host headroom unchanged
+          grep -q -- '--chunked-prefill-size 4096' /tmp/flash.rendered
+          grep -q -- '--page-size 64' /tmp/flash.rendered
+          grep -q -- '--fp4-gemm-backend flashinfer_cutlass' /tmp/flash.rendered
+          grep -q -- '--mem-fraction-static 0.85' /tmp/flash.rendered
+          grep -q -- '--max-mamba-cache-size' /tmp/flash.rendered
+          grep -q -- '--speculative-token-map /out/token-map-65536.pt' /tmp/flash.rendered
+          grep -q -- '--speculative-draft-model-quantization unquant' /tmp/flash.rendered
           grep -q -- '--api-key' /tmp/flash.rendered
           grep -q 'chat-template-flashnext.jinja' /tmp/flash.rendered
           grep -q 'HF_HUB_OFFLINE=1' /tmp/flash.rendered
@@ -170,46 +230,227 @@ jobs:
           if grep -q -- '--language-only' /tmp/flash.rendered; then
             echo "flash launcher must NOT pass --language-only (vision stays on)"; exit 1
           fi
-          # poisoned-table guard must stay (a boot interrupted mid table write
-          # wedges every later boot; root-caused live on the reference box)
-          grep -q '.loading' /tmp/flash.rendered
-          grep -q 'ple_table_\*' /tmp/flash.rendered && grep -q 'SGLANG_QWEN4_PLE_TAG=' /tmp/flash.rendered && grep -q 'SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1' /tmp/flash.rendered
+          # The previous table file goes before every boot: the server rewrites the whole
+          # table each time, and over a cold populated file that is ~17 MB/s (~55 min)
+          # against GB/s on a fresh sparse one. This replaced the poisoned-table guard.
+          grep -q 'rm -f "$PLE_DIR"/ple_table_' /tmp/flash.rendered
+          grep -q 'SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB=8' /tmp/flash.rendered
+          grep -q 'SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1' /tmp/flash.rendered
+          # A tier that does not speculate must not receive the draft vocabulary.
+          sed -e "s|__FLASH_TIER_ARGS__|--max-running-requests 24 --max-mamba-cache-size 96 --mamba-radix-cache-strategy extra_buffer_lazy|g" \
+              -e "s|__SPEC_TOKEN_MAP_LINE__||g" qwen38-flash-launch.sh.template > /tmp/flash.thr
+          if grep -q -- '--speculative-token-map' /tmp/flash.thr; then
+            echo "the throughput tier must not carry a draft vocabulary"; exit 1
+          fi
+          bash -n /tmp/flash.thr
+          # Each flash checkpoint keeps its own flag pair. The NVDA export resolves its
+          # own scheme and pins the MoE runner; the two NVFP4 ones declare the scheme and
+          # must tell the draft their in-checkpoint MTP tensors are BF16. Swapping either
+          # is silent: an fp8 head loaded as dense, or an autotune rejection.
+          sed -e "s|__FLASH_QUANT_ARGS__|--moe-runner-backend flashinfer_cutlass |g" qwen38-flash-launch.sh.template > /tmp/flash.nvda
+          grep -q -- '--moe-runner-backend flashinfer_cutlass' /tmp/flash.nvda
+          if grep -q -- '--quantization modelopt_fp4' /tmp/flash.nvda; then
+            echo "the NVDA render must not pass --quantization (it resolves to modelopt_mixed)"; exit 1
+          fi
+          if grep -q -- '--speculative-draft-model-quantization' /tmp/flash.nvda; then
+            echo "the NVDA render must not pass a draft quantization"; exit 1
+          fi
+          arm() { grep -A2 -E "^ *$1\)$|^ *$1\) " install.sh; }
+          arm 'flash-nvda' | grep -qE 'FLASH_QUANT_ARGS="--moe-runner-backend flashinfer_cutlass ' \
+            || { echo "install.sh: the NVDA arm no longer pins the MoE runner"; exit 1; }
+          if arm 'flash-nvda' | grep -q 'speculative-draft-model-quantization'; then
+            echo "install.sh: the NVDA arm must not set a draft quantization"; exit 1
+          fi
+          arm 'flash\|flash-uncensored' | grep -qE 'FLASH_QUANT_ARGS="--quantization modelopt_fp4 --speculative-draft-model-quantization unquant ' \
+            || { echo "install.sh: the NVFP4 flash arm lost its scheme or its BF16 draft"; exit 1; }
+          if grep -qE 'FLASH_TIER_ARGS=.*speculative-draft-model-quantization' install.sh; then
+            echo "the draft quantization belongs to the checkpoint, not to a tier"; exit 1
+          fi
+          for tier in context concurrency throughput; do
+            grep -qE "^ *$tier\)" install.sh || { echo "install.sh lost the $tier tier"; exit 1; }
+          done
+          # A name that interpolates a variable must come after it. ${x:-0} makes this
+          # class of bug silent: it shipped a token-map-0.pt once.
+          n_size=$(grep -n '^SPEC_TOKEN_MAP_SIZE=' install.sh | cut -d: -f1)
+          n_name=$(grep -n '^TOKEN_MAP_NAME=' install.sh | cut -d: -f1)
+          [ -n "$n_size" ] && [ -n "$n_name" ] || { echo "install.sh lost the token map size or name"; exit 1; }
+          [ "$n_size" -lt "$n_name" ] || { echo "TOKEN_MAP_NAME (line $n_name) interpolates SPEC_TOKEN_MAP_SIZE (line $n_size) before it is set"; exit 1; }
+          grep -qE '^TOKEN_MAP_NAME="token-map-\$\{SPEC_TOKEN_MAP_SIZE\}\.pt"$' install.sh \
+            || { echo "the token map file name must carry the size"; exit 1; }
+          # The per-checkpoint and per-tier flags must be RESOLVED AFTER the
+          # convergence block, which can change MODEL_CHOICE: a plain
+          # ./install.sh on a flash box converges from "stock" to "flash", and
+          # computing the flags once left the launcher without --quantization
+          # modelopt_fp4. That boots for ten minutes and dies at MoE autotune,
+          # so the resolution is a function, called again before any render, and
+          # an empty result refuses to write the launcher at all.
+          grep -q '^resolve_flash_checkpoint_args() {' install.sh \
+            || { echo "install.sh: the checkpoint flags are not a function any more"; exit 1; }
+          grep -q '^resolve_flash_tier_args() {' install.sh \
+            || { echo "install.sh: the tier flags are not a function any more"; exit 1; }
+          n_render=$(grep -n '^render_tpl() {' install.sh | cut -d: -f1)
+          n_last=$(grep -n '^resolve_flash_checkpoint_args$' install.sh | tail -1 | cut -d: -f1)
+          [ -n "$n_render" ] && [ -n "$n_last" ] && [ "$n_last" -lt "$n_render" ] \
+            || { echo "install.sh: the checkpoint flags are not re-resolved before rendering"; exit 1; }
+          n_conv=$(grep -n 'INSTALLED_CHOICE' install.sh | head -1 | cut -d: -f1)
+          [ "$n_last" -gt "$n_conv" ] \
+            || { echo "install.sh: the flags are resolved before the convergence block, not after"; exit 1; }
+          grep -q 'resolved no checkpoint flags for MODEL_CHOICE' install.sh \
+            || { echo "install.sh: nothing refuses to write a flash launcher with no checkpoint flags"; exit 1; }
+          # The 27B lane has the same shape of decision and got it right from the
+          # start (its KV dtype is resolved late, after convergence). Lock that
+          # placement too, so the two lanes cannot drift apart again.
+          n_kv=$(grep -n 'fp8|uncensored-fp8) *KV_CACHE_ARGS=' install.sh | cut -d: -f1)
+          [ -n "$n_kv" ] && [ "$n_kv" -gt "$n_conv" ] && [ "$n_kv" -lt "$n_render" ] \
+            || { echo "install.sh: KV_CACHE_ARGS must be resolved after the convergence block and before rendering (line $n_kv, convergence $n_conv, render $n_render)"; exit 1; }
 
 
-      - name: opencode limits block (both modes and both install paths, from install.sh itself)
+      - name: One list of targets, in all four places that must agree
         run: |
-          get() { bash -c "CONTEXT_MODE=$1; NO_SERVICE=$2; MODEL_CHOICE=${3:-stock}; PORT=30000; PROXY_PORT=30001; eval \"\$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; echo \"\$OC_PORT \$OC_CTX \$OC_OUT\""; }
-          [ "$(get native 0)" = "30001 194048 64000" ] || { echo "native service limits drifted"; exit 1; }
-          [ "$(get 1m 0)" = "30001 700000 200000" ] || { echo "1m limits drifted"; exit 1; }
-          [ "$(get native 1)" = "30000 194048 64000" ] || { echo "no-service limits drifted"; exit 1; }
-          # FP8 weights cost ~92k of KV pool, so the NVFP4 1m numbers overflow it:
-          # 680000 compaction + 200000 output = 880000 against a measured 771,139.
-          [ "$(get 1m 0 fp8)" = "30001 480000 160000" ] || { echo "fp8 1m limits drifted"; exit 1; }
-          [ "$(get 1m 0 uncensored-fp8)" = "30001 480000 160000" ] || { echo "uncensored-fp8 1m limits drifted"; exit 1; }
-          [ "$(get native 0 fp8)" = "30001 194048 64000" ] || { echo "fp8 native limits drifted"; exit 1; }
-          # The FP8 pair must ask for strictly less than the NVFP4 pair: its pool is
-          # smaller by a measured ~92k. We do NOT assert an absolute pool here; the
-          # repo documents two non-overlapping NVFP4 ranges (README 917K-1019K from
-          # five v1.3-era boots, oc-fit-limits.py 863,398-913,334 from three later
-          # ones) and picking one would bake an unresolved measurement into CI.
-          python3 - <<'FIT'
-          import subprocess
-          def limits(choice):
-              out = subprocess.run(["bash", "-c",
-                  f'CONTEXT_MODE=1m; NO_SERVICE=0; MODEL_CHOICE={choice}; PORT=30000; PROXY_PORT=30001; '
-                  "eval \"$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; "
-                  'echo "$OC_CTX $OC_OUT"'], capture_output=True, text=True).stdout.split()
-              return int(out[0]), int(out[1])
-          nv_ctx, nv_out = limits("stock")
-          for choice in ("fp8", "uncensored-fp8"):
-              ctx, o = limits(choice)
-              assert ctx < nv_ctx and o < nv_out, f"{choice} must ask for less than NVFP4"
-              worst = int(ctx * 0.971) + o      # opencode compacts at ~97% of limit.context
-              assert worst <= 771139, f"{choice}: 1m worst case {worst} exceeds the measured FP8 pool"
-          print("  FP8 1m limits fit the measured FP8 pool and stay under the NVFP4 pair")
-          FIT
-          getf() { bash -c "LANE=flash; CONTEXT_MODE=native; NO_SERVICE=0; PORT=30000; PROXY_PORT=30001; eval \"\$(sed -n '/# opencode limits per context mode/,/# end oc mode/p' install.sh | grep -v '^#')\"; echo \"\$OC_PORT \$OC_CTX \$OC_OUT\""; }
-          [ "$(getf)" = "30001 110000 32000" ] || { echo "flash limits drifted"; exit 1; }
+          # The switch selector in the cockpit's HTML, the closed enum the cockpit
+          # validates an action against, install.sh's MODEL_CHOICE case and
+          # switch-model.sh's are four independent lists of the same set. Nothing
+          # checked that they agreed, and a target added to three of them is a
+          # button that either does not exist or is refused when pressed.
+          python3 - <<'PYEOF'
+          import re, sys, pathlib
+
+          def fail(msg):
+              print("target lists disagree:", msg); sys.exit(1)
+
+          html = pathlib.Path("dashboard/static/index.html").read_text()
+          m = re.search(r'<select id="switchsel".*?</select>', html, re.S)
+          if not m:
+              fail("no switchsel in index.html")
+          ui = re.findall(r'<option value="([^"]+)"', m.group(0))
+
+          cock = pathlib.Path("dashboard/cockpit.py").read_text()
+          m = re.search(r'"switch":\s*\{.*?"params":\s*\{"target":\s*\[(.*?)\]\}', cock, re.S)
+          if not m:
+              fail("no switch action enum in cockpit.py")
+          enum = re.findall(r'"([^"]+)"', m.group(1))
+
+          inst = pathlib.Path("install.sh").read_text()
+          m = re.search(r'^case "\$MODEL_CHOICE" in\n(.*?)^esac', inst, re.M | re.S)
+          if not m:
+              fail("no MODEL_CHOICE case in install.sh")
+          arms = re.findall(r'^\s{2}([a-z0-9|-]+)\)', m.group(1), re.M)
+          choices = sorted({c for arm in arms for c in arm.split("|")} - {"*"})
+
+          sw = pathlib.Path("switch-model.sh").read_text()
+          m = re.search(r'case "\$CHOICE" in ([a-z0-9|-]+)\)', sw)
+          if not m:
+              fail("no CHOICE guard in switch-model.sh")
+          guard = sorted(m.group(1).split("|"))
+
+          rec = pathlib.Path("dashboard/recipes.py").read_text()
+          m = re.search(r"BUILTIN_IDS = \((.*?)\)", rec, re.S)
+          if not m:
+              fail("no BUILTIN_IDS in recipes.py")
+          builtins = re.findall(r'"([^"]+)"', m.group(1))
+
+          lists = {"index.html select": sorted(ui), "cockpit switch enum": sorted(enum),
+                   "install.sh MODEL_CHOICE": choices, "switch-model.sh guard": guard,
+                   "recipes BUILTIN_IDS": sorted(builtins)}
+          ref = lists["install.sh MODEL_CHOICE"]
+          for name, got in lists.items():
+              if got != ref:
+                  fail(f"{name} is {got}, install.sh says {ref}")
+          if len(ui) != len(set(ui)):
+              fail("duplicate option in the selector")
+          # And the prose must not lag the list: "any of the six" outlived the
+          # sixth target by one commit.
+          words = {5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}
+          n = len(ref)
+          for path in ("install.sh", "README.md"):
+              body = pathlib.Path(path).read_text()
+              for count, word in words.items():
+                  if count != n and (f"any of the {word}" in body
+                                     or f"the {word} targets" in body
+                                     or f"{word} switchable targets" in body):
+                      fail(f"{path} still says {word} targets, there are {n}")
+          print(f"{len(ref)} targets, five lists agree: {', '.join(ref)}")
+          PYEOF
+
+      - name: opencode limits, the one table and both callers
+        run: |
+          # The limits are not decoration: opencode compacts at limit.context, so a
+          # limit above what the lane serves means the proxy answers 400 before
+          # opencode ever compacts. One table (oc-limits.sh), and both callers must
+          # use it: install.sh at install time, switch-model.sh at switch time. The
+          # switch did not write them at all until 2026-09-08.
+          l() { ./oc-limits.sh "$@"; }
+          [ "$(l stock native)" = "194048 64000 local" ] || { echo "27B native limits drifted"; exit 1; }
+          [ "$(l stock 1m)" = "700000 200000 local, 1M" ] || { echo "27B 1m limits drifted"; exit 1; }
+          [ "$(l uncensored 1m)" = "700000 200000 local, 1M" ] || { echo "uncensored 1m drifted"; exit 1; }
+          [ "$(l fp8 1m)" = "480000 160000 local, 1M" ] || { echo "fp8 1m limits drifted"; exit 1; }
+          [ "$(l uncensored-fp8 1m)" = "480000 160000 local, 1M" ] || { echo "uncensored-fp8 1m drifted"; exit 1; }
+          [ "$(l fp8 native)" = "194048 64000 local" ] || { echo "fp8 native drifted"; exit 1; }
+          # Every flash target, every tier: the default tier was never asserted
+          # before (the old gate fell through to the throughput arm).
+          for t in flash flash-uncensored flash-nvda; do
+            [ "$(l "$t" context)" = "190000 64000 local" ] || { echo "$t/context drifted"; exit 1; }
+            [ "$(l "$t" concurrency)" = "100000 16000 local" ] || { echo "$t/concurrency drifted"; exit 1; }
+            [ "$(l "$t" throughput)" = "110000 32000 local" ] || { echo "$t/throughput drifted"; exit 1; }
+          done
+          # Nonsense is refused rather than defaulted, or a typo silently serves
+          # the wrong budget.
+          ! l banana native 2>/dev/null || { echo "an unknown target must be refused"; exit 1; }
+          ! l flash nonsense 2>/dev/null || { echo "an unknown tier must be refused"; exit 1; }
+          ! l stock nonsense 2>/dev/null || { echo "an unknown context mode must be refused"; exit 1; }
+          ! l 2>/dev/null || { echo "no argument must be refused"; exit 1; }
+          # Derived from an invocation, which is how the switch reads it.
+          tmp=$(mktemp -d)
+          printf '  --max-running-requests 8 \\\n  python3 -m sglang.launch_server \\\n' > "$tmp/l8.sh"
+          printf '  --max-running-requests 24 \\\n  python3 -m sglang.launch_server \\\n' > "$tmp/l24.sh"
+          printf '  --context-length 1010000 \\\n  python3 -m sglang.launch_server \\\n' > "$tmp/u1m.service"
+          printf '  --context-length 262144 \\\n  python3 -m sglang.launch_server \\\n' > "$tmp/unat.service"
+          [ "$(l flash --from "$tmp/l8.sh")" = "100000 16000 local" ] || { echo "derived tier (8) wrong"; exit 1; }
+          [ "$(l flash --from "$tmp/l24.sh")" = "110000 32000 local" ] || { echo "derived tier (24) wrong"; exit 1; }
+          [ "$(l stock --from "$tmp/u1m.service")" = "700000 200000 local, 1M" ] || { echo "derived 1m wrong"; exit 1; }
+          [ "$(l stock --from "$tmp/unat.service")" = "194048 64000 local" ] || { echo "derived native wrong"; exit 1; }
+          [ "$(l flash --from /nonexistent)" = "190000 64000 local" ] || { echo "a missing invocation must fall back to the default tier"; exit 1; }
+          rm -rf "$tmp"
+          # The FP8 pair must ask for strictly less than the NVFP4 pair and fit the
+          # measured FP8 pool. We do NOT assert an absolute NVFP4 pool: the repo
+          # documents two non-overlapping ranges and picking one would bake an
+          # unresolved measurement into CI.
+          read -r NV_CTX NV_OUT _ <<<"$(l stock 1m)"
+          for c in fp8 uncensored-fp8; do
+            read -r CTX OUT _ <<<"$(l $c 1m)"
+            [ "$CTX" -lt "$NV_CTX" ] && [ "$OUT" -lt "$NV_OUT" ] \
+              || { echo "$c must ask for less than NVFP4"; exit 1; }
+            worst=$(( CTX * 971 / 1000 + OUT ))   # opencode compacts at ~97% of limit.context
+            [ "$worst" -le 771139 ] \
+              || { echo "$c: 1m worst case $worst exceeds the measured FP8 pool"; exit 1; }
+          done
+          # And both callers go through it, rather than carrying a second copy.
+          grep -q 'oc-limits.sh" "$MODEL_CHOICE" "$OC_SELECTOR"' install.sh \
+            || { echo "install.sh no longer reads the shared limits table"; exit 1; }
+          grep -q 'oc-limits.sh" "$CHOICE" --from "$INVOCATION"' switch-model.sh \
+            || { echo "switch-model.sh no longer reads the shared limits table"; exit 1; }
+          for f in install.sh switch-model.sh; do
+            if grep -qE 'OC_CTX=[0-9]+|SW_CTX=[0-9]+' "$f"; then
+              echo "$f carries its own limit numbers again; they belong in oc-limits.sh"; exit 1
+            fi
+          done
+          # Every target the installer knows must have a picker label in the switch,
+          # or it silently keeps the previous target's name.
+          python3 - <<'PYEOF'
+          import re, pathlib, sys
+          inst = pathlib.Path("install.sh").read_text()
+          m = re.search(r'^case "\$MODEL_CHOICE" in\n(.*?)^esac', inst, re.M | re.S)
+          arms = re.findall(r'^\s{2}([a-z0-9|-]+)\)', m.group(1), re.M)
+          choices = sorted({c for a in arms for c in a.split("|")} - {"*"})
+          sw = pathlib.Path("switch-model.sh").read_text()
+          # not anchored: the first entry sits on the same line as "LABEL = {"
+          labels = set(re.findall(r'"([a-z0-9-]+)":\s*"Qwen', sw))
+          missing = [c for c in choices if c not in labels]
+          if missing:
+              print("switch-model.sh has no picker label for:", missing); sys.exit(1)
+          print(f"  {len(choices)} targets, all with a picker label")
+          PYEOF
+          echo "  the limits table is shared, complete on every target and tier, and refuses nonsense"
 
       - name: opencode generator produces a valid config (all three install shapes)
         run: |

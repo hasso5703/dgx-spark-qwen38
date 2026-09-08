@@ -1,6 +1,6 @@
 # Qwen3.8 on DGX Spark (GB10): 27B at 50 tok/s, Flash-Next 176B on one box
 
-One command installs a boot-persistent, hardened serving stack for the Qwen3.8 family on a single DGX Spark, with **five switchable targets** and **zero quality loss** on each (NVFP4 is the quantization floor, Qwen's own FP8 is available above it; every speculative path is lossless by construction):
+One command installs a boot-persistent, hardened serving stack for the Qwen3.8 family on a single DGX Spark, with **seven switchable targets** and **zero quality loss** on each (NVFP4 is the quantization floor, Qwen's own FP8 is available above it; every speculative path is lossless by construction). Since v1.8 the flash lane serves an **official SGLang image** for this hardware with nothing added, serves **4 concurrent requests** where it used to serve one, and got **14 to 25% of its decode back from one flag** (`--speculative-token-map`, see below):
 
 | target | model | engine | headline (measured here) |
 |---|---|---|---|
@@ -8,17 +8,19 @@ One command installs a boot-persistent, hardened serving stack for the Qwen3.8 f
 | `uncensored` | Qwen3.8-27B abliterated NVFP4 | SGLang + DFlash2 | same speed and serving path as stock |
 | `fp8` | Qwen3.8-27B FP8, Qwen's own release | SGLang + DFlash2 | the quantization reference: 108 tok/s aggregate at 8 streams, ~92K less KV pool |
 | `uncensored-fp8` | Qwen3.8-27B abliterated FP8 | SGLang + DFlash2 | same serving path and same cost as `fp8` |
-| `flash` | **Qwen3.8-Flash-Next 176B** hybrid MoE NVFP4 | SGLang + NEXTN | **34-42 tok/s decode, working prefix caching (30K re-serve: 0.5 s), vision**, 262K on ONE box |
+| `flash` (default of its lane) | **Qwen3.8-Flash-Next 176B** hybrid MoE NVFP4 | SGLang + NEXTN | **47.9 tok/s on code, 47.1 on math, 29-31 on prose, 27.0 ms/tok on an agent loop, prefix caching, vision**, 262K on ONE box |
+| `flash-uncensored` | the **abliterated** build of that same tree | SGLang + NEXTN | 205 of 206 shards identical in size to stock, so the same flags: 45-46 on code, **0 refusals of 5** |
+| `flash-nvda` | the same 176B from NVIDIA's mixed-precision export | SGLang + NEXTN | ties the stock export inside the spread, measured here |
 
 The 27B path is the fastest configuration measured so far on GB10 (**SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels**): **50 tok/s greedy median on `./bench.sh` (code 41-47, reasoning 52-57, math peak 60)**, free prose 17-23 in any language, **135-148 tok/s aggregate at 8 concurrent streams, 258 at 32**. Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
 
-The flash path serves a model that does not otherwise fit: the 176B checkpoint's 51B N-gram table is **mmap-served from NVMe through the page cache** (a two-file, sha256-verified overlay on the official SGLang image; see `flash-sglang/ATTRIBUTION.md`), leaving the unified pool to the compute weights and a real 262K KV cache. Since v1.5 the lane runs on SGLang: **prefix caching works** (a 30K-token conversation is re-served in 0.5 s instead of 18.4 s, x36; an agent turn with a fresh question on a known prefix lands in ~3 s), decode is 34-42 tok/s with the model's own NEXTN/MTP head, prefill ~1,500-2,000 tok/s cold, and image input stays available.
+The flash path serves a model that does not otherwise fit: the 176B checkpoint's 47.7 GiB FP8 N-gram table is **served from a sparse file on NVMe**, read row by row by the gather kernel through GB10's host page tables, leaving the unified pool to the compute weights and a real KV cache. Until v1.7 that was a vendored patch of this repo's own; since v1.8 it is upstream (`--ple-offload-backend file`, [sglang#37068](https://github.com/sgl-project/sglang/pull/37068)) and the overlay is retired, along with the vendored sm_121 QSA kernel and the workaround for the GB10 MTP collapse. **Prefix caching works** (27k tokens re-served in 2.5 s against 12.0 s cold), decode is **47.9 tok/s on code and 47.1 on math** single stream (29-31 on prose), prefill ~2,250 tok/s cold, and image input stays available. Since v1.8 it also takes **`--speculative-token-map`**, which hands the speculative draft the target's `lm_head` sliced to 65,536 rows instead of all 248,320: that removes 2.6 GiB from every engine step on a lane that is memory-bandwidth bound, and it is worth 14 to 25% of decode without changing what the model can say, because the target still verifies every drafted token over the whole vocabulary.
 
 Whatever the target, you get the same surface: an **OpenAI-compatible API** on port 30000 (both lanes also speak the Anthropic protocol), a keepalive proxy for agent CLIs on 30001, and **[opencode](https://opencode.ai) works out of the box** (the installer writes a ready-to-use provider config; the chat template ships pre-patched for agentic clients). The stack is built to grow: more targets, engines and drafters will slot into the same switch surface.
 
 ## Quickstart
 
-Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). Free disk: **~84 GB** for a 27B target (~39 under `$HOME` for checkpoints and caches, ~45 on the Docker partition for the 39 GB image; caching the other 27B targets adds ~21 GB per NVFP4 target and ~31 GB per FP8 one), **~230 GB** for the flash target (~195 under `$HOME`: the ~136 GB checkpoint plus a ~48 GB mmap backing file for the N-gram table, written once at first boot; ~35 on the Docker partition for the 30 GB image).
+Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). Free disk: **~84 GB** for a 27B target (~39 under `$HOME` for checkpoints and caches, ~45 on the Docker partition for the 39 GB image; caching the other 27B targets adds ~21 GB per NVFP4 target and ~31 GB per FP8 one), **~225 GB** for a flash target (~175 under `$HOME`: the ~126 GB checkpoint, ~124 for NVIDIA's export, plus the 47.7 GiB sparse file the N-gram table is served from and rewritten into on every boot; ~35 on the Docker partition for the 30 GB image).
 
 One command, first install and updates alike (clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer):
 
@@ -42,14 +44,14 @@ cd dgx-spark-qwen38
 ./bench.sh              # verify your tok/s
 ```
 
-First boot takes **~7-9 minutes** for a 27B target (CUDA graph capture + kernel compilation, cached afterwards; later boots ~5-7 min) and **~15 minutes** for flash (the first boot also writes the 48 GB PLE backing file; later boots ~10 min). Then:
+First boot takes **~7-9 minutes** for a 27B target (CUDA graph capture + kernel compilation, cached afterwards; later boots ~5-7 min) and **~12-15 minutes** for a flash target, every boot: the server writes the whole 47.7 GiB N-gram table into its file each time (measured here: 12 min 21 s to `/health` on a fresh table). Then:
 
 - **opencode**: ready config at `~/.config/qwen38/opencode.json`, see "opencode integration" below
 - **Any OpenAI client**: `http://<host>:30000/v1/chat/completions`, model `qwen3.8-27b` (flash: `qwen3.8-flash-next`), Bearer key from `~/.config/qwen38/api-key`
 - **Anthropic protocol**: `http://<host>:30000/v1/messages` (`Authorization: Bearer` only, not `x-api-key`)
 - **Don't want a systemd service?** `./install.sh --no-service && ./run.sh`: same config, foreground, no sudo, Ctrl+C and it's gone (27B targets; flash is service-only in this release).
 - Everything is **pinned twice** (base image digest + checkpoint revisions at download, and the same `--revision` passed to the server itself, so an upstream push to a checkpoint repo can never change what you serve; plus sha256-verified overlay files: five for DFlash2, `dflash2/ATTRIBUTION.md`, two for flash, `flash-sglang/ATTRIBUTION.md`). It still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
-- Since 2026-08-21, this same combination (DFLASH2, draft block 8) is the **official recipe in the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**. No official image ships it yet (the cookbook has you build from source at a pinned commit), so this repo's prebuilt overlay stays the no-build path until one does.
+- Since 2026-08-21, this same combination (DFLASH2, draft block 8) is the **official recipe in the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**, and since 2026-08-22 there is an official multi-arch image that ships it (`lmsysorg/sglang:dev-qwen38-27b-dflash2`, built from `1cf2b8c`). It is **not** what this repo serves yet, for one reason: it was built on 2026-08-22 and the mrope fix this repo's 27B overlay carries ([sglang#34446](https://github.com/sgl-project/sglang/pull/34446), the fused Qwen3.5 RoPE kernel discarding mrope height and width) merged on 2026-08-30, so serving it as it stands rotates every image token as if it sat at its temporal position on all three axes. The flash lane, whose overlay is entirely upstream, does serve its official image since v1.8.
 
 ### Your choices, and how they combine
 
@@ -57,7 +59,9 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 
 | Choice | How | Default | Notes |
 |---|---|---|---|
-| Model | `MODEL_CHOICE=stock`, `uncensored`, `fp8`, `uncensored-fp8`, `flash` | `stock` | 27B NVFP4 stock or abliterated, the same pair in Qwen's FP8, or Flash-Next 176B (see the five targets) |
+| Model | `MODEL_CHOICE=stock`, `uncensored`, `fp8`, `uncensored-fp8`, `flash`, `flash-uncensored`, `flash-nvda` | `stock` | 27B NVFP4 stock or abliterated, the same pair in Qwen's FP8, or Flash-Next 176B in one of three NVFP4 exports (see the seven targets) |
+| Reduced draft vocabulary | `SPEC_TOKEN_MAP_SIZE=65536`, or `0` to serve without it | `65536` | flash only: hands the speculative draft the target's `lm_head` sliced to that many rows, which is 14 to 25% of decode and cannot change what the model may say |
+| Flash serving tier | `FLASH_TIER=context`, `concurrency`, `throughput` | `context` | flash only: 4 concurrent requests and a pool that takes a full 262K prompt, 8 requests at a third of the pool, or 24 without speculation |
 | Context mode (27B) | `CONTEXT_MODE=native` or `1m` | `native` | `1m` = 1,010,000 window, mem-fraction 0.70, proxy required (see the 1M section) |
 | systemd service | default, or `--no-service` | service | `--no-service`: foreground with `./run.sh`, no sudo, 27B native only |
 | Start now | default, or `--no-start` | starts | install everything, start later with `sudo systemctl start` |
@@ -238,69 +242,95 @@ Back to native: `CONTEXT_MODE=native ./install.sh` (removes the proxy service; t
 
 ## The flash target: Qwen3.8-Flash-Next 176B on one Spark
 
-> **v1.5 users: upgrade to v1.5.2.** The v1.5 flash overlay routed GB10 decode
-> through a kernel that silently corrupts long-context output (runs of token
-> id 0, 1 request in 4 at 120k tokens, 4 in 4 at 210k; found by hashd1ve on
-> 2026-08-29). v1.5.2 replaces that route with a dedicated Triton kernel from
-> upstream PR sglang#36845, re-validated here by exact needle retrieval at
-> 120k, 190k and 210k. Re-run the one-liner (or `git pull && ./install.sh`):
-> the converging install rebuilds the serving image and restarts the lane.
+> **v1.7 and earlier users: upgrade.** v1.8 replaces this repo's vendored
+> overlay with the official image the SGLang cookbook points DGX Spark at, which
+> fixes at the root the failure the v1.6 proxy could only detect (every running
+> MTP request collapsing to a wall of `!` at the same instant,
+> [sglang#36811](https://github.com/sgl-project/sglang/pull/36811)), and serves
+> **4 concurrent requests instead of 1** at the same single-stream speed. Re-run
+> the one-liner (or `git pull && ./install.sh`).
 
-Qwen's official validation environment for this model is a dual GB300 node;
-on Sparks, the public recipes run it on **two** boxes (TP2). This target runs
-it on **one**, with the model's full 262K window and full NVFP4 quality, on SGLang
-(since v1.5; the same engine as the 27B pair), because of one structural trick
-and two kernel-resolver fixes, all vendored, sha256-verified and pinned in
-`flash-sglang/`:
+Qwen's official validation environment for this model is a dual GB300 node; the
+public Spark recipes run it on **two** boxes (TP2). This target runs it on
+**one**, with the model's full 262K window and full NVFP4 quality, because the
+47.7 GiB FP8 N-gram (PLE) table leaves memory entirely: it lives in a sparse
+file on the local NVMe and the gather kernel reads its rows through GB10's host
+page tables, which works because this part reports
+`cudaDevAttrPageableMemoryAccessUsesHostPageTables`.
 
-- **The 51B N-gram (PLE) table never sits in RAM.** A three-line patch makes
-  its backing store a file-backed mmap on NVMe (`torch.from_file`), with
-  `madvise(MADV_RANDOM)` so a cold row costs one 4K page instead of a
-  readahead window. On GB10's coherent memory the gather kernel dereferences
-  the pageable pointer directly. Measured overhead: under 3%.
-- **QSA decode on sm_121 runs the merged upstream kernel.** Upstream gates GB10
-  out of the trtllm sparse-decode path and the generic fallback does not compile
-  there; the v1.5 workaround (widening that gate) silently corrupted long
-  contexts (see the warning above). Since v1.6 the resolver routes sm_121 to the
-  **merged** kernel of
-  [PR #36845](https://github.com/sgl-project/sglang/pull/36845), the KDA package it
-  landed as, with the 2026-08-28 Triton kernel it replaced kept as the fallback for
-  calls outside the KDA contract. Validated here by exact needle retrieval **9/9 at
-  120k prompt tokens**, quality canaries 4/4, no run of token id 0; the kernel's
-  author measures 9/9 at 120k, 190k and 210k on their own Spark. It also removes the
-  token-ID-0 tool-call loop of
-  [#36537](https://github.com/sgl-project/sglang/issues/36537).
-  **The pool is a hard wall on this lane, and since v1.6.2 it is the same wall on
-  every boot.** SGLang sizes the KV pool from the memory free at the instant it
-  profiles, so two boots of the identical launcher drew 189,056 and 249,408 tokens on
-  2026-09-03, and the bigger draw cost 6 GiB of host headroom (idle `MemAvailable`
-  17.2 GiB against 23.7), which is the headroom a 120k prompt spends. The launcher now
-  pins `--max-total-tokens 190000` (served as 189,952 after page alignment), the
-  envelope every needle and canary result in this repo was measured in, and waits
-  for a busy box to go quiet before it starts (bounded, never blocks a boot). The
-  cockpit says so when a boot still comes up short. A prompt larger than the pool,
-  sent direct to the engine port past the proxy, is queued and never admitted, which
-  wedges the scheduler for every request after it (`/abort_request` answers
-  `not found in rid_to_state`:
-  [sglang#36333](https://github.com/sgl-project/sglang/issues/36333), unfixed
-  upstream). Only a restart clears it. Use the proxy port.
+Until v1.7 that was a patch this repo vendored and built into a local image.
+Since v1.8 it is upstream and the image is official:
 
-Measured on the reference box (two-call wall-clock, quality canaries 4/4,
-needle-in-haystack passing at 100K with fresh content):
+- **`--ple-offload-embedding --ple-offload-backend file --ple-offload-dir /ple`**
+  ([sglang#37068](https://github.com/sgl-project/sglang/pull/37068)), which adds
+  two things the vendored patch never had: a `posix_fadvise(WILLNEED)` prefetcher
+  for prefill-sized gathers, and a **resident-set trimmer**. That trimmer is the
+  headline of this release for anyone who ran v1.6: a row fault maps in a whole
+  page-cache folio, so the mapping's resident set climbed towards the full
+  47.7 GiB while a token read a few KB of it, and on unified memory that is the
+  same pool SGLang sizes the KV cache from. It is the mechanism behind the boot
+  lottery v1.6.2 pinned `--max-total-tokens` against, and behind the ~9 GiB of
+  host headroom a 120K prompt used to cost. Capped by
+  `SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB` (default 8; `PLE_RSS_BUDGET_GB=` at
+  install). Seen at first boot here: `PLE table: trimmed resident set 10.6 ->
+  0.2 GiB (budget 8.0 GiB)`.
+- **QSA decode on sm_121** runs the merged kernel of
+  [#36845](https://github.com/sgl-project/sglang/pull/36845) from inside the
+  official image, so the two attention-backend flags this lane used to need are
+  gone and the engine resolves the route itself.
+- The table is **rewritten on every boot**, so the launcher deletes the previous
+  `ple_table_*.bin` first: upstream measures a cold populated file rewriting at
+  ~17 MB/s (~55 min) against GB/s on a fresh sparse one. One warm rewrite here
+  ran at +27% of a fresh boot rather than 5x, which is the page cache, not a
+  contradiction. It also retires the poisoned-table guard of v1.5 to v1.7: a
+  table written from scratch cannot be half-written from a previous boot.
+
+### Three tiers, because concurrency and context trade one for one
+
+Each mamba state slot costs **0.206 GiB** of the same pool the KV cache comes
+out of (measured here), and the hybrid GDN/QSA model reserves **5 slots per
+running request** with `extra_buffer`, 4 with `extra_buffer_lazy`. The scheduler
+silently caps `--max-running-requests` to what the mamba pool admits while
+`/get_server_info` still reports what you asked for, so every tier pins
+`--max-mamba-cache-size` to requests x slots.
+
+| `FLASH_TIER=` | requests | KV pool | measured here |
+|---|---|---|---|
+| **`context`** (default) | 4 | **279,872 to 463,488 tokens** across boots, and every one of them above the 262,144-token window, so a full-context prompt always fits | **47.9 / 47.1 / 30.9 tok/s** single stream (code, math, prose FR), **71.6 tok/s aggregate at 4 streams** (17.9-18.7 each) |
+| `concurrency` | 8 | 129,792 tokens on the boot measured, so prompts stop near 119K | 38.2 / 37.1 / 27.3 single and **96.5 tok/s aggregate at 8** (12.1-13.5 each), measured before the draft vocabulary |
+| `throughput` | 24, no speculation | ~286K tokens (upstream) | upstream: 83 tok/s of output at 24, 15.9 single |
+
+Both speculative tiers are the cookbook's own verified single-Spark cells, which
+score **GSM8K 97.1-97.3% on the full 1,319-question set** upstream. `context` is
+this repo's default because the lane exists for long context and an agent client
+runs one or two streams; it is the same cell with the concurrency pinned lower.
+
+The pool is still sized from what the host has free at the instant SGLang
+profiles, so it is a range rather than a number: boots of the identical launcher
+have measured 279,872, 454,016, 458,816 and 463,488 tokens at the `context`
+tier. What v1.8
+removed is the *creeping* half of that variance (the table's resident set), not
+the boot-time half, which is why the launcher still waits for a busy box to go
+quiet before it starts. At this tier both ends of the range are above the
+262,144-token window, which is the property that matters.
+
+Measured on the reference box at the `context` tier, image
+`dev-qwen38-next-local` (`4ccff141db`):
 
 | axis | measured |
 |---|---|
-| **prefix caching, 30K re-serve** | **18.4 s cold, 0.5 s cached (x36)** |
-| **known 30K prefix + fresh question** | **~3 s (x5.8)**: the agentic turn shape |
-| decode, reasoning | 34.2 tok/s (up to ~42 reported on short-context profiles) |
-| decode, free prose | 20.3 tok/s |
-| long-context retrieval (`./needle.sh`) | exact passphrase retrieval, 4 trials per depth; the probe reports the real prompt token count and, with `--mem`, the host MemAvailable floor during each prompt (the flash lane's real ceiling, see the context row) |
-| prefill, cold | ~1,500-2,000 tok/s (real QSA sparse kernels) |
+| **prefix caching, 27K re-serve** | **12.0 s cold, 2.5 s cached (x4.8)**, 27,008 of 27,026 tokens from the cache |
+| decode, single stream | **47.9 on code, 47.1 on math, 30.9 on prose FR, 29.3 on prose EN** (median of three repeats after a discarded warm-up; 38.8 / 36.7 / 26.5 on the v1.6 overlay) |
+| decode, 4 streams | **71.6 tok/s aggregate**, 17.9-18.7 per stream |
+| **agent loop** (`./bench-agent.py`, 8 turns on an 8K prefix, work pinned at 130 tokens) | **27.0 ms/tok** median, TTFT flat at 0.31-0.34 s, **-1 ms of TTFT per 1,000 added prompt tokens**: the prefix cache is being reused, with speculation on |
+| **long-context retrieval** | **3/3 exact at ~120K** and **1/1 exact at 200,058 tokens** (`./needle.sh --mem`, fresh passphrase each), no run of token id 0 anywhere |
+| quality canaries | 4/4 (merge, logic, French, primes) |
+| prefill, cold | ~2,250 tok/s at 27K, ~1,960 tok/s at 200K |
 | vision (image input) | works, including combined with large prompts |
 | context window | 262,144 native, no YaRN |
-| **context that fits** | **one prompt tops out at 128K tokens** on a 128 GB box, enforced by the proxy (`PROMPT_CEILING_TOKENS`, v1.5.6): that keeps about 14 GiB of host memory available at the prompt's peak. The limit is memory, not the KV pool (184K tokens at fraction 0.81): the prefill of a long prompt grows the engine's footprint by ~0.27 GiB per 1k tokens beyond ~90K (measured 29/08: 120K prompt +7.4 GiB, 135K +11.4, 150K +15.3, 177K +22.8 with 0.8 GiB left on the host; recoverable GPU driver allocation refusals appear from ~125K depending on the run, the cockpit counts them). Prompts above the ceiling get a clear 400 (`context_too_long`) instead of pushing the box to the memory edge (a 512 prefill chunk was tested and rejected: slower, and no better at 150K); one giant context runs at a time (`--max-running-requests 1`). The v1.5.2/v1.5.3 scheduler hangs are fixed since v1.5.4 (CHANGELOG). A true-262K preset needs an engine-side fix for that growth and is not promised. The 27B lane does not show it (1M unit measured flat at 100K, 200K and 300K, BENCHMARKS) |
-| decode at depth | slows with context: field reports put it near 28-31 tok/s around 100K, ~22 tok/s at 240K (hashd1ve) |
-| memory | fraction 0.81 + docker cap 110g (the cap does not see CUDA unified allocations). Host MemAvailable: ~24 GiB idle after boot, 16.6 GiB during a 120K prompt, 12.6 GiB at 135K (measured 29/08); the earlier "headroom unchanged at ~23 GB" note was an idle measurement |
+| **context that fits** | **one prompt tops out at 200,000 tokens**, enforced by the proxy (`PROMPT_CEILING_TOKENS`), and by its share of the KV pool on the smaller tiers. This is up from 128K in v1.5.6 to v1.7, and the reason is the trimmer above: a 120K prompt now costs **0.0-0.1 GiB** of host headroom where it used to cost ~9 GiB, and a 200K prompt costs 3.5 GiB and leaves **12.6 GiB free** against the ~10 GiB livelock edge. Prompts above the ceiling get a clear 400 (`context_too_long`). Past 200K is deliberately unmeasured here: 262K would land near that edge, and on this box a livelock costs a power cycle |
+| memory | fraction 0.85 + docker cap 110g (the cap does not see CUDA unified allocations). Host MemAvailable: **16.6-16.9 GiB idle** at the `context` tier whatever the pool came out at, so a larger pool inside the same static fraction costs the host nothing; 19.8 GiB at `concurrency`; 14.7-15.0 GiB through a 120K prompt, 12.6 GiB through a 200K one |
+| boot to `/health` | 12 min 21 s with a fresh table, 14 min 54 s when it rewrote a populated one |
 
 **Why the flash lane keeps a bf16 KV cache.** The 27B FP8 target asks for
 `--kv-cache-dtype fp8_e4m3` and gains about half its pool for free, so the same
@@ -311,44 +341,34 @@ trick looks tempting here, and it works: an fp8 KV cache on the QSA path
 to **2/6 against 6/6 in bf16**, and they keep bf16 as their own production
 setting. The difference from the 27B case is calibration: the NVFP4 and FP8 27B
 checkpoints carry KV scales the engine applies, while nothing calibrates the QSA
-path's cache. A bigger pool is not worth a measured quality drop, so this lane
-stays bf16 and the 128K one-prompt ceiling stays the memory answer.
+path's cache. A bigger pool is not worth a measured quality drop.
 
 The NEXTN speculative head is the model's own next-token module (its 31
 tensors ship in the checkpoint in BF16, hence `unquant` for the draft): drafts
 are verified by the target, so output quality is exactly the target's.
 
-**Two ways the scheduler can hang under pool pressure (reproduced here twice
-on 2026-08-29, same family as [sglang #30314](https://github.com/sgl-project/sglang/issues/30314)):**
-a second giant request admitted while the pool sits at 98 %, or a new ~90k
-prompt after several large prompts left cached in the radix cache (prefill
-completes at 89 % usage, decode never starts). The frontend keeps answering
-`/health` while nothing is served, so a health probe is not enough. What this
-repo does about it: v1.5.2 serves one giant context at a time; `needle.sh`
-flushes the cache before each probe; the cockpit (`dashboard/`, opt-in, see
-below) runs a real generation probe, flushes the cache when the engine idles
-with a mostly-held pool, and can restart a wedged engine if you arm it. Since v1.5.4 the keepalive proxy refuses prompts the lane cannot serve (v1.5.6: counted by the engine's tokenizer, capped by the per-lane ceiling; v1.5.8: an engine that is down answers `503 engine_unavailable`, never a size refusal) and aborts
-the generation of a client that disappeared; between very large prompts, `curl -X POST
-127.0.0.1:30000/flush_cache -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)"`
-still avoids the eviction path on 9-slot boots.
+**One thing still wedges this lane: a prompt larger than the KV pool, sent
+straight to the engine port.** It is queued and never admitted, which stalls
+every request after it (`/abort_request` answers `not found in rid_to_state`:
+[sglang#36333](https://github.com/sgl-project/sglang/issues/36333), open
+upstream). Only a restart clears it, and at 15 minutes that is worth avoiding:
+**use the proxy port**, which refuses such a prompt with a 400. The `context`
+tier makes this much harder to hit, since its pool (279,872) is larger than the
+window it serves (262,144).
 
-Known upstream behavior, reproduced here
-([sglang #35537](https://github.com/sgl-project/sglang/issues/35537)): with
-chunked prefill, while one request is decoding a long answer, NEW requests can
-starve until it finishes, even with room in every pool. A single agent client
-(opencode sends one request at a time) never notices; concurrent clients see
-bursty latency. When a client disappears the keepalive proxy closes the
-upstream; an explicit server-side abort of the orphaned generation is coming
-with proxy v6.7 (until then an abandoned request decodes to its max_tokens).
-Prefix caching is why this lane exists: an agent client resends the whole
-conversation every turn, and the radix cache turns that from a full recompute
-into an incremental one. The lane runs `--max-running-requests 1` since v1.5.2;
-the boot log shows the default mamba state cache (9 slots, 5 per running
-request) caps it to one running request anyway. The 48 GB mmap backing file
-(`PLE_DIR`, default `~/flashnext-ple`) is rewritten on every boot up to v1.5.2
-(issue #7); v1.5.3 reuses it.
+Two older failure modes are worth knowing about. The scheduler could hang under
+pool pressure with a second giant request admitted at 98% usage (same family as
+[sglang#30314](https://github.com/sgl-project/sglang/issues/30314)); the
+frontend keeps answering `/health` while nothing is served, so a health probe is
+not enough, which is why the cockpit runs a real generation probe and flushes
+the prefix cache when the engine idles with a mostly-held pool. And with chunked
+prefill, new requests can starve while one request decodes a long answer
+([sglang#35537](https://github.com/sgl-project/sglang/issues/35537)); a single
+agent client never notices, concurrent clients see bursty latency.
+`/flush_cache` is refused with a 400 while anything is in flight, by design:
+flush when the lane is idle.
 
-## The five targets, and switching between them
+## The seven targets, and switching between them
 
 | choice | checkpoint | revision | engine, unit |
 |---|---|---|---|
@@ -357,6 +377,43 @@ request) caps it to one running request anyway. The 48 GB mmap backing file
 | `fp8` | `Qwen/Qwen3.8-27B-FP8` | `017b9c7` | SGLang, `qwen38-sglang` |
 | `uncensored-fp8` | `edp1096/Huihui-Qwen3.8-27B-abliterated-FP8` | `603028a` | SGLang, `qwen38-sglang` |
 | `flash` | `RadixArk/Qwen3.8-Flash-Next-NVFP4` | `7b71922` | SGLang, `qwen38-flash` |
+| `flash-uncensored` | `dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4` | `be794b9` | SGLang, `qwen38-flash` |
+| `flash-nvda` | `nvidia/Qwen3.8-Flash-Next-NVFP4` | `fc694b5` | SGLang, `qwen38-flash` |
+
+`flash-uncensored` is the abliterated build of the tree this lane already
+serves, and it was chosen on evidence rather than on downloads: of the
+abliterated Flash-Next exports published for this architecture, this one has
+**206 shards with the same names as the stock export and 205 of them
+byte-identical in size**, the same index, the same `hf_quant_config` and the same
+chat template. It is an abliteration OF what this lane serves, so every serving
+flag transfers unchanged, MTP and the vision tower included. Validated here:
+boot 10 min 40 s, KV pool 473,664 tokens, decode 45.4-46.4 tok/s on code,
+canaries 4/4, needle 1/1 exact at 120K, prefix caching x5.9, and **0 refusals out
+of 5** deliberately blunt probes, which is the point of the variant. Safety
+refusals are removed, which moves the guardrails onto you: filtering, human
+review and access control are yours to supply, and the lane binds to `0.0.0.0`.
+Two alternatives were rejected for stated reasons, both worth knowing if you go
+looking: `orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4` is a different
+packaging (18 shards, 170.9 GiB, no `hf_quant_config`, a separate
+`model-mtp.safetensors`), and the Mia/Keys splice cannot be served here at all,
+because it is built on the vLLM tree
+(`Qwen3_8FlashNextForConditionalGeneration`, `model_type qwen3_8_flash_next`)
+while SGLang registers only `Qwen4ExpForConditionalGeneration`, with zero
+mentions of the other name anywhere in the image.
+
+`flash-nvda` is NVIDIA's own ModelOpt **MIXED_PRECISION** export of the same
+176B model: NVFP4 routed experts, an FP8 N-gram table and FP8 block-scaled MTP
+experts, ~124 GiB. Same lane, same tiers, one difference that matters and two
+flags that carry it: its MTP draft is fp8 rather than BF16, which leaves a much
+larger KV pool at identical pins (upstream measured 174K tokens against 93K on
+the cookbook's 8-request cell). It is served with **no `--quantization`**, because
+it resolves to `modelopt_mixed` on its own, and with **`--moe-runner-backend
+flashinfer_cutlass`** pinned, because the mixed-precision auto-default picks
+`flashinfer_trtllm` on GB10 and the NVFP4 MoE method rejects it at autotune.
+`./switch-model.sh flash-nvda` rewrites the model path, the revision and that
+flag pair together. It needs the mixed-precision loader of
+[sglang#38121](https://github.com/sgl-project/sglang/pull/38121), which is in the
+image this repo pins.
 
 The uncensored target is huihui-ai's abliteration of Qwen3.8-27B re-quantized
 with the identical RadixArk modelopt NVFP4 recipe (verified: same
@@ -428,6 +485,31 @@ and the keepalive proxy stay put.
   commands for the engine pair it just queued.
 - Speculation stays lossless with every target (DFlash2 drafts and MTP drafts
   are verified against the target model); only acceptance rates vary.
+
+## Three tools worth knowing about
+
+```bash
+./bench-agent.py                  # the agent-loop shape: ms/tok on a growing conversation
+./bench-agent.py --turns 6 --prefix-tokens 30000
+./build-token-map.py --help       # the reduced draft vocabulary (install.sh runs it for you)
+./check-pins.sh                   # does every pinned revision and digest still resolve?
+```
+
+`bench-agent.py` measures the shape an agent client actually has, which none of
+the tok/s numbers above capture: it resends a growing conversation and asks for a
+short answer, with the work pinned so ms/tok compares engines and not answer
+lengths. The number to read is **TTFT per 1,000 added prompt tokens**: near zero
+means the prefix cache is being reused, and a figure that tracks the whole prompt
+means it is not, which is what to check before blaming decode. That distinction
+is not academic. On vLLM a third party measured the drafter ranking *invert*
+between the two shapes: MTP had the best decode on their box and the worst agent
+loop, worse than no speculation at all, because their scheduler drops a cacheable
+block per request when a drafter is configured. This lane does not pay that, and
+`bench-agent.py` is how you check yours.
+
+`check-pins.sh` is deliberately not in CI: a green build must not depend on
+Hugging Face being up. Run it before a release, or when an install fails on a
+fresh box.
 
 ## Operations
 
@@ -680,7 +762,15 @@ downloaded and installed when you ask for it (`MODEL_CHOICE=flash`), and the reg
 `opencode.json` gains an `xhigh` reasoning-effort variant. v1.4 -> v1.5 moves the flash
 lane from vLLM to SGLang (working prefix caching; the upgrade keeps your port, cache and
 model choices and regenerates the launch script on the new engine; the first boot writes
-the 48 GB PLE backing file). 27B boxes are again untouched. Upgrading from v1.2.x also removes the deprecated Claude Code warmup drop-in if you had
+the 48 GB PLE backing file). **v1.7 -> v1.8 moves the flash lane onto the official image
+and off this repo's overlay**: the upgrade pulls one 15 GB image, builds nothing, deletes
+the previous N-gram table file so the next boot writes a fresh one (~12 min), and serves 4
+concurrent requests instead of 1. It also raises that lane's one-prompt ceiling from 128,000
+to 200,000 tokens and its opencode limits with it, so an agent client will start sending
+longer conversations: that is measured, not assumed (needle 3/3 at 120K and 1/1 at 200K, host
+memory floor 12.6 GiB). Rollback is `OVERLAY_FLASH=1 ./install.sh`, which rebuilds the v1.7
+image; the v1.7 image is kept on the box for exactly that. **27B boxes are untouched by
+v1.8**, on purpose: see `dflash2/ATTRIBUTION.md`, "The 27B migration, and what blocks it". Upgrading from v1.2.x also removes the deprecated Claude Code warmup drop-in if you had
 installed it, and no longer writes `claude-code.env`: an existing copy keeps working and will
 never be overwritten again (earlier versions regenerated it on every install, losing any
 customization), but it is unmaintained; the supported client config is `opencode.json`. v1.1 → v1.2 downloads the ~4 GB

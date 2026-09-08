@@ -26,6 +26,27 @@ LANE_TEMPLATE = {"27b": "qwen38-sglang.service.template",
                  "27b-1m": "qwen38-sglang-1m.service.template",
                  "flash": "qwen38-flash-launch.sh.template"}
 CONTEXT_MODES = ("native", "1m")
+# The flash lane's two cookbook-verified tiers, the same strings install.sh
+# renders into the launcher. Kept here so a recipe read from the repo matches
+# the launcher on the box flag for flag.
+# The draft's own quantization is not here: it belongs to the checkpoint, and
+# install.sh renders it next to the target's scheme. See FLASH_QUANT_ARGS.
+_MTP = ("--mamba-radix-cache-strategy extra_buffer "
+        "--speculative-algorithm NEXTN --speculative-num-steps 3 "
+        "--speculative-eagle-topk 1 --speculative-num-draft-tokens 4")
+TIER_ARGS = {
+    "context": "--max-running-requests 4 --max-mamba-cache-size 20 " + _MTP,
+    "concurrency": "--max-running-requests 8 --max-mamba-cache-size 40 " + _MTP,
+    "throughput": ("--max-running-requests 24 --max-mamba-cache-size 96 "
+                   "--mamba-radix-cache-strategy extra_buffer_lazy"),
+}
+
+# Placeholders a recipe keeps on purpose: they name where this particular box put
+# things, and a recipe is host-independent by design (drift() ignores a
+# placeholder on either side). Everything else in a lane template carries a
+# serving flag and MUST be substituted by builtin(), which is asserted there.
+HOST_PLACEHOLDERS = ("__HOME__", "__USER__", "__GROUP__", "__HF_CACHE__",
+                     "__PLE_DIR__", "__PORT__", "__PROXY_PORT__", "__PROMPT_CEILING__")
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -53,7 +74,22 @@ FLAGS = {
     "prefill_attention": ("--prefill-attention-backend", str, ("flashinfer", "triton", "trtllm_mha", "fa3")),
     "decode_attention": ("--decode-attention-backend", str, ("flashinfer", "triton", "trtllm_mha", "fa3")),
     "quantization": ("--quantization", str, ("modelopt_fp4", "fp8", "none")),
-    "mamba_cache_strategy": ("--mamba-radix-cache-strategy", str, ("extra_buffer", "no_buffer")),
+    # The mixed-precision export resolves its own scheme and is served with no
+    # --quantization at all, but it does need the MoE runner pinned: the auto
+    # default picks flashinfer_trtllm on GB10 and the NVFP4 MoE method rejects it.
+    "moe_runner_backend": ("--moe-runner-backend", str, ("flashinfer_cutlass", "flashinfer_trtllm", "triton", "auto")),
+    "fp4_gemm_backend": ("--fp4-gemm-backend", str, ("flashinfer_cutlass", "flashinfer_cudnn", "flashinfer_cutedsl", "flashinfer_trtllm", "marlin", "auto")),
+    # Compressed QSA addresses the KV pool in pages; the flash lane serves 64,
+    # which is also what the engine sets by itself for this model.
+    "page_size": ("--page-size", int, (1, 256)),
+    # Where the 47.7 GiB N-gram table lives: pinned host RAM (upstream default,
+    # useless on unified memory) or a sparse file the gather kernel reads through
+    # the host page tables (sglang#37068, the only thing that fits one GB10).
+    "ple_offload_backend": ("--ple-offload-backend", str, ("file", "pinned")),
+    # The reduced draft vocabulary. A path, so it is checked for shape only: the
+    # engine reads it with torch.load and slices the target head to those rows.
+    "speculative_token_map": ("--speculative-token-map", str, None),
+    "mamba_cache_strategy": ("--mamba-radix-cache-strategy", str, ("extra_buffer", "extra_buffer_lazy", "no_buffer", "auto")),
     # Only the FP8 targets ask for this; the NVFP4 checkpoints carry KV scales in
     # their own quant config. It is worth about half the KV pool, so a recipe that
     # omits it is not the recipe that was measured.
@@ -61,24 +97,42 @@ FLAGS = {
 }
 DRAFT_FLAGS = {
     "algorithm": ("--speculative-algorithm", str),
+    # Belongs to the checkpoint: an NVFP4 export whose MTP tensors stayed BF16
+    # must say "unquant", and one whose MTP experts are fp8 block-scaled must
+    # not. Getting this wrong loads a quantized head as if it were dense.
+    "quantization": ("--speculative-draft-model-quantization", str),
     "repo": ("--speculative-draft-model-path", str),
     "revision": ("--speculative-draft-model-revision", str),
     "steps": ("--speculative-num-steps", int),
     "draft_tokens": ("--speculative-num-draft-tokens", int),
 }
-BUILTIN_IDS = ("stock", "uncensored", "fp8", "uncensored-fp8", "flash")
+BUILTIN_IDS = ("stock", "uncensored", "fp8", "uncensored-fp8", "flash", "flash-nvda",
+               "flash-uncensored")
 
 
 def parse_assignments(text: str) -> dict[str, str]:
-    """Top-level shell assignments -> literal value (default of ${V:-x} kept)."""
+    """Shell assignments -> literal value (default of ${V:-x} kept).
+
+    FIRST occurrence wins. install.sh declares every pin once in its header and
+    then reassigns some of those names inside its convergence logic (a box
+    already serving the throughput tier sets FLASH_TIER=throughput before
+    rendering); reading the last assignment reported that runtime branch as the
+    repo's pin, which made a latency recipe come out with the other tier's
+    concurrency."""
     out = {}
     for m in ASSIGN_RE.finditer(text):
-        out[m.group(1)] = m.group(4) if m.group(4) is not None else m.group(3)
+        key = m.group(1)
+        if key in out:
+            continue
+        out[key] = m.group(4) if m.group(4) is not None else m.group(3)
     return out
 
 
 def _flag(text: str, flag: str):
-    m = re.search(re.escape(flag) + r"[ =]+([^\s\\'\"]+)", text)
+    # ")" is excluded because the flash launcher carries its tier as a bash
+    # array, TIER=(--max-running-requests 24 ... extra_buffer_lazy), and the
+    # closing parenthesis is not part of the last flag's value.
+    m = re.search(re.escape(flag) + r"[ =]+([^\s\\'\")]+)", text)
     return m.group(1) if m else None
 
 
@@ -121,6 +175,20 @@ def profile_from_text(text: str) -> dict:
             "drafter": drafter, "serve": serve, "env": env}
 
 
+def _deref(value: str | None, assigns: dict[str, str]) -> str | None:
+    """One level of "$OTHER" / "${OTHER}" indirection, resolved from assigns.
+
+    install.sh declares the two serving images as the pinned bases by default
+    (SERVE_IMAGE="${SERVE_IMAGE:-$IMAGE}"), because since v1.8 the served image
+    IS the official one and only OVERLAY=1 puts a locally built tag there. The
+    pin parser sees the reference, so a recipe read from the repo has to follow
+    it or it reports "$IMAGE" as the image."""
+    if isinstance(value, str) and value.startswith("$"):
+        name = value[1:].strip("{}")
+        return assigns.get(name, value)
+    return value
+
+
 def _subst(value, mapping: dict[str, str]):
     if isinstance(value, str):
         for k, v in mapping.items():
@@ -138,34 +206,76 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str],
         raise KeyError(recipe_id)
     if context_mode not in CONTEXT_MODES:
         raise ValueError(f"context_mode: {context_mode!r} not in {CONTEXT_MODES}")
-    lane = "flash" if recipe_id == "flash" else "27b"
+    lane = "flash" if recipe_id.startswith("flash") else "27b"
     key = "27b-1m" if (lane == "27b" and context_mode == "1m") else lane
-    prof = profile_from_text(templates[LANE_TEMPLATE[key]])
+    text = templates[LANE_TEMPLATE[key]]
     if lane == "flash":
-        repo, rev, image = assigns["FLASH_REPO"], assigns["FLASH_REV"], assigns["FLASH_SERVE_IMAGE"]
+        pfx = {"flash-nvda": "FLASH_NVDA", "flash-uncensored": "FLASH_UNC"}.get(recipe_id, "FLASH")
+        repo, rev = assigns[f"{pfx}_REPO"], assigns[f"{pfx}_REV"]
+        image = _deref(assigns["FLASH_SERVE_IMAGE"], assigns)
         base = assigns.get("FLASH_IMAGE")
-        overlay = "flash-sglang"
+        # Since v1.8 the served image IS the pinned official one, so there is no
+        # overlay to name unless this box installed with OVERLAY=1.
+        overlay = "flash-sglang" if image != base else None
     else:
         pfx = {"stock": "STOCK", "uncensored": "UNC", "fp8": "FP8",
                "uncensored-fp8": "UNCFP8"}[recipe_id]
-        repo, rev, image = assigns[f"{pfx}_REPO"], assigns[f"{pfx}_REV"], assigns["SERVE_IMAGE"]
-        base = None
-        overlay = "dflash2"
+        repo, rev = assigns[f"{pfx}_REPO"], assigns[f"{pfx}_REV"]
+        image = _deref(assigns["SERVE_IMAGE"], assigns)
+        base = assigns.get("IMAGE")
+        overlay = "dflash2" if image != base else None
     # The unit templates carry the KV cache choice as a placeholder because it is
     # per-target; substitute it the way install.sh does so an FP8 recipe shows the
     # flag that defines it instead of leaving a placeholder behind.
     kv = "--kv-cache-dtype fp8_e4m3 " if recipe_id in ("fp8", "uncensored-fp8") else ""
+    # The flash lane's tier, its checkpoint's own flag pair and the two numbers
+    # install.sh renders are placeholders in the template, so the profile has to
+    # be read AFTER substitution or the tier's flags are invisible and the memory
+    # fraction reads as a string.
+    if recipe_id == "flash-nvda":
+        quant_args = "--moe-runner-backend flashinfer_cutlass "
+    elif lane == "flash":
+        # flash and flash-uncensored are the same tree, so the same flags, and
+        # their in-checkpoint MTP tensors are BF16 in an NVFP4 export
+        quant_args = ("--quantization modelopt_fp4 "
+                      "--speculative-draft-model-quantization unquant ")
+    else:
+        quant_args = ""
+    tier = assigns.get("FLASH_TIER", "context")
+    tier_args = (TIER_ARGS.get(tier) or TIER_ARGS["context"]) if lane == "flash" else ""
+    # The reduced draft vocabulary is rendered as a whole line, and only when the
+    # tier speculates, exactly as install.sh decides it. Leaving the placeholder
+    # unsubstituted made every flash recipe report a drift against a launcher
+    # that carries the flag (caught by the live HTTP smoke, 2026-09-08).
+    map_size = assigns.get("SPEC_TOKEN_MAP_SIZE", "0")
+    map_line = ""
+    if lane == "flash" and "--speculative-algorithm" in tier_args and map_size not in ("0", ""):
+        map_line = f"TIER+=(--speculative-token-map /out/token-map-{map_size}.pt)"
+    mapping = {"__KV_CACHE_ARGS__": kv,
+               "__MODEL__": repo, "__MODEL_REV_ARGS__": f"--revision {rev}",
+               "__MODEL_REV__": rev, "__IMAGE__": image,
+               "__FLASH_QUANT_ARGS__": quant_args,
+               "__FLASH_TIER_ARGS__": tier_args,
+               "__SPEC_TOKEN_MAP_LINE__": map_line,
+               "__FLASH_MEM_FRACTION__": assigns.get("FLASH_MEM_FRACTION", "0.85"),
+               "__PLE_RSS_BUDGET_GB__": assigns.get("PLE_RSS_BUDGET_GB", "8"),
+               "__DRAFT2_REV__": assigns.get("DRAFT2_REV", "__DRAFT2_REV__"),
+               "__DRAFT_REV__": assigns.get("DRAFT_REV", "__DRAFT_REV__")}
+    rendered = _subst(text, mapping)
+    left = sorted(set(re.findall(r"__[A-Z][A-Z0-9_]*__", rendered))) 
+    unexpected = [ph for ph in left if ph not in HOST_PLACEHOLDERS]
+    if unexpected:
+        raise KeyError(f"builtin({recipe_id!r}) left {unexpected} unsubstituted: a "
+                       f"placeholder that carries a serving flag must be rendered here, "
+                       f"or every box reports a drift it does not have (this happened to "
+                       f"the reduced draft vocabulary, caught by the live HTTP smoke)")
+    prof = profile_from_text(rendered)
     prof = dict(prof)
     prof["serve"] = dict(prof["serve"])
     if kv:
         prof["serve"]["kv_cache_dtype"] = "fp8_e4m3"
-    else:
+    elif lane == "27b":
         prof["serve"].pop("kv_cache_dtype", None)
-    mapping = {"__KV_CACHE_ARGS__": kv,
-               "__MODEL__": repo, "__MODEL_REV_ARGS__": f"--revision {rev}",
-               "__MODEL_REV__": rev, "__IMAGE__": image,
-               "__DRAFT2_REV__": assigns.get("DRAFT2_REV", "__DRAFT2_REV__"),
-               "__DRAFT_REV__": assigns.get("DRAFT_REV", "__DRAFT_REV__")}
     drafter = {k: _subst(v, mapping) for k, v in prof["drafter"].items()}
     env = {k: _subst(v, mapping) for k, v in prof["env"].items()}
     return {
@@ -241,7 +351,14 @@ def validate(recipe: dict, reserved_ids: tuple = ()) -> list[str]:
                 continue
             _flag_name, typ, rng = FLAGS[k]
             if typ is str:
-                if v not in rng:
+                if rng is None:
+                    # Free-form string (a path). Shape only: no whitespace, no
+                    # shell metacharacters, because it is rendered into a
+                    # launcher, and bounded so a recipe cannot carry a payload.
+                    if (not isinstance(v, str) or not v or len(v) > 512
+                            or re.search(r"[\s;&|`$<>(){}\\'\"]", v)):
+                        errs.append(f"serve.{k}: a plain path, no whitespace or shell metacharacters")
+                elif v not in rng:
                     errs.append(f"serve.{k}: one of {list(rng)}")
             elif isinstance(v, bool) or not isinstance(v, (int, float)):
                 errs.append(f"serve.{k}: number expected")

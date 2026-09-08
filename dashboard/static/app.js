@@ -41,10 +41,13 @@ const STAGE_LABEL = {'init': 'init', 'loading-weights': 'weights', 'loading-draf
 const ALL_STAGES = Object.keys(STAGE_LABEL);
 const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B'};
 const AGENT_UNIT = 'opencode-web.service';
-// The three 27B targets share one unit, so the lane name alone ("27B") does not say
-// which checkpoint is loaded. Every control that names the lane says the checkpoint too.
+// Both lanes have several targets sharing one unit, so the lane name alone ("27B",
+// "flash") does not say which checkpoint is loaded. Every control that names a lane
+// says the checkpoint too. The plain "flash" target maps to the empty string on
+// purpose: it is that lane's default and the lane name already reads right.
 const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8',
-                      'uncensored-fp8': 'FP8 uncensored', flash: ''};
+                      'uncensored-fp8': 'FP8 uncensored', flash: '',
+                      'flash-uncensored': 'uncensored', 'flash-nvda': 'NVIDIA export'};
 function laneLabel(unit){
   if (unit === AGENT_UNIT) return 'the opencode web server';
   const base = LANE_NAME[unit] || unit.replace('.service', '');
@@ -616,7 +619,7 @@ const JOBLINES = {id: null, lines: []};
 // as the parameter dict that happens to be its wire format.
 const ACTION_PHRASE = {
   unit: p => `${p.verb || 'act on'} ${String(p.unit || '').replace('.service', '')}`,
-  switch: p => `switch the 27B lane to ${TARGET_SHORT[p.target] || p.target || ''}`,
+  switch: p => `switch to ${TARGET_SHORT[p.target] || p.target || 'flash 176B'}`,
   flush_cache: () => 'flush the radix cache',
   abort_all: () => 'abort every generation in flight',
   smoke: () => 'smoke probe through the proxy',
@@ -983,7 +986,9 @@ function askAction(name, params, argv, warns){
   if (!$('modal').hidden) return;
   const TARGET_NAME = {stock: 'stock 27B (NVFP4)', uncensored: 'uncensored 27B (NVFP4)',
                        fp8: 'FP8 27B (Qwen official)', 'uncensored-fp8': 'FP8 27B abliterated',
-                       flash: 'flash 176B'};
+                       flash: 'flash 176B (NVFP4)',
+                       'flash-uncensored': 'flash 176B uncensored (NVFP4)',
+                       'flash-nvda': 'flash 176B, NVIDIA export'};
   const TARGET_NOTE = {
     fp8: 'Qwen\u2019s own FP8 release: the most faithful weights of this lane, and the heaviest. '
        + '30.9 GB against 21 GB for NVFP4, and SGLang takes that out of the KV pool: expect around '
@@ -993,7 +998,14 @@ function askAction(name, params, argv, warns){
     uncensored: 'The abliterated NVFP4 checkpoint: same size and speed as stock, refusals removed.',
     'uncensored-fp8': 'The abliterated weights in Qwen\u2019s own FP8 format: the refusals of the FP8 target removed, '
        + 'at the same 30.9 GB and the same cost in pool and speed. The first switch downloads about 31 GB.',
-    flash: 'The 176B Flash-Next lane. It has its own unit, its own image and its own 48 GB PLE table.'};
+    flash: 'The 176B Flash-Next lane. It has its own unit, its own image, and a 47.7 GiB N-gram '
+       + 'table served from a file on the NVMe that the server rewrites on every boot.',
+    'flash-uncensored': 'The abliterated build of the same 176B tree: 205 of its 206 shards are '
+       + 'byte-identical in size to the stock export, so every serving flag is the same one. '
+       + 'Refusals removed. The first switch downloads about 126 GB.',
+    'flash-nvda': 'NVIDIA\u2019s own mixed-precision export of the same 176B model: NVFP4 experts, '
+       + 'an FP8 N-gram table and FP8 block-scaled MTP experts. Served with no --quantization and '
+       + 'a pinned MoE runner, which switch-model.sh handles. The first switch downloads about 124 GB.'};
   const TITLES = {unit: p => `${p.verb} ${laneLabel(p.unit)}`,
                   switch: p => `switch the target model to ${TARGET_NAME[p.target] || p.target}`,
                   flush_cache: () => 'flush the engine cache', abort_all: () => 'abort every in-flight generation', smoke: () => 'run a smoke generation through the proxy', diag_bundle: () => 'write a diagnostics bundle'};
@@ -1154,7 +1166,15 @@ $('upbtn').addEventListener('click', async () => {
       tr.insertCell().append(chip(m.status, m.status === 'same' ? 'ok' : m.status === 'moved' ? 'warn' : 'err'));
     });
     const rel = d.release || {};
-    setText('upline', rel.latest ? `repo release: local ${rel.local}, latest published ${rel.latest}` + (rel.latest === rel.local ? ' (up to date)' : ' (update available)') : 'release check offline (no network or GitHub unreachable)');
+    // A running cockpit serves html from disk against python it imported at
+    // start, so a repo updated underneath it shows new controls the old action
+    // layer refuses. Say it where the release line already lives.
+    const stale = rel.stale_code || [];
+    const relLine = rel.latest ? `repo release: local ${rel.local}, latest published ${rel.latest}` + (rel.latest === rel.local ? ' (up to date)' : ' (update available)') : 'release check offline (no network or GitHub unreachable)';
+    setText('upline', stale.length
+      ? `this cockpit is running code older than the repo (${stale.join(', ')} changed on disk): restart it with sudo systemctl restart qwen38-dashboard.service, or its controls and its checks disagree. ${relLine}`
+      : relLine);
+    const up = $('upline'); if (up) up.classList.toggle('warn', stale.length > 0);
     const moved = (d.models || []).filter(m => m.status === 'moved').length;
     b.textContent = moved ? `recheck (${moved} moved)` : 'recheck (all same)';
   }catch(e){ b.textContent = 'retry'; setText('upline', 'check failed: ' + e.message); }
