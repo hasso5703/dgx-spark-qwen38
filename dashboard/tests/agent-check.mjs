@@ -111,6 +111,26 @@ await evalJs(`document.getElementById('agexit').click()`); await sleep(200);
 const after = JSON.parse(await evalJs(`JSON.stringify({ on: document.body.classList.contains('agentmax'), h: document.getElementById('agframe').getBoundingClientRect().height, stored: localStorage.getItem('cockpit.agent.max'), label: document.getElementById('agmax').textContent })`) || '{}');
 ok('fullscreen: the corner button brings the cockpit back and the frame is embedded again', after.on === false && after.h < 900 && after.label === 'Fullscreen' && after.stored === '0', JSON.stringify(after));
 
+// 1c. The relay note must never shrink the fullscreen frame. This check runs on
+// the relay's own host, where the note is hidden, so it is shown on purpose here:
+// `:not([hidden])` counts its own argument, which made
+// `.agentnote:not([hidden]) + .agentframe` (0,3,0) outweigh
+// `body.agentmax .agentframe` (0,2,1). Measured before the fix, on a 900 px
+// window with the note shown: a 682 px "fullscreen" frame.
+// Shown, measured and hidden again inside one synchronous block: the state tick
+// rewrites the note's hidden flag on this host, and a first attempt measured the
+// frame after that tick had already put it back.
+await evalJs(`document.getElementById('agmax').click()`); await sleep(400);
+const noted = JSON.parse(await evalJs(`(() => {
+  const n = document.getElementById('agnote'), f = document.getElementById('agframe');
+  const was = n.hidden; n.hidden = false;
+  const out = { on: document.body.classList.contains('agentmax'), note: !n.hidden,
+                h: Math.round(f.getBoundingClientRect().height), vh: window.innerHeight };
+  n.hidden = was; return JSON.stringify(out);
+})()`) || '{}');
+ok('fullscreen: a visible relay note does not shrink the frame', noted.on && noted.note && noted.h === noted.vh, JSON.stringify(noted));
+await evalJs(`document.getElementById('agexit').click()`); await sleep(200);
+
 // 2. the relay opened directly (the "Open in a tab" button)
 net.length = 0; consoleErrors.length = 0;
 await send('Page.navigate', { url: `${RELAY}/` }, sessionId);

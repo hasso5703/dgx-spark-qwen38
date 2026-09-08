@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <meta name="description" content="Live control room for the Qwen3.8 serving stack on a DGX Spark: engine lifecycle, KV pool, requests, models, actions.">
 <title>Spark Cockpit</title>
 <link rel="icon" href="/static/favicon.svg">
@@ -103,7 +103,8 @@
   .banner b{font-weight:650}
 
   /* ── shell: rail + content ── */
-  .shell{display:grid; grid-template-columns:var(--rail) 1fr; min-height:calc(100vh - var(--top))}
+  .shell{display:grid; grid-template-columns:var(--rail) 1fr; min-height:calc(100vh - var(--top));
+         min-height:calc(100dvh - var(--top))}
   body.railmin .shell{grid-template-columns:var(--rail-min) 1fr}
   .rail{position:sticky; top:var(--top); align-self:start; height:calc(100vh - var(--top)); overflow:auto;
         border-right:1px solid var(--line); padding:12px 10px; display:flex; flex-direction:column; gap:4px;
@@ -211,6 +212,7 @@
   .btn.mini{padding:4px 10px; font-size:11.5px}
   .btn:disabled{opacity:.42; cursor:not-allowed}
   select{background:var(--soft); color:var(--txt); border:1px solid var(--line); border-radius:9px; padding:5px 10px; font-size:12.5px}
+  .follow{font-size:11.5px; color:var(--mut); display:flex; align-items:center; gap:5px}
   select:disabled{opacity:.5}
 
   /* ── the reservoir: KV pool held vs capacity vs model window ── */
@@ -291,27 +293,88 @@
   @media (max-width:1240px){ .lanepill .sub{display:none} }
   @media (max-width:1120px){ .lanepill{display:none} }
 
+  /* ── held in a hand ─────────────────────────────────────────────────────────
+     Everything here is keyed on the viewport, never on iOS, so a narrow desktop
+     window gets the same layout and the same tests. The numbers come from
+     dashboard/tests/mobile-check.mjs on four real iPhone geometries: before this
+     block, a 393 px phone spent 620 px of its 852 px screen on the bar and the
+     rail before the first card, because both wrapped into three rows. One
+     swipeable row each costs 150 px instead. */
   @media (max-width:980px){
     .shell{grid-template-columns:1fr}
-    .rail{position:static; height:auto; flex-direction:row; flex-wrap:wrap; border-right:0; border-bottom:1px solid var(--line); padding:8px}
+    .rail{position:static; height:auto; flex-direction:row; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden;
+          border-right:0; border-bottom:1px solid var(--line); padding:7px 10px; gap:6px;
+          scrollbar-width:none; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain}
+    .rail::-webkit-scrollbar{display:none}
     .rail .foot{display:none}
-    .rail .nav{width:auto}
-    .top{height:auto; flex-wrap:wrap; padding:8px 12px}
-    /* One row is a desktop luxury: on a phone the bar wraps rather than scroll sideways. */
-    .actbar{flex-wrap:wrap; margin-left:0}
-    .actbar .grp + .grp{padding-left:0; border-left:0}
+    .rail .nav{width:auto; flex:none}
+    /* The identity row keeps the brand and the connection; the actions get a row
+       of their own that scrolls sideways rather than stacking four buttons deep. */
+    .top{height:auto; flex-wrap:wrap; padding:6px 12px; row-gap:6px; column-gap:10px}
+    .top .brand h1{font-size:14px}
+    .conn{order:2; margin-left:auto}
+    .actbar{order:3; flex:1 0 100%; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden;
+            justify-content:flex-start; margin-left:0; padding-bottom:1px;
+            scrollbar-width:none; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain}
+    .actbar::-webkit-scrollbar{display:none}
+    .actbar .grp{flex:none}
+    .actbar .grp + .grp{padding-left:9px; border-left:1px solid var(--line)}
+    #switchsel{min-width:9rem; max-width:12rem; flex-shrink:0}
     .jobstrip{top:auto; position:static}
+    .content{padding:var(--s4) var(--s4) 40px}
+    .tabhead{margin-bottom:var(--s4)}
+    /* A number and its tank, stacked. Side by side at 393 px the tank took 40 %
+       of the row and the number's own column stayed empty. */
+    .res{grid-template-columns:1fr; gap:10px; align-items:stretch}
+    .res .legend{gap:10px}
+    .facts{grid-template-columns:repeat(auto-fit, minmax(132px,1fr)); gap:12px var(--s4)}
+    .kv{gap:8px var(--s4)}
+    .evt time{min-width:62px}
+    .grid{gap:14px}
+    section.panel{padding:var(--s3) var(--s4) var(--s4)}
+    /* The rail is a row now, so the shell has two rows and the second one takes
+       the rest of the screen. minmax(0,1fr), not 1fr: a grid row's automatic
+       minimum is its content, so a plain 1fr grows past the viewport instead of
+       giving the Agent frame a box to fill. The agent rules themselves live
+       further down, after the ones they override. */
+    .shell{grid-template-rows:auto minmax(0,1fr)}
+  }
+  /* ── fingers, not a mouse ───────────────────────────────────────────────────
+     44x44 CSS px is the smallest target Apple's HIG accepts, and a form control
+     under 16 px makes iOS Safari zoom the whole page the moment it takes focus,
+     with no way back. Keyed on a coarse pointer as well as on width, so a tablet
+     at 1024 px gets it too. */
+  @media (max-width:980px), (pointer:coarse){
+    .iconbtn{width:44px; height:44px}
+    .btn{min-height:44px; padding:10px 16px; font-size:13.5px}
+    .btn.mini{min-height:44px; padding:9px 13px; font-size:12.5px}
+    select{font-size:16px; min-height:44px; padding:8px 12px}
+    input[type=text], input[type=search], input[type=password], input[type=number], textarea{
+      font-size:16px; min-height:44px}
+    input[type=checkbox], input[type=radio]{width:20px; height:20px}
+    .rail .nav{min-height:44px; font-size:13.5px}
+    /* The box is the target, not the 20 px square inside it. */
+    .follow{min-height:44px; padding-right:2px}
+    .agexit{min-height:44px; padding:10px 16px; font-size:12.5px; top:8px}
+    #joblogbtn{min-height:40px}
   }
   /* Agent tab: the frame takes what the viewport leaves under the bar and the head */
   .agenthead{display:flex; align-items:flex-start; justify-content:space-between; gap:var(--s3); flex-wrap:wrap; margin-bottom:var(--s3)}
   .agenthead .tabhead{margin:0}
   .agentbar{display:flex; align-items:center; gap:var(--s2); flex-wrap:wrap; padding-top:2px}
   .agentbar a.btn{text-decoration:none; display:inline-flex; align-items:center}
+  .agentbtns{display:flex; align-items:center; gap:var(--s2); min-width:0}
   .agentline{color:var(--mut); font-size:12px}
   .agentnote{margin:0 0 var(--s3)}
-  .agentframe{position:relative; height:calc(100vh - var(--top) - 118px); min-height:440px; border:1px solid var(--line);
+  .agentframe{position:relative; height:calc(100vh - var(--top) - 118px); height:calc(100dvh - var(--top) - 118px);
+    min-height:min(440px, 55dvh); border:1px solid var(--line);
     border-radius:var(--r-card); overflow:hidden; background:var(--card); box-shadow:var(--shadow)}
-  .agentnote:not([hidden]) + .agentframe{height:calc(100vh - var(--top) - 160px)}
+  /* Scoped to the embedded state on purpose: :not([hidden]) counts its own
+     argument, so this selector weighs (0,3,0) and would beat
+     body.agentmax .agentframe (0,2,1). Fullscreen was then short by this
+     very calc, on any host that shows the note. */
+  body:not(.agentmax) .agentnote:not([hidden]) + .agentframe{
+    height:calc(100vh - var(--top) - 160px); height:calc(100dvh - var(--top) - 160px)}
   .agentframe iframe{display:block; width:100%; height:100%; border:0}
   .agentmsg{position:absolute; inset:0; display:grid; place-items:center; padding:var(--s6); text-align:center; background:var(--card)}
   .agentmsg .empty{max-width:62ch; margin:0 auto}
@@ -320,12 +383,47 @@
   /* fullscreen: the frame covers the whole window (above the bar and the rail, under the
      confirm modal and the toasts); one small corner button, or Escape, brings the cockpit back */
   body.agentmax{overflow:hidden}
+  body.agentmax{overscroll-behavior:none}
   body.agentmax .agentframe{position:fixed; inset:0; height:auto; min-height:0; border:0; border-radius:0; box-shadow:none; z-index:40}
+  /* --vvh is the visual viewport's height, set by app.js when it changes: on iOS
+     the software keyboard shrinks that viewport and leaves the layout one alone,
+     so a frame sized in dvh would keep its composer under the keyboard. */
+  body.agentmax .agentframe{top:var(--vvtop, 0px); height:var(--vvh, 100dvh); bottom:auto}
   .agexit{position:absolute; top:6px; right:14px; z-index:3; display:none; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
     border:1px solid var(--line2); background:color-mix(in srgb, var(--card) 86%, transparent); color:var(--mut); font-family:inherit; font-size:11.5px;
     cursor:pointer; opacity:.62; backdrop-filter:blur(6px); transition:opacity .15s}
   .agexit:hover, .agexit:focus-visible{opacity:1; color:var(--txt)}
   body.agentmax .agexit{display:inline-flex}
+
+  /* The Agent tab in a hand. Placed after the rules above on purpose: a media
+     query adds no specificity, so a narrow-screen rule written before the rule
+     it means to override simply loses. The frame flexes into what the shell row
+     leaves instead of subtracting a hand-counted head height, which is the
+     number that goes stale the next time a line is added to that head. */
+  @media (max-width:980px){
+    body[data-tab="agent"] .content{display:flex; flex-direction:column; min-width:0; min-height:0; padding-bottom:var(--s3)}
+    body[data-tab="agent"] #tab-agent.active{display:flex; flex-direction:column; flex:1 1 auto; min-height:0}
+    .agenthead{flex-direction:column; gap:var(--s2); margin-bottom:var(--s2)}
+    /* Row one is the state and the controls, and it scrolls sideways; row two is
+       the detail line, which is prose and belongs on its own line rather than
+       squeezed into a flex item three lines tall. */
+    .agentbar{flex-wrap:wrap; row-gap:6px; width:100%}
+    .agentbar .chip{order:1; flex:none}
+    /* basis 0, not auto: flexbox breaks a line on the hypothetical size, so a
+       scroller whose content is 453 px wide takes a row of its own before it
+       ever gets the chance to shrink. */
+    .agentbtns{order:2; flex:1 1 0; overflow-x:auto; overflow-y:hidden; min-width:0; padding-bottom:1px;
+               scrollbar-width:none; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain}
+    .agentbtns::-webkit-scrollbar{display:none}
+    .agentbtns .btn{flex:none}
+    .agentline{order:3; flex:1 0 100%; font-size:11px; line-height:1.5}
+    /* The subtitle explains the tab you are already looking at. */
+    #tab-agent .tabhead p{display:none}
+    .agentnote{font-size:11.5px; margin-bottom:var(--s2)}
+    body:not(.agentmax) .agentframe,
+    body:not(.agentmax) .agentnote:not([hidden]) + .agentframe{
+      flex:1 1 auto; height:auto; min-height:200px; border-radius:var(--r-ctl)}
+  }
 </style>
 </head>
 <body>
@@ -610,7 +708,7 @@
                 <option value="qwen38-keepalive.service">keepalive proxy (journal)</option>
                 <option value="opencode-web.service" id="logopt-agent" hidden>opencode web server (journal)</option>
               </select>
-              <label style="font-size:11.5px;color:var(--mut);display:flex;align-items:center;gap:5px"><input type="checkbox" id="logfollow"> follow</label>
+              <label class="follow"><input type="checkbox" id="logfollow"> follow</label>
               <button class="btn mini ghost" id="logbtn">Tail</button>
             </span>
           </h3>
@@ -636,10 +734,12 @@
         <div class="agentbar" id="agentbar">
           <span class="chip skel" id="agchip">...</span>
           <span class="agentline" id="agline"></span>
-          <a class="btn mini ghost" id="agopen" target="_blank" rel="noopener" hidden title="The same interface in its own browser tab">Open in a tab</a>
-          <button class="btn mini ghost" id="agreload" hidden title="Reload the panel">Reload</button>
-          <button class="btn mini ghost" id="agmax" hidden title="Fill the browser window with the agent; Escape or the corner button brings the cockpit back">Fullscreen</button>
-          <button class="btn mini ghost" id="agrestart" data-act="unit" data-unit="opencode-web.service" data-verb="restart" hidden title="systemctl restart opencode-web.service (after an opencode upgrade)">Restart server</button>
+          <span class="agentbtns">
+            <a class="btn mini ghost" id="agopen" target="_blank" rel="noopener" hidden title="The same interface in its own browser tab">Open in a tab</a>
+            <button class="btn mini ghost" id="agreload" hidden title="Reload the panel">Reload</button>
+            <button class="btn mini ghost" id="agmax" hidden title="Fill the browser window with the agent; Escape or the corner button brings the cockpit back">Fullscreen</button>
+            <button class="btn mini ghost" id="agrestart" data-act="unit" data-unit="opencode-web.service" data-verb="restart" hidden title="systemctl restart opencode-web.service (after an opencode upgrade)">Restart server</button>
+          </span>
         </div>
       </div>
       <p class="note agentnote" id="agnote" hidden></p>

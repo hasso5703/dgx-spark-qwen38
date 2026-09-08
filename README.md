@@ -633,6 +633,36 @@ sudo rm -f /etc/systemd/system/qwen38-dashboard.service \
 sudo systemctl daemon-reload
 ```
 
+### On a phone
+
+The cockpit is built for a hand as well as for a desk, and the layout is checked
+rather than assumed: `dashboard/tests/mobile-check.mjs` drives a headless
+Chromium through four real iPhone geometries (SE, 15, 15 Pro Max, and 15 in
+landscape) on all eight tabs and asserts what a phone actually gets.
+
+Below 980 px the top bar keeps one identity row and gives the actions a row of
+their own that scrolls sideways, the section rail becomes one swipeable row of
+pills with the current section scrolled into view, and the cards stack. Controls
+are at least 44x44 CSS px, and every form control is 16 px or larger, because
+iOS Safari zooms the whole page when a smaller one takes focus and never zooms
+back. The heights use `dvh`, not `vh`: on iOS the browser's own chrome counts
+inside `100vh`, so a full-height panel written that way overflows by exactly the
+toolbar.
+
+The Agent tab opens **fullscreen on a phone**, because there the tab is the
+frame: opencode gets the whole screen and the corner chip brings the cockpit
+back. That choice is remembered per device, so exiting once makes the embedded
+frame the default from then on. It never opens fullscreen when the panel cannot
+load (a relay bound to another address, a stopped server): covering the
+explanation with a blank frame would leave nothing to act on.
+
+Run it against the address the phone uses, so the Agent tab is exercised the way
+it behaves in a hand:
+
+```bash
+node dashboard/tests/mobile-check.mjs http://<the box's tailnet address>:30090
+```
+
 ### The Agent tab: opencode in the browser, behind the cockpit login
 
 Since v1.7.0 the cockpit can hold opencode's own web interface, so a session on the

@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.8.2 (2026-09-09): the cockpit on a phone, opencode included
+
+Measured before it was changed: `dashboard/tests/mobile-check.mjs` (new) drives a
+headless Chromium through four real iPhone geometries (SE 375x667, 15 393x852,
+15 Pro Max 430x932, 15 in landscape 852x393) across all eight tabs and asserts
+horizontal overflow, elements wider than the screen, touch target sizes, form
+control sizes and the Agent frame's box. The first run scored **64 of 132**. It
+now scores **136 of 136** against the address a phone uses, and 132 of 132
+against one where the relay answers elsewhere.
+
+- **The chrome was the problem, not the content.** On a 393 px phone the top bar
+  and the section rail both wrapped into three rows and ate **620 px of an 852 px
+  screen** before the first card. The bar now keeps one identity row and gives
+  the actions a row of their own that scrolls sideways; the rail is one swipeable
+  row of pills, with the current section scrolled into view by app.js. Same
+  content, **150 px** instead of 620.
+- **44x44 and 16 px.** Every control was under Apple's minimum touch target (the
+  action buttons were 27 px tall) and every form control was under 16 px, which
+  makes iOS Safari zoom the whole page on focus with no way back. Both are fixed
+  below 980 px and on any coarse pointer, and the login page's field, the first
+  thing a phone sees, was 15 px.
+- **`dvh`, not `vh`.** On iOS the browser's own chrome counts inside `100vh`, so
+  every full-height box written that way overflows by exactly the toolbar. The
+  shell, the login card and the agent frame now use dynamic viewport units with
+  the old ones as the fallback, and the fullscreen frame follows
+  `window.visualViewport` (`--vvh`, `--vvtop`), which is the only thing that
+  tracks the software keyboard on iOS.
+- **The Agent tab opens fullscreen on a phone**, because there the tab is the
+  frame: opencode's own interface is responsive (measured: its media queries at
+  600 and 640 px, no overflow at 393 px), it only needed the whole screen. The
+  choice is remembered per device, and it is never applied when the panel cannot
+  load, so a relay on another address still shows its explanation instead of a
+  blank frame with a chip in the corner.
+- **A specificity bug that was not a phone bug.** `.agentnote:not([hidden]) +
+  .agentframe` weighs (0,3,0), because `:not()` counts its own argument, and
+  outweighed `body.agentmax .agentframe` (0,2,1): fullscreen kept the embedded
+  height whenever the relay note was visible. Measured on a 900 px desktop
+  window: a 682 px "fullscreen" frame. `agent-check.mjs` grew the gate that
+  catches it (31 checks now), and the gate was verified against the old CSS.
+- Also: the buttons in the Agent head are grouped so they scroll as a row instead
+  of stacking four deep, panels and cards stack on a narrow screen (the KV pool
+  card put its tank in a 40 % column and left the number's column empty), and
+  `interactive-widget=resizes-content` is declared so a keyboard resizes the
+  content instead of pushing it out of view.
+
+Nothing changed above 980 px: click-storm 43/43, resilience 16/16, headless
+render with no exception, HTTP smoke 32/32, 160 unit tests, CI 27/27.
+
 ## v1.8.1 (2026-09-08): the opencode output ceiling is a ceiling, not the installed target's number
 
 Found by asking the Agent tab what it was actually running, right after v1.8.0

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>Spark Cockpit</title>
 <link rel="icon" href="/static/favicon.svg">
 <style>
@@ -19,7 +19,7 @@
   }
   *{box-sizing:border-box; margin:0}
   body{
-    min-height:100vh; display:grid; place-items:center;
+    min-height:100vh; min-height:100dvh; display:grid; place-items:center; padding:20px;
     background:
       radial-gradient(900px 480px at 50% -12%, var(--glow), transparent 60%),
       var(--paper);
@@ -46,7 +46,7 @@
   input{
     width:100%; padding:13px 15px; border-radius:11px;
     border:1px solid var(--line); background:var(--soft);
-    color:var(--txt); font-size:15px; outline:none;
+    color:var(--txt); font-size:16px; outline:none; min-height:48px;
     transition:border-color .2s, box-shadow .2s;
   }
   input:focus{border-color:var(--acc);
@@ -54,7 +54,7 @@
   button{
     width:100%; margin-top:15px; padding:13px; border:0; border-radius:11px;
     background:linear-gradient(135deg, var(--acc), var(--flash));
-    color:#fff; font-size:15px; font-weight:650; cursor:pointer;
+    color:#fff; font-size:15px; font-weight:650; cursor:pointer; min-height:48px;
     transition:filter .18s, box-shadow .18s;
   }
   button:hover{filter:brightness(1.1);

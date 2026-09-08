@@ -328,3 +328,57 @@ and without probing the real engine.
   back; a `bash` tool call ran (`echo cockpit-ok`) with no permission prompt under
   opencode 1.18.27's defaults; the relay refused from the LAN and the docker bridge
   (no listener), 401 on the tailnet address without a session.
+
+## 2026-09-09: the cockpit in a hand
+
+### What a phone was getting
+`tests/mobile-check.mjs` (new) emulates four iPhone geometries (SE 375x667,
+15 393x852, 15 Pro Max 430x932, 15 landscape 852x393) with device metrics, touch
+and the device pixel ratio, walks all eight tabs and measures: document
+overflow, every element wider than the viewport that is not inside a scroller of
+its own, form controls under 16 px, touch targets under 44x44, and the Agent
+frame's box. First run: **64 of 132**. There was no horizontal overflow anywhere,
+which is the check that already existed at 390 px; everything else was new.
+
+Read from the screenshots rather than from the numbers: the top bar and the rail
+wrapped into three rows each and spent **620 px of an 852 px screen** before the
+first card, and the Agent tab's frame started at y=615, so a phone saw a 240 px
+sliver of opencode.
+
+### What changed
+- One identity row plus a sideways-scrolling action row; the rail is one
+  swipeable row of pills, and `revealNav()` keeps the current one in view.
+- 44x44 targets and 16 px controls below 980 px or on any coarse pointer, plus
+  the login field (15 px, the first thing a phone sees).
+- `dvh` everywhere a full-height box was written in `vh`, and `--vvh`/`--vvtop`
+  from `window.visualViewport` for the fullscreen frame, which is the only thing
+  that follows the iOS keyboard.
+- The Agent tab opens fullscreen on a phone unless the panel cannot load. opencode's
+  own interface is already responsive (its media queries at 600 and 640 px, no
+  overflow at 393 px, a mobile layout rendered): it only needed the whole screen.
+
+### Defects found while building (each one fixed with a gate)
+- **CSS specificity, and it was not a phone bug**: `.agentnote:not([hidden]) +
+  .agentframe` weighs (0,3,0) because `:not()` counts its argument, so it beat
+  `body.agentmax .agentframe` (0,2,1) and fullscreen kept the embedded height
+  whenever the relay note was visible. Measured on a 900 px desktop window: 682 px
+  of "fullscreen". `agent-check.mjs` gained the gate, verified against the old CSS.
+- **Source order**: the first phone rules for the Agent tab were written inside a
+  media block that sits before the rules they override. A media query adds no
+  specificity, so they lost. They now live after their targets.
+- **Grid minimum**: `grid-template-rows: auto 1fr` still grows past the viewport,
+  because a row's automatic minimum is its content. `minmax(0,1fr)` is what gives
+  the frame a box to fill.
+- **Flex line breaking**: a scroller with `flex:1 1 auto` took a row of its own,
+  because a line breaks on the hypothetical size before shrinking applies. Basis 0.
+- **A test that failed for the wrong reason**: the first fullscreen gate set the
+  note visible, clicked, then measured, and a state tick re-hid the note in
+  between. Shown, measured and hidden inside one synchronous block instead.
+
+### Tests (all green on 2026-09-09)
+- `tests/mobile-check.mjs` 136/136 against the tailnet address (Agent fullscreen,
+  opencode really loaded), 132/132 against 127.0.0.1 (relay elsewhere: the note is
+  shown and the embedded frame stays usable).
+- `tests/monkey-check.mjs` 43/43, `tests/resilience-check.mjs` 16/16,
+  `tests/agent-check.mjs` 31/31, `tests/headless-check.mjs` zero exception,
+  `tests/smoke-http.sh` 32/32, 160 unit tests, local CI 27/27.

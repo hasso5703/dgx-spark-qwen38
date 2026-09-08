@@ -80,7 +80,18 @@ function showTab(name, push = true){
   if (name === 'models' && !loaded.recipes) loadRecipes();
   // at parse time the agent helpers below are not initialised yet; the first state
   // tick mounts the frame in that case, a later click mounts it at once
-  if (name === 'agent' && document.readyState === 'complete') mountAgent();
+  if (name === 'agent' && document.readyState === 'complete'){ mountAgent(); applyAgentMax(); }
+  revealNav(name);
+}
+// On a narrow screen the rail is one horizontal scroller: the section you are on
+// has to be inside it, or the current tab sits off-screen behind a swipe.
+function revealNav(name){
+  const b = document.querySelector(`.rail .nav[data-tab="${name}"]`);
+  const rail = b && b.parentElement;
+  if (!rail || rail.scrollWidth <= rail.clientWidth + 1) return;   // not scrolling: nothing to reveal
+  const left = b.offsetLeft - (rail.clientWidth - b.offsetWidth) / 2;
+  const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  rail.scrollTo({left: Math.max(0, left), behavior: smooth ? 'smooth' : 'auto'});
 }
 document.querySelectorAll('.rail .nav').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
 window.addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'overview', false));
@@ -103,6 +114,23 @@ if (topbar && window.ResizeObserver){
     const h = Math.round(topbar.getBoundingClientRect().height);
     if (h) document.documentElement.style.setProperty('--top', h + 'px');
   }).observe(topbar);
+}
+
+// The visual viewport is the part of the page a person can actually see. On iOS
+// the software keyboard shrinks it and offsets it without touching the layout
+// viewport, so a fullscreen frame sized in dvh would keep opencode's composer
+// under the keyboard. --vvh and --vvtop follow it; the CSS falls back to 100dvh
+// and 0 when the API is absent, which is every engine that never had the problem.
+const vvp = window.visualViewport;
+if (vvp){
+  const syncVV = () => {
+    const s = document.documentElement.style;
+    s.setProperty('--vvh', Math.round(vvp.height) + 'px');
+    s.setProperty('--vvtop', Math.round(vvp.offsetTop) + 'px');
+  };
+  vvp.addEventListener('resize', syncVV);
+  vvp.addEventListener('scroll', syncVV);
+  syncVV();
 }
 
 // ── sparklines (canvas, bounded series) ───────────────────────────────────────
@@ -748,8 +776,27 @@ function renderLaneAction(why){
 // The relay lives on this same host (cookies ignore ports), so the frame carries the
 // cockpit session and opencode never asks for its own password. The frame is created
 // the first time the tab opens and then kept: hiding a tab must not lose a session.
-const AG = {mounted: false, wasReady: null, restoreMax: false};
-try { AG.restoreMax = localStorage.getItem('cockpit.agent.max') === '1'; } catch { /* storage may be unavailable */ }
+const AG = {mounted: false, wasReady: null};
+// Whether the frame opens covering the window. An explicit choice wins on every
+// device; with no choice stored, a hand-held viewport gets fullscreen, because
+// there the head above the frame is a third of the screen and the tab IS the
+// frame. Exiting is one tap on the corner chip, and that choice is remembered.
+function agentMaxDefault(){
+  let pref = null;
+  try { pref = localStorage.getItem('cockpit.agent.max'); } catch { /* storage may be unavailable */ }
+  if (pref === '1') return true;
+  if (pref === '0') return false;
+  return window.matchMedia('(max-width:980px)').matches;
+}
+function applyAgentMax(){
+  if (!agentMaxDefault() || document.body.classList.contains('agentmax')) return;
+  // Never cover the reason the panel is empty. A relay bound to another address,
+  // a stopped server or a server still starting all have their explanation on
+  // this page, and the frame has none: fullscreen would be a blank screen with a
+  // chip in the corner. Opening it by hand still works in every one of those states.
+  if (!agentReady() || !$('agnote').hidden || !$('agmsg').hidden) return;
+  setAgentMax(true, false);
+}
 // Fullscreen: the frame covers the window; the corner button or Escape brings the cockpit
 // back. Remembered, so a reload on #agent comes back the way it was left.
 function setAgentMax(on, persist = true){
@@ -813,7 +860,7 @@ function rAgent(d){
   if (ready){
     if (activeTab === 'agent') mountAgent();
     if (AG.wasReady === false && AG.mounted) reloadAgent();   // the server came back: reconnect the panel
-    if (AG.restoreMax && activeTab === 'agent'){ AG.restoreMax = false; setAgentMax(true, false); }
+    if (activeTab === 'agent') applyAgentMax();   // a deep link to #agent lands here first
   } else {
     agentMessage(!r.listening ? `The relay is not listening yet: ${r.error || 'waiting for its address'}.`
                : !unitOn ? `The opencode server is ${u.active === 'failed' ? 'failed' : 'stopped'}. Start it from a terminal (sudo systemctl start ${AGENT_UNIT}) or read its journal in the Logs tab.`
