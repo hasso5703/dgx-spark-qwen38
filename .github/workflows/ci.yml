@@ -434,6 +434,33 @@ jobs:
               echo "$f carries its own limit numbers again; they belong in oc-limits.sh"; exit 1
             fi
           done
+          # The output CEILING is the table's maximum, not the installed target's
+          # own limit. opencode sends max_tokens = min(limit.output, ceiling):
+          # limit.output follows a switch, the ceiling does not, so a ceiling
+          # derived from the installed target cuts the next lane's turn in
+          # silence, which is the hidden 32000 default's exact failure mode. Seen
+          # on the Agent tab: a flash install handed it 64000, and a switch to a
+          # 27B box in 1M mode then asked for 200000.
+          CAP="$(l --max-out)"
+          [ "$CAP" -gt 32000 ] || { echo "the ceiling must lift opencode's hidden 32000 cap"; exit 1; }
+          for c in flash flash-uncensored flash-nvda; do
+            for t in context concurrency throughput; do
+              read -r _ OUT _ <<<"$(l "$c" "$t")"
+              [ "$OUT" -le "$CAP" ] || { echo "$c/$t asks for $OUT, above the ceiling $CAP"; exit 1; }
+            done
+          done
+          for c in stock uncensored fp8 uncensored-fp8; do
+            for t in native 1m; do
+              read -r _ OUT _ <<<"$(l "$c" "$t")"
+              [ "$OUT" -le "$CAP" ] || { echo "$c/$t asks for $OUT, above the ceiling $CAP"; exit 1; }
+            done
+          done
+          grep -qF 'OC_OUT_CAP="$("$REPO_DIR/oc-limits.sh" --max-out)"' install.sh \
+            || { echo "install.sh no longer takes the output ceiling from the table"; exit 1; }
+          grep -qF 'OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX:-$OC_OUT_CAP' install.sh \
+            || { echo "the oc launcher no longer exports the shared ceiling"; exit 1; }
+          grep -qF 'oc-limits.sh" --max-out' dashboard/install-agent.sh \
+            || { echo "install-agent.sh no longer takes the Agent tab ceiling from the table"; exit 1; }
           # Every target the installer knows must have a picker label in the switch,
           # or it silently keeps the previous target's name.
           python3 - <<'PYEOF'

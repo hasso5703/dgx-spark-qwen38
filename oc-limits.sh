@@ -16,6 +16,7 @@
 #
 #   ./oc-limits.sh <choice> <tier-or-mode>        # explicit: what install.sh knows
 #   ./oc-limits.sh <choice> --from <invocation>   # derived: what a switch can read
+#   ./oc-limits.sh --max-out                      # the ceiling every caller shares
 #
 # `choice` is a target name. The second argument is the flash serving tier
 # (context | concurrency | throughput) for a flash target, or the 27B context
@@ -28,13 +29,46 @@
 set -uo pipefail
 
 usage() {
-  printf 'usage: %s <choice> <tier-or-mode>\n       %s <choice> --from <invocation-file>\n' \
-    "$0" "$0" >&2
+  printf 'usage: %s <choice> <tier-or-mode>\n       %s <choice> --from <invocation-file>\n       %s --max-out\n' \
+    "$0" "$0" "$0" >&2
   exit 2
 }
 
 CHOICE="${1:-}"
 [ -n "$CHOICE" ] || usage
+
+# --max-out: the largest output any target can ask for.
+#
+# OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX is a CEILING, not a per-target number:
+# opencode sends max_tokens = min(limit.output, that ceiling). limit.output is
+# the number that follows a switch (rewritten from this table), so the ceiling
+# only has to sit above every value the table can produce. Deriving it from the
+# INSTALLED target instead is the bug this exists to prevent: a box installed on
+# the flash lane wrote a 64,000 ceiling, the switch to a 27B box in 1M mode
+# raised limit.output to 200,000, the ceiling stayed, and a long turn was cut at
+# 64,000 with no error and no text, which is the exact failure the 32,000
+# default produces. Computed by asking this table for every pair, so it cannot
+# drift from it.
+if [ "$CHOICE" = "--max-out" ]; then
+  MAXOUT=0
+  for _c in flash flash-nvda flash-uncensored; do
+    for _t in context concurrency throughput; do
+      _o="$("$0" "$_c" "$_t" | awk '{print $2}')"
+      [ -n "$_o" ] || { printf 'oc-limits: --max-out could not read %s %s\n' "$_c" "$_t" >&2; exit 2; }
+      [ "$_o" -gt "$MAXOUT" ] && MAXOUT="$_o"
+    done
+  done
+  for _c in stock uncensored fp8 uncensored-fp8; do
+    for _t in native 1m; do
+      _o="$("$0" "$_c" "$_t" | awk '{print $2}')"
+      [ -n "$_o" ] || { printf 'oc-limits: --max-out could not read %s %s\n' "$_c" "$_t" >&2; exit 2; }
+      [ "$_o" -gt "$MAXOUT" ] && MAXOUT="$_o"
+    done
+  done
+  [ "$MAXOUT" -gt 0 ] || { printf 'oc-limits: --max-out found no limits\n' >&2; exit 2; }
+  printf '%s\n' "$MAXOUT"
+  exit 0
+fi
 SECOND="${2:-}"
 INVOCATION=""
 SELECTOR=""

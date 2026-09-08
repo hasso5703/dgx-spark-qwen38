@@ -789,6 +789,14 @@ read -r OC_CTX OC_OUT OC_LABEL <<<"$("$REPO_DIR/oc-limits.sh" "$MODEL_CHOICE" "$
   || die "oc-limits.sh refused MODEL_CHOICE=$MODEL_CHOICE with $OC_SELECTOR (repo bug: please open an issue)"
 [ -n "${OC_CTX:-}" ] && [ -n "${OC_OUT:-}" ] \
   || die "oc-limits.sh returned no limits for $MODEL_CHOICE/$OC_SELECTOR"
+# The output CEILING is not this target's number: opencode sends
+# max_tokens = min(limit.output, the ceiling), limit.output is what a switch
+# rewrites, and a ceiling taken from the installed target survives the switch
+# and cuts the next lane's turn in silence. So it is the table's maximum.
+OC_OUT_CAP="$("$REPO_DIR/oc-limits.sh" --max-out)" \
+  || die "oc-limits.sh --max-out failed (repo bug: please open an issue)"
+[ "${OC_OUT_CAP:-0}" -ge "$OC_OUT" ] \
+  || die "oc-limits.sh --max-out returned $OC_OUT_CAP, below this target's $OC_OUT"
 OC_PORT="$PROXY_PORT"
 [ "${NO_SERVICE:-0}" -eq 1 ] && OC_PORT="$PORT"
 # end oc mode
@@ -884,17 +892,20 @@ OC_BIN="$HOME/.local/bin/oc"
 OC_EXISTING="$(command -v oc || true)"
 if [ -n "$OC_EXISTING" ] && [ "$OC_EXISTING" != "$OC_BIN" ] && ! grep -q 'dgx-spark-qwen38' "$OC_EXISTING" 2>/dev/null; then
   echo "NOTE: an unrelated 'oc' command exists at $OC_EXISTING; not installing the launcher."
-  echo "      Launch opencode with:  OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=$OC_OUT opencode --yolo"
+  echo "      Launch opencode with:  OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=$OC_OUT_CAP opencode --yolo"
 else
   mkdir -p "$HOME/.local/bin"
   cat > "$OC_BIN" <<OCWRAP
 #!/bin/bash
 # oc launcher installed by dgx-spark-qwen38: opencode wired to the local server.
-# Lifts opencode's hidden 32000 max_tokens cap to the declared output limit;
-# without this, long thinking phases are cut at 32000 and the turn ends silently.
+# Lifts opencode's hidden 32000 max_tokens cap above every output limit this
+# repo declares; without this, long thinking phases are cut at 32000 and the
+# turn ends silently. It is a ceiling: the per-model limit.output in
+# opencode.json is the number that follows a model switch, and this one only has
+# to stay above it, which is why it is not the installed target's own limit.
 # --yolo auto-approves permissions (the reference box runs this way; remove it
 # below if you prefer per-action prompts).
-export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX="\${OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX:-$OC_OUT}"
+export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX="\${OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX:-$OC_OUT_CAP}"
 OPENCODE_BIN="\$(command -v opencode || true)"
 [ -n "\$OPENCODE_BIN" ] || OPENCODE_BIN="\$HOME/.opencode/bin/opencode"
 # --yolo goes LAST: opencode's parser rejects global flags before a
@@ -902,7 +913,7 @@ OPENCODE_BIN="\$(command -v opencode || true)"
 exec "\$OPENCODE_BIN" "\$@" --yolo
 OCWRAP
   chmod +x "$OC_BIN"
-  echo "installed the oc launcher at $OC_BIN (output cap lifted to $OC_OUT)"
+  echo "installed the oc launcher at $OC_BIN (output ceiling $OC_OUT_CAP, this target's limit $OC_OUT)"
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) echo "NOTE: $HOME/.local/bin is not in your PATH; add it or call $OC_BIN directly." ;;

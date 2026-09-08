@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.8.1 (2026-09-08): the opencode output ceiling is a ceiling, not the installed target's number
+
+Found by asking the Agent tab what it was actually running, right after v1.8.0
+shipped. opencode sends `max_tokens = min(limit.output, OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX)`,
+and v1.8.0 made `limit.output` follow a model switch (`oc-limits.sh`) while the
+env var kept being written from the **installed** target: a box installed on the
+flash lane got a 64,000 ceiling in `~/.local/bin/oc` and in
+`opencode-web.service`, so after a switch to a 27B box in 1M mode, where
+`limit.output` is 200,000, a long turn was still cut at 64,000 with
+`finish_reason: length`, no text and no tool call. That is the exact silent
+failure the env var exists to prevent, and the switch could not fix it because
+the ceiling is not a per-target number.
+
+- **`./oc-limits.sh --max-out`** returns the largest output limit the table can
+  produce (200,000 today, from the 27B NVFP4 1M pair), computed by asking the
+  table for every target and tier so it cannot drift from it.
+- **`install.sh`** writes that value into the `oc` launcher, and refuses to
+  install if it comes back below the installed target's own limit.
+  **`dashboard/install-agent.sh`** takes the Agent tab's ceiling from the same
+  call instead of copying the launcher's number, which is how the tab inherited
+  the installed target's value. `AGENT_OUTPUT_TOKEN_MAX` still wins when set.
+- **The CI gate now proves the property**, not the number: the ceiling must
+  exceed opencode's hidden 32,000 default and every output limit the table
+  produces on every target and tier, and both installers must read it from the
+  table. All four assertions were mutation-tested (ceiling taken from the
+  installed target, ceiling below the table, Agent tab reading the launcher,
+  ceiling at 64,000: each one fails the gate).
+- Applied on the reference box: launcher and `opencode-web.service` now carry
+  200,000, the agent unit was re-installed with its bind, port and auto mode
+  kept, and the flash lane's own limits are unchanged (`limit.output` 64,000,
+  which is what the lane serves). On that box the live effect was confined to
+  the Agent tab: an interactive shell there already exported 200,000 from
+  `~/.bashrc`, which a systemd unit does not read, so the CLI never saw the low
+  ceiling and the tab always did. A fresh install has no such export.
+
 ## v1.8.0 (2026-09-08): the official image, a reduced draft vocabulary, and a seventh target
 
 Upstream caught up with this repo on the flash lane, and then this repo found

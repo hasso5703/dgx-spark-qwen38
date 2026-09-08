@@ -87,12 +87,19 @@ grep -qE '^OPENCODE_SERVER_PASSWORD=.+' "$ENV_FILE" || die "$ENV_FILE has no OPE
 CRED_USER="$({ grep -m1 -E '^OPENCODE_SERVER_USERNAME=' "$ENV_FILE" || true; } | cut -d= -f2-)"; CRED_USER="${CRED_USER:-opencode}"
 CRED_PW="$({ grep -m1 -E '^OPENCODE_SERVER_PASSWORD=' "$ENV_FILE" || true; } | cut -d= -f2-)"
 
-# ── the output cap: the oc launcher's, else this repo's 27B default ────────
+# ── the output ceiling: the limits table's maximum ─────────────────────────
+# opencode sends max_tokens = min(limit.output, this ceiling). limit.output is
+# the per-model number, and it follows a model switch; the ceiling only has to
+# stay above every value the table can produce. Reading it from the installed
+# oc launcher is how the Agent tab inherited the installed target's own number:
+# a box installed on the flash lane gave the tab a 64,000 ceiling, and after a
+# switch to a 27B box in 1M mode (limit.output 200,000) a long turn was cut at
+# 64,000 with no error and no text. AGENT_OUTPUT_TOKEN_MAX still wins.
 OUT_MAX="${AGENT_OUTPUT_TOKEN_MAX:-}"
-if [ -z "$OUT_MAX" ] && grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
-  OUT_MAX="$({ grep -m1 -oE 'OUTPUT_TOKEN_MAX[^0-9]*[0-9]{4,7}' "$HOME/.local/bin/oc" || true; } | grep -oE '[0-9]+$' || true)"
+if [ -z "$OUT_MAX" ] && [ -x "$HERE/../oc-limits.sh" ]; then
+  OUT_MAX="$("$HERE/../oc-limits.sh" --max-out 2>/dev/null || true)"
 fi
-OUT_MAX="${OUT_MAX:-160000}"
+OUT_MAX="${OUT_MAX:-200000}"
 [[ "$OUT_MAX" =~ ^[0-9]+$ ]] || die "AGENT_OUTPUT_TOKEN_MAX must be a number"
 
 # ── permissions: opencode's defaults, or every tool call approved ──────────
