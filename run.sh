@@ -94,6 +94,7 @@ echo
 exec docker run --rm --name qwen38-sglang-run --gpus all \
   --memory 100g --memory-swap 100g --shm-size 16g --network host --ipc=host \
   -e TORCHINDUCTOR_CACHE_DIR=/cache/inductor \
+  -e SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1 \
   -v "$CONFIG_DIR/sglang-cache":/cache \
   -v "$HF_CACHE":/root/.cache/huggingface \
   -v "$CONFIG_DIR":/out \

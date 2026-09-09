@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.13). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.14). No content logging, and the only
 rewriting is the tool-schema guard (role 4).
 
 Four roles, nothing else:
@@ -10,10 +10,9 @@ Four roles, nothing else:
    measured 2026-08-23, client death 10-20 s after the first comment) and an
    authentic empty chunk on the OpenAI dialect (opencode/AI SDK stall detectors
    ignore comments and drop the stream after ~140-180 s without a real chunk);
-2. close the upstream as soon as the client goes away AND explicitly POST
-   /abort_request for the request id (v6.7: closing the socket alone left
-   orphan generations decoding to max_tokens, measured 29/08), so SGLang aborts the
-   generation instead of running a zombie;
+2. never leave a generation running for a client that is gone: the proxy names every
+   request itself (x-override-rid), POSTs /abort_request BEFORE it closes the upstream
+   socket, and drains the answer when the engine offers no rid to abort with;
 3. never lull a client on a dead upstream: past MAX_SILENCE_S an EXPLICIT SSE
    error event is sent, then the stream is closed. MAX_SILENCE_S must stay
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
@@ -23,6 +22,17 @@ Four roles, nothing else:
    engine validates them with a Python regex and 400s the request otherwise. Nothing
    else in the body is ever touched.
 
+v6.14: an abandoned request no longer becomes a zombie. Three holes, all measured here on
+      2026-09-09 (6,582 flood lines in one day, one request decoding 6 minutes for nobody):
+      a client that gave up during prefill left a request the proxy could not name, because
+      it learned the rid from the first SSE event; the Anthropic dialect's id (msg_<uuid>)
+      was sent to /abort_request although it names nothing the engine knows; and the abort
+      was fired in a thread that raced the socket close, which is what deletes the state
+      the abort needs (sglang #35255, in main since 2026-09-04 and in neither image this
+      repo serves). The proxy now imposes the rid with x-override-rid on the routes that
+      honour it, aborts synchronously before closing, and on /v1/messages, where the
+      engine mints its own id and applies no header overrides, drains the answer to its
+      end instead of orphaning it.
 v6.13: Claude Code's Artifact tool carries an ECMA-262 'pattern' with Unicode property
       escapes ([^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}...]). SGLang validates every tool schema with
       jsonschema, whose 'regex' format check compiles patterns with Python's re, which
@@ -58,7 +68,7 @@ before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
 / max 1307 ms through the proxy vs a steady 118 ms direct. read1() returns as
 soon as bytes are available, so the stream stays token by token.
 """
-import json, os, queue, re, socket, sys, threading, time, urllib.request, urllib.error
+import json, os, queue, re, socket, sys, threading, time, urllib.request, urllib.error, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -300,6 +310,30 @@ def pool_tokens():
     return _POOL["tokens"]
 HOP = {"host", "content-length", "connection", "keep-alive", "transfer-encoding"}
 
+# Abort contract (v6.14). SGLang only aborts a request it can still FIND: abort_request()
+# returns early when the rid is no longer in TokenizerManager.rid_to_state, and a client
+# disconnect deletes that entry first (generate_request's "except BaseException" ->
+# _discard_pending_req_states), so the AbortReq never reaches the scheduler and the
+# request keeps decoding with nobody listening (sglang #35255, merged upstream
+# 2026-09-04; neither image this repo serves carries it). Two consequences for the proxy:
+#   - it must know the rid BEFORE the first SSE event, or a client that gives up during
+#     prefill leaves a request nobody can name (measured here 2026-09-09: 4,470 flood
+#     lines for one rid, ~6 min of dead decode);
+#   - it must send the abort BEFORE it closes the upstream socket, or it races the
+#     deletion it is trying to beat.
+# The engine takes the rid from the caller on the routes below (x-override-rid,
+# request_headers.py). The Anthropic route builds its own request object and never
+# applies header overrides, so on /v1/messages the id the client sees (msg_<uuid>) is
+# NOT the engine's rid: there is nothing to abort with, and the proxy drains instead.
+RID_OVERRIDE_ROUTES = ("/v1/chat/completions", "/generate")
+ABORT_TIMEOUT_S = float(os.environ.get("ABORT_TIMEOUT_S", "5"))
+# Ceiling on draining an abandoned generation that cannot be aborted. Reading it to its
+# natural end costs the same decode the zombie would have cost anyway, and saves the
+# flood: an engine writing into a socket nobody reads is silent, an engine whose state
+# was deleted logs one line per output batch.
+DRAIN_MAX_S = float(os.environ.get("DRAIN_MAX_S", "900"))
+_rid_override_honoured = None       # None = never observed, True/False = what the engine did
+
 def log(msg):
     sys.stderr.write(f"[proxy] {msg}\n"); sys.stderr.flush()
 
@@ -368,8 +402,23 @@ class H(BaseHTTPRequestHandler):
         except OSError: pass
 
     # ---- upstream ----------------------------------------------------------
+    def _forced_rid(self):
+        """The rid this proxy imposes on the engine, so an abandoned request has a name
+        before it has produced anything. A caller that sets the header itself keeps it."""
+        if getattr(self, "_frid", "unset") != "unset":
+            return self._frid
+        if self.path.split("?")[0] in RID_OVERRIDE_ROUTES:
+            self._frid = self.headers.get("x-override-rid") or uuid.uuid4().hex
+        else:
+            self._frid = None
+        return self._frid
+
     def _hdrs(self):
-        return {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+        h = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+        rid = self._forced_rid()
+        if rid:
+            h["X-Override-Rid"] = rid
+        return h
 
     def _open(self, body):
         req = urllib.request.Request(UPSTREAM + self.path, data=body,
@@ -449,7 +498,11 @@ class H(BaseHTTPRequestHandler):
         log(f"{getattr(self, '_peer', '?')} {self.command} {self.path.split('?')[0]} {outcome} in {time.time()-self._t0:.1f}s{st}")
 
     def _note_rid(self, rec: bytes):
-        """First SSE event carries the request id in both dialects."""
+        """First SSE event carries the request id in both dialects. On the OpenAI dialect
+        that id IS the engine's rid, so it also tells us whether the engine honoured the
+        override this proxy sent; on the Anthropic dialect it is a locally minted
+        msg_<uuid> and names nothing the engine knows."""
+        global _rid_override_honoured
         if getattr(self, "_rid", None) is not None:
             return
         try:
@@ -459,9 +512,34 @@ class H(BaseHTTPRequestHandler):
                     rid = j.get("id") or (j.get("message") or {}).get("id")
                     if rid and rid != "keepalive":
                         self._rid = rid
+                        forced = self._forced_rid()
+                        if forced and _rid_override_honoured is None:
+                            _rid_override_honoured = (rid == forced)
+                            log("this engine honours x-override-rid: an abandoned request "
+                                "can be aborted before it produces anything"
+                                if _rid_override_honoured else
+                                "this engine ignores x-override-rid (start it with "
+                                "SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1): a request "
+                                "abandoned before its first event can only be drained")
                     return
         except Exception:
             return
+
+    def _abortable_rid(self):
+        """The rid the engine would recognise, or None when there is none to give it.
+
+        A rid this proxy invented is only worth sending once an answer has PROVED the
+        engine takes it (SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES is off by default, and an
+        engine that ignores the header answers with its own rid). Sending an unproven one
+        reads like a successful abort in the log and aborts nothing, which is the failure
+        this version exists to remove: unproven means "no rid", and no rid means drain."""
+        forced = self._forced_rid()
+        observed = getattr(self, "_rid", None)
+        if forced and _rid_override_honoured is True:
+            return forced
+        if observed and self.path.split("?")[0] in RID_OVERRIDE_ROUTES:
+            return observed         # engine ignored the override: its own id is the rid
+        return None                 # Anthropic dialect: msg_<uuid> is not a rid
 
     def _scan_corruption(self, rec: bytes) -> bool:
         """True once the stream has produced CORRUPTION_RUN marker characters in a row."""
@@ -484,25 +562,64 @@ class H(BaseHTTPRequestHandler):
         self._crun = run
         return False
 
-    def _abort_upstream(self, why: str):
-        """Tell SGLang to stop generating for a client that is gone."""
-        rid = getattr(self, "_rid", None)
+    def _abort_upstream(self, why: str) -> bool:
+        """Tell SGLang to stop generating for a client that is gone, and say whether it
+        was told. SYNCHRONOUS by contract: the engine drops the request state the moment
+        this proxy closes the socket, and an abort that arrives after that is discarded
+        in silence (sglang #35255). Returns False when there is no rid to abort with,
+        which is the caller's signal to drain instead of orphaning the generation."""
+        if getattr(self, "_aborted", False):
+            return True
+        rid = self._abortable_rid()
         if not rid:
-            return
-        def go():
-            try:
-                hdrs = {"Content-Type": "application/json"}
-                auth = self.headers.get("Authorization")
-                if auth: hdrs["Authorization"] = auth
-                req = urllib.request.Request(UPSTREAM + "/abort_request",
-                                             json.dumps({"rid": rid}).encode(), hdrs)
-                urllib.request.urlopen(req, timeout=5).read()
-                log(f"aborted upstream rid={rid} ({why})")
-            except Exception as e:
-                log(f"abort_request failed for rid={rid}: {e}")
-        threading.Thread(target=go, daemon=True).start()
+            return False
+        try:
+            hdrs = {"Content-Type": "application/json"}
+            auth = self.headers.get("Authorization")
+            if auth: hdrs["Authorization"] = auth
+            req = urllib.request.Request(UPSTREAM + "/abort_request",
+                                         json.dumps({"rid": rid}).encode(), hdrs)
+            urllib.request.urlopen(req, timeout=ABORT_TIMEOUT_S).read()
+            self._aborted = True
+            log(f"aborted upstream rid={rid} ({why})")
+            return True
+        except Exception as e:
+            log(f"abort_request failed for rid={rid}: {e}")
+            return False
 
     def _relay(self, resp):
+        """A client that vanishes before the relay can start (30/08: a request that
+        showed as 'in flight' forever) used to leave the upstream response open and
+        unnamed. The engine had already been given the request, so it kept decoding:
+        one such disconnect cost 1,742 flood lines and 3 minutes of dead decode here on
+        2026-09-09. Every exit path now either aborts the generation or drains it."""
+        try:
+            self._relay_inner(resp)
+        except BaseException:
+            if not self._abort_upstream("client vanished mid-request"):
+                self._drain_detached(resp)
+            else:
+                try: resp.close()
+                except Exception: pass
+            raise
+
+    def _drain_detached(self, resp):
+        """Read an abandoned response to its end in the background: see DRAIN_MAX_S."""
+        t0 = time.time()
+        def go():
+            try:
+                while time.time() - t0 < DRAIN_MAX_S:
+                    if not resp.read1(65536):
+                        break
+            except Exception:
+                pass
+            finally:
+                try: resp.close()
+                except Exception: pass
+                log(f"drained an abandoned {self.path.split('?')[0]} for {time.time()-t0:.0f}s")
+        threading.Thread(target=go, daemon=True).start()
+
+    def _relay_inner(self, resp):
         sse = "text/event-stream" in (resp.headers.get("Content-Type") or "")
         self._begin(resp.status, resp.headers)
         if not sse:
@@ -510,6 +627,7 @@ class H(BaseHTTPRequestHandler):
             # what the guard can do here is name it in the log instead of leaving a wall
             # of exclamation marks to be explained later.
             worst = 0
+            detached = False
             try:
                 while True:
                     c = resp.read(65536)
@@ -519,12 +637,22 @@ class H(BaseHTTPRequestHandler):
                         for ch in c.decode("utf-8", "ignore"):
                             run = run + 1 if ch == CORRUPTION_MARK else 0
                             if run > worst: worst = run
-                    self._chunk(c)
+                    try:
+                        self._chunk(c)
+                    except Exception:
+                        # the client is gone while the engine is still writing an answer
+                        # nobody will read (a non-streamed answer is one long silence for
+                        # the caller, so this is a common way to lose one)
+                        if self._abort_upstream("client gone on a non-streamed answer"):
+                            self._done("CLIENT GONE on write"); return
+                        self._drain_detached(resp); detached = True
+                        self._done("CLIENT GONE on write (draining)"); return
             except Exception:
                 pass
             finally:
-                try: resp.close()
-                except Exception: pass
+                if not detached:
+                    try: resp.close()
+                    except Exception: pass
             self._finish()
             if worst >= CORRUPTION_RUN:
                 log(f"corrupted output in a non-streamed answer ({worst} marker chars)")
@@ -533,13 +661,15 @@ class H(BaseHTTPRequestHandler):
 
         q = queue.Queue(maxsize=1024)
         stop = threading.Event()
+        drain = threading.Event()
+        drain_t0 = [0.0]
         def pump():
             # only COMPLETE SSE events are forwarded (boundary \n\n): a
             # keepalive can therefore never land in the middle of an event
             # (v6.4 bug: keepalive chunk injected mid-JSON-line, corrupt stream)
             buf = b""
             def put(rec):
-                while not stop.is_set():
+                while not stop.is_set() and not drain.is_set():
                     try: q.put(("d", rec), timeout=2); return True
                     except queue.Full: continue
                 return False
@@ -549,6 +679,17 @@ class H(BaseHTTPRequestHandler):
                     # blocks until 8 KB accumulate (bursty stream)
                     c = resp.read1(8192)
                     if not c: break
+                    if drain.is_set():
+                        # nobody is listening any more and the engine cannot be told to
+                        # stop: read the answer to its end anyway. The decode costs the
+                        # same as the zombie would have, the log stays clean, and the
+                        # slot is released when the generation ends instead of being
+                        # held by a request whose state no longer exists.
+                        if time.time() - drain_t0[0] > DRAIN_MAX_S:
+                            log(f"drain ceiling reached after {DRAIN_MAX_S:.0f}s, "
+                                f"dropping the socket for {self.path.split('?')[0]}")
+                            break
+                        continue
                     buf += c
                     while True:
                         i = buf.find(b"\n\n")
@@ -556,10 +697,16 @@ class H(BaseHTTPRequestHandler):
                         rec = buf[:i+2]; buf = buf[i+2:]
                         if not put(rec): break
             except Exception as e:
-                if not stop.is_set():
+                if not stop.is_set() and not drain.is_set():
                     try: q.put(("e", str(e).encode()), timeout=5)
                     except Exception: pass
             finally:
+                if drain.is_set():
+                    log(f"drained an abandoned {self.path.split('?')[0]} for "
+                        f"{time.time() - drain_t0[0]:.0f}s")
+                    try: resp.close()
+                    except Exception: pass
+                    return
                 if buf and not stop.is_set():
                     try: q.put(("d", buf), timeout=2)
                     except Exception: pass
@@ -570,10 +717,16 @@ class H(BaseHTTPRequestHandler):
         threading.Thread(target=pump, daemon=True).start()
 
         def drop_upstream(why="client gone"):
-            self._abort_upstream(why)
-            stop.set()
-            try: resp.close()
-            except Exception: pass
+            # Abort first, close second: the close is what deletes the state the abort
+            # needs (sglang #35255). When there is no rid the engine would recognise,
+            # closing is the one thing not to do.
+            if self._abort_upstream(why):
+                stop.set()
+                try: resp.close()
+                except Exception: pass
+            else:
+                drain_t0[0] = time.time()
+                drain.set()
 
         anthropic = self.path.startswith("/v1/messages")
         # anthropic dialect: official ping event. openai dialect: an AUTHENTIC
@@ -727,5 +880,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.13 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.14 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     Server(("0.0.0.0", port), H).serve_forever()

@@ -168,7 +168,7 @@ What the shipped config gets right for you:
 4. **Mid-conversation system messages**: some agent clients inject system messages after turn 1; the stock template raises `System message must be at the beginning`. Patched to render them as `<system-reminder>` blocks.
 5. **Vision declared**: `attachment` + `modalities` are set, so image attachments and on-disk image reads work end to end (the model is natively multimodal).
 
-On service installs the generated config points at the **keepalive proxy port** (`PORT+1`), not the server directly, and that is deliberate: SGLang buffers tool-call arguments while they stream (127 s of measured silence on one 400-line file write, at native context), and opencode drops a stream after roughly 140-180 s without a real chunk. The proxy (`qwen38-keepalive.service`, vendored `keepalive-proxy.py`) fills those silences with protocol-correct keepalives, at SSE event boundaries only, and aborts the generation server-side the moment the client disconnects (no zombie generations). With `./install.sh --no-service` there is no proxy: the config then points at the server directly, and huge single-file writes may abort. One more caveat, measured: SGLang's `--api-key` only accepts `Authorization: Bearer`, **not** `x-api-key`.
+On service installs the generated config points at the **keepalive proxy port** (`PORT+1`), not the server directly, and that is deliberate: SGLang buffers tool-call arguments while they stream (127 s of measured silence on one 400-line file write, at native context), and opencode drops a stream after roughly 140-180 s without a real chunk. The proxy (`qwen38-keepalive.service`, vendored `keepalive-proxy.py`) fills those silences with protocol-correct keepalives, at SSE event boundaries only, and makes sure a client that gives up does not leave a generation running (v6.14: it names every request with `x-override-rid` so it can abort one that has not produced anything yet, aborts before closing the socket, and drains the answer where the engine offers no rid to abort with). With `./install.sh --no-service` there is no proxy: the config then points at the server directly, and huge single-file writes may abort. One more caveat, measured: SGLang's `--api-key` only accepts `Authorization: Bearer`, **not** `x-api-key`.
 
 ## The 1M context mode
 
@@ -224,6 +224,19 @@ daily since 2026-08-22:
   default, `0` disables), aborts the generation upstream and sends an explicit
   `corrupted_output` error instead. It reads only the delta text it already relays,
   never tool-call arguments, so a model writing `!!!` in prose is untouched.
+- **No zombie generations** (proxy v6.14). A client that gives up leaves the engine
+  decoding unless the abort reaches it in time, and it cannot: `abort_request()` returns
+  early once the rid has left `rid_to_state`, which the disconnect itself empties
+  ([sglang#35255](https://github.com/sgl-project/sglang/pull/35255), merged upstream
+  2026-09-04 and in neither image this repo serves). Measured here on 2026-09-09: 6,582
+  `state was deleted in TokenizerManager` lines in one day, one request decoding 6 min for
+  nobody. The proxy now names every request itself (`x-override-rid`, which the engine
+  honours because the units pass `SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1`), so a request
+  abandoned during prefill still has a name, and it aborts **before** closing the socket
+  rather than in a thread racing it. Where no rid can exist, on `/v1/messages` (the
+  Anthropic route mints its own `msg_<uuid>` and applies no header overrides), the answer
+  is drained to its end instead of being orphaned. Same request through both proxies: 223
+  flood lines and a held slot before, 0 after.
 - **A tool-schema guard** (proxy v6.13). The engine validates every tool's parameters
   with `jsonschema`, whose `regex` format check compiles `pattern` with Python's `re`.
   JSON Schema says `pattern` is ECMA-262, which has Unicode property escapes (`\p{Cc}`)

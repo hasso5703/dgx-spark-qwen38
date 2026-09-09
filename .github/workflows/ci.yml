@@ -545,6 +545,9 @@ jobs:
       - name: keepalive proxy oversize guard (offline, fake /tokenize)
         run: python3 tests/test_proxy_guard.py
 
+      - name: keepalive proxy abort contract (offline, fake engine with #35255 rule)
+        run: python3 tests/test_proxy_abort.py
+
       - name: opencode limits fit the served pool (offline)
         run: python3 tests/test_oc_fit_limits.py
 

@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.8.4 (2026-09-09): a client that gives up no longer leaves the engine decoding
+
+The reference box logged **6,582 copies of `Received output for rid=... but the state
+was deleted in TokenizerManager`** on 2026-09-09 alone. Behind each burst is a request
+whose client went away and whose generation kept running: one of them decoded for
+**6 minutes and 8 seconds** with nobody listening (4,470 log lines), on a lane that
+serves **four** concurrent requests. The engine was healthy the whole time.
+
+- **Why an abort can arrive too late to do anything.** `TokenizerManager.abort_request()`
+  returns early when the rid is no longer in `rid_to_state`, and a client disconnect
+  deletes that entry first: `generate_request()` catches the `CancelledError` and calls
+  `_discard_pending_req_states()`. The `AbortReq` never reaches the scheduler, which keeps
+  decoding and logs one line per output batch. Upstream fixed it in
+  [sglang#35255](https://github.com/sgl-project/sglang/pull/35255) (merged 2026-09-04,
+  `_release_req_states_on_failure`); **neither image this repo serves carries it**: the
+  27B images predate it, and the flash lane's `dev-qwen38-next-local` is built from the
+  Qwen4-Exp branch, which is 995 commits behind main (verified against the container:
+  `_release_req_states_on_failure` 0, `abort_sent` 0, `_discard_pending_req_states` 2).
+- **Three holes on this side of the wire, all measured here.** The proxy learned the rid
+  from the **first SSE event**, so a client that gave up during prefill left a request it
+  could not name (the 6-minute one). On `/v1/messages` it sent the id it did have,
+  `msg_<uuid>`, which the Anthropic route mints locally and the engine has never heard of:
+  an abort that logs like a success and aborts nothing. And the abort was fired in a
+  **background thread racing `resp.close()`**, which is the call that deletes the state
+  the abort needs.
+- **The proxy (v6.14) names every request itself.** It sends `x-override-rid` on the
+  routes that honour it (`/v1/chat/completions`, `/generate`), so an abandoned request has
+  a name before it has produced a single token, and it POSTs `/abort_request`
+  **synchronously, before** closing the upstream socket. A rid it invented is only used
+  once an answer has **proved** the engine takes it: SGLang gates header overrides behind
+  `SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES`, off by default, and an unproven rid would abort
+  nothing while reading like a success.
+- **When there is no rid to abort with, the answer is drained, not dropped.** On
+  `/v1/messages` the engine mints its own id and applies no header overrides, so nothing
+  the client sees names the request. Reading the answer to its end costs the decode the
+  zombie would have cost anyway, and keeps the engine's state coherent: no flood, and the
+  slot is released when the generation ends. `DRAIN_MAX_S` (900 s) bounds it.
+- **`SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1` is now passed to the engine** by the flash
+  launcher, both 27B units and `run.sh`. It takes effect at the next engine start; until
+  then the proxy drains instead of aborting, which is the same absence of a zombie at the
+  cost of the decode.
+- **Measured on the box, same engine, same request** (client killed mid-request,
+  `max_tokens` 400): **223 flood lines and a zombie holding a slot** through the v6.13
+  proxy, **0 flood lines** through v6.14, which drained the abandoned answer for 18 s and
+  closed it. `tests/test_proxy_abort.py` (new, 6 cases) reproduces the upstream rule in a
+  fake engine: an abort for a rid whose state is gone is recorded as ignored, never as an
+  abort, so the ordering is tested and not merely intended.
+
 ## v1.8.3 (2026-09-09): one tool schema no longer kills a whole session
 
 Claude Code 2.1.266 could not say hello to this lane. Every request, from the

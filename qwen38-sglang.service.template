@@ -12,6 +12,7 @@ ExecStartPre=-/usr/bin/docker rm -f qwen38-sglang
 ExecStart=/bin/bash -c 'exec /usr/bin/docker run --rm --name qwen38-sglang --gpus all \
   --memory 100g --memory-swap 100g --shm-size 16g --network host --ipc=host \
   -e TORCHINDUCTOR_CACHE_DIR=/cache/inductor \
+  -e SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1 \
   -v __HOME__/.config/qwen38/sglang-cache:/cache \
   -v __HF_CACHE__:/root/.cache/huggingface \
   -v __HOME__/.config/qwen38:/out \
