@@ -441,6 +441,28 @@ with the identical RadixArk modelopt NVFP4 recipe (verified: same
 chat template, MTP + vision intact, ~22 GB). It refuses the least while keeping
 the stock NVFP4 serving path.
 
+**NVIDIA published its own 27B NVFP4 export on 2026-09-08**
+([`nvidia/Qwen3.8-27B-NVFP4`](https://huggingface.co/nvidia/Qwen3.8-27B-NVFP4)), and it
+is not a new option here, for a reason worth writing down. Its quantization map is the
+**same one this repo already serves**, layer for layer: 401 quantized layers, NVFP4
+group-16 on the 64 MLP triplets and on `lm_head`, FP8 on all 48 linear-attention and 16
+self-attention projections, `mtp*` excluded, and the three shards match the RadixArk
+export **byte for byte in size** (9,965,652,544 / 9,985,757,064 / 1,970,287,672; the
+weights themselves differ, as two calibrations do). One field differs and it is the one
+that costs something: RadixArk declares `kv_cache_quant_algo: FP8`, NVIDIA's declares
+`null`, so SGLang's `--kv-cache-dtype auto` gives it a **bf16 KV cache and about half the
+pool** unless you pass `--kv-cache-dtype fp8_e4m3` yourself, which is what NVIDIA's own
+card tells you to do (and what this repo already does for the FP8 pair). Two things on
+that card are worth knowing: it says the checkpoint was produced with **modelopt v0.48.0**
+while the checkpoint's own `hf_quant_config.json` names `0.47.0.dev80+g913f5e224`, and its
+accuracy table, measured by NVIDIA on GB300 under vLLM, prices this recipe against BF16 at
+**GPQA Diamond 88.01 against 88.92, Terminal-Bench 74.02 against 75.56, IFBench 78.93
+against 80.07, MMMU-Pro 74.86 against 75.14**, with **AA-LCR 73.38 against 72.63** and
+**SciCode 48.41 against 47.93** landing the other way. That is the size of the NVFP4
+question on this model, from the people who quantized it. Adding an eighth target for a
+recipe-identical export would cost 21 GB and a validation cycle for, at best, a tie: say
+so in an issue if you want it, the switch surface has room.
+
 The FP8 pair is Qwen's own release and huihui-ai's abliteration of it in the
 same format. SGLang reads the weight scheme from the checkpoint's config, but
 one flag does change: **the FP8 targets are served with `--kv-cache-dtype
@@ -759,7 +781,7 @@ DASH_AGENT_PORT=0 dashboard/install-dashboard.sh       # the cockpit without the
 
 ## Extras (opt-in)
 
-Two field-tested pieces from the reference box, deliberately not part of the default
+Three field-tested pieces from the reference box, deliberately not part of the default
 install because they touch things beyond the serving stack:
 
 **`extras/opencode/auto-continue.js`**: an opencode plugin that automatically resumes a
@@ -775,6 +797,12 @@ mkdir -p ~/.config/opencode/plugins && cp extras/opencode/auto-continue.js ~/.co
 Plugins load when opencode starts (a running session never picks it up). Log at
 `~/.config/qwen38/auto-continue.log`; tune with `AC_THROTTLE_MS`, `AC_IDLE_DELAY_MS`,
 `AC_MAX_CONSECUTIVE`, `AC_LOG`.
+
+**`extras/gguf/`**: a note, not a lane. What llama.cpp measured on this box against the
+SGLang path (25.6 tok/s on code against 32-40, prose 17.7-18.2 against 17-22, prefill
+about a third), the four traps that make a GGUF benchmark on GB10 lie to you, and what
+evidence would make a GGUF target worth adding. Written for
+[issue #12](https://github.com/hasso5703/dgx-spark-qwen38/issues/12).
 
 **`extras/cake-ingress/`**: ingress anti-bufferbloat. While a model download saturates
 your link, the queue builds up inside the ISP box and everything else drowns (measured on
