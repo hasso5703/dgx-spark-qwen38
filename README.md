@@ -224,6 +224,13 @@ daily since 2026-08-22:
   default, `0` disables), aborts the generation upstream and sends an explicit
   `corrupted_output` error instead. It reads only the delta text it already relays,
   never tool-call arguments, so a model writing `!!!` in prose is untouched.
+- **A tool-schema guard** (proxy v6.13). The engine validates every tool's parameters
+  with `jsonschema`, whose `regex` format check compiles `pattern` with Python's `re`.
+  JSON Schema says `pattern` is ECMA-262, which has Unicode property escapes (`\p{Cc}`)
+  that `re` rejects outright, so a single such tool makes the engine answer `400` to
+  **every** request of the session (measured 2026-09-09 against Claude Code 2.1.266 and
+  its `Artifact` tool). The proxy removes only the patterns Python cannot compile, only
+  inside tool parameter schemas, and forwards every other body untouched and unparsed.
 - The generated opencode config switches to `context/input 700000, output 200000`
   (compaction fires at 680000; worst case 880000, under the worst measured pool).
 

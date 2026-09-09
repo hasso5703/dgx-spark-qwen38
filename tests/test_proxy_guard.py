@@ -84,6 +84,56 @@ class ProxyGuard(unittest.TestCase):
         self.assertIn("tool_result", sent["messages"][1]["content"])  # non-text blocks counted via their JSON
         self.assertGreaterEqual(n, 5)
 
+    def test_tool_pattern_python_cannot_compile_is_dropped(self):
+        """Claude Code's Artifact tool sends an ECMA-262 pattern with Unicode property
+        escapes; the engine validates schemas with Python's re and 400s the whole
+        session over it (09/09). The pattern goes, everything else stays."""
+        ecma = r'^(?!__.*__$)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}"\\./[\]]{1,200}$'
+        body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                           "tools": [{"name": "Artifact", "input_schema": {"type": "object", "properties": {
+                               "field": {"type": "string", "pattern": ecma},
+                               "doc_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}}}}]}).encode()
+        out, dropped = self.mod.sanitize_tool_schemas(body, "/v1/messages")
+        self.assertEqual(dropped, [ecma])
+        props = json.loads(out)["tools"][0]["input_schema"]["properties"]
+        self.assertNotIn("pattern", props["field"])
+        self.assertIn("pattern", props["doc_id"])       # a pattern re accepts is kept
+        self.assertEqual(json.loads(out)["messages"], [{"role": "user", "content": "hi"}])
+
+    def test_openai_and_message_level_tools_are_reached(self):
+        ecma = r"^\p{L}+$"
+        body = json.dumps({"model": "m",
+                           "tools": [{"type": "function", "function": {"name": "f", "parameters": {
+                               "properties": {"a": {"pattern": ecma}}}}}],
+                           "messages": [{"role": "system", "content": "s", "tools": [
+                               {"name": "g", "input_schema": {"properties": {"b": {"pattern": ecma}}}}]}]}).encode()
+        out, dropped = self.mod.sanitize_tool_schemas(body, "/v1/chat/completions")
+        self.assertEqual(len(dropped), 2)
+        self.assertNotIn("pattern", out.decode())
+
+    def test_clean_body_is_forwarded_untouched(self):
+        """No marker in the raw bytes: the body is not even parsed."""
+        body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                           "tools": [{"name": "f", "input_schema": {"properties": {
+                               "a": {"pattern": "^[a-z]+$"}}}}]}).encode()
+        out, dropped = self.mod.sanitize_tool_schemas(body, "/v1/messages")
+        self.assertIs(out, body)
+        self.assertEqual(dropped, [])
+
+    def test_user_content_quoting_a_bad_pattern_is_left_alone(self):
+        """The guard walks tool schemas only: a prompt that happens to quote one of
+        these regexes must reach the engine byte for byte."""
+        text = r'why does [^\p{Cc}] fail? {"pattern": "\p{L}"}'
+        body = json.dumps({"model": "m", "messages": [{"role": "user", "content": text}]}).encode()
+        out, dropped = self.mod.sanitize_tool_schemas(body, "/v1/messages")
+        self.assertEqual(dropped, [])
+        self.assertEqual(json.loads(out)["messages"][0]["content"], text)
+
+    def test_malformed_and_bodyless_requests_survive(self):
+        self.assertEqual(self.mod.sanitize_tool_schemas(rb'{"tools": [broken \p{L}', "/v1/messages")[1], [])
+        self.assertEqual(self.mod.sanitize_tool_schemas(None, "/v1/messages"), (None, []))
+        self.assertEqual(self.mod.sanitize_tool_schemas(rb'\p{L}', "/health")[1], [])
+
     def test_unknown_shapes_return_none(self):
         self.assertIsNone(self.mod.tokenize_count(b"not json", "/v1/chat/completions"))
         self.assertIsNone(self.mod.tokenize_count(json.dumps([1, 2]).encode(), "/v1/chat/completions"))

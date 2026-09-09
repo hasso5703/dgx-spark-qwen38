@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.12). No content logging, no rewriting.
+"""Keepalive proxy in front of SGLang (v6.13). No content logging, and the only
+rewriting is the tool-schema guard (role 4).
 
-Three roles, nothing else:
+Four roles, nothing else:
 1. fill the silences of the SSE stream (SGLang's tool-call parser buffers the
    arguments: 127 s of measured silence for a 400-line file write) by injecting
    the OFFICIAL Anthropic "ping" event every KEEPALIVE_S seconds on the
@@ -16,7 +17,18 @@ Three roles, nothing else:
 3. never lull a client on a dead upstream: past MAX_SILENCE_S an EXPLICIT SSE
    error event is sent, then the stream is closed. MAX_SILENCE_S must stay
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
-   cold cache), hence the 3600 s default.
+   cold cache), hence the 3600 s default;
+4. keep one tool schema from killing a whole session: the 'pattern' values that
+   Python's re cannot compile are dropped from tool parameter schemas, because the
+   engine validates them with a Python regex and 400s the request otherwise. Nothing
+   else in the body is ever touched.
+
+v6.13: Claude Code's Artifact tool carries an ECMA-262 'pattern' with Unicode property
+      escapes ([^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}...]). SGLang validates every tool schema with
+      jsonschema, whose 'regex' format check compiles patterns with Python's re, which
+      raises "bad escape \\p": the engine answered 400 to EVERY request of the session
+      (measured 09/09 against Claude Code v2.1.266, sglang serving_chat.py:868). The
+      proxy drops the patterns Python cannot compile and forwards the rest untouched.
 
 v6.12: the tripwire trips at 128 marker characters (48 is a plausible banner line in a
       code block; 128 is not something a model writes, and real corruption runs to
@@ -46,7 +58,7 @@ before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
 / max 1307 ms through the proxy vs a steady 118 ms direct. read1() returns as
 soon as bytes are available, so the stream stays token by token.
 """
-import json, os, queue, socket, sys, threading, time, urllib.request, urllib.error
+import json, os, queue, re, socket, sys, threading, time, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -87,6 +99,78 @@ TOKENS_PER_MEDIA = int(os.environ.get("TOKENS_PER_MEDIA", "4096"))   # generous 
 # its state rather than the model writing prose. 0 disables the guard.
 CORRUPTION_RUN = int(os.environ.get("CORRUPTION_RUN", "128") or 0)
 CORRUPTION_MARK = "!"
+
+
+# Tool-schema guard (v6.13): SGLang validates every tool's parameter schema with
+# jsonschema (serving_chat.py: Draft202012Validator.check_schema), whose 'regex' format
+# check compiles 'pattern' with Python's re. JSON Schema says 'pattern' is ECMA-262,
+# which has Unicode property escapes and named groups; Python's re has neither, so ONE
+# such tool makes the engine answer 400 to every request of the session. A 'pattern'
+# only constrains what the model may write into an argument, so dropping the ones Python
+# cannot compile costs the caller nothing and keeps the lane usable.
+UNPYTHONIC_PATTERN_MARKS = (rb"\\p{", rb"\\P{", rb"(?<")
+_pattern_drop_logged = set()
+
+
+def _prune_patterns(node, dropped, depth=0):
+    """Drop, in place, every 'pattern' Python's re refuses. Depth-bounded: a cyclic
+    or absurdly nested schema must not take the proxy down with a RecursionError."""
+    if depth > 48:
+        return
+    if isinstance(node, dict):
+        pat = node.get("pattern")
+        if isinstance(pat, str):
+            try:
+                re.compile(pat)
+            except (re.error, RecursionError):
+                node.pop("pattern", None)
+                dropped.append(pat)
+        for value in node.values():
+            _prune_patterns(value, dropped, depth + 1)
+    elif isinstance(node, list):
+        for value in node:
+            _prune_patterns(value, dropped, depth + 1)
+
+
+def _tool_param_schemas(j):
+    """The tool parameter schemas of a body: Anthropic 'input_schema' and OpenAI
+    'function.parameters', at request level and inside messages (the engine validates
+    message-level tools too). Nothing outside these subtrees is ever visited."""
+    holders = [j] + [m for m in (j.get("messages") or []) if isinstance(m, dict)]
+    for holder in holders:
+        tools = holder.get("tools")
+        if not isinstance(tools, list):
+            continue
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            fn = tool.get("function")
+            for schema in (tool.get("input_schema"),
+                           fn.get("parameters") if isinstance(fn, dict) else None):
+                if isinstance(schema, dict):
+                    yield schema
+
+
+def sanitize_tool_schemas(body, path):
+    """The body to forward, and the patterns dropped from it. A body whose raw bytes
+    carry no construct Python's re rejects is passed through untouched, without even
+    being parsed: the hot path pays one substring scan."""
+    if not body or not path.startswith("/v1/"):
+        return body, []
+    if not any(mark in body for mark in UNPYTHONIC_PATTERN_MARKS):
+        return body, []
+    try:
+        j = json.loads(body)
+    except Exception:
+        return body, []                 # not JSON we can fix: let the engine decide
+    if not isinstance(j, dict):
+        return body, []
+    dropped = []
+    for schema in _tool_param_schemas(j):
+        _prune_patterns(schema, dropped)
+    if not dropped:
+        return body, []
+    return json.dumps(j).encode(), dropped
 
 
 def _anthropic_as_openai(j, media):
@@ -553,6 +637,12 @@ class H(BaseHTTPRequestHandler):
         log(f"{self._peer} -> {self.command} {self.path.split('?')[0]} body={n0}b")
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if (with_body and n) else None
+        body, dropped = sanitize_tool_schemas(body, self.path)
+        for pat in dropped:                 # once per distinct pattern, not per request
+            if pat not in _pattern_drop_logged:
+                _pattern_drop_logged.add(pat)
+                log(f"{self._peer} tool schema: dropped a 'pattern' Python's re cannot "
+                    f"compile (the engine would 400 the request): {pat[:120]}")
         if body and self.path.startswith("/v1/") and len(body) > 200_000:
             pool = pool_tokens()
             est = len(body) / CHARS_PER_TOKEN_MIN     # optimistic: fewest tokens the body could be
@@ -637,5 +727,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.12 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.13 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     Server(("0.0.0.0", port), H).serve_forever()

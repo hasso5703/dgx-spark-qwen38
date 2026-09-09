@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.8.3 (2026-09-09): one tool schema no longer kills a whole session
+
+Claude Code 2.1.266 could not say hello to this lane. Every request, from the
+very first word, came back `400 Tool 1 function has invalid 'parameters' schema:
+'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}"\\\\./[\\]]{1,200}$' is not a 'regex'`.
+Nothing was wrong with the model, the chat template or the client.
+
+- **The engine validates tool schemas with a Python regex, and JSON Schema is not
+  written in one.** `serving_chat.py:868` runs `Draft202012Validator.check_schema()`
+  on every tool's parameters, and that check compiles each `pattern` with Python's
+  `re`. The spec says `pattern` is **ECMA-262**, which has Unicode property escapes;
+  `re` does not, and answers `bad escape \p`. One tool carrying such a pattern
+  (Claude Code's `Artifact`, on its `field` argument) is enough to make the engine
+  refuse **every** request of the session, before the model sees anything. This is
+  an upstream limitation, not a local misconfiguration: `jsonschema` has always
+  compiled with `re` rather than the `regex` module.
+- **The proxy (v6.13) drops exactly those patterns and nothing else.** Only the
+  `pattern` values Python cannot compile are removed, only inside tool parameter
+  schemas (`input_schema` on the Anthropic dialect, `function.parameters` on the
+  OpenAI one, at request level and inside messages, since the engine validates
+  message-level tools too). A `pattern` constrains what the model may write into an
+  argument, so removing it costs the caller nothing here, and a pattern `re` does
+  accept (`^[A-Za-z0-9_-]{1,64}$`) is kept.
+- **The hot path pays one substring scan.** A body whose raw bytes carry none of the
+  JSON-escaped markers `\\p{`, `\\P{`, `(?<` is forwarded untouched, without being
+  parsed at all. A prompt that merely quotes one of these regexes is never rewritten,
+  and the walk is depth-bounded so a cyclic schema cannot take the proxy down. Each
+  distinct dropped pattern is logged once, not once per turn.
+- **Measured, not assumed**: the failing request was reproduced against the live
+  lane (`400`), then answered `200` with the same body after the fix.
+  `tests/test_proxy_guard.py` grew five cases and runs 30.
+
 ## v1.8.2 (2026-09-09): the cockpit on a phone, opencode included
 
 Measured before it was changed: `dashboard/tests/mobile-check.mjs` (new) drives a
