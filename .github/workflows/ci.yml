@@ -558,7 +558,7 @@ jobs:
           # Every flash target, every tier: the default tier was never asserted
           # before (the old gate fell through to the throughput arm).
           for t in flash flash-uncensored flash-nvda; do
-            [ "$(l "$t" context)" = "190000 64000 local" ] || { echo "$t/context drifted"; exit 1; }
+            [ "$(l "$t" context)" = "175000 64000 local" ] || { echo "$t/context drifted"; exit 1; }
             [ "$(l "$t" concurrency)" = "100000 16000 local" ] || { echo "$t/concurrency drifted"; exit 1; }
             [ "$(l "$t" throughput)" = "110000 32000 local" ] || { echo "$t/throughput drifted"; exit 1; }
           done
@@ -578,7 +578,7 @@ jobs:
           [ "$(l flash --from "$tmp/l24.sh")" = "110000 32000 local" ] || { echo "derived tier (24) wrong"; exit 1; }
           [ "$(l stock --from "$tmp/u1m.service")" = "700000 200000 local, 1M" ] || { echo "derived 1m wrong"; exit 1; }
           [ "$(l stock --from "$tmp/unat.service")" = "194048 64000 local" ] || { echo "derived native wrong"; exit 1; }
-          [ "$(l flash --from /nonexistent)" = "190000 64000 local" ] || { echo "a missing invocation must fall back to the default tier"; exit 1; }
+          [ "$(l flash --from /nonexistent)" = "175000 64000 local" ] || { echo "a missing invocation must fall back to the default tier"; exit 1; }
           rm -rf "$tmp"
           # The FP8 pair must ask for strictly less than the NVFP4 pair and fit the
           # measured FP8 pool. We do NOT assert an absolute NVFP4 pool: the repo

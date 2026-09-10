@@ -101,7 +101,7 @@ case "$CHOICE" in
     # The budget is min(the proxy's one-prompt ceiling, what the tier's KV pool
     # holds alongside the answer).
     case "$TIER" in
-      context)     CTX=190000; OUT=64000 ;;   # 254,000 <= the pool, and 190,000 <= the 200,000 ceiling
+      context)     CTX=175000; OUT=64000 ;;   # 239,000 <= the pool; 175,000 = the 200,000 ceiling minus the estimate drift (field 10/09: the engine counted 208,297 prompt tokens while opencode, at context 190,000, still thought it was under its own threshold — opencode counts by estimate, the proxy counts with the engine; a tool-heavy session overruns its own limit by >=18,000 tokens, so the ceiling's slack must cover the drift or the proxy refuses before compaction ever fires)
       concurrency) CTX=100000; OUT=16000 ;;   # 116,000 <= the 129,792-token pool, 100,000 <= its 119,408 proxy share
       throughput)  CTX=110000; OUT=32000 ;;   # a big pool, but 24 requests share it
       *) printf 'oc-limits: unknown flash tier "%s"\n' "$TIER" >&2; exit 2 ;;

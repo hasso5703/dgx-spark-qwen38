@@ -40,6 +40,14 @@ BOOT_MARGIN = float(os.environ.get("OC_BOOT_MARGIN", "0.10"))
 # more pool than any real answer needs.
 OUTPUT_SHARE = 0.25
 OUTPUT_CAP = 200_000
+# When a lane sets a prompt ceiling, the opencode context must sit under it by
+# more than zero: opencode counts tokens by estimate while the proxy counts
+# with the engine, and a tool-heavy session overruns its own limit by the gap
+# (field 2026-09-10: the engine counted 208,297 tokens while opencode, at
+# context 190,000 under a 200,000 ceiling, had not yet fired compaction).
+# Context == ceiling means the proxy refuses before compaction fires, which is
+# the exact failure this tool exists to prevent.
+CEILING_MARGIN = int(os.environ.get("OC_CEILING_MARGIN", "25_000"))
 LANE_MODEL = {"qwen3.8-27b": "qwen38", "qwen3.8-flash-next": "flashnext"}
 
 
@@ -57,7 +65,7 @@ def fit(pool: int, ceiling: int = 0) -> tuple[int, int]:
     output = min(OUTPUT_CAP, int(budget * OUTPUT_SHARE))
     context = budget - output
     if ceiling > 0:                      # a per-lane prompt ceiling caps the context too
-        context = min(context, ceiling)
+        context = min(context, max(0, ceiling - CEILING_MARGIN))
     return (context // 1000) * 1000, (output // 1000) * 1000
 
 
