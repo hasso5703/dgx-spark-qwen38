@@ -41,6 +41,61 @@ python3 -m venv .venv-test && .venv-test/bin/pip install coverage hypothesis
 | Browser | `dashboard/tests/*.mjs` | does the page work in a real headless Chromium, at four iPhone geometries? |
 | Anti-drift | CI steps | do the four places that must agree still agree (targets, flags, sudoers allowlist, pins)? |
 
+## Can it be 100%? Measured, not argued
+
+Yes for coverage, no for the thing that matters, and the gap between those two
+answers is the most useful number in this file.
+
+**100% branch coverage is reachable.** `lifecycle.py` and `recipes.py` are both at
+**100%** (303 and 263 statements, 164 and 140 branches, nothing missed, nothing
+partial), and getting there took one afternoon of tests plus **two declared
+exclusions**, both in `lifecycle.py`, both provably unreachable rather than merely
+awkward:
+
+- the `elif` chain in `parse_boot_log` ends in a defensive `break`. Reaching it
+  needs a marker name the chain does not handle, and the chain handles every name
+  in `MARKERS`. Rather than only silencing it,
+  `test_every_marker_is_handled_by_the_chain` parses the function's own AST and
+  fails the day a marker is declared without an arm, which is strictly stronger
+  than covering the branch would have been;
+- `if stage in STAGES:` followed by `for s in STAGES: if s == stage: break`
+  cannot finish the loop, because the guard in front of it guarantees a match.
+
+The seven statements found on the way there were not plumbing. Two were real
+holes: `outcome_kind`'s own `in flight` and `no end logged` branches had never
+been called (`parse_feed` sets those kinds itself), and the **drain-ceiling log
+line had never been parsed** in a test, although the verdict for `ceiling > 0`
+was covered through a hand-built dict. The other five were malformed-timestamp
+paths, which is exactly what a truncated journal line produces.
+
+**And `lifecycle.py`, at 100% coverage, has a mutation score of 91.7%**: 17
+injected faults that its 139 tests do not notice, in code where every branch is
+executed. That is the whole point. Coverage measures execution; only mutation
+measures detection.
+
+**100% mutation score is not reachable, and not because of effort.** Equivalent
+mutants exist, and deciding whether a mutant is equivalent is undecidable in
+general (it reduces to program equivalence). Four of the seventeen, from this
+repo:
+
+| survivor | why no test can kill it |
+|---|---|
+| `weight_ends >= 2` to `> 2` | the `or` clause beside it already covers the boundary, and no real log has two weight-ends with fewer than two begins: you cannot end a load you did not begin |
+| `pool <= 0` to `< 0` | `not pool` in front of it already catches zero |
+| `secs > drain_max_s` to `>=` | on equal values it assigns the same value |
+| `outcome[:40]` to `[:41]` | a truncation width no behaviour depends on |
+
+So the target this repo actually holds: **100% on the pure-logic modules**, where
+there is no excuse and the number is honest; a **floor that only ever rises** on
+the modules that shell out or serve HTTP; and a **mutation floor** as the real
+quality gate, because that is the one that asks whether the tests would notice.
+
+`cockpit.py` is at 71% and climbing. Of what remains, about seven statements in
+ten are plain reachable logic, so 100% there is cost and not impossibility; the
+rest is process-lifetime code (`main`, `serve_forever`, the sampler loops), which
+the `.mjs` browser checks already exercise in a **real spawned process** where
+coverage cannot follow it.
+
 ## Coverage is a floor, not a badge
 
 `ci.yml` measures branch coverage per module and fails under a floor. The floors
@@ -49,11 +104,11 @@ are the numbers measured on 2026-09-10 minus a point of slack, and they are
 
 | module | floor | why it is where it is |
 |---|---|---|
-| `lifecycle.py` | 95% | pure logic, no excuse |
-| `recipes.py` | 95% | pure logic |
+| `lifecycle.py` | **100%** | pure logic, no excuse, two declared exclusions |
+| `recipes.py` | **100%** | pure logic |
 | `agent_relay.py` | 88% | the rest is socket error paths |
 | `registry.py` | 88% | the rest is filesystem error paths |
-| `cockpit.py` | 58% | 1,889 lines; the auth, CSRF, static, action, job and diagnostics surfaces are covered, the sampler threads are not |
+| `cockpit.py` | 70% | 1,889 lines; the auth, CSRF, static, action, job and diagnostics surfaces are covered, the sampler threads are not |
 
 And the root modules, which had no floor at all until 2026-09-10:
 
@@ -263,10 +318,11 @@ on code that was already in production:
 |---|---|---|
 | offline test functions | 216 | **461** |
 | generated inputs per run | 0 | **~17,000** (57 property and fuzz checks x 300) |
-| branch coverage, dashboard total | 68% | **87%** |
-| branch coverage, `cockpit.py` | 14% | **61%** |
+| branch coverage, dashboard total | 68% | **91%** |
+| branch coverage, `cockpit.py` | 14% | **71%** |
+| modules at 100% branch coverage | 0 | **2** |
 | modules at 0% | 3 | **0** |
-| mutation score, `lifecycle.py` | never measured (74.8% when first asked) | **90.8%** |
+| mutation score, `lifecycle.py` | never measured (74.8% when first asked) | **91.7%** |
 | CI gates | 28 | **38** |
 | defects found and fixed by the new tests | | **21 crash paths, 1 dead branch, 3 wrong outputs** |
 

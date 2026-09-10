@@ -300,6 +300,112 @@ class Switches(unittest.TestCase):
                           if r["key"].startswith("switch.")], [])
 
 
+class TheLastSixLines(unittest.TestCase):
+    """recipes.py sat at 97% with six statements left. Each is a real path, and
+    two of them are the kind that only ever runs on a bad day, which is exactly
+    when you want it to have been tested."""
+
+    def test_a_draft_flag_with_a_non_numeric_value_is_kept_as_text(self):
+        """--speculative-num-steps is declared int. A launcher carrying a
+        placeholder or a typo there must not lose the value: the recipe keeps the
+        raw string so the drift panel can show what is actually on the box."""
+        prof = rc.profile_from_text(
+            "python3 -m sglang.launch_server --speculative-num-steps __STEPS__")
+        self.assertEqual(prof["drafter"]["steps"], "__STEPS__")
+        prof = rc.profile_from_text(
+            "python3 -m sglang.launch_server --speculative-num-draft-tokens four")
+        self.assertEqual(prof["drafter"]["draft_tokens"], "four")
+
+    def test_a_value_that_is_not_a_shell_reference_is_returned_as_is(self):
+        self.assertEqual(rc._deref("lmsysorg/sglang:tag", {"IMAGE": "x"}),
+                         "lmsysorg/sglang:tag")
+        self.assertIsNone(rc._deref(None, {}))
+        self.assertEqual(rc._deref("$MISSING", {}), "$MISSING",
+                         "an unresolvable reference must survive, not vanish")
+
+    def test_an_unsubstituted_serving_placeholder_is_a_loud_failure(self):
+        """The guard that exists because it happened: a placeholder carrying a
+        serving flag left in the rendered recipe makes every box report a drift
+        it does not have. It must raise, not be reported as a value."""
+        assigns = rc.parse_assignments((REPO / "install.sh").read_text())
+        templates = rc.load_templates(REPO)
+        bad = dict(templates)
+        name = rc.LANE_TEMPLATE["flash"]
+        bad[name] = templates[name].replace(
+            "--chunked-prefill-size 4096", "--chunked-prefill-size __CHUNK__")
+        with self.assertRaises(KeyError) as cm:
+            rc.builtin("flash", assigns, bad)
+        self.assertIn("__CHUNK__", str(cm.exception))
+        self.assertIn("unsubstituted", str(cm.exception))
+
+    def test_a_host_placeholder_is_allowed_to_survive_rendering(self):
+        """The other half of the same rule: __HOME__ and friends name where a
+        particular box put things, and a recipe is host-independent by design."""
+        assigns = rc.parse_assignments((REPO / "install.sh").read_text())
+        templates = rc.load_templates(REPO)
+        recipe = rc.builtin("flash", assigns, templates)
+        self.assertIsInstance(recipe, dict)
+
+    def test_a_switches_block_that_is_not_an_object_is_refused(self):
+        base = {"id": "x", "lane": "flash",
+                "engine": {"family": "sglang", "image": "a/b@sha256:" + "0" * 64},
+                "model": {"repo": "a/b", "revision": "0" * 40},
+                "drafter": {"algorithm": "none"},
+                "serve": {"context_length": 262144}}
+        for bad in ([], "yes", 5, True):
+            errs = rc.validate({**base, "switches": bad})
+            self.assertTrue(any("flag -> true/false" in e for e in errs), (bad, errs))
+
+    def test_presence_of_a_recipe_with_no_drafter_repo_is_not_a_verdict(self):
+        """cached(None, ...) means "there is nothing to look for", which is None
+        and not False: a NEXTN target has no drafter repo and must not read as a
+        missing download."""
+        registry = {"models": [], "images": [], "managed_repos": []}
+        recipe = {"engine": {"image": "a/b:t"},
+                  "model": {"repo": "a/b", "revision": "0" * 40},
+                  "drafter": {"algorithm": "NEXTN", "repo": None, "revision": None}}
+        got = rc.presence(recipe, registry)
+        self.assertIsNone(got.get("drafter"), got)
+
+    def test_presence_survives_a_malformed_recipe_from_disk(self):
+        """presence() runs on recipes read from ~/.config/qwen38/recipes, and
+        load_custom hands back a recipe even when validate() rejected it, because
+        the panel shows the errors next to it. So presence must cope with a
+        DFLASH recipe whose drafter repo is missing (validate refuses it, the
+        panel still renders it) and with a model repo that is not there at all:
+        the answer is "nothing to look for", never a crash and never a false
+        "missing download"."""
+        registry = {"models": [], "images": [], "managed_repos": []}
+        broken = {"engine": {"image": "a/b:t"},
+                  "model": {"repo": None, "revision": None},
+                  "drafter": {"algorithm": "DFLASH", "repo": None, "revision": None}}
+        got = rc.presence(broken, registry)
+        self.assertIsNone(got["model"], got)
+        self.assertIsNone(got["drafter"], got)
+        self.assertFalse(got["image"])
+        self.assertFalse(got["downloading"])
+
+    def test_a_custom_recipe_file_that_is_not_an_object_is_listed_with_its_errors(self):
+        """load_custom must report a bad file rather than skip it, or a user who
+        wrote JSON wrong gets silence."""
+        import json
+        import tempfile
+        d = Path(tempfile.mkdtemp(prefix="recipes-"))
+        (d / "list.json").write_text(json.dumps([1, 2, 3]))
+        (d / "good.json").write_text(json.dumps(
+            {"id": "mine", "lane": "flash",
+             "engine": {"family": "sglang", "image": "a/b@sha256:" + "0" * 64},
+             "model": {"repo": "a/b", "revision": "0" * 40},
+             "drafter": {"algorithm": "none"},
+             "serve": {"context_length": 262144}}))
+        out = rc.load_custom(d)
+        by_file = {o["file"]: o for o in out}
+        self.assertIn("list.json", by_file)
+        self.assertTrue(by_file["list.json"]["errors"])
+        self.assertEqual(by_file["good.json"]["errors"], [])
+        self.assertIs(by_file["good.json"]["recipe"]["builtin"], False)
+
+
 class Presence(unittest.TestCase):
     REG = {"images": [{"ref": "qwen38-flash:v1.5.3"}],
            "models": [{"repo_id": "RadixArk/Qwen3.8-Flash-Next-NVFP4",

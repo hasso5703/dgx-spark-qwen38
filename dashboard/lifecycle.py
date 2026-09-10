@@ -72,8 +72,13 @@ def parse_boot_log(lines: list[str]) -> dict:
                 graphs_begun = True
             elif name == "graphs_end":
                 graphs_done = True
-            elif name == "ready":
+            elif name == "ready":   # pragma: no branch
                 fired = True
+            # The chain above handles every name in MARKERS, so this break is
+            # never reached by falling off the end of it. That is a property, not
+            # a hope: test_every_marker_is_handled_by_the_chain fails the day a
+            # marker is declared without an arm, which is the only way this line
+            # could start swallowing one.
             break
     if fired:
         stage = "warming-up"          # fired up; health flips it to ready
@@ -91,8 +96,8 @@ def parse_boot_log(lines: list[str]) -> dict:
         stage = None                  # no boot evidence in this tail
     done = []
     if stage in STAGES:            # no marker evidence => nothing is "done"
-        for s in STAGES:
-            if s == stage:
+        for s in STAGES:           # pragma: no branch (the guard above
+            if s == stage:         # guarantees a match, so the loop always breaks)
                 break
             done.append(s)
     return {"stage": stage, "done": done, "fired_up": fired,

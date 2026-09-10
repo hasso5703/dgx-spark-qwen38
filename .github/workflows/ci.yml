@@ -158,21 +158,34 @@ jobs:
           pip install 'coverage==7.16.0' 2>/dev/null || true
           PY="$(./tests/testpy.sh coverage)"
           cd dashboard
-          "$PY" -m coverage run --branch --source=. -m unittest \
+          rm -f .coverage*
+          "$PY" -m coverage run --branch --parallel-mode --source=. -m unittest \
             $(cd tests && ls test_*.py | sed 's/\.py$//' | sed 's/^/tests./' | tr '\n' ' ')
+          # the property checks are a suite too: leaving them out of the
+          # measurement reported three validate() branches as uncovered while
+          # they were being exercised 300 times each
+          "$PY" -m coverage run --branch --parallel-mode --source=. \
+            tests/property_checks.py >/dev/null
+          "$PY" -m coverage combine -q
           "$PY" -m coverage report --sort=cover | tee /tmp/cov.txt
+          rm -f .coverage*
           # A floor per module, raised in a commit and never lowered quietly.
           # These are what was measured on 2026-09-10, minus a point of slack.
           "$PY" - <<'PYEOF'
           import re, sys
-          # Measured 2026-09-10 under this step's own conditions (a throwaway
-          # HOME, the way a runner has no ~/.config/qwen38): cockpit 59,
-          # agent_relay 89, registry 89, lifecycle 96, recipes 96, total 86.
-          # One point of slack each. Raised in a commit, never lowered quietly:
-          # cockpit went 14 -> 30 -> 53 -> 59 over one day of writing tests.
-          FLOORS = {"cockpit.py": 58, "agent_relay.py": 88, "registry.py": 88,
-                    "lifecycle.py": 95, "recipes.py": 95}
-          TOTAL_FLOOR = 85
+          # Raised in a commit, never lowered quietly. cockpit.py went
+          # 14 -> 30 -> 53 -> 59 -> 71 over one day of writing tests.
+          #
+          # lifecycle.py and recipes.py are at 100% BRANCH coverage and are held
+          # there: they are pure logic, so there is no excuse, and the two
+          # branches that cannot be taken by any input carry a "pragma: no
+          # branch" whose reason is itself guarded by a test
+          # (test_every_marker_is_handled_by_the_chain). A module that reaches
+          # 100% and is then allowed to slip is worse than one that never got
+          # there, because the number stops meaning anything.
+          FLOORS = {"cockpit.py": 70, "agent_relay.py": 88, "registry.py": 88,
+                    "lifecycle.py": 100, "recipes.py": 100}
+          TOTAL_FLOOR = 89
           got, bad = {}, []
           for line in open("/tmp/cov.txt"):
               m = re.match(r"^(\S+\.py|TOTAL)\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)%", line)

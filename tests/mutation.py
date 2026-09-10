@@ -130,8 +130,8 @@ def run_suite(cmds, cwd):
 # one. The numbers are what was measured on 2026-09-10, minus a small margin for
 # the equivalent mutants any walk of this kind produces.
 TARGETS = {
-    "dashboard/lifecycle.py": ("python3 dashboard/tests/test_lifecycle.py", 90.0),
-    "dashboard/recipes.py": ("python3 dashboard/tests/test_recipes.py", 75.0),
+    "dashboard/lifecycle.py": ("python3 dashboard/tests/test_lifecycle.py", 91.0),
+    "dashboard/recipes.py": ("python3 dashboard/tests/test_recipes.py", 79.0),
 }
 
 
@@ -140,7 +140,7 @@ def main():
         worst = 0.0
         failed = []
         for mod, (cmd, floor) in TARGETS.items():
-            score = one(Path(REPO / mod), [cmd.split()], 10 ** 6, quiet=True)
+            score = one((REPO / mod).resolve(), [cmd.split()], 10 ** 6, quiet=True)
             mark = "ok" if score >= floor else "UNDER FLOOR"
             print(f"  {mark:11} {mod:28} {score:5.1f}%  (floor {floor:.0f}%)")
             if score < floor:
@@ -148,7 +148,10 @@ def main():
             worst = max(worst, floor - score)
         print(f"\nmutation score: {'all modules at or above their floor' if not failed else 'BELOW FLOOR: ' + ', '.join(failed)}")
         return 1 if failed else 0
-    module = Path(sys.argv[1])
+    # resolve(): the walk mutates a COPY of the repo and locates the module by
+    # its path relative to REPO, so a relative argv (dashboard/lifecycle.py, the
+    # way anyone would type it) raised ValueError until this line existed.
+    module = Path(sys.argv[1]).resolve()
     suite_cmds = [c.split() for c in sys.argv[2].split(";")]
     budget = int(sys.argv[3]) if len(sys.argv) > 3 else 10 ** 6
     one(module, suite_cmds, budget)

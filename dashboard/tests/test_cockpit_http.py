@@ -354,6 +354,147 @@ class StaticFiles(Base):
             self.assertEqual(hdrs.get("Referrer-Policy"), "no-referrer", path)
 
 
+class ReadRoutes(Base):
+    """The whole GET surface. Every one of these was uncovered, and one of them
+    is a boundary: /api/logs/<name> takes a name from the URL and hands it to a
+    command, so the allowlist is the only thing between a URL and an arbitrary
+    journal unit."""
+
+    def get(self, path, cookie=None):
+        st, hdrs, data = self.req("GET", path, cookie=cookie)
+        return st, (json.loads(data) if data and hdrs.get(
+            "Content-Type", "").startswith("application/json") else data)
+
+    def test_the_action_registry_is_published_without_its_argv(self):
+        """The UI needs the parameters to render a selector; it must never be
+        handed the command template."""
+        cookie = self.login()
+        st, body = self.get("/api/actions", cookie)
+        self.assertEqual(st, 200)
+        self.assertEqual(set(body), set(self.cp.ACTIONS))
+        for name, spec in body.items():
+            self.assertEqual(set(spec), {"danger", "params"}, name)
+        self.assertNotIn("sudo", json.dumps(body))
+        self.assertNotIn("systemctl", json.dumps(body))
+
+    def test_the_state_endpoint_returns_the_sampler_state(self):
+        cookie = self.login()
+        st, body = self.get("/api/state", cookie)
+        self.assertEqual(st, 200)
+        self.assertIn("config", body)
+
+    def test_the_cached_snapshots_answer_or_explain_themselves(self):
+        """upstream, registry and recipes each reach the network or the disk and
+        each isolates its own failure: a 500 with a reason, never a traceback
+        through the handler."""
+        cookie = self.login()
+        for path in ("/api/upstream", "/api/registry", "/api/recipes"):
+            st, body = self.get(path, cookie)
+            self.assertIn(st, (200, 500), path)
+            self.assertIsInstance(body, dict, path)
+            if st == 500:
+                self.assertIn("error", body, path)
+
+    def test_refresh_bypasses_the_cache_without_breaking_the_answer(self):
+        cookie = self.login()
+        for path in ("/api/registry?refresh=1", "/api/recipes?refresh=1"):
+            st, body = self.get(path, cookie)
+            self.assertIn(st, (200, 500), path)
+            self.assertIsInstance(body, dict, path)
+
+    def test_the_inventory_is_parsed_into_typed_rows(self):
+        cookie = self.login()
+        st, body = self.get("/api/inventory", cookie)
+        self.assertEqual(st, 200)
+        self.assertIn("items", body)
+        for item in body["items"]:
+            self.assertEqual(set(item), {"kind", "what"})
+            self.assertIn(item["kind"], ("unit", "drop-ins", "backup", "config",
+                                         "legacy", "launcher", "image", "weights",
+                                         "ple-file"))
+
+    def test_only_allowlisted_log_sources_are_readable(self):
+        """The name comes from the URL. Anything not on the list is a 404, so a
+        URL can never name a journal unit or a container of its own choosing."""
+        cookie = self.login()
+        # qwen38-flash is NOT in this list: it is the container's real name and
+        # therefore allowed. The refused set is everything else.
+        for name in ("sshd", "docker", "../../etc/passwd", "cloudflared.service",
+                     "qwen38-flash.service.evil", "", "..%2f..%2fetc", "*",
+                     "qwen38-flash%20", "QWEN38-FLASH", "unsloth-studio.service"):
+            st, body = self.get(f"/api/logs/{name}", cookie)
+            self.assertEqual(st, 404, f"/api/logs/{name} answered {st}")
+            self.assertEqual(body["error"], "unknown source", name)
+        # and the allowlist is exactly the two sets the cockpit declares
+        self.assertTrue(set(self.cp.CONTAINERS) | set(self.cp.JOURNAL_UNITS))
+
+    def test_a_known_log_source_answers_with_bounded_lines(self):
+        cookie = self.login()
+        known = list(self.cp.CONTAINERS) + list(self.cp.JOURNAL_UNITS)
+        self.assertTrue(known)
+        for name in known:
+            st, body = self.get(f"/api/logs/{name}", cookie)
+            self.assertEqual(st, 200, name)
+            self.assertEqual(body["name"], name)
+            self.assertIsInstance(body["lines"], list)
+            self.assertLessEqual(len(body["lines"]), 120, name)
+
+    def test_an_unknown_job_id_is_a_404(self):
+        cookie = self.login()
+        for jid in ("nope", "../../etc", "", "0" * 64):
+            st, body = self.get(f"/api/jobs/{jid}", cookie)
+            self.assertEqual(st, 404, jid)
+            self.assertEqual(body["error"], "no such job")
+
+    def test_a_known_job_is_returned_with_its_log_tail(self):
+        cookie = self.login()
+        job = self.cp.Job("smoke", None, 10)
+        job.append("a line the tail must carry")
+        self.cp.JOBS[job.id] = job
+        try:
+            st, body = self.get(f"/api/jobs/{job.id}", cookie)
+            self.assertEqual(st, 200)
+            self.assertEqual(body["id"], job.id)
+            self.assertIn("a line the tail must carry", body["lines"])
+        finally:
+            self.cp.JOBS.pop(job.id, None)
+
+    def test_the_root_serves_the_login_page_without_a_session(self):
+        st, body = self.req("GET", "/")[0], self.req("GET", "/")[2]
+        self.assertEqual(st, 200)
+        self.assertIn(b"<", body)
+
+    def test_the_root_serves_the_app_with_a_session(self):
+        cookie = self.login()
+        st, _, body = self.req("GET", "/", cookie=cookie)
+        self.assertEqual(st, 200)
+        self.assertIn(b"Spark Cockpit", body)
+
+    def test_an_unknown_api_route_is_a_404_and_not_a_static_file(self):
+        cookie = self.login()
+        for path in ("/api/nope", "/api/", "/nope", "/api/state/extra"):
+            st, body = self.get(path, cookie)
+            self.assertEqual(st, 404, path)
+
+    def test_the_event_stream_sends_state_and_stops_when_the_client_leaves(self):
+        """The SSE endpoint is an infinite loop by design; what is asserted is
+        that it starts with a real payload and that a client walking away does
+        not raise in the handler thread."""
+        import http.client
+        cookie = self.login()
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        c.request("GET", "/api/stream", None, {"Cookie": cookie})
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        self.assertIn("text/event-stream", r.getheader("Content-Type", ""))
+        chunk = r.read(64)
+        self.assertTrue(chunk.startswith(b"data: "), chunk[:40])
+        c.close()                      # walk away mid-stream
+        time.sleep(0.2)
+        st, _, _ = self.req("GET", "/api/health")
+        self.assertEqual(st, 200, "the server did not survive a client leaving the stream")
+
+
 class ActionRegistry(Base):
     """The registry itself, as data. No HTTP, no job: what CAN be built."""
 

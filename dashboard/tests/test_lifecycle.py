@@ -700,6 +700,133 @@ class MoreMutantsThatSurvived(unittest.TestCase):
         self.assertEqual(feed(601)["kind"], "unknown")
 
 
+class TheLastTenLines(unittest.TestCase):
+    """Written to answer one question: can a module like this reach 100%?
+
+    coverage.py put lifecycle.py at 96% with exactly ten statements left, and
+    every one of them turned out reachable. Two were real gaps rather than
+    plumbing: outcome_kind's own "in flight" and "no end logged" branches were
+    never called directly (parse_feed sets those kinds itself), and the drain
+    ceiling was only ever tested through a hand-built dict, so the log line that
+    is supposed to produce it had never been parsed. The other eight are the
+    malformed-timestamp paths, which is exactly the input a journal produces when
+    a line is truncated.
+    """
+
+    def test_outcome_kind_answers_the_two_states_parse_feed_sets_itself(self):
+        self.assertEqual(lc.outcome_kind("in flight"), "live")
+        self.assertEqual(lc.outcome_kind("no end logged"), "unknown")
+
+    def test_a_real_drain_ceiling_line_is_counted(self):
+        """The line the proxy writes when a drain runs past DRAIN_MAX_S. The
+        verdict for ceiling > 0 was tested; the parse that produces it was not."""
+        raw = ("[proxy] drain ceiling reached after 900s, dropping the socket "
+               "for /v1/chat/completions")
+        g = lc.parse_guard(raw)
+        self.assertEqual(g["ceiling"], 1)
+        self.assertEqual(g["drained"], 0, "a ceiling is not a completed drain")
+        state, msg = lc.guard_verdict(lc.parse_zombies(""), g, True)
+        self.assertEqual(state, "warn")
+        self.assertIn("ceiling", msg)
+
+    def test_a_boot_with_only_a_server_args_line_is_the_init_stage(self):
+        b = lc.parse_boot_log(["[2026-09-10 10:00:00] server_args=ServerArgs(x)"])
+        self.assertEqual(b["stage"], "init")
+        self.assertEqual(b["done"], [])
+
+    def test_a_tail_with_no_boot_evidence_has_no_stage(self):
+        b = lc.parse_boot_log(["nothing about a boot in here", ""])
+        self.assertIsNone(b["stage"])
+
+    def test_an_unparsable_newest_timestamp_leaves_requests_in_flight(self):
+        """The feed's orphan window needs a clock. If the newest line's timestamp
+        is not a date, there is no clock, and a request must stay 'in flight'
+        rather than be called unaccounted for on no evidence."""
+        start = ("2026-09-10T09:00:00+02:00 h p[1]: [proxy] 1.2.3.4:5 -> "
+                 "POST /v1/chat/completions body=10b")
+        # 19 characters with a T in position 10, and not a date
+        bogus = "2026-99-99T99:99:99 h p[1]: [proxy] 9.9.9.9:9 -> POST /x body=1b"
+        rows = lc.parse_feed(start + "\n" + bogus)
+        first = [r for r in rows if r["peer"] == "1.2.3.4:5"][0]
+        self.assertEqual(first["kind"], "live")
+        self.assertEqual(first["outcome"], "in flight")
+
+    def test_a_request_whose_own_timestamp_is_unparsable_is_left_alone(self):
+        """The start line carries the bogus stamp this time, and a later good
+        line provides the clock: the row must survive rather than raise."""
+        bogus = "2026-13-45T99:00:00 h p[1]: [proxy] 1.2.3.4:5 -> POST /x body=10b"
+        good = ("2026-09-10T09:20:00+02:00 h p[1]: [proxy] 9.9.9.9:9 -> "
+                "POST /v1/chat/completions body=10b")
+        rows = lc.parse_feed(bogus + "\n" + good)
+        row = [r for r in rows if r["peer"] == "1.2.3.4:5"][0]
+        self.assertEqual(row["outcome"], "in flight")
+
+    def test_a_zombie_request_with_an_unparsable_span_reports_no_seconds(self):
+        """parse_zombies measures the span between a request's first and last
+        flood line. A truncated timestamp must give secs=None, not a crash and
+        not a made-up duration."""
+        raw = ("[2026-09-10 10:00:00] Received output for rid='a' but the state "
+               "was deleted in TokenizerManager.\n"
+               "[2026-13-45 99:00:00] Received output for rid='a' but the state "
+               "was deleted in TokenizerManager.")
+        z = lc.parse_zombies(raw)
+        self.assertEqual(z["lines"], 2)
+        self.assertEqual(z["requests"][0]["rid"], "a")
+        self.assertIsNone(z["requests"][0]["secs"])
+        # and a verdict over it must not raise on the missing span
+        state, msg = lc.guard_verdict(z, lc.parse_guard(""), True)
+        self.assertEqual(state, "warn")
+
+
+class TheLastFourBranches(unittest.TestCase):
+    """After every statement was covered, four partial BRANCHES remained. Two
+    were reachable and are tested here. The other two cannot be taken by any
+    input, and rather than silence them with a pragma alone, the structural
+    test below keeps the reason true:
+
+      * `parse_boot_log`'s elif chain ends in a defensive `break`. Reaching it
+        needs a marker name the chain does not handle, and the chain handles all
+        of MARKERS. `test_every_marker_is_handled_by_the_chain` is what keeps
+        that so, and is strictly stronger than covering the branch would be: it
+        fails the day someone adds a marker without an arm.
+      * `if stage in STAGES:` then `for s in STAGES: if s == stage: break` cannot
+        finish the loop without breaking, because the guard in front of it
+        guarantees a match.
+    """
+
+    def test_every_marker_is_handled_by_the_chain(self):
+        """The guard on the unreachable break: every name in MARKERS must have an
+        arm in parse_boot_log, or the break stops being dead code and starts
+        being a silently ignored marker."""
+        import ast
+        import inspect
+        tree = ast.parse(inspect.getsource(lc.parse_boot_log))
+        handled = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Compare) and isinstance(node.left, ast.Name)
+                    and node.left.id == "name"
+                    and isinstance(node.comparators[0], ast.Constant)):
+                handled.add(node.comparators[0].value)
+        declared = {name for name, _ in lc.MARKERS}
+        self.assertEqual(declared - handled, set(),
+                         "a marker is declared but never handled: the defensive "
+                         "break in parse_boot_log would swallow it")
+
+    def test_an_action_with_no_lifecycle_gate_is_never_blocked(self):
+        """Covers 162->166: the elif is false, so nothing is blocked. smoke,
+        flush_cache and abort_all are safe at any engine state."""
+        states = {u: "loading-weights" for u in lc.ENGINE_UNITS}
+        for action in ("smoke", "flush_cache", "abort_all", "diag_bundle", ""):
+            self.assertEqual(lc.blocked_reasons(action, {}, states), [], action)
+
+    def test_a_window_with_drains_but_no_aborts_reads_as_drains(self):
+        """Covers 488->490: handled is truthy with aborted at zero."""
+        g = dict(lc.parse_guard(""), drained=4, drain_max_s=12.0)
+        state, msg = lc.guard_verdict(lc.parse_zombies(""), g, True)
+        self.assertEqual(state, "ok")
+        self.assertEqual(msg, "4 drained, no flood")
+
+
 class ZombieGuard(unittest.TestCase):
     """Real lines: the engine's flood from the reference box (2026-09-09 21:15:49,
     the single line the flash container logged in 14 h) and the proxy's own
