@@ -1,5 +1,5 @@
 [Unit]
-Description=Qwen3.8-Flash-Next NVFP4 + MTP (vLLM, PLE table on NVMe, capped docker), OpenAI API :__PORT__
+Description=Qwen3.8-Flash-Next NVFP4 + NEXTN (SGLang, PLE table on NVMe, capped docker), OpenAI API :__PORT__
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service

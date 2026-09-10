@@ -406,7 +406,7 @@ elif [ "$FLASH_READABLE" -eq 1 ]; then
 fi
 if [ "$INSTALLED_CHOICE" = "flash" ]; then
   # Converge on the installed flash launch script (the unit only points at it;
-  # the vLLM flags and mounts live in $CONFIG_DIR/launch-flash.sh).
+  # the engine flags and mounts live in $CONFIG_DIR/launch-flash.sh).
   FLASH_LAUNCH="$CONFIG_DIR/launch-flash.sh"
   CUR_REV=""; CUR_PORT=""; CUR_HF=""
   if [ -r "$FLASH_LAUNCH" ]; then
@@ -598,8 +598,9 @@ else
 fi
 
 step "3/9 Verifying the container can see the GPU"
-# --entrypoint: the vLLM image's entrypoint is `vllm serve`, so a bare command
-# would be parsed as serve arguments instead of running nvidia-smi.
+# --entrypoint: the image ships NVIDIA's own entrypoint script
+# (/opt/nvidia/nvidia_entrypoint.sh), which prints a banner and runs its argument;
+# overriding it is what makes this a plain nvidia-smi call with plain output.
 GPU_SEEN="$(docker run --rm --gpus all --entrypoint nvidia-smi "$PULLED_IMAGE" -L 2>/dev/null | grep -m1 '^GPU' || true)"
 [ -n "$GPU_SEEN" ] \
   || die "'docker run --gpus all' cannot see the GPU (no GPU line from nvidia-smi -L in the container). The NVIDIA Container Toolkit is missing or unconfigured. Fix: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
