@@ -1,10 +1,13 @@
 """Offline tests for lifecycle.py, built on REAL log lines from this box
 (qwen38-flash boot of 2026-08-28 21:19 and qwen38-sglang boots of 08-28)."""
+import re
 import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+HERE = Path(__file__).resolve()
+REPO = HERE.parents[2]
+sys.path.insert(0, str(HERE.parents[1]))
 import lifecycle as lc  # noqa: E402
 
 FLASH_BOOT = [
@@ -256,6 +259,73 @@ DRAFT2_REV="50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
             self.assertEqual(got[0]["repo_id"], "Acme/Tiny")
             self.assertEqual(got[0]["disk_bytes"], 10)
             self.assertEqual(got[0]["revisions"][0]["bytes"], 10)
+
+
+class FeedOutcomes(unittest.TestCase):
+    """Every outcome the proxy can write must reach the feed, and read as what it is.
+
+    The list is not copied here: it is read out of keepalive-proxy.py, so a new
+    outcome string added to the proxy either classifies or fails this test. The
+    feed is the panel a person looks at when something is wrong, and it went
+    three releases painting a client that walked away in the same red as an
+    engine that refused."""
+
+    SUFFIX = " [12306b relayed, first event at 3.7s, last at 7.3s]"
+
+    @classmethod
+    def setUpClass(cls):
+        src = (REPO / "keepalive-proxy.py").read_text()
+        raw = re.findall(r'self\._done\(\s*f?"([^"]+)"', src)
+        # f-string holes carry an HTTP status in every case that has one
+        cls.outcomes = sorted({re.sub(r"\{[^}]+\}", "502", o) for o in raw})
+        assert len(cls.outcomes) >= 12, cls.outcomes
+
+    def _line(self, outcome, suffix=""):
+        return ("2026-09-10T09:00:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 -> "
+                "POST /v1/chat/completions body=42b\n"
+                "2026-09-10T09:00:07+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 POST "
+                f"/v1/chat/completions {outcome} in 7.4s{suffix}")
+
+    def test_every_outcome_reaches_the_feed_with_its_duration(self):
+        for outcome in self.outcomes:
+            for suffix in ("", self.SUFFIX):
+                rows = lc.parse_feed(self._line(outcome, suffix))
+                self.assertEqual(len(rows), 1, outcome)
+                self.assertEqual(rows[0]["outcome"], outcome[:40], outcome)
+                self.assertEqual(rows[0]["secs"], 7.4, outcome)
+
+    def test_every_outcome_gets_a_kind_the_ui_knows(self):
+        known = {"ok", "gone", "fail", "live", "unknown"}
+        for outcome in self.outcomes:
+            kind = lc.parse_feed(self._line(outcome))[0]["kind"]
+            self.assertIn(kind, known, outcome)
+
+    def test_a_client_that_left_is_not_a_failure(self):
+        """v6.14 outcomes: the client walked away and the proxy handled it. Reading
+        those as 'fail' is what made a quiet lane look broken."""
+        for outcome in ("CLIENT GONE on write", "CLIENT GONE on write (draining)",
+                        "CLIENT GONE during keepalive",
+                        "no outcome (client vanished mid-request)"):
+            self.assertIn(outcome, self.outcomes, f"{outcome} is no longer in the proxy")
+            self.assertEqual(lc.parse_feed(self._line(outcome))[0]["kind"], "gone", outcome)
+
+    def test_a_real_failure_still_reads_as_one(self):
+        for outcome in ("503 engine unreachable", "400 oversize refused", "UPSTREAM CUT",
+                        "DROPPED upstream silent", "REFUSED corrupted output"):
+            self.assertEqual(lc.parse_feed(self._line(outcome))[0]["kind"], "fail", outcome)
+
+    def test_a_delivered_answer_reads_as_ok(self):
+        for outcome in ("ok", "ok get", "ok non-sse", "ok non-sse CORRUPTED"):
+            self.assertEqual(lc.parse_feed(self._line(outcome))[0]["kind"], "ok", outcome)
+
+    def test_an_unfinished_request_is_live_then_unknown(self):
+        start = ("2026-09-10T09:00:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 -> "
+                 "POST /v1/chat/completions body=42b")
+        self.assertEqual(lc.parse_feed(start)[0]["kind"], "live")
+        # 11 minutes of newer traffic later, it is not in flight, it is unaccounted for
+        later = start + ("\n2026-09-10T09:11:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:6666 -> "
+                         "POST /v1/chat/completions body=42b")
+        self.assertEqual(lc.parse_feed(later)[0]["kind"], "unknown")
 
 
 class ZombieGuard(unittest.TestCase):

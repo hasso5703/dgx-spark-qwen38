@@ -316,6 +316,28 @@ FEED_REFUSED = re.compile(r"\[proxy\] (\S+) REFUSED oversize \(\d+b, (.+?), limi
 FEED_FIT = re.compile(r"\[proxy\] (\S+) oversize check: (\d+) tokens fit \((\d+) usable")
 
 
+# How an outcome reads, so the UI never has to match strings itself (it did, and it
+# painted a client that walked away the same red as a lane that failed):
+#   ok      the answer was delivered
+#   gone    the CLIENT left; the proxy aborted or drained the generation. Not a fault
+#           of this box, and the whole point of v6.14 is that it costs nothing further
+#   fail    the request did not get an answer: the engine, the guard or the stream
+#   live    still in flight
+#   unknown no end line was ever written (a proxy restart mid-request)
+def outcome_kind(outcome: str) -> str:
+    if outcome == "in flight":
+        return "live"
+    if outcome == "no end logged":
+        return "unknown"
+    if outcome.startswith("ok"):
+        return "ok"
+    # "CLIENT GONE on write", "... (draining)", "CLIENT GONE during keepalive",
+    # "no outcome (client vanished mid-request)": the client is the one who left.
+    if "CLIENT GONE" in outcome or "client vanished" in outcome:
+        return "gone"
+    return "fail"
+
+
 def parse_feed(raw: str, last: int = 25) -> list[dict]:
     """journalctl text of the keepalive proxy -> the last requests: client, path,
     size, outcome, seconds, and the guard's detail when it counted the prompt
@@ -331,7 +353,7 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
         if m:
             peer = m.group(1)
             reqs[peer] = {"ts": ts, "peer": peer, "path": m.group(3), "bytes": int(m.group(4)),
-                          "outcome": "in flight", "secs": None, "detail": None}
+                          "outcome": "in flight", "kind": "live", "secs": None, "detail": None}
             order.append(peer)
             continue
         m = FEED_REFUSED.search(ln)
@@ -346,6 +368,7 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
         if m and m.group(1) in reqs:
             r = reqs[m.group(1)]
             r["outcome"] = m.group(4)[:40]
+            r["kind"] = outcome_kind(r["outcome"])
             r["secs"] = float(m.group(5))
     # A start with no end cannot stay "in flight" forever: the proxy guarantees an
     # end line per request since 30/08, but a proxy restart mid-request (or an older
@@ -366,6 +389,7 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
                     continue
                 if age > 600:
                     r["outcome"] = "no end logged"
+                    r["kind"] = "unknown"
     return [reqs[p] for p in order[-last:]]
 
 

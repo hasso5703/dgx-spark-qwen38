@@ -409,7 +409,10 @@ function rFeed(d){
     tr.insertCell().textContent = r.path;
     const c2 = tr.insertCell(); c2.textContent = r.bytes >= 1024 ? (r.bytes / 1024).toFixed(0) + ' KB' : r.bytes + ' B'; c2.className = 'r num';
     const c3 = tr.insertCell(); c3.textContent = r.secs != null ? r.secs.toFixed(1) + ' s' : ''; c3.className = 'r num';
-    const cls = r.outcome.startsWith('ok') ? 'ok' : r.outcome === 'in flight' ? 'flash live' : r.outcome === 'no end logged' ? '' : 'err';
+    // The kind comes from the server (lifecycle.outcome_kind), so the UI never
+    // matches outcome strings itself: it used to, and it painted a client that
+    // walked away the same red as a lane that failed.
+    const cls = {ok: 'ok', gone: 'warn', fail: 'err', live: 'flash live', unknown: ''}[r.kind] ?? 'err';
     const c4 = tr.insertCell(); c4.append(el('span', 'chip ' + cls, r.outcome));
     if (r.detail){ const dv = el('div', 'num', r.detail); dv.style.cssText = 'font-size:10.5px;color:var(--mut);margin-top:3px'; c4.append(dv); }
   });
