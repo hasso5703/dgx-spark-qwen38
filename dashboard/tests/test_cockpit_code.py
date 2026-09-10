@@ -25,7 +25,18 @@ sys.path.insert(0, str(DASH))
 
 
 def load_cockpit(from_dir: Path):
-    """Import cockpit.py from a directory as a fresh module object."""
+    """Import cockpit.py from a directory as a fresh module object.
+
+    COCKPIT_CONFIG_DIR is redirected first because importing is not free of side
+    effects: _session_secret() persists an HMAC secret so a service restart does
+    not log every browser out, and without this it wrote cockpit-secret into the
+    developer's own ~/.config/qwen38. The CI step "The offline suite touches
+    nothing outside itself" is what found it.
+    """
+    os.environ.setdefault("COCKPIT_CONFIG_DIR",
+                          tempfile.mkdtemp(prefix="cockpit-code-cfg-"))
+    os.environ.setdefault("COCKPIT_PORT", "0")
+    os.environ.setdefault("COCKPIT_AGENT_PORT", "0")
     spec = importlib.util.spec_from_file_location(
         f"cockpit_under_test_{from_dir.name}", from_dir / "cockpit.py")
     module = importlib.util.module_from_spec(spec)

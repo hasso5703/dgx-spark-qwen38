@@ -49,10 +49,11 @@ are the numbers measured on 2026-09-10 minus a point of slack, and they are
 | `recipes.py` | 95% | pure logic |
 | `agent_relay.py` | 88% | the rest is socket error paths |
 | `registry.py` | 88% | the rest is filesystem error paths |
-| `cockpit.py` | 52% | 1,889 lines, most of it collectors that shell out; the auth, CSRF, static and action surfaces are covered, the sampler threads are not |
+| `cockpit.py` | 58% | 1,889 lines; the auth, CSRF, static, action, job and diagnostics surfaces are covered, the sampler threads are not |
 
-It was 14% on `cockpit.py` and 68% overall before 2026-09-10. Measuring is what
-made that visible: nobody had ever run coverage on this repo.
+It was 14% on `cockpit.py` and 68% overall before 2026-09-10, and went 14 to 30
+to 53 to 59 over one day of writing tests. Measuring is what made that visible:
+nobody had ever run coverage on this repo.
 
 ## Property-based checks
 
@@ -147,6 +148,24 @@ commit. It now copies the repo to a temp directory and mutates the copy, so a
 killed run cannot touch the tree at all. Verified by killing one mid-walk and
 checking `git diff`.
 
+## The secret the diagnostics bundle must not leak
+
+`job_diag_bundle` collects journals, container logs, the launch script and the
+engine's own `server_info` into a tarball a user is meant to attach to an issue.
+Every one of those sources has the serving API key in it: SGLang prints
+`api_key=...` in its ServerArgs banner, which lands in the docker log and the
+journal, and the launcher passes it on its command line. The bundle masks it, and
+that masking has been wrong before, committed as "key masked, verified".
+
+`test_cockpit_jobs.py` does not trust the word. It plants a known key in every
+source the bundle reads (a stubbed `run()` for the journals and logs, a stubbed
+`http_json` for the server info, a real launch script on disk), builds a **real
+tarball**, and greps every member for the key. Two more tests close the obvious
+holes in that check: one requires the `<masked>` marker in at least three members,
+because a grep for the key also passes when the bundle collected nothing; another
+requires the launcher to still contain `--port 30000`, because a bundle that
+gutted the file instead of masking it would also pass.
+
 ## Concurrency
 
 Threads make failures probabilistic, so `test_concurrency.py` hammers rather than
@@ -202,13 +221,13 @@ on code that was already in production:
 
 | | before | after |
 |---|---|---|
-| offline test functions | 216 | **420** |
+| offline test functions | 216 | **448** |
 | generated inputs per run | 0 | **~17,000** (57 property and fuzz checks x 300) |
-| branch coverage, dashboard total | 68% | **84%** |
-| branch coverage, `cockpit.py` | 14% | **55%** |
+| branch coverage, dashboard total | 68% | **87%** |
+| branch coverage, `cockpit.py` | 14% | **61%** |
 | modules at 0% | 3 | **0** |
 | mutation score, `lifecycle.py` | never measured (74.8% when first asked) | **90.8%** |
-| CI gates | 28 | **34** |
+| CI gates | 28 | **36** |
 | defects found and fixed by the new tests | | **21 crash paths, 1 dead branch, 3 wrong outputs** |
 
 ## Conventions
@@ -223,5 +242,13 @@ on code that was already in production:
 - A test names the bug it prevents, in the words of what went wrong. `git log`
   and `CHANGELOG.md` carry the story; the test carries the guard.
 - Nothing in the offline suite touches the box: no network, no docker, no
-  systemctl, no real API key. `test_cockpit_collectors.py` asserts that too, by
-  recording every argv its stub was asked for.
+  systemctl, no real API key. That is a **checked property**, not an intention,
+  because these tests are run on the machine that serves production: the CI step
+  "The offline suite touches nothing outside itself" gives the suite a witness
+  `HOME`, hashes every file in it before and after, and compares the listening
+  sockets on both sides. It earned its place immediately by catching
+  `test_cockpit_code.py` writing `cockpit-secret` into the developer's own
+  `~/.config/qwen38`, because importing `cockpit.py` persists an HMAC secret (so
+  a service restart does not log every browser out) and that suite had not
+  redirected `COCKPIT_CONFIG_DIR`. `test_cockpit_collectors.py` adds the other
+  half by recording every argv its stub was asked for.

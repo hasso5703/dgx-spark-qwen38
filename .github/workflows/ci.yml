@@ -82,6 +82,37 @@ jobs:
           # threshold next to it), which is the known ceiling of the method.
           python3 tests/mutation.py --all
 
+      - name: The offline suite touches nothing outside itself
+        run: |
+          # This repo's tests are run on the box that serves production, so
+          # "offline" has to be a checked property and not an intention. The
+          # suite gets a witness tree, runs, and the tree must be identical
+          # afterwards. It also must not have written into HOME, which is how
+          # three diagnostics bundles were once found in a developer's home
+          # directory, and must not have contacted the serving ports.
+          witness="$(mktemp -d)"
+          export HOME="$witness/home"
+          mkdir -p "$HOME/.config/qwen38"
+          echo "not-the-real-key" > "$HOME/.config/qwen38/api-key"
+          before="$(find "$witness" -type f -exec sha256sum {} + | sort)"
+          ports_before="$(ss -Htln 2>/dev/null | awk '{print $4}' | sort || true)"
+          (cd dashboard && python3 -m unittest \
+             $(cd tests && ls test_*.py | sed 's/\.py$//' | sed 's/^/tests./' | tr '\n' ' ') \
+             2>&1 | tail -3)
+          (for f in tests/test_*.py; do python3 "$f" >/dev/null 2>&1 || { echo "$f failed"; exit 1; }; done)
+          after="$(find "$witness" -type f -exec sha256sum {} + | sort)"
+          if [ "$before" != "$after" ]; then
+            echo "the offline suite wrote into HOME:"
+            diff <(echo "$before") <(echo "$after") || true
+            exit 1
+          fi
+          ports_after="$(ss -Htln 2>/dev/null | awk '{print $4}' | sort || true)"
+          [ "$ports_before" = "$ports_after" ] || {
+            echo "the offline suite left a listening socket behind:"
+            diff <(echo "$ports_before") <(echo "$ports_after") || true; exit 1; }
+          rm -rf "$witness"
+          echo "  ok: HOME untouched, no socket left listening"
+
       - name: Coverage floors (measured, per module)
         run: |
           pip install 'coverage==7.16.0' 2>/dev/null || true
@@ -95,12 +126,13 @@ jobs:
           "$PY" - <<'PYEOF'
           import re, sys
           # Measured 2026-09-10 under this step's own conditions (a throwaway
-          # HOME, the way a runner has no ~/.config/qwen38): cockpit 53,
-          # agent_relay 89, registry 89, lifecycle 96, recipes 96, total 84.
-          # One point of slack each. Raised in a commit, never lowered quietly.
-          FLOORS = {"cockpit.py": 52, "agent_relay.py": 88, "registry.py": 88,
+          # HOME, the way a runner has no ~/.config/qwen38): cockpit 59,
+          # agent_relay 89, registry 89, lifecycle 96, recipes 96, total 86.
+          # One point of slack each. Raised in a commit, never lowered quietly:
+          # cockpit went 14 -> 30 -> 53 -> 59 over one day of writing tests.
+          FLOORS = {"cockpit.py": 58, "agent_relay.py": 88, "registry.py": 88,
                     "lifecycle.py": 95, "recipes.py": 95}
-          TOTAL_FLOOR = 83
+          TOTAL_FLOOR = 85
           got, bad = {}, []
           for line in open("/tmp/cov.txt"):
               m = re.match(r"^(\S+\.py|TOTAL)\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)%", line)
