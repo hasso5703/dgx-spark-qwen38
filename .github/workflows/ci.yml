@@ -183,7 +183,14 @@ jobs:
           # (test_every_marker_is_handled_by_the_chain). A module that reaches
           # 100% and is then allowed to slip is worse than one that never got
           # there, because the number stops meaning anything.
-          FLOORS = {"cockpit.py": 70, "agent_relay.py": 88, "registry.py": 88,
+          # A floor belongs to the MOST CONSTRAINED environment that has to pass
+          # it, which is the runner and not a developer's box: cockpit.py reads
+          # 71% here and 69% on a GitHub runner, because the runner has no
+          # docker, no systemctl and no nvidia-smi, so several collector branches
+          # never run there. The gate caught exactly that on the first push. Note
+          # that lifecycle.py and recipes.py read 100% in both, which is what
+          # being pure logic buys.
+          FLOORS = {"cockpit.py": 68, "agent_relay.py": 88, "registry.py": 88,
                     "lifecycle.py": 100, "recipes.py": 100}
           TOTAL_FLOOR = 89
           got, bad = {}, []

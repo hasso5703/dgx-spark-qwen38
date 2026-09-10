@@ -108,7 +108,14 @@ are the numbers measured on 2026-09-10 minus a point of slack, and they are
 | `recipes.py` | **100%** | pure logic |
 | `agent_relay.py` | 88% | the rest is socket error paths |
 | `registry.py` | 88% | the rest is filesystem error paths |
-| `cockpit.py` | 70% | 1,889 lines; the auth, CSRF, static, action, job and diagnostics surfaces are covered, the sampler threads are not |
+| `cockpit.py` | 68% | 1,889 lines; the auth, CSRF, static, action, job and diagnostics surfaces are covered, the sampler threads are not |
+
+A floor belongs to the **most constrained environment that has to pass it**.
+`cockpit.py` reads 71% on the reference box and **69% on a GitHub runner**, because
+the runner has no docker, no systemctl and no nvidia-smi, so several collector
+branches never run there. Setting the floor from the local number failed the first
+push, which is the gate working. `lifecycle.py` and `recipes.py` read 100% in both,
+which is what being pure logic buys you.
 
 And the root modules, which had no floor at all until 2026-09-10:
 
