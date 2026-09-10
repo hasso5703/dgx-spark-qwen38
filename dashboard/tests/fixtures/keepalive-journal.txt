@@ -1,0 +1,60 @@
+2026-09-09T18:28:44+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:58424 oversize check: 54834 tokens fit (200000 usable of pool 469376)
+2026-09-09T18:28:48+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:58424 POST /v1/chat/completions ok in 4.0s [10733b relayed, first event at 1.3s, last at 4.0s]
+2026-09-09T18:29:08+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55672 -> POST /v1/chat/completions body=6733678b
+2026-09-09T18:29:08+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55672 oversize check: 54935 tokens fit (200000 usable of pool 469376)
+2026-09-09T18:29:32+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55672 POST /v1/chat/completions ok in 23.5s [60304b relayed, first event at 2.1s, last at 23.5s]
+2026-09-09T18:29:32+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:53956 -> POST /v1/chat/completions body=6737469b
+2026-09-09T18:29:32+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:53956 oversize check: 56046 tokens fit (200000 usable of pool 469376)
+2026-09-09T18:29:49+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:53956 POST /v1/chat/completions ok in 17.3s [40198b relayed, first event at 1.6s, last at 17.3s]
+2026-09-09T18:31:50+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55092 -> POST /v1/chat/completions body=6739828b
+2026-09-09T18:31:50+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55092 oversize check: 56855 tokens fit (200000 usable of pool 469376)
+2026-09-09T18:32:16+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55092 POST /v1/chat/completions ok in 26.5s [67505b relayed, first event at 2.2s, last at 26.5s]
+2026-09-09T18:32:17+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:53364 -> POST /v1/chat/completions body=6742399b
+2026-09-09T18:32:17+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:53364 oversize check: 57541 tokens fit (200000 usable of pool 469376)
+2026-09-09T18:32:41+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:53364 POST /v1/chat/completions ok in 24.2s [58160b relayed, first event at 1.6s, last at 24.2s]
+2026-09-09T18:33:01+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:46436 -> POST /v1/chat/completions body=6745294b
+2026-09-09T18:33:01+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:46436 oversize check: 58301 tokens fit (200000 usable of pool 469376)
+2026-09-09T18:33:11+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:46436 POST /v1/chat/completions ok in 10.4s [19463b relayed, first event at 2.1s, last at 10.4s]
+2026-09-09T18:33:12+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:33364 -> POST /v1/chat/completions body=6746386b
+2026-09-09T18:33:12+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:33364 oversize check: 58593 tokens fit (200000 usable of pool 469376)
+2026-09-09T18:33:18+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:33364 POST /v1/chat/completions ok in 6.6s [18027b relayed, first event at 1.8s, last at 6.6s]
+2026-09-09T21:05:54+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55434 -> POST /v1/chat/completions body=6747006b
+2026-09-09T21:05:54+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55434 oversize check: 58798 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:06:14+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55434 POST /v1/chat/completions ok in 20.7s [48096b relayed, first event at 2.2s, last at 20.7s]
+2026-09-09T21:06:15+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55296 -> POST /v1/chat/completions body=6755064b
+2026-09-09T21:06:15+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55296 oversize check: 61625 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:06:45+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:55296 POST /v1/chat/completions ok in 30.1s [83956b relayed, first event at 2.8s, last at 30.1s]
+2026-09-09T21:06:45+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:51808 -> POST /v1/chat/completions body=6761231b
+2026-09-09T21:06:45+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:51808 oversize check: 63858 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:07:08+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:51808 POST /v1/chat/completions ok in 23.1s [63462b relayed, first event at 3.1s, last at 23.1s]
+2026-09-09T21:07:08+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:35606 -> POST /v1/chat/completions body=6767152b
+2026-09-09T21:07:08+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:35606 oversize check: 65939 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:08:51+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:35606 POST /v1/chat/completions ok in 103.2s [303442b relayed, first event at 3.9s, last at 103.2s]
+2026-09-09T21:08:52+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:51900 -> POST /v1/chat/completions body=6780622b
+2026-09-09T21:08:52+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:51900 oversize check: 69862 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:09:51+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:51900 POST /v1/chat/completions ok in 59.3s [177685b relayed, first event at 2.3s, last at 59.3s]
+2026-09-09T21:09:51+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:56896 -> POST /v1/chat/completions body=6787110b
+2026-09-09T21:09:51+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:56896 oversize check: 71615 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:10:05+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:56896 POST /v1/chat/completions ok in 14.0s [32855b relayed, first event at 2.4s, last at 14.0s]
+2026-09-09T21:10:06+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:51202 -> POST /v1/chat/completions body=6788558b
+2026-09-09T21:10:06+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:51202 oversize check: 72066 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:10:10+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:51202 POST /v1/chat/completions ok in 4.7s [5429b relayed, first event at 1.6s, last at 4.7s]
+2026-09-09T21:10:10+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:35496 -> POST /v1/chat/completions body=6789042b
+2026-09-09T21:10:11+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:35496 oversize check: 72200 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:10:34+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:35496 POST /v1/chat/completions ok in 23.1s [63745b relayed, first event at 2.3s, last at 23.1s]
+2026-09-09T21:10:34+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:40942 -> POST /v1/chat/completions body=6792069b
+2026-09-09T21:10:34+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:40942 oversize check: 72962 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:10:40+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:40942 POST /v1/chat/completions ok in 5.9s [12441b relayed, first event at 1.7s, last at 5.9s]
+2026-09-09T21:10:40+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:48856 -> POST /v1/chat/completions body=6793995b
+2026-09-09T21:10:40+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:48856 oversize check: 73642 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:11:55+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:48856 POST /v1/chat/completions ok in 75.3s [204390b relayed, first event at 2.6s, last at 75.3s]
+2026-09-09T21:11:55+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:45332 -> POST /v1/chat/completions body=6801713b
+2026-09-09T21:11:56+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:45332 oversize check: 75665 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:12:17+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:45332 POST /v1/chat/completions ok in 21.1s [53832b relayed, first event at 1.7s, last at 21.1s]
+2026-09-09T21:12:26+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:58142 -> POST /v1/chat/completions body=6804052b
+2026-09-09T21:12:26+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:58142 oversize check: 76297 tokens fit (200000 usable of pool 469376)
+2026-09-09T21:13:59+02:00 gx10-eff9 python3[886333]: [proxy] aborted upstream rid=b3b2239afcd2452a922b87c60ec4d477 (client gone)
+2026-09-09T21:13:59+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:58142 POST /v1/chat/completions CLIENT GONE on write in 93.3s [230545b relayed, first event at 2.4s, last at 93.2s]
+2026-09-09T21:26:50+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:39166 -> POST /v1/chat/completions body=176b
+2026-09-09T21:26:50+02:00 gx10-eff9 python3[886333]: [proxy] 127.0.0.1:39166 POST /v1/chat/completions no outcome (client vanished mid-request) in 0.2s
+2026-09-09T21:43:39+02:00 gx10-eff9 python3[886333]: [proxy] 100.114.54.60:54712 -> POST /v1/messages body=938347b

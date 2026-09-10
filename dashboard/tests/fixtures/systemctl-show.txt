@@ -1,0 +1,5 @@
+ExecMainStartTimestamp=Wed 2026-09-09 22:57:53 CEST
+Description=Qwen3.8-Flash-Next NVFP4 + MTP (vLLM, PLE table on NVMe, capped docker), OpenAI API :30000
+ActiveState=active
+SubState=running
+UnitFileState=enabled

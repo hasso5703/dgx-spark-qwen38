@@ -1,0 +1,6 @@
+qwen38-flash:v1.6.0-kda 30.3GB 2461014562e8
+qwen38-dflash2:v1.2.3 38.6GB 75aa241d38ae
+node:24 1.13GB d975b5c585b1
+docker.n8n.io/n8nio/n8n:latest 1.48GB ace03195c465
+ubuntu:24.04 101MB 5b8c0c14690e
+postgres:16-alpine 288MB c05eced0bdb4

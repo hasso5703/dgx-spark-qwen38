@@ -1408,6 +1408,10 @@ def start_action(name: str, params: dict, origin: str = "ui") -> tuple[int, dict
     spec = ACTIONS.get(name)
     if not spec:
         return 404, {"error": "unknown action"}
+    # The caller is the HTTP layer or the autoheal, so the shape is checked here
+    # too: a JSON list or scalar in "params" reached .get() and raised.
+    if not isinstance(params, dict):
+        return 400, {"error": "params must be an object"}
     # closed-enum validation of every parameter
     clean = {}
     for key, allowed in spec["params"].items():
@@ -1780,9 +1784,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if len(fails) >= 5:
                 LOGIN_FAILS[ip] = fails
                 return self.send_json({"error": "too many attempts, wait a minute"}, 429)
+            # Shape before content: a body that is valid JSON but not an object
+            # ({"key": null}, [], "x", 5) used to reach .get() and compare_digest()
+            # and raise, which killed the handler thread and dropped the connection
+            # with no answer, on the ONE route that is reachable before auth.
+            # 21 such inputs were found by tests/test_cockpit_http.py.
             try:
-                key = json.loads(raw or b"{}").get("key", "")
+                body = json.loads(raw or b"{}")
             except json.JSONDecodeError:
+                body = {}
+            key = body.get("key") if isinstance(body, dict) else None
+            if not isinstance(key, str):
                 key = ""
             expected = api_key()
             if not (expected and hmac.compare_digest(key, expected)):
@@ -1810,6 +1822,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             payload = json.loads(raw or b"{}")
         except json.JSONDecodeError:
+            return self.send_json({"error": "bad json"}, 400)
+        if not isinstance(payload, dict):
             return self.send_json({"error": "bad json"}, 400)
         if not check_token(payload.get("csrf", ""), "csrf", max_age=3600):
             return self.send_json({"error": "csrf"}, 403)

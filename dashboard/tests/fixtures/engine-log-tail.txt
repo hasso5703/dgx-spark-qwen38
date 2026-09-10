@@ -1,0 +1,40 @@
+[2026-09-10 10:12:48] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:48] INFO:     127.0.0.1:54236 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:49] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:49] INFO:     127.0.0.1:54248 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:50] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:50] INFO:     127.0.0.1:51760 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:51] INFO:     127.0.0.1:51768 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:51] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:52] INFO:     127.0.0.1:51780 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:52] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:53] INFO:     127.0.0.1:51782 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:53] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:54] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:54] INFO:     127.0.0.1:51794 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:55] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:55] INFO:     127.0.0.1:51808 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:56] INFO:     127.0.0.1:51822 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:56] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:57] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:57] INFO:     127.0.0.1:51824 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:58] INFO:     127.0.0.1:51840 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:58] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:12:59] INFO:     127.0.0.1:51842 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:12:59] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:13:00] INFO:     127.0.0.1:50850 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:13:00] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:13:01] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:13:01] INFO:     127.0.0.1:50854 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:13:02] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:13:02] INFO:     127.0.0.1:50864 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:13:03] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:13:03] INFO:     127.0.0.1:50866 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:13:03] Prefill batch, #new-seq: 1, #new-token: 64, #cached-token: 0, full token usage: 0.00, mamba usage: 0.00, #running-req: 0, #queue-req: 0, #pending-token: 0, cuda graph: False, input throughput (token/s): 2.12
+[2026-09-10 10:13:04] INFO:     127.0.0.1:50868 - "GET /health HTTP/1.1" 200 OK
+[2026-09-10 10:13:04] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:13:04] INFO:     127.0.0.1:50870 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:13:05] Endpoint '/get_load' is deprecated and will be removed in a future version. Please use '/v1/loads' instead.
+[2026-09-10 10:13:05] INFO:     127.0.0.1:50872 - "GET /get_load HTTP/1.1" 200 OK
+[2026-09-10 10:13:06] Endpoint '/get_server_info' is deprecated and will be removed in a future version. Please use '/server_info' instead.
+[2026-09-10 10:13:06] INFO:     127.0.0.1:50882 - "GET /get_server_info HTTP/1.1" 200 OK

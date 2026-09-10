@@ -1,0 +1,4 @@
+qwen38-flash|101.61%|5.83GiB / 110GiB
+supabase-storage|0.00%|78.21MiB / 121.6GiB
+supabase-edge-functions|0.01%|6.59MiB / 121.6GiB
+supabase-pooler|0.11%|63.04MiB / 121.6GiB
