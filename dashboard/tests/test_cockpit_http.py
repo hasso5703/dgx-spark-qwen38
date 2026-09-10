@@ -430,12 +430,16 @@ class ActionValidation(Base):
     """start_action, called directly. DRY_RUN means nothing is executed."""
 
     def tearDown(self):
-        # never leave the single-job lock held for the next test
-        if self.cp.JOB_LOCK.locked():
-            try:
-                self.cp.JOB_LOCK.release()
-            except RuntimeError:
-                pass
+        """Wait for the job thread to release the single-job lock, never take it
+        from under it: releasing a lock its owner still holds made run_job's own
+        release raise 'release unlocked lock' in a background thread, which is
+        test pollution that reads like a product bug."""
+        for _ in range(200):                      # DRY_RUN jobs finish at once
+            if not self.cp.JOB_LOCK.locked():
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("a dry-run job never released the job lock")
         self.cp.JOB_CURRENT["id"] = None
 
     def test_dry_run_is_really_on(self):

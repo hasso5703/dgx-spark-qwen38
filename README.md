@@ -121,6 +121,8 @@ v1.2 wins every row of the frozen battery except eval-style math (parity with st
 
 Full study (methodology, engine-vs-engine matrix, an independent reproduction, the physics of the GB10 ceiling, and a frozen benchmark battery you can run against **any** engine, `./bench-matrix.sh`): in **[BENCHMARKS.md](BENCHMARKS.md)**.
 
+How the repo is tested, and what the tests found in code that was already in production: in **[TESTING.md](TESTING.md)**. Measured branch coverage with a floor per module, property-based checks over generated inputs, a fuzzed and state-machine-simulated proxy, and a mutation score, because a suite written alongside its own code has to be asked whether it would notice the code being wrong (`lifecycle.py`: 74.8% of injected faults caught before that question was asked, 90.8% after).
+
 ## ⚠️ The GB10 unified-memory trap (read this before changing anything)
 
 SGLang's memory accounting **does not see 25-40 GB** of transient allocations on GB10 unified memory (the flashinfer fp8 autotuner and CUDA graph capture allocate outside the tracked pool). Running `--mem-fraction-static` above **0.50**, or running SGLang natively (outside Docker), can drive host available memory to **zero**: on a machine where SSH often rides on the same memory, that means a hard freeze only a power cycle fixes. We learned this the hard way.

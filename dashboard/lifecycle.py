@@ -159,10 +159,6 @@ def blocked_reasons(action: str, params: dict, states: dict) -> list[str]:
                 reasons.append(
                     f"{other} is {st(other)}: two engines never run at once "
                     f"on unified memory (stop it first)")
-        if unit in ENGINE_UNITS and verb in ("stop", "restart") \
-                and st(unit) in TRANSITIONAL:
-            # allowed, but the caller should surface warn_reasons instead
-            pass
     elif action in ("switch", "update_stack"):
         for u in ENGINE_UNITS:
             if st(u) in TRANSITIONAL:

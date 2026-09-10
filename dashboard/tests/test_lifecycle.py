@@ -328,6 +328,315 @@ class FeedOutcomes(unittest.TestCase):
         self.assertEqual(lc.parse_feed(later)[0]["kind"], "unknown")
 
 
+class MutantsThatSurvived(unittest.TestCase):
+    """Written from a mutation run, not from imagination.
+
+    /tmp mutation walk of 2026-09-10 edited one operator at a time in
+    lifecycle.py and ran the whole suite after each edit: 210 mutants, 157
+    caught, 53 survived. A survivor is a place where the code could be wrong and
+    every test would stay green, so each test below names the mutant it kills.
+    Score after this class: see the CI step "Mutation score".
+    """
+
+    # ---- blocked_reasons: both halves of a condition matter ------------------
+    def test_a_verb_that_is_not_a_start_does_not_need_the_other_lane_stopped(self):
+        """Kills line 156 And->Or: with 'or', stopping one lane would be blocked
+        because the OTHER lane happens to be busy, which is backwards."""
+        states = {"qwen38-sglang.service": "ready", "qwen38-flash.service": "stopped"}
+        self.assertEqual(
+            lc.blocked_reasons("unit", {"unit": "qwen38-flash.service", "verb": "stop"}, states),
+            [])
+
+    def test_a_unit_that_is_not_an_engine_is_never_blocked_by_an_engine(self):
+        """Kills line 156 In->NotIn on the unit half."""
+        states = {"qwen38-sglang.service": "ready", "qwen38-flash.service": "ready"}
+        for verb in ("start", "restart", "stop"):
+            self.assertEqual(
+                lc.blocked_reasons("unit",
+                                   {"unit": "qwen38-keepalive.service", "verb": verb},
+                                   states), [], verb)
+
+    def test_starting_an_engine_while_the_other_is_ready_is_blocked(self):
+        states = {"qwen38-sglang.service": "ready", "qwen38-flash.service": "stopped"}
+        reasons = lc.blocked_reasons(
+            "unit", {"unit": "qwen38-flash.service", "verb": "start"}, states)
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn("two engines never run at once", reasons[0])
+
+    def test_starting_an_engine_while_the_other_is_stopped_is_allowed(self):
+        states = {"qwen38-sglang.service": "stopped", "qwen38-flash.service": "stopped"}
+        self.assertEqual(
+            lc.blocked_reasons("unit", {"unit": "qwen38-flash.service", "verb": "start"},
+                               states), [])
+
+    # ---- warn_reasons: the two branches say different things -----------------
+    def test_stopping_the_flash_lane_mid_boot_warns_about_the_ple_table(self):
+        """Kills line 177 And->Or and line 180 Eq->NotEq: the flash-mid-boot
+        warning and the ready warning are different sentences and must not
+        collapse into one."""
+        for state in lc.TRANSITIONAL:
+            warns = lc.warn_reasons("unit",
+                                    {"unit": "qwen38-flash.service", "verb": "stop"},
+                                    {"qwen38-flash.service": state})
+            self.assertEqual(len(warns), 1, (state, warns))
+            self.assertIn("PLE", warns[0], state)
+
+    def test_stopping_a_ready_lane_warns_about_the_clients(self):
+        warns = lc.warn_reasons("unit", {"unit": "qwen38-sglang.service", "verb": "stop"},
+                                {"qwen38-sglang.service": "ready"})
+        self.assertEqual(len(warns), 1, warns)
+        self.assertIn(":30001", warns[0])
+
+    def test_stopping_a_stopped_lane_warns_about_nothing(self):
+        self.assertEqual(
+            lc.warn_reasons("unit", {"unit": "qwen38-sglang.service", "verb": "stop"},
+                            {"qwen38-sglang.service": "stopped"}), [])
+
+    def test_starting_a_lane_is_not_a_warning(self):
+        """Kills line 177 In->NotIn: only stop and restart warn."""
+        self.assertEqual(
+            lc.warn_reasons("unit", {"unit": "qwen38-sglang.service", "verb": "start"},
+                            {"qwen38-sglang.service": "ready"}), [])
+
+    # ---- record_pool: the zero an engine reports before ready ----------------
+    def test_a_zero_pool_is_not_recorded(self):
+        """Kills line 223 (0 -> 1, LtE -> Lt): an engine reports 0 before it is
+        ready, and recording that would poison the spread forever."""
+        h = lc.record_pool({}, "u", "t", 0)
+        self.assertEqual(h, {})
+        self.assertEqual(lc.record_pool({}, "u", "t", -5), {})
+
+    def test_a_pool_of_one_token_is_recorded(self):
+        h = lc.record_pool({}, "u", "t", 1)
+        self.assertEqual(list(h.values()), [[1]])
+
+    # ---- pool_shortfall: the page alignment is not a shortfall ---------------
+    def test_a_pool_aligned_down_to_its_page_is_not_a_shortfall(self):
+        """Kills line 240 (128 -> 129, Sub -> Add, GtE -> Gt): SGLang aligns a
+        pin down to its page, so 190,000 serving as 189,952 is the pin honoured."""
+        self.assertIsNone(lc.pool_shortfall(pinned=190_000, served=189_952))
+        self.assertIsNone(lc.pool_shortfall(pinned=190_000, served=190_000 - 128))
+
+    def test_a_pool_short_by_more_than_a_page_is_a_shortfall(self):
+        msg = lc.pool_shortfall(pinned=190_000, served=190_000 - 129)
+        self.assertIsNotNone(msg)
+        self.assertIn("held memory", msg)
+
+    def test_a_pool_larger_than_the_pin_is_not_a_shortfall(self):
+        self.assertIsNone(lc.pool_shortfall(pinned=190_000, served=250_000))
+
+    # ---- pool_spread: two boots is the floor for a spread -------------------
+    def test_one_boot_reports_itself_but_no_spread(self):
+        """Kills line 249 (2 -> 3, Lt -> LtE)."""
+        h = lc.record_pool({}, "u", "t", 463_616)
+        got = lc.pool_spread(h, "u", "t")
+        self.assertEqual(got, {"n": 1, "last": 463_616})
+
+    def test_two_boots_make_a_spread(self):
+        h = lc.record_pool(lc.record_pool({}, "u", "t", 400_000), "u", "t", 463_616)
+        got = lc.pool_spread(h, "u", "t")
+        self.assertEqual(got["n"], 2)
+        self.assertEqual((got["min"], got["max"], got["last"]),
+                         (400_000, 463_616, 463_616))
+
+    def test_no_boot_at_all_is_none(self):
+        self.assertIsNone(lc.pool_spread({}, "u", "t"))
+
+    # ---- wedge_decision / wedge_plan boundaries -----------------------------
+    def test_an_idle_engine_is_wedged_exactly_at_the_canary_threshold(self):
+        """Kills line 274 Gt->GtE around the canary threshold."""
+        kw = dict(health_ok=True, num_reqs=0, progress_age=None, stall_after=120)
+        self.assertFalse(lc.decide_wedge(canary_fails=1, threshold=2, **kw))
+        self.assertTrue(lc.decide_wedge(canary_fails=2, threshold=2, **kw))
+        self.assertTrue(lc.decide_wedge(canary_fails=3, threshold=2, **kw))
+
+    def test_a_busy_engine_is_wedged_only_past_the_stall_window(self):
+        kw = dict(health_ok=True, num_reqs=1, canary_fails=0, threshold=2)
+        self.assertFalse(lc.decide_wedge(progress_age=120, stall_after=120, **kw))
+        self.assertTrue(lc.decide_wedge(progress_age=121, stall_after=120, **kw))
+        self.assertFalse(lc.decide_wedge(progress_age=None, stall_after=120, **kw))
+
+    def test_an_unhealthy_engine_is_never_called_wedged_here(self):
+        self.assertFalse(lc.decide_wedge(health_ok=False, num_reqs=0, canary_fails=99,
+                                           threshold=2, progress_age=9999, stall_after=1))
+
+    def test_a_restart_waits_for_the_full_grace_window(self):
+        """Kills line 289 GtE->Gt: at exactly the grace the restart is due."""
+        kw = dict(decided=True, prev_state="wedged", now=1000.0, autoheal=True,
+                  cooldown_ok=True, job_running=False)
+        self.assertFalse(lc.wedge_plan(wedged_since=1000.0 - 599, grace=600, **kw)["restart"])
+        self.assertTrue(lc.wedge_plan(wedged_since=1000.0 - 600, grace=600, **kw)["restart"])
+
+    def test_a_running_job_defers_a_restart(self):
+        kw = dict(decided=True, prev_state="wedged", wedged_since=0.0, now=10_000.0,
+                  grace=600, autoheal=True, cooldown_ok=True)
+        self.assertFalse(lc.wedge_plan(job_running=True, **kw)["restart"])
+        self.assertTrue(lc.wedge_plan(job_running=False, **kw)["restart"])
+
+    def test_autoheal_off_never_restarts_however_wedged(self):
+        plan = lc.wedge_plan(decided=True, prev_state="wedged", wedged_since=0.0,
+                             now=10_000.0, grace=0, autoheal=False, cooldown_ok=True,
+                             job_running=False)
+        self.assertEqual(plan["state"], "wedged")
+        self.assertFalse(plan["restart"])
+
+    # ---- the memory floor -----------------------------------------------------
+    def test_the_memory_floor_is_a_floor_not_a_ceiling(self):
+        """Kills line 307 Lt->LtE and the num_reqs boundary: exactly at the floor
+        is above it, and nothing running means nothing to abort."""
+        kw = dict(floor_gib=3.0, last_abort_ts=None, now=1000.0, cooldown_s=60)
+        self.assertEqual(lc.decide_mem_floor(avail_gib=3.0, num_reqs=2, **kw)[0], False)
+        self.assertEqual(lc.decide_mem_floor(avail_gib=2.9, num_reqs=2, **kw)[0], True)
+        self.assertEqual(lc.decide_mem_floor(avail_gib=2.9, num_reqs=0, **kw)[0], False)
+
+    def test_the_cooldown_is_respected_to_the_second(self):
+        kw = dict(avail_gib=1.0, num_reqs=4, floor_gib=3.0, now=1000.0, cooldown_s=60)
+        self.assertFalse(lc.decide_mem_floor(last_abort_ts=1000.0 - 59, **kw)[0])
+        self.assertTrue(lc.decide_mem_floor(last_abort_ts=1000.0 - 60, **kw)[0])
+
+    # ---- parse_feed's window --------------------------------------------------
+    def test_the_feed_returns_at_most_the_window_it_was_asked_for(self):
+        """Kills line 341 (25 -> 26): the default window is 25 rows."""
+        lines = []
+        for i in range(40):
+            peer = f"127.0.0.1:{5000 + i}"
+            lines.append(f"2026-09-10T09:00:00+02:00 h p[1]: [proxy] {peer} -> "
+                         f"POST /v1/chat/completions body=10b")
+            lines.append(f"2026-09-10T09:00:01+02:00 h p[1]: [proxy] {peer} "
+                         f"POST /v1/chat/completions ok in 1.0s")
+        raw = "\n".join(lines)
+        self.assertEqual(len(lc.parse_feed(raw)), 25)
+        self.assertEqual(len(lc.parse_feed(raw, last=3)), 3)
+        self.assertEqual(len(lc.parse_feed(raw, last=100)), 40)
+
+
+class MoreMutantsThatSurvived(unittest.TestCase):
+    """Second mutation pass, after the first class took the score from 74.8% to
+    90.8%. These are the survivors that remained."""
+
+    def _boot(self, *lines):
+        return lc.parse_boot_log(list(lines))
+
+    ARGS = "[2026-09-10 10:00:00] server_args=ServerArgs(model_path='x')"
+    WBEGIN = "[2026-09-10 10:00:01] Load weight begin. avail mem=111.97 GB"
+    WEND = ("[2026-09-10 10:10:00] Load weight end. elapsed=1.0 s, type=T, "
+            "quant=modelopt_fp4, quant_algo=NVFP4, avail mem=29.01 GB, mem usage=82.97 GB.")
+    KV = ("[2026-09-10 10:11:00] KV Cache is allocated. dtype: torch.bfloat16, "
+          "#tokens: 159552, K size: 1.83 GB, V size: 1.83 GB")
+    GBEGIN = "[2026-09-10 10:12:00] Capture target verify CUDA graph begin. backend=full"
+    GEND = "[2026-09-10 10:12:01] Capture target verify CUDA graph end. elapsed=1.61 s"
+    READY = "[2026-09-10 10:13:00] The server is fired up and ready to roll!"
+
+    # ---- a fresh ServerArgs line is a fresh boot ----------------------------
+    def test_a_second_boot_in_the_same_log_resets_everything(self):
+        """Kills line 60's reset flags: a docker log tail can span a previous
+        life of the container, and carrying its 'ready' into this boot would
+        report a starting engine as up."""
+        b = self._boot(self.ARGS, self.WBEGIN, self.WEND, self.KV, self.GBEGIN,
+                       self.GEND, self.READY,
+                       self.ARGS, self.WBEGIN)          # a new boot begins here
+        self.assertFalse(b["fired_up"], "the previous boot's readiness leaked")
+        self.assertEqual(b["stage"], "loading-weights")
+        self.assertEqual(b["weight_ends"], 0)
+
+    def test_the_previous_boot_is_reported_while_it_is_the_only_one(self):
+        b = self._boot(self.ARGS, self.WBEGIN, self.WEND, self.KV, self.GBEGIN,
+                       self.GEND, self.READY)
+        self.assertTrue(b["fired_up"])
+
+    # ---- the draft-load threshold ------------------------------------------
+    def test_two_weight_ends_mean_the_draft_is_loading(self):
+        """Kills line 84 (2 -> 3, GtE -> Gt): the second checkpoint IS the draft,
+        and this is what tells a 9-minute boot from a stuck one."""
+        one = self._boot(self.ARGS, self.WBEGIN, self.WEND)
+        self.assertNotEqual(one["stage"], "loading-draft")
+        two = self._boot(self.ARGS, self.WBEGIN, self.WEND, self.WBEGIN, self.WEND)
+        self.assertEqual(two["stage"], "loading-draft")
+
+    def test_a_second_begin_with_one_end_also_means_the_draft(self):
+        b = self._boot(self.ARGS, self.WBEGIN, self.WEND, self.WBEGIN)
+        self.assertEqual(b["stage"], "loading-draft")
+
+    def test_one_begin_alone_is_the_target_not_the_draft(self):
+        b = self._boot(self.ARGS, self.WBEGIN)
+        self.assertEqual(b["stage"], "loading-weights")
+
+    # ---- done stages --------------------------------------------------------
+    def test_the_current_stage_is_not_listed_as_done(self):
+        """Kills line 95 Eq->NotEq: the loop stops AT the current stage."""
+        b = self._boot(self.ARGS, self.WBEGIN, self.WEND, self.KV)
+        self.assertNotIn(b["stage"], b["done"])
+        self.assertTrue(set(b["done"]).issubset(set(lc.STAGES)))
+
+    def test_stages_before_the_current_one_are_all_done(self):
+        b = self._boot(self.ARGS, self.WBEGIN, self.WEND, self.KV, self.GBEGIN)
+        idx = lc.STAGES.index(b["stage"])
+        self.assertEqual(b["done"], list(lc.STAGES[:idx]))
+
+    # ---- journal_flags ------------------------------------------------------
+    def test_a_rebuild_line_anywhere_raises_the_flag(self):
+        """Kills line 105's any(): one line in a long tail is enough."""
+        self.assertTrue(lc.journal_flags(["noise"] * 50
+                                         + ["rebuilding the PLE table"])["rebuild"])
+        self.assertFalse(lc.journal_flags(["noise"] * 50)["rebuild"])
+        self.assertFalse(lc.journal_flags([])["rebuild"])
+
+    # ---- derive_state's rebuild flag ---------------------------------------
+    def test_the_rebuild_flag_is_carried_through_untouched(self):
+        """Kills line 111 bool(rebuild)."""
+        boot = self._boot(self.ARGS, self.WBEGIN)
+        for value in (True, False):
+            got = lc.derive_state(unit_active="active", unit_sub="running",
+                                  container_running=True, healthy=False,
+                                  boot=boot, rebuild=value)
+            self.assertIs(got["rebuild"], value)
+
+    # ---- warn_reasons: the flash lane is the only one with a PLE table ------
+    def test_only_the_flash_lane_warns_about_the_ple_table(self):
+        """Kills line 176 And->Or: the 27B lane has no n-gram table to dirty."""
+        warns = lc.warn_reasons("unit",
+                                {"unit": "qwen38-sglang.service", "verb": "stop"},
+                                {"qwen38-sglang.service": "loading-weights"})
+        self.assertEqual(warns, [], warns)
+
+    # ---- record_pool keeps a bounded history -------------------------------
+    def test_the_pool_history_is_bounded_to_its_keep(self):
+        """Kills line 219's LtE and the keep arithmetic: an unbounded history
+        would grow a state file forever."""
+        h = {}
+        for i in range(30):
+            h = lc.record_pool(h, "u", "t", 400_000 + i, keep=12)
+        self.assertEqual(len(list(h.values())[0]), 12)
+        self.assertEqual(list(h.values())[0][-1], 400_029, "the newest boot was dropped")
+
+    def test_a_keep_of_one_holds_only_the_last_boot(self):
+        h = lc.record_pool(lc.record_pool({}, "u", "t", 1, keep=1), "u", "t", 2, keep=1)
+        self.assertEqual(list(h.values())[0], [2])
+
+    # ---- parse_feed's timestamp and its 10-minute orphan window ------------
+    def test_only_an_iso_timestamp_is_read_as_one(self):
+        """Kills line 346 And->Or: both the length and the T position matter, or
+        a body= line's own text becomes the clock."""
+        raw = ("2026-09-10T09:00:00+02:00 h p[1]: [proxy] 1.2.3.4:5 -> "
+               "POST /v1/chat/completions body=10b")
+        self.assertEqual(lc.parse_feed(raw)[0]["ts"], "2026-09-10T09:00:00")
+        # a line with no timestamp at all must not invent one
+        self.assertEqual(lc.parse_feed("[proxy] 1.2.3.4:5 -> POST /x body=1b")[0]["ts"][:1],
+                         "[")
+
+    def test_an_orphan_becomes_unknown_only_after_ten_minutes(self):
+        """Kills line 386 Gt->GtE: at exactly 600 s it is still in flight."""
+        def feed(seconds):
+            start = ("2026-09-10T09:00:00+02:00 h p[1]: [proxy] 1.2.3.4:5 -> "
+                     "POST /v1/chat/completions body=10b")
+            mm, ss = divmod(seconds, 60)
+            later = (f"2026-09-10T09:{mm:02d}:{ss:02d}+02:00 h p[1]: [proxy] "
+                     "9.9.9.9:9 -> POST /v1/chat/completions body=10b")
+            return lc.parse_feed(start + "\n" + later)[0]
+        self.assertEqual(feed(600)["kind"], "live")
+        self.assertEqual(feed(601)["kind"], "unknown")
+
+
 class ZombieGuard(unittest.TestCase):
     """Real lines: the engine's flood from the reference box (2026-09-09 21:15:49,
     the single line the flash container logged in 14 h) and the proxy's own
@@ -396,6 +705,96 @@ class ZombieGuard(unittest.TestCase):
         state, msg = lc.guard_verdict(lc.parse_zombies(""), lc.parse_guard(""), False)
         self.assertEqual(state, "")
         self.assertIn("does not take the proxy's rid", msg)
+
+    # ---- the mutants that survived in this file's own newest code -----------
+    def test_the_longest_drain_is_the_maximum_not_the_last(self):
+        """Kills line 461 (Gt->GtE, Or->And): a shorter drain after a long one
+        must not replace it, and the first drain must be recorded at all."""
+        raw = "\n".join(["[proxy] drained an abandoned /v1/messages for 30s",
+                         "[proxy] drained an abandoned /v1/messages for 5s"])
+        g = lc.parse_guard(raw)
+        self.assertEqual(g["drained"], 2)
+        self.assertEqual(g["drain_max_s"], 30.0)
+
+    def test_the_first_drain_sets_the_maximum_from_none(self):
+        g = lc.parse_guard("[proxy] drained an abandoned /generate for 7s")
+        self.assertEqual(g["drain_max_s"], 7.0)
+
+    def test_a_zero_second_drain_is_still_recorded(self):
+        """Kills line 461 Or->And: with 'and', a first drain of 0 s would leave
+        drain_max_s at None and read as no drain at all."""
+        g = lc.parse_guard("[proxy] drained an abandoned /generate for 0s")
+        self.assertEqual(g["drained"], 1)
+        self.assertEqual(g["drain_max_s"], 0.0)
+
+    def test_the_flood_threshold_between_warn_and_err_is_a_hundred_lines(self):
+        """Kills line 476 (100 -> 101, GtE -> Gt): 100 is already an error."""
+        quiet = lc.parse_guard("")
+        for lines, want in ((99, "warn"), (100, "err"), (101, "err")):
+            z = {"lines": lines, "distinct": 1,
+                 "requests": [{"rid": "r", "lines": lines, "secs": 12.0}]}
+            self.assertEqual(lc.guard_verdict(z, quiet, True)[0], want, lines)
+
+    def test_one_flood_line_is_already_a_warning(self):
+        """Kills line 477 (0 -> 1): a single line means a real abandoned
+        generation, and this panel exists to notice the first one."""
+        z = {"lines": 1, "distinct": 1, "requests": [{"rid": "r", "lines": 1, "secs": 0.0}]}
+        state, msg = lc.guard_verdict(z, lc.parse_guard(""), True)
+        self.assertEqual(state, "warn")
+        self.assertIn("1 flood line", msg)
+
+    def test_the_worst_request_is_named_in_an_error_verdict(self):
+        """Kills line 475 Add->Sub in the handled count and the detail clause."""
+        z = {"lines": 4470, "distinct": 2,
+             "requests": [{"rid": "b64416f1", "lines": 4470, "secs": 368.0},
+                          {"rid": "d03744c5", "lines": 1742, "secs": 180.0}]}
+        state, msg = lc.guard_verdict(z, lc.parse_guard(""), True)
+        self.assertEqual(state, "err")
+        self.assertIn("4,470 flood lines", msg)
+        self.assertIn("2 abandoned request(s)", msg)
+        self.assertIn("worst 4,470 lines over 368s", msg)
+
+    def test_an_error_verdict_survives_a_request_with_no_span(self):
+        z = {"lines": 200, "distinct": 1,
+             "requests": [{"rid": "r", "lines": 200, "secs": None}]}
+        state, msg = lc.guard_verdict(z, lc.parse_guard(""), True)
+        self.assertEqual(state, "err")
+        self.assertNotIn("worst", msg)
+
+    def test_an_abort_and_a_drain_are_both_named_in_the_ok_verdict(self):
+        """Kills line 478 And->Or and line 475 Add->Sub: both counters are
+        reported, and either one alone is still an answer."""
+        g = dict(lc.parse_guard(""), aborted=2, drained=3, drain_max_s=9.0)
+        state, msg = lc.guard_verdict(lc.parse_zombies(""), g, True)
+        self.assertEqual(state, "ok")
+        self.assertIn("2 aborted", msg)
+        self.assertIn("3 drained", msg)
+
+    def test_only_aborts_reads_without_an_and(self):
+        g = dict(lc.parse_guard(""), aborted=2)
+        _, msg = lc.guard_verdict(lc.parse_zombies(""), g, True)
+        self.assertEqual(msg, "2 aborted, no flood")
+
+    def test_a_flood_outranks_the_work_the_proxy_did(self):
+        """The order of the branches is the whole point: a leak is the finding,
+        whatever the counters say next to it."""
+        z = {"lines": 500, "distinct": 1,
+             "requests": [{"rid": "r", "lines": 500, "secs": 60.0}]}
+        g = dict(lc.parse_guard(""), aborted=9, drained=9)
+        self.assertEqual(lc.guard_verdict(z, g, True)[0], "err")
+
+    def test_a_ceiling_outranks_an_unanswered_abort(self):
+        g = dict(lc.parse_guard(""), ceiling=1, abort_failed=1)
+        state, msg = lc.guard_verdict(lc.parse_zombies(""), g, True)
+        self.assertEqual(state, "warn")
+        self.assertIn("ceiling", msg)
+
+    def test_an_unknown_override_is_not_reported_as_a_missing_one(self):
+        """Kills line 493 False->True: None means no engine is serving, which is
+        not the same as an engine that refuses the proxy's rid."""
+        state, msg = lc.guard_verdict(lc.parse_zombies(""), lc.parse_guard(""), None)
+        self.assertEqual(state, "ok")
+        self.assertIn("no abandoned request", msg)
 
     def test_verdict_is_clean_when_nothing_happened(self):
         state, msg = lc.guard_verdict(lc.parse_zombies(""), lc.parse_guard(""), True)
