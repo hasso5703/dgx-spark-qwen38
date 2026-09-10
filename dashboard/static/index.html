@@ -602,6 +602,19 @@
           <h3>Request feed <span class="chip" id="feedchip">...</span><span class="right"><span class="age"></span></span></h3>
           <div class="tablewrap"><table id="feedtable" data-empty="No request through the proxy yet."><thead><tr><th>Time</th><th>Client</th><th>Path</th><th class="r">Body</th><th class="r">Duration</th><th>Outcome</th></tr></thead><tbody></tbody></table></div>
         </section>
+        <section class="panel" data-src="reqguard">
+          <h3>Zombie guard <span class="chip" id="zgchip">...</span><span class="right"><span class="age"></span></span></h3>
+          <p class="note" id="zgverdict">...</p>
+          <dl class="kv" style="margin-top:10px">
+            <dt>Running proxy</dt><dd class="num" id="zgversion">...</dd>
+            <dd class="text" id="zgversionnote" hidden></dd>
+            <dt>Engine takes the proxy's rid</dt><dd class="num" id="zgoverride">...</dd>
+            <dd class="text" id="zgoverridenote" hidden></dd>
+            <dt>Clients that left</dt><dd class="num" id="zgacted">...</dd>
+            <dt>Engine flood lines</dt><dd class="num" id="zgflood">...</dd>
+          </dl>
+          <div class="tablewrap" id="zgtablewrap" hidden><table id="zgtable" data-empty="No abandoned generation in the window."><thead><tr><th>Abandoned request</th><th class="r">Log lines</th><th class="r">Dead decode</th></tr></thead><tbody></tbody></table></div>
+        </section>
         <section class="panel" data-src="engine_fast,decode">
           <h3>Pool and decode <span class="right"><span class="age"></span></span></h3>
           <div class="gauge" id="poolgauge">

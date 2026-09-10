@@ -258,6 +258,81 @@ DRAFT2_REV="50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
             self.assertEqual(got[0]["revisions"][0]["bytes"], 10)
 
 
+class ZombieGuard(unittest.TestCase):
+    """Real lines: the engine's flood from the reference box (2026-09-09 21:15:49,
+    the single line the flash container logged in 14 h) and the proxy's own
+    journal from the same night."""
+
+    ENGINE = "\n".join([
+        "[2026-09-09 21:15:49] Received output for rid='5e5de8901d2349fd8d9107f21df3ab92' but the state was deleted in TokenizerManager.",
+        "[2026-09-09 21:15:49] Received output for rid='5e5de8901d2349fd8d9107f21df3ab92' but the state was deleted in TokenizerManager.",
+        "[2026-09-09 21:16:01] Received output for rid='5e5de8901d2349fd8d9107f21df3ab92' but the state was deleted in TokenizerManager.",
+        "[2026-09-09 21:20:00] Received output for rid='b64416f1aa1c4d0f9c0f3d2e8a7b6c5d' but the state was deleted in TokenizerManager.",
+        "[2026-09-09 21:20:00] Decode batch. #running-req: 1, token usage: 0.01, accept len: 2.16",
+    ])
+    PROXY = "\n".join([
+        "2026-09-10T09:00:00+02:00 gx10 python3[1]: [proxy] v6.14 on :30001 -> http://127.0.0.1:30000 (keepalive 10s, max silence 3600s)",
+        "2026-09-10T09:01:00+02:00 gx10 python3[1]: [proxy] aborted upstream rid=837fff7d986c425d9acb51090cc802c9 (client gone)",
+        "2026-09-10T09:02:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:35624 POST /v1/chat/completions CLIENT GONE on write in 7.4s [12306b relayed, first event at 3.7s, last at 7.3s]",
+        "2026-09-10T09:03:00+02:00 gx10 python3[1]: [proxy] drained an abandoned /v1/messages for 18s",
+        "2026-09-10T09:04:00+02:00 gx10 python3[1]: [proxy] abort_request failed for rid=deadbeef: timed out",
+    ])
+
+    def test_flood_is_grouped_by_request_worst_first(self):
+        z = lc.parse_zombies(self.ENGINE)
+        self.assertEqual(z["lines"], 4)          # the Decode batch line is not one
+        self.assertEqual(z["distinct"], 2)
+        self.assertEqual(z["requests"][0]["lines"], 3)
+        self.assertEqual(z["requests"][0]["rid"], "5e5de8901d2349fd8d9107f21df3ab92")
+        # first line 21:15:49, last 21:16:01: the span IS the dead decode
+        self.assertEqual(z["requests"][0]["secs"], 12.0)
+
+    def test_a_quiet_window_counts_nothing(self):
+        z = lc.parse_zombies("[2026-09-10 09:00:00] Decode batch. #running-req: 0\n")
+        self.assertEqual((z["lines"], z["distinct"], z["requests"]), (0, 0, []))
+
+    def test_proxy_counters_and_running_version(self):
+        g = lc.parse_guard(self.PROXY)
+        self.assertEqual(g["version"], "6.14")
+        self.assertEqual(g["port"], 30001)
+        self.assertEqual(g["aborted"], 1)
+        self.assertEqual(g["drained"], 1)
+        self.assertEqual(g["drain_max_s"], 18.0)
+        self.assertEqual(g["abort_failed"], 1)
+        self.assertEqual(g["reasons"], {"client gone": 1})
+
+    def test_an_end_line_is_never_counted_as_an_abort(self):
+        """The end line names the same event ("CLIENT GONE on write") and must not
+        double the abort count: the feed reports outcomes, this reports actions."""
+        g = lc.parse_guard(self.PROXY.splitlines()[2])
+        self.assertEqual((g["aborted"], g["drained"]), (0, 0))
+
+    def test_verdict_is_the_flood_first(self):
+        big = "\n".join(f"[2026-09-09 21:1{i % 10}:49] Received output for rid='r{i % 3}' "
+                         "but the state was deleted in TokenizerManager." for i in range(150))
+        state, msg = lc.guard_verdict(lc.parse_zombies(big), lc.parse_guard(self.PROXY), True)
+        self.assertEqual(state, "err")
+        self.assertIn("150 flood lines", msg)
+
+    def test_verdict_reports_work_done_when_the_engine_log_is_clean(self):
+        state, msg = lc.guard_verdict(lc.parse_zombies(""), lc.parse_guard(self.PROXY), True)
+        # an abort the engine never answered outranks the tally: it means a zombie
+        self.assertEqual(state, "warn")
+        self.assertIn("did not answer", msg)
+
+    def test_verdict_says_why_a_prefill_loss_can_only_be_drained(self):
+        """The engine env decides: without SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES the
+        proxy cannot name a request that has not emitted anything yet."""
+        state, msg = lc.guard_verdict(lc.parse_zombies(""), lc.parse_guard(""), False)
+        self.assertEqual(state, "")
+        self.assertIn("does not take the proxy's rid", msg)
+
+    def test_verdict_is_clean_when_nothing_happened(self):
+        state, msg = lc.guard_verdict(lc.parse_zombies(""), lc.parse_guard(""), True)
+        self.assertEqual(state, "ok")
+        self.assertIn("no abandoned request", msg)
+
+
 class WedgeDecision(unittest.TestCase):
     def test_field_case_idle_route(self):
         # 29/08: health 200, get_load 0 requests, every completion hung

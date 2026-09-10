@@ -537,6 +537,19 @@ jobs:
           # checkpoint validation must stay pinned-revision-aware (issue #5)
           grep -q 'snapshots/\$REV_SHA' run.sh
 
+      - name: Every serving lane parks its scheduler when idle
+        run: |
+          # Without --sleep-on-idle SGLang's scheduler busy-spins a full core while
+          # doing nothing. The 27B lane has carried the flag since v1.2.6 (A/B on the
+          # reference box: scheduler CPU 101% -> 1.7%, TTFT unchanged); the flash lane
+          # shipped without it and burned a core for 12 h 21 min of measured idle on
+          # 2026-09-10. This lane grew from an experiment into the one in production,
+          # so the flag is a gate now, not a habit.
+          for f in qwen38-sglang.service.template qwen38-sglang-1m.service.template \
+                   qwen38-flash-launch.sh.template run.sh; do
+            grep -q -- '--sleep-on-idle' "$f" || { echo "$f does not park its scheduler when idle"; exit 1; }
+          done
+
       - name: patch-yarn fixtures (both config shapes, idempotence, revision pin)
         run: python3 tests/test_patch_yarn.py
 

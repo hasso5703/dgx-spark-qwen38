@@ -369,6 +369,112 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
     return [reqs[p] for p in order[-last:]]
 
 
+# ── zombie guard: what a client that gave up cost the engine (pure) ─────────
+# The engine's own line, one per output batch of a request whose client is gone
+# (tokenizer_manager.py, "Received output for {rid=} but the state was deleted").
+# One request that decodes to max_tokens with nobody listening writes thousands
+# of these: 6,582 on the reference box on 2026-09-09, the worst single request
+# 4,470 lines over 6 min 08 s. The count is the symptom; the rid is the request.
+ZOMBIE_RE = re.compile(
+    r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] Received output for rid='([^']+)' "
+    r"but the state was deleted")
+# The proxy's side of the same event, since v6.14: it either names the request to
+# the engine (abort) or reads the abandoned answer to its end (drain). Both are
+# an absence of zombie; which one happened says whether the engine took the rid.
+GUARD_VERSION_RE = re.compile(r"\[proxy\] v([\d.]+) on :(\d+)")
+GUARD_ABORT_RE = re.compile(r"\[proxy\] aborted upstream rid=(\S+) \((.+?)\)")
+GUARD_ABORT_FAIL_RE = re.compile(r"\[proxy\] abort_request failed for rid=(\S+)")
+GUARD_DRAIN_RE = re.compile(r"\[proxy\] drained an abandoned (\S+) for ([\d.]+)s")
+GUARD_CEILING_RE = re.compile(r"\[proxy\] drain ceiling reached after ([\d.]+)s")
+
+
+def parse_zombies(raw: str) -> dict:
+    """Engine log window -> what abandoned generations cost in it.
+
+    Pure counting, no judgement: the caller knows the window. `lines` is the
+    flood volume, `requests` the distinct rids behind it, worst first, each with
+    the seconds between its first and last line (that span IS the dead decode)."""
+    per: dict[str, dict] = {}
+    for m in ZOMBIE_RE.finditer(raw):
+        ts, rid = m.group(1), m.group(2)
+        r = per.setdefault(rid, {"rid": rid, "lines": 0, "first": ts, "last": ts})
+        r["lines"] += 1
+        r["last"] = ts
+    for r in per.values():
+        try:
+            r["secs"] = round((datetime.strptime(r["last"], "%Y-%m-%d %H:%M:%S")
+                               - datetime.strptime(r["first"], "%Y-%m-%d %H:%M:%S")
+                               ).total_seconds(), 1)
+        except ValueError:
+            r["secs"] = None
+    reqs = sorted(per.values(), key=lambda r: -r["lines"])
+    return {"lines": sum(r["lines"] for r in reqs), "requests": reqs[:5],
+            "distinct": len(reqs)}
+
+
+def parse_guard(raw: str) -> dict:
+    """Keepalive journal window -> what the proxy did about clients that left.
+
+    `version` is the running proxy's own banner, which is the only honest source
+    for whether the fix is deployed: the file in the repo says nothing about the
+    process systemd started."""
+    out = {"version": None, "port": None, "aborted": 0, "abort_failed": 0,
+           "drained": 0, "drain_max_s": None, "ceiling": 0, "reasons": {}}
+    for ln in raw.splitlines():
+        m = GUARD_VERSION_RE.search(ln)
+        if m:
+            out["version"], out["port"] = m.group(1), int(m.group(2))
+            continue
+        m = GUARD_ABORT_RE.search(ln)
+        if m:
+            out["aborted"] += 1
+            why = m.group(2)[:40]
+            out["reasons"][why] = out["reasons"].get(why, 0) + 1
+            continue
+        if GUARD_ABORT_FAIL_RE.search(ln):
+            out["abort_failed"] += 1
+            continue
+        m = GUARD_DRAIN_RE.search(ln)
+        if m:
+            out["drained"] += 1
+            secs = float(m.group(2))
+            if out["drain_max_s"] is None or secs > out["drain_max_s"]:
+                out["drain_max_s"] = secs
+            continue
+        if GUARD_CEILING_RE.search(ln):
+            out["ceiling"] += 1
+    return out
+
+
+def guard_verdict(zombies: dict, guard: dict, override_env: bool | None) -> tuple:
+    """(state, sentence) for the cockpit chip. Reads the two sides together: the
+    engine's flood is the only proof of a real leak, the proxy's counters say
+    whether anything is holding the line, and the engine env says whether an
+    abort can even be addressed (SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES: without
+    it the proxy cannot name a request that has not spoken yet, so it drains)."""
+    handled = guard["aborted"] + guard["drained"]
+    if zombies["lines"] >= 100:
+        w = zombies["requests"][0] if zombies["requests"] else None
+        detail = f", worst {w['lines']:,} lines over {w['secs']:.0f}s" if w and w["secs"] else ""
+        return "err", f"{zombies['lines']:,} flood lines from {zombies['distinct']} abandoned request(s){detail}"
+    if zombies["lines"]:
+        return "warn", f"{zombies['lines']} flood line(s) from {zombies['distinct']} abandoned request(s)"
+    if guard["ceiling"]:
+        return "warn", f"{guard['ceiling']} drain(s) hit the ceiling and were dropped"
+    if guard["abort_failed"]:
+        return "warn", f"{guard['abort_failed']} abort(s) the engine did not answer"
+    if handled:
+        bits = []
+        if guard["aborted"]:
+            bits.append(f"{guard['aborted']} aborted")
+        if guard["drained"]:
+            bits.append(f"{guard['drained']} drained")
+        return "ok", f"{' and '.join(bits)}, no flood"
+    if override_env is False:
+        return "", "quiet; the engine does not take the proxy's rid, so a request lost in prefill is drained"
+    return "ok", "no abandoned request in this window"
+
+
 # opencode default model vs the lane actually serving (the cockpit panel's verdict).
 LANE_PROVIDER = {"qwen38-sglang.service": "qwen38", "qwen38-flash.service": "flashnext"}
 

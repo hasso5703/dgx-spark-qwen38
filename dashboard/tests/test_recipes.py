@@ -260,6 +260,46 @@ class Drift(unittest.TestCase):
         self.assertIn("serve.mem_fraction", keys)
 
 
+class Switches(unittest.TestCase):
+    """Value-less flags. FLAGS holds "flag -> value" pairs, so this whole class of
+    flag used to be invisible to the drift panel, which is where a box missing one
+    would have to show up."""
+
+    def test_token_equality_never_a_substring(self):
+        sw = rc._switches("python3 -m sglang.launch_server --disable-radix-cache")
+        self.assertFalse(sw["--disable-prefill-cuda-graph"])
+        self.assertFalse(sw["--sleep-on-idle"])
+
+    def test_a_switch_inside_the_flash_tier_array_still_counts(self):
+        sw = rc._switches("TIER=(--max-running-requests 4 --sleep-on-idle)")
+        self.assertTrue(sw["--sleep-on-idle"])
+
+    def test_every_lane_template_parks_its_scheduler(self):
+        """The repo's own templates, read from disk: this is the gate the flash lane
+        failed for three releases."""
+        for name in ("qwen38-sglang.service.template", "qwen38-sglang-1m.service.template",
+                     "qwen38-flash-launch.sh.template", "run.sh"):
+            prof = rc.profile_from_text((REPO / name).read_text())
+            self.assertTrue(prof["switches"]["--sleep-on-idle"],
+                            f"{name} does not park its scheduler when idle")
+
+    def test_the_flash_template_keeps_the_ple_offload(self):
+        prof = rc.profile_from_text((REPO / "qwen38-flash-launch.sh.template").read_text())
+        self.assertTrue(prof["switches"]["--ple-offload-embedding"])
+
+    def test_drift_reports_a_switch_the_box_does_not_pass(self):
+        recipe = rc.profile_from_text("python3 -m sglang.launch_server --model-path X --sleep-on-idle")
+        box = rc.profile_from_text("python3 -m sglang.launch_server --model-path X")
+        rows = [r for r in rc.drift(recipe, box) if r["key"].startswith("switch.")]
+        self.assertEqual(rows, [{"key": "switch.--sleep-on-idle", "recipe": True, "installed": False}])
+
+    def test_identical_invocations_drift_on_no_switch(self):
+        t = "python3 -m sglang.launch_server --model-path X --sleep-on-idle --allow-auto-truncate"
+        prof = rc.profile_from_text(t)
+        self.assertEqual([r for r in rc.drift(prof, rc.profile_from_text(t))
+                          if r["key"].startswith("switch.")], [])
+
+
 class Presence(unittest.TestCase):
     REG = {"images": [{"ref": "qwen38-flash:v1.5.3"}],
            "models": [{"repo_id": "RadixArk/Qwen3.8-Flash-Next-NVFP4",

@@ -22,6 +22,7 @@ const setText = (id, txt) => { const e = $(id); if (e) { e.textContent = txt; e.
 // Short in the column, complete on hover: a definition list stops reading like a
 // definition list once a value wraps over four ragged right-aligned lines.
 const setShort = (id, txt, full) => { const e = $(id); if (e){ e.textContent = txt; e.title = full || txt; e.classList.remove('skel'); } };
+const note = (id, txt) => { const e = $(id); if (e) { e.textContent = txt || ''; e.hidden = !txt; e.classList.remove('skel'); } };
 const setChip = (id, txt, cls) => { const e = $(id); if (e) { e.textContent = txt; e.className = 'chip ' + (cls || ''); } };
 const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
 const clear = n => { while (n.firstChild) n.removeChild(n.firstChild); };
@@ -415,6 +416,39 @@ function rFeed(d){
   const inflight = rows.filter(r => r.outcome === 'in flight').length;
   setChip('feedchip', inflight ? inflight + ' in flight' : rows.length ? 'idle' : 'no request yet', inflight ? 'flash live' : '');
   if (!rows.length){ const tr = tb.insertRow(); const c = tr.insertCell(); c.colSpan = 6; c.className = 'empty'; c.textContent = 'no request has gone through the proxy yet (agent clients use :30001)'; }
+}
+function rGuard(d){
+  const g = d.guard || {}, z = d.zombies || {};
+  setChip('zgchip', d.state === 'err' ? 'leaking' : d.state === 'warn' ? 'check' : 'holding', d.state);
+  const verdict = (d.verdict || '').replace(/^./, c => c.toUpperCase());
+  setText('zgverdict', `${verdict} (last ${d.window || '10m'}${d.lane ? ', ' + d.lane : ''})`);
+  // The RUNNING proxy is the one that matters: the file in the repo says nothing
+  // about the process systemd started.
+  const v = g.version, old = v && parseFloat(v) < 6.14;
+  setText('zgversion', v ? 'v' + v : 'no banner');
+  $('zgversion').style.color = old ? 'var(--warn)' : '';
+  note('zgversionnote', old ? 'Below v6.14 a client that gives up during prefill leaves a generation the proxy cannot name.'
+    : !v ? 'No startup banner in the journal, so the running version is unknown.' : '');
+  setText('zgoverride', d.override === true ? 'yes' : d.override === false ? 'no' : 'no engine');
+  note('zgoverridenote', d.override === false
+    ? 'Without SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES the engine keeps its own request id, so an abandoned answer is read to its end instead of aborted. The next engine restart picks the flag up.' : '');
+  const acted = [];
+  if (g.aborted) acted.push(`${g.aborted} aborted`);
+  if (g.drained) acted.push(`${g.drained} drained${g.drain_max_s != null ? `, longest ${g.drain_max_s.toFixed(0)} s` : ''}`);
+  if (g.abort_failed) acted.push(`${g.abort_failed} abort unanswered`);
+  if (g.ceiling) acted.push(`${g.ceiling} hit the drain ceiling`);
+  setText('zgacted', acted.length ? acted.join(' \u00b7 ') : 'none');
+  setText('zgflood', z.lines ? `${fmtN(z.lines)} from ${z.distinct}` : '0');
+  $('zgflood').style.color = z.lines ? 'var(--err)' : '';
+  const rows = z.requests || [];
+  $('zgtablewrap').hidden = !rows.length;
+  const tb = $('zgtable').tBodies[0]; clear(tb);
+  rows.forEach(r => {
+    const tr = tb.insertRow();
+    const c0 = tr.insertCell(); c0.textContent = r.rid.slice(0, 12); c0.className = 'num';
+    const c1 = tr.insertCell(); c1.textContent = fmtN(r.lines); c1.className = 'r num';
+    const c2 = tr.insertCell(); c2.textContent = r.secs != null ? `${r.secs.toFixed(0)} s` : ''; c2.className = 'r num';
+  });
 }
 function rOpencode(d){
   F.ocfit = d.fit || null;
@@ -882,7 +916,7 @@ $('agrestart').addEventListener('click', () => askAction('unit', {verb: 'restart
 // ── apply: freshness, banners, isolation ──────────────────────────────────────
 const RENDER = {machine: rMachine, gpu: rGpu, engine_info: rEngineInfo, engine_fast: rEngineFast, decode: rDecode,
                 canary: rCanary, kernel: rKernel, units: rUnits, containers: rContainers, repo: rRepo,
-                lifecycle: rLifecycle, feed: rFeed, opencode: rOpencode, config: rConfig, job: rJob, agent: rAgent};
+                lifecycle: rLifecycle, feed: rFeed, reqguard: rGuard, opencode: rOpencode, config: rConfig, job: rJob, agent: rAgent};
 document.querySelectorAll('dd, .chip, .num').forEach(e => { if (e.textContent.trim() === '...') e.classList.add('skel'); });
 let lastMsgAt = 0, lastState = null, lastAges = {}, lastErrors = {};
 const lastGood = {};   // per collector: the last sample that was NOT an error

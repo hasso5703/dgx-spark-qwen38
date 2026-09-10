@@ -1,5 +1,48 @@
 # Changelog
 
+## v1.8.5 (2026-09-10): the flash lane stops burning a core to do nothing, and the cockpit says who is leaking
+
+Two facts measured on the reference box this morning, both about the lane that is
+actually in production.
+
+- **The flash lane never got `--sleep-on-idle`.** Without it SGLang's scheduler
+  busy-spins while there is nothing to do. Measured on the live box at 11:13, with the
+  engine idle: the `sglang::schedul` thread at **101 % of a CPU core, and it had been
+  there for 12 h 21 min** of elapsed time. The 27B lane has carried the flag since
+  v1.2.6, where the A/B on this same box measured **scheduler CPU 101 % to 1.7 %,
+  module power 12.1 to 10.5 W, and wake-up TTFT unchanged** (0.234-0.240 s before,
+  0.234-0.239 s after); the flash launcher, written later, simply never received it.
+  On a box whose ten power cuts were heat-soak, a core spinning for nothing is not a
+  detail. The flag is in the launcher now, and **a CI gate** requires it of every
+  serving lane (both 27B units, the flash launcher and `run.sh`) so it cannot be
+  forgotten by the next one. It takes effect at the next engine start, together with
+  the `SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1` of v1.8.4.
+- **The cockpit was blind to the whole class of flag it belonged to.** The recipe layer
+  held flags as "flag -> value" pairs, so a flag that carries no value could not be
+  represented, and the drift panel, whose one job is to say where the box differs from
+  the repo, had nothing to report about a lane missing `--sleep-on-idle`. Recipes now
+  carry a `switches` map (seven value-less serving flags, token equality so
+  `--disable-radix-cache` never answers for another flag), `drift()` reports them as
+  `switch.--flag`, and a custom recipe may declare them. On the reference box the panel
+  now reads exactly what is true: `switch.--sleep-on-idle: recipe true, installed false`.
+- **New cockpit panel: Zombie guard** (Requests tab, 30 s tier). It reads both sides of
+  the wire at once: the engine's own flood lines (`Received output for rid=... but the
+  state was deleted in TokenizerManager`, grouped by request, worst first, with the
+  seconds between a request's first and last line, which IS the dead decode), the
+  proxy's counters over the same window (aborted, drained and the longest drain, aborts
+  the engine never answered, drains that hit the ceiling), **the version of the running
+  proxy** read from its own startup banner, and whether the engine accepts the proxy's
+  request id at all. That last pair is what makes the panel actionable: a repo on v6.14
+  says nothing about the process systemd started, and without the header override an
+  abandoned answer can only be drained, never aborted.
+- Two bugs found while building it, both fixed here: `journalctl -g` returns its matches
+  **newest first** where plain `-n` is chronological, so reading the listing last-wins
+  reported a box running v6.13 as v6.12, the version it had booted nine hours earlier;
+  and `builtin()` composes a recipe field by field, so the new switches map had to be
+  carried explicitly, which the suite's own "no drift against my own template" test
+  caught immediately. 13 new offline tests (8 in `test_lifecycle.py`, 6 in
+  `test_recipes.py`), all on real log lines from this box.
+
 ## v1.8.4 (2026-09-09): a client that gives up no longer leaves the engine decoding
 
 The reference box logged **6,582 copies of `Received output for rid=... but the state

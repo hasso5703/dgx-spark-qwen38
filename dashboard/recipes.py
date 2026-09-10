@@ -95,6 +95,32 @@ FLAGS = {
     # omits it is not the recipe that was measured.
     "kv_cache_dtype": ("--kv-cache-dtype", str, ("fp8_e4m3", "auto", "bf16")),
 }
+# Serving switches: flags that carry no value, so FLAGS above cannot hold them and
+# drift() was blind to the whole class. One of them is why this exists: the flash
+# lane shipped without --sleep-on-idle and its scheduler burned a full core for
+# 12 h 21 min of measured idle (2026-09-10), while the drift panel, whose job is
+# to say where the box differs from the repo, had nothing to report.
+SWITCHES = (
+    "--sleep-on-idle",              # park the scheduler instead of busy-spinning a core
+    "--allow-auto-truncate",        # truncate an oversize prompt instead of erroring
+    "--enable-torch-compile",       # 27B lane: compiled decode
+    "--disable-flashinfer-autotune",
+    "--disable-prefill-cuda-graph",
+    "--ple-offload-embedding",      # flash lane: the only reason 176B fits one GB10
+    "--trust-remote-code",
+)
+
+
+def _switches(text: str) -> dict[str, bool]:
+    """Which value-less serving flags this invocation passes.
+
+    Token equality, never a substring: --disable-radix-cache must not answer for
+    --disable-radix, and a flag named inside prose is already gone (the caller
+    strips comment lines)."""
+    tokens = {t.strip("()\'\"\\,") for t in text.split()}
+    return {f: f in tokens for f in SWITCHES}
+
+
 DRAFT_FLAGS = {
     "algorithm": ("--speculative-algorithm", str),
     # Belongs to the checkpoint: an NVFP4 export whose MTP tensors stayed BF16
@@ -172,7 +198,7 @@ def profile_from_text(text: str) -> dict:
     rev = _flag(text, "--revision")
     return {"engine": {"family": "sglang", "image": image},
             "model": {"repo": _flag(text, "--model-path"), "revision": rev},
-            "drafter": drafter, "serve": serve, "env": env}
+            "drafter": drafter, "serve": serve, "switches": _switches(text), "env": env}
 
 
 def _deref(value: str | None, assigns: dict[str, str]) -> str | None:
@@ -282,7 +308,8 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str],
         "id": recipe_id, "lane": lane, "builtin": True,
         "engine": {"family": "sglang", "image": image, "base_image": base, "overlay": overlay},
         "model": {"repo": repo, "revision": rev},
-        "drafter": drafter, "serve": dict(prof["serve"]), "env": env,
+        "drafter": drafter, "serve": dict(prof["serve"]),
+        "switches": dict(prof["switches"]), "env": env,
         "validation": {"needle_depths": [60000, 120000] if lane == "flash" else [30000, 100000],
                        "canaries": 4},
     }
@@ -366,6 +393,15 @@ def validate(recipe: dict, reserved_ids: tuple = ()) -> list[str]:
                 errs.append(f"serve.{k}: {rng[0]} to {rng[1]}")
         if "context_length" not in serve:
             errs.append("serve.context_length: required")
+    switches = recipe.get("switches", {})
+    if not isinstance(switches, dict):
+        errs.append("switches: object of flag -> true/false")
+    else:
+        for k, v in switches.items():
+            if k not in SWITCHES:
+                errs.append(f"switches.{k}: unknown switch (allowed: {list(SWITCHES)})")
+            elif not isinstance(v, bool):
+                errs.append(f"switches.{k}: true or false")
     env = recipe.get("env", {})
     if not isinstance(env, dict):
         errs.append("env: object of NAME=value strings")
@@ -397,6 +433,10 @@ def drift(recipe: dict, installed: dict) -> list[dict]:
     keys = set(recipe.get("serve", {})) | set(installed.get("serve", {}))
     for k in sorted(keys):
         cmp(f"serve.{k}", recipe.get("serve", {}).get(k), installed.get("serve", {}).get(k))
+    skeys = set(recipe.get("switches", {})) | set(installed.get("switches", {}))
+    for k in sorted(skeys):
+        cmp(f"switch.{k}", recipe.get("switches", {}).get(k, False),
+            installed.get("switches", {}).get(k, False))
     ekeys = set(recipe.get("env", {})) | set(installed.get("env", {}))
     for k in sorted(ekeys):
         if k in ("HF_HUB_OFFLINE", "TORCHINDUCTOR_CACHE_DIR", "SGLANG_QWEN4_PLE_MMAP_DIR", "SGLANG_QWEN4_PLE_TAG"):

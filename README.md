@@ -596,7 +596,7 @@ revisions cached, that metadata probe is the only network call.
 
 Notes: the server's own `watchdog_timeout=300` is a *hang* detector (kills a genuinely stuck forward so systemd restarts it); it does not limit generation length. Two concurrent generations share the memory bus (~half speed each): the GB10 is a batch-1-per-moment machine.
 
-**Idle power**: without `--sleep-on-idle`, SGLang's scheduler busy-spins a full CPU core while doing nothing (reported as +10-12 W at the wall by [alef204 and emX0r](https://forums.developer.nvidia.com/t/380257/56), diagnosed in [MiaAI-Lab issue #4](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark/issues/4)). The unit ships the flag since v1.2.6. A/B on the reference box: scheduler CPU 101 % -> 1.7 % at idle, module power 12.1 -> 10.5 W, and wake-up TTFT unchanged (0.234-0.240 s before, 0.234-0.239 s after, measured after 60 s and 300 s of idle), throughput in family (41.5 tok/s code, 52.8 math).
+**Idle power**: without `--sleep-on-idle`, SGLang's scheduler busy-spins a full CPU core while doing nothing (reported as +10-12 W at the wall by [alef204 and emX0r](https://forums.developer.nvidia.com/t/380257/56), diagnosed in [MiaAI-Lab issue #4](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark/issues/4)). Every serving lane ships the flag, and a CI gate requires it: the 27B units and `run.sh` since v1.2.6, the flash launcher since v1.8.5, where the lane was measured holding a core at 101 % for 12 h 21 min of idle because the launcher had been written without it. A/B on the reference box: scheduler CPU 101 % -> 1.7 % at idle, module power 12.1 -> 10.5 W, and wake-up TTFT unchanged (0.234-0.240 s before, 0.234-0.239 s after, measured after 60 s and 300 s of idle), throughput in family (41.5 tok/s code, 52.8 math).
 
 ## The cockpit (opt-in web dashboard)
 
@@ -644,6 +644,19 @@ What it shows and does:
   action is audited to `~/.config/qwen38/cockpit-audit.log` with its exact argv.
 - **Registry.** Which pinned checkpoints are actually on disk, which are stray,
   which are missing, and what each costs you in bytes.
+- **Recipes and drift.** Every target as data, derived from `install.sh` and the lane
+  templates so a recipe cannot drift from what the installer renders, compared flag by
+  flag against the invocation actually running on the box. Since v1.8.5 that comparison
+  covers value-less flags too (`switch.--sleep-on-idle: recipe true, installed false` is
+  what the panel said the morning the flash lane was caught spinning a core).
+- **Zombie guard.** A client that gives up leaves the engine decoding unless something
+  stops it, so the Requests tab reads both sides of the wire: the engine's own flood
+  lines grouped by request, worst first, with the span between a request's first and
+  last line, which is the dead decode; what the proxy did about it over the same window
+  (aborted, drained, the longest drain, aborts the engine never answered); the version
+  of the **running** proxy from its startup banner; and whether the engine accepts the
+  proxy's request id at all, because without that an abandoned answer can only be
+  drained. See the v1.8.4 and v1.8.5 changelog entries.
 
 **The privileged surface, stated plainly.** The unit actions need root, so the
 installer writes `/etc/sudoers.d/qwen38-cockpit`: an exact argv allowlist,

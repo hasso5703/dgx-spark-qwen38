@@ -565,6 +565,54 @@ def collect_feed():
     return {"node_id": "local", "rows": lc.parse_feed(raw)}
 
 
+ZOMBIE_WINDOW = "10m"          # one window per sample: no overlap, no double count
+
+
+@guard
+def collect_guard():
+    """The zombie guard, both sides of the wire.
+
+    A client that gives up leaves the engine decoding unless the proxy names the
+    request and aborts it in time, or reads the abandoned answer to its end. The
+    engine's flood lines are the only proof of a real leak, the proxy's journal
+    says what was done about it, and the engine's own environment says whether an
+    abort can be addressed at all: SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES is off
+    by default upstream, and without it a request lost during prefill has no name
+    the engine would recognise. See CHANGELOG v1.8.4 and sglang#35255."""
+    active = None
+    for c in CONTAINERS:
+        if run(["docker", "ps", "-q", "-f", f"name=^{c}$"]).strip():
+            active = c
+            break
+    zombies = lc.parse_zombies("")
+    override = None
+    if active:
+        tail = run(["docker", "logs", "--since", ZOMBIE_WINDOW, active], timeout=10,
+                   merge_err=True)
+        zombies = lc.parse_zombies(tail)
+        env = run(["docker", "inspect", active, "--format",
+                   "{{range .Config.Env}}{{println .}}{{end}}"], timeout=6)
+        override = "SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1" in env
+    # The banner is only printed at startup, so the version needs the whole
+    # journal of the unit, not the window the counters are read over. ONE line:
+    # journalctl with -g returns its matches NEWEST FIRST (plain -n is
+    # chronological), so a listing read last-wins reports the OLDEST banner. It
+    # did: a box running v6.13 was reported as v6.12, the version it had booted
+    # nine hours earlier. -n 1 is the newest match and needs no ordering
+    # assumption at all.
+    banner = run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "1",
+                  "--no-pager", "-o", "cat", "-g", "on :"], timeout=6)
+    counters = run(["journalctl", "-u", "qwen38-keepalive.service",
+                    "--since", f"-{ZOMBIE_WINDOW.replace('m', 'min')}",
+                    "--no-pager", "-o", "cat"], timeout=6)
+    g = lc.parse_guard(counters)
+    g["version"] = lc.parse_guard(banner)["version"] or g["version"]
+    state, verdict = lc.guard_verdict(zombies, g, override)
+    return {"node_id": "local", "lane": active, "window": ZOMBIE_WINDOW,
+            "zombies": zombies, "guard": g, "override": override,
+            "state": state, "verdict": verdict}
+
+
 @guard
 def collect_opencode():
     """What the installer and the switch act on: the --no-opencode marker, the config
@@ -1049,7 +1097,7 @@ TIERS = [
     (5.0, {"units": collect_units, "containers": collect_containers,
            "feed": collect_feed, "agent": collect_agent}),
     (30.0, {"engine_info": collect_engine_info, "repo": collect_repo, "kernel": collect_kernel,
-            "opencode": collect_opencode}),
+            "opencode": collect_opencode, "reqguard": collect_guard}),
 ]
 
 
