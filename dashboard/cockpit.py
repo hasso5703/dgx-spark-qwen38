@@ -1844,7 +1844,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 or not target.is_file():
             return self.send_json({"error": "not found"}, 404)
         ctype = {"html": "text/html; charset=utf-8", "css": "text/css",
-                 "js": "text/javascript", "svg": "image/svg+xml"}.get(
+                 "js": "text/javascript", "svg": "image/svg+xml",
+                 "woff2": "font/woff2"}.get(
                      target.suffix.lstrip("."), "application/octet-stream")
         body = target.read_bytes()
         self.send_response(200)

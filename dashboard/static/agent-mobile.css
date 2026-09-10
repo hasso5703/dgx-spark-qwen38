@@ -1,0 +1,60 @@
+/* Spark Cockpit — mobile comfort layer for opencode's web interface.
+   Served by the agent relay and injected into the served index.html; it never
+   touches opencode's own files. The interface is responsive already, so this
+   sheet does not fight its layout: it raises what a thumb and an iPhone
+   actually need, inside the same breakpoint opencode uses for its mobile
+   layout (767px), through the stable [data-component]/[data-slot] contract.
+   16px in the composer is deliberate: iOS zooms the page on focus of anything
+   smaller, which is the classic "phone feels broken" symptom. */
+
+@media (max-width: 767px) {
+  /* opencode scopes its theme tokens under :root[data-theme=...], so match the
+     attribute to outrank it (this sheet is injected after theirs: at equal
+     specificity, last one wins). The body sizes itself with a raw Tailwind
+     value (text-[13px], seen in the live DOM) — the escaped utility override
+     below catches it at equal specificity, later in the cascade. */
+  :root, :root[data-theme] {
+    --font-size-small: 15px;
+    --font-size-base: 16px;
+    --font-size-large: 18px;
+  }
+  .text-\[13px\] { font-size: 15px; }
+
+  /* no double-tap-zoom lag anywhere, no text-selection on taps */
+  button, a, [role=button], [role=tab] { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+
+  /* the thumb floor: real buttons are tappable, not decorative minis */
+  [data-component=button-v2], [data-component=icon-button-v2],
+  [data-component=session-tab-popover-trigger] { min-height: 40px; }
+  [data-component=prompt-input], [data-component=prompt-input-v2] { font-size: 16px; }
+
+  /* the composer: room to type, clear of the home indicator (an iframe that
+     reaches the viewport bottom on iOS resolves the inset to a real value) */
+  [data-component=session-prompt-dock] {
+    padding-bottom: max(0px, env(safe-area-inset-bottom, 0px));
+  }
+  [data-component=prompt-input] [contenteditable],
+  [data-component=prompt-input-v2] [contenteditable] { min-height: 28px; }
+
+  /* the composer's footer row is where desktop-first shows: attach + model
+     picker (capped at 220px) + reasoning-variant picker + send button do not
+     fit 393px, the variant picker cannot shrink (no min-width in its classes)
+     and lands on top of send — the overlapping pair on the phone. Cap both
+     pickers against the viewport and let them shrink, so the send button
+     keeps a clear column; then raise send itself to a thumb size. */
+  [data-component=prompt-input-v2] button[data-component=button-v2] {
+    max-width: 36vw; min-width: 0; flex-shrink: 1;
+  }
+  [data-component=prompt-input-v2] button[data-component=icon-button] {
+    width: 40px; height: 40px; padding: 8px;
+  }
+
+  /* code reads in the column it has: soft-wrap instead of sideways scroll */
+  [data-component=markdown] pre, [data-component=markdown] code,
+  [data-component=markdown-code] pre, [data-component=markdown-code] code {
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+
+  /* the tab rail stays, but the titles stop shouting over each other */
+  [data-slot=titlebar-tabs] { min-width: 0; font-size: 13px; }
+}

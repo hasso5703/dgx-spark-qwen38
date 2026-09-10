@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import agent_relay as ar  # noqa: E402
 
 GOOD_AUTH = "Basic " + base64.b64encode(b"cockpit:secret").decode()
+SPA_DOC = b"<!doctype html><html><head><title>Oc</title></head><body><div id=root></div></body></html>"
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 RELEASE = threading.Event()          # lets the SSE handler send its second event
 SEEN: list = []                       # requests as the upstream saw them
@@ -95,6 +96,25 @@ class FakeOpencode(http.server.BaseHTTPRequestHandler):
         if path == "/nobody":
             self.send_response(204)
             self.end_headers()
+            return
+        if path == "/spa":
+            doc = SPA_DOC
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(doc)))
+            self.send_header("Cache-Control", "max-age=600")
+            self.end_headers()
+            self.wfile.write(doc)
+            return
+        if path == "/gzspa":
+            import gzip
+            doc = gzip.compress(SPA_DOC)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(doc)))
+            self.end_headers()
+            self.wfile.write(doc)
             return
         if path == "/cookie":
             return self._json({"ok": True}, extra=(("Set-Cookie", "cockpit=evil; Path=/"),
@@ -262,6 +282,60 @@ class RelayTests(unittest.TestCase):
             self.assertIn("opencode-web.service", json.loads(cm.exception.read())["error"])
         finally:
             srv.shutdown(); srv.server_close()
+
+    # ---- mobile layer injection ----
+    def test_inject_mobile_helper(self):
+        out = ar.inject_mobile(SPA_DOC)
+        self.assertTrue(out.startswith(SPA_DOC[:out.index(b'<link')]))
+        self.assertIn(b'<link rel="stylesheet" href="/__cockpit/agent-mobile.css">', out)
+        self.assertLess(out.index(b"agent-mobile.js"), out.index(b"</head>"),
+                        "the script lands inside head, before opencode's module")
+        self.assertEqual(ar.inject_mobile(out), out, "double injection never happens")
+        self.assertIn(ar.MOBILE_TAGS, ar.inject_mobile(b"<html>no head here</html>"),
+                      "a document without </head> still gets the layer, appended")
+
+    def test_wants_html_rewrite_pure(self):
+        yes = dict(content_type="text/html", content_encoding=None, chunked=False, length=2884)
+        self.assertTrue(ar.wants_html_rewrite("GET", 200, **yes))
+        self.assertTrue(ar.wants_html_rewrite("GET", 200, content_type="text/html; charset=utf-8",
+                                              content_encoding="identity", chunked=False, length=10))
+        for why, kw in {"POST": dict(command="POST"), "redirect": dict(status=304),
+                        "json": dict(content_type="application/json"), "gzip": dict(content_encoding="gzip"),
+                        "chunked": dict(chunked=True), "no length": dict(length=None),
+                        "huge": dict(length=10 * 1024 * 1024)}.items():
+            args = {"content_type": "text/html", "content_encoding": None, "chunked": False, "length": 2884}
+            args.update(kw)
+            self.assertFalse(ar.wants_html_rewrite(args.pop("command", "GET"), args.pop("status", 200), **args), why)
+
+    def test_injected_assets_served_by_the_relay_itself(self):
+        code, hdr, body = self.get("/__cockpit/agent-mobile.css")
+        self.assertEqual(code, 200)
+        self.assertIn("text/css", hdr["Content-Type"])
+        self.assertIn(b"safe-area-inset-bottom", body, "the phone's home-indicator fix is in there")
+        self.assertIn(b"max-width: 767px", body, "opencode's own mobile breakpoint")
+        code, hdr, body = self.get("/__cockpit/agent-mobile.js")
+        self.assertEqual(code, 200)
+        self.assertIn("javascript", hdr["Content-Type"])
+        self.assertIn(b"spark.lastSession", body)
+        code, _, _ = self.get("/__cockpit/agent-mobile.css", headers={"Cookie": ""})
+        self.assertEqual(code, 401, "the cockpit session gates even our own files")
+
+    def test_served_document_gets_the_mobile_layer(self):
+        code, hdr, body = self.get("/spa", headers={"Accept": "text/html"})
+        self.assertEqual(code, 200)
+        self.assertIn(b"/__cockpit/agent-mobile.css", body)
+        self.assertIn(b"<title>Oc</title>", body, "the document itself passes untouched")
+        self.assertEqual(int(hdr["Content-Length"]), len(body), "the length is recomputed after injection")
+        self.assertEqual(hdr["Cache-Control"], "no-cache",
+                         "Safari must revalidate, never serve the un-injected document from its cache")
+
+    def test_gzipped_document_streams_untouched(self):
+        code, hdr, body = self.get("/gzspa", headers={"Accept": "text/html"})
+        self.assertEqual(code, 200)
+        self.assertEqual(hdr["Content-Encoding"], "gzip")
+        self.assertNotIn(b"/__cockpit/agent-mobile.", body, "compressed bytes are forwarded byte-exact")
+        import gzip
+        self.assertEqual(gzip.decompress(body), SPA_DOC)
 
     # ---- header hygiene ----
     def test_request_headers_are_rewritten(self):

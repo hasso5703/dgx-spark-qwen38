@@ -30,7 +30,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-RELAY_VERSION = "1.0"
+RELAY_VERSION = "1.1"
 
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
               "te", "trailer", "transfer-encoding", "upgrade"}
@@ -48,6 +48,19 @@ MAX_BODY = 64 * 1024 * 1024       # request body ceiling (attachments included)
 CHUNK = 64 * 1024
 CONNECT_TIMEOUT = 5.0
 HANDSHAKE_LIMIT = 64 * 1024
+INJECT_LIMIT = 256 * 1024         # an HTML document we rewrite must stay this small (the SPA index is ~3 KB)
+
+# The cockpit's mobile comfort layer for opencode's interface (phone typography,
+# touch targets, safe areas, theme default). opencode's own files are never
+# touched: these two are the relay's, served same-origin (so its CSP 'self'
+# accepts them) and linked into the served index by inject_mobile below.
+INJECT_DIR = Path(__file__).resolve().parent / "static"
+INJECTED_FILES = {
+    "/__cockpit/agent-mobile.css": ("agent-mobile.css", "text/css; charset=utf-8"),
+    "/__cockpit/agent-mobile.js": ("agent-mobile.js", "application/javascript; charset=utf-8"),
+}
+MOBILE_TAGS = (b'<link rel="stylesheet" href="/__cockpit/agent-mobile.css">'
+               b'<script src="/__cockpit/agent-mobile.js"></script>')
 
 
 # ── pure helpers ─────────────────────────────────────────────────────────────
@@ -109,11 +122,12 @@ def forward_request_headers(items, upstream_host: str, auth: str,
     return out
 
 
-def forward_response_headers(items) -> list[tuple[str, str]]:
+def forward_response_headers(items, drop=()) -> list[tuple[str, str]]:
+    extra = {d.lower() for d in drop}
     out = []
     for k, v in items:
         kl = k.lower()
-        if kl in RESPONSE_DROP:
+        if kl in RESPONSE_DROP or kl in extra:
             continue
         # a cookie named like the cockpit session would shadow the real one on this host
         if kl == "set-cookie" and v.strip().lower().startswith(SESSION_COOKIE + "="):
@@ -132,6 +146,34 @@ def frame_policy(host_header: str | None, cockpit_port: int) -> str:
 def split_upstream(url: str) -> tuple[str, int]:
     u = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
     return u.hostname or "127.0.0.1", u.port or 80
+
+
+def injected_asset(path: str) -> tuple[str, str] | None:
+    """(filename, content-type) when the request asks for one of the cockpit's
+    own injected assets, else None."""
+    return INJECTED_FILES.get(path.split("?", 1)[0])
+
+
+def inject_mobile(html: bytes) -> bytes:
+    """Link the mobile comfort layer into a served document, just before
+    </head> (the script stays before opencode's module, so its theme default
+    lands before the app paints). Idempotent; appends when no </head> exists."""
+    if b"/__cockpit/agent-mobile." in html:
+        return html
+    out, n = re.subn(rb"(?i)</head\s*>", lambda m: MOBILE_TAGS + m.group(0), html, count=1)
+    return out if n else html + MOBILE_TAGS
+
+
+def wants_html_rewrite(command: str, status: int, content_type: str | None,
+                       content_encoding: str | None, chunked: bool,
+                       length: int | None) -> bool:
+    """Rewrite only a small, known-length, uncompressed 200 HTML document we
+    were asked to GET; everything else (SSE, images, gzip, redirects) streams
+    byte-exact as before."""
+    return (command == "GET" and status == 200
+            and "text/html" in (content_type or "").lower()
+            and (content_encoding or "").strip().lower() in ("", "identity")
+            and not chunked and length is not None and 0 < length <= INJECT_LIMIT)
 
 
 def tailscale_ipv4(run=subprocess.run) -> str | None:
@@ -252,6 +294,9 @@ def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
             public = self.command == "GET" and self.path.split("?", 1)[0] in PUBLIC_PATHS
             if not public and not cfg.is_authed(self.headers.get("Cookie")):
                 return self.refuse(401, "cockpit session required")
+            asset = injected_asset(self.path) if self.command in ("GET", "HEAD") else None
+            if asset:
+                return self.serve_asset(asset)
             creds = cfg.credentials()
             if not creds:
                 return self.refuse(503, "agent credentials missing on the box (run dashboard/install-agent.sh)")
@@ -290,6 +335,23 @@ def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
             if self.command != "HEAD":
                 self.wfile.write(payload)
 
+        def serve_asset(self, asset: tuple[str, str]):
+            """The cockpit's own injected asset, read fresh from disk each time
+            (iterating on it should never need a relay restart)."""
+            try:
+                payload = (INJECT_DIR / asset[0]).read_bytes()
+            except OSError:
+                return self.refuse(404, "injected asset missing on the box: " + asset[0])
+            self.send_response(200)
+            self.send_header("Content-Type", asset[1])
+            if self.command != "HEAD":
+                self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-cache")
+            self.own_headers()
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(payload)
+
         def own_headers(self):
             self.send_header("Content-Security-Policy", frame_policy(self.headers.get("Host"), cfg.cockpit_port))
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -313,9 +375,14 @@ def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
             except (OSError, http.client.HTTPException) as e:
                 conn.close()
                 return self.refuse(502, f"agent server unreachable ({type(e).__name__}); is opencode-web.service running?")
+            rewrite = wants_html_rewrite(self.command, resp.status,
+                                         resp.getheader("Content-Type"),
+                                         resp.getheader("Content-Encoding"),
+                                         resp.chunked, resp.length)
             try:
                 self.send_response(resp.status, resp.reason)
-                for k, v in forward_response_headers(resp.getheaders()):
+                for k, v in forward_response_headers(resp.getheaders(),
+                                                     drop=("cache-control",) if rewrite else ()):
                     self.send_header(k, v)
                 self.own_headers()
                 bodyless = self.command == "HEAD" or resp.status in (204, 304) or resp.status < 200
@@ -323,6 +390,16 @@ def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
                     if self.command == "HEAD" and resp.getheader("Content-Length") is not None:
                         self.send_header("Content-Length", resp.getheader("Content-Length"))
                     self.end_headers()
+                    return
+                if rewrite:
+                    payload = inject_mobile(resp.read(resp.length))
+                    self.send_header("Content-Length", str(len(payload)))
+                    # opencode sends no Cache-Control (Safari then serves the
+                    # document from its heuristic cache and the injection — and
+                    # with it the phone layer — never reaches the browser)
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    self.wfile.write(payload)
                     return
                 if resp.length is not None and not resp.chunked:
                     self.send_header("Content-Length", str(resp.length))

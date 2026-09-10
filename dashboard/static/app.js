@@ -185,13 +185,18 @@ function rMachine(d){
     const used = m.MemTotal - m.MemAvailable, pct = 100 * used / m.MemTotal;
     setText('memlab', fmtB(used) + ' / ' + fmtB(m.MemTotal));
     $('memfill').style.width = pct.toFixed(1) + '%';
-    $('memgauge').className = 'gauge' + (pct > 90 ? ' crit' : pct > 80 ? ' warn' : '');
-    const cls = m.MemAvailable < 8 * GB ? 'err' : m.MemAvailable < 15 * GB ? 'warn' : 'ok';
+    // The gauge turns by the same rule as the chip: headroom in gibibytes, not a
+    // percentage. A loaded lane sits past 90 % of the pool by design — the model is
+    // simply resident — so the resting state is calm champagne, and only real
+    // danger (a prefill eating the floor) lights bronze, then clay. An alarm that
+    // rings while everything is fine teaches people to ignore the colour.
+    const cls = m.MemAvailable < 4 * GB ? 'err' : m.MemAvailable < 9 * GB ? 'warn' : 'ok';
+    $('memgauge').className = 'gauge' + (cls === 'err' ? ' crit' : cls === 'warn' ? ' warn' : '');
     setChip('memchip', fmtB(m.MemAvailable) + ' free', cls); setChip('memchip2', fmtB(m.MemAvailable) + ' free', cls);
     setText('memavail', fmtB(m.MemAvailable)); setText('memavail2', fmtB(m.MemAvailable)); setText('memused2', fmtB(used));
     setText('memcache', fmtB(m.Cached)); setText('swap', fmtB((m.SwapTotal || 0) - (m.SwapFree || 0)));
     push('mem', used / GB); drawSpark($('memspark'), 'mem', css('--acc'), m.MemTotal / GB);
-    badge('machine', m.MemAvailable < 8 * GB ? fmtB(m.MemAvailable) : '', m.MemAvailable < 8 * GB ? 'err' : '');
+    badge('machine', m.MemAvailable < 4 * GB ? fmtB(m.MemAvailable) : '', m.MemAvailable < 4 * GB ? 'err' : '');
   }
   const cpu = d.cpu_pct || {};
   setChip('cpuchip', (cpu.cpu ?? 0).toFixed(0) + ' %', (cpu.cpu || 0) > 85 ? 'warn' : 'ok');
@@ -405,16 +410,26 @@ function rFeed(d){
   rows.forEach(r => {
     const tr = tb.insertRow();
     tr.insertCell().textContent = feedTime(r.ts);
-    const c1 = tr.insertCell(); c1.textContent = r.peer; c1.className = 'num';
+    const c1 = tr.insertCell(); c1.className = 'num';
+    // Every client so far is this box talking to itself through the proxy; only the
+    // port tells the connections apart. A remote client (an iPhone on the LAN) still
+    // shows its full address. The full peer stays in the tooltip.
+    c1.textContent = r.peer.startsWith('127.0.0.1:') ? ':' + r.peer.split(':').pop() : r.peer;
+    c1.title = r.peer;
     tr.insertCell().textContent = r.path;
     const c2 = tr.insertCell(); c2.textContent = r.bytes >= 1024 ? (r.bytes / 1024).toFixed(0) + ' KB' : r.bytes + ' B'; c2.className = 'r num';
     const c3 = tr.insertCell(); c3.textContent = r.secs != null ? r.secs.toFixed(1) + ' s' : ''; c3.className = 'r num';
     // The kind comes from the server (lifecycle.outcome_kind), so the UI never
     // matches outcome strings itself: it used to, and it painted a client that
     // walked away the same red as a lane that failed.
-    const cls = {ok: 'ok', gone: 'warn', fail: 'err', live: 'flash live', unknown: ''}[r.kind] ?? 'err';
+    // An ok request is the resting state — dozens of them a minute — so it wears no
+    // colour: graphite. Only bronze (client left) and clay (it broke) light the lamp.
+    const cls = {ok: '', gone: 'warn', fail: 'err', live: 'flash live', unknown: ''}[r.kind] ?? 'err';
     const c4 = tr.insertCell(); c4.append(el('span', 'chip ' + cls, r.outcome));
-    if (r.detail){ const dv = el('div', 'num', r.detail); dv.style.cssText = 'font-size:10.5px;color:var(--mut);margin-top:3px'; c4.append(dv); }
+    // The detail comes from the proxy's own words; the cell shows it compactly.
+    if (r.detail){ const t = r.detail.replace(' tokens counted, fits (', ' tok fits ').replace(' usable)', '')
+      .replace(' prompt tokens (counted by the engine), limit ', ' tok over limit ');
+      const dv = el('div', 'num', t); dv.style.cssText = 'font-size:10px;color:var(--mut);margin-top:4px;letter-spacing:0'; c4.append(dv); }
   });
   const inflight = rows.filter(r => r.outcome === 'in flight').length;
   setChip('feedchip', inflight ? inflight + ' in flight' : rows.length ? 'idle' : 'no request yet', inflight ? 'flash live' : '');
@@ -839,7 +854,7 @@ function applyAgentMax(){
 function setAgentMax(on, persist = true){
   document.body.classList.toggle('agentmax', on);
   const b = $('agmax'); if (b){ b.textContent = on ? 'Exit fullscreen' : 'Fullscreen'; b.setAttribute('aria-pressed', String(on)); }
-  if (on) mountAgent();
+  if (on){ mountAgent(); agexitPlace(); }   // the parked place only measures once the button can be seen
   if (persist){ try { localStorage.setItem('cockpit.agent.max', on ? '1' : '0'); } catch { /* storage may be unavailable */ } }
 }
 const agentUrl = () => F.agent && F.agent.relay && F.agent.relay.port ? `http://${location.hostname}:${F.agent.relay.port}/` : null;
@@ -908,7 +923,56 @@ function rAgent(d){
 }
 $('agreload').addEventListener('click', reloadAgent);
 $('agmax').addEventListener('click', () => setAgentMax(!document.body.classList.contains('agentmax')));
-$('agexit').addEventListener('click', () => setAgentMax(false));
+// The back button floats and the person parks it where it covers nothing.
+// The place is a fraction of the frame (not pixels): a rotation or a window
+// resize puts it back on the same side, at the same height. A drag is never a
+// click — releasing after a move must not close the frame.
+const AGEXIT_KEY = 'cockpit.agent.exitpos';
+const agexitFrame = () => $('agexit').closest('.agentframe');
+function agexitPlace(){
+  const b = $('agexit'), f = agexitFrame(); if (!f) return;
+  let p = null; try { p = JSON.parse(localStorage.getItem(AGEXIT_KEY)); } catch { /* unparseable: rest at the default */ }
+  if (!p || !(p.x >= 0 && p.x <= 1) || !(p.y >= 0 && p.y <= 1)){ b.style.left = b.style.top = b.style.right = b.style.transform = ''; return; }
+  const fr = f.getBoundingClientRect(), w = b.offsetWidth || 140, h = b.offsetHeight || 32;
+  b.style.transform = 'none'; b.style.right = 'auto';
+  b.style.left = Math.max(6, Math.min(fr.width - w - 6, p.x * fr.width)) + 'px';
+  b.style.top = Math.max(6, Math.min(fr.height - h - 6, p.y * fr.height)) + 'px';
+}
+window.addEventListener('resize', () => { if (document.body.classList.contains('agentmax')) agexitPlace(); });
+let agexitStart = null, agexitMoved = false;
+$('agexit').addEventListener('pointerdown', e => {
+  const f = agexitFrame(); if (!f) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  const r = $('agexit').getBoundingClientRect(), fr = f.getBoundingClientRect();
+  agexitStart = { x: e.clientX, y: e.clientY, ox: r.left - fr.left, oy: r.top - fr.top, w: r.width, h: r.height };
+  agexitMoved = false;
+  $('agexit').setPointerCapture(e.pointerId);
+});
+$('agexit').addEventListener('pointermove', e => {
+  if (!agexitStart) return;
+  const dx = e.clientX - agexitStart.x, dy = e.clientY - agexitStart.y;
+  if (!agexitMoved && Math.hypot(dx, dy) < 6) return;
+  agexitMoved = true;
+  const b = $('agexit'), fr = agexitFrame().getBoundingClientRect();
+  b.classList.add('dragging');
+  b.style.transform = 'none'; b.style.right = 'auto';
+  b.style.left = Math.max(6, Math.min(fr.width - agexitStart.w - 6, agexitStart.ox + dx)) + 'px';
+  b.style.top = Math.max(6, Math.min(fr.height - agexitStart.h - 6, agexitStart.oy + dy)) + 'px';
+});
+function agexitEnd(){
+  const b = $('agexit'); b.classList.remove('dragging');
+  if (!agexitStart) return;
+  agexitStart = null;
+  if (!agexitMoved) return;
+  const f = agexitFrame(), fr = f.getBoundingClientRect(), r = b.getBoundingClientRect();
+  try { localStorage.setItem(AGEXIT_KEY, JSON.stringify({ x: (r.left - fr.left) / fr.width, y: (r.top - fr.top) / fr.height })); } catch { /* private mode: parked only for this page */ }
+}
+$('agexit').addEventListener('pointerup', agexitEnd);
+$('agexit').addEventListener('pointercancel', agexitEnd);
+$('agexit').addEventListener('click', () => {
+  if (agexitMoved){ agexitMoved = false; return; }   // the finger moved the button, it did not press it
+  setAgentMax(false);
+});
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && document.body.classList.contains('agentmax') && $('modal').hidden) setAgentMax(false);
 });
@@ -1178,7 +1242,7 @@ function recipeRow(tb, row){
   tr.insertCell().textContent = fmtServe(r.serve || {});
   const p = row.presence || {};
   const cells = [['image', p.image], ['model', p.model], ['drafter', p.drafter]].map(([k, v]) =>
-    [v === true ? k : v === false ? k + ' missing' : k + ' n/a', v === true ? 'ok' : v === false ? 'err' : '']);
+    [v === true ? k : v === false ? k + ' missing' : k + ' n/a', v === true ? '' : v === false ? 'err' : '']);
   if (p.downloading) cells[1] = ['model downloading', 'warn'];   // blobs still arriving
   cellChips(tr, cells);
   const cd = tr.insertCell();

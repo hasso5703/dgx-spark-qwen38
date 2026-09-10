@@ -5,17 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>Spark Cockpit</title>
 <link rel="icon" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/fonts/fonts.css">
 <style>
+  /* Same house as the cockpit: graphite chassis, champagne-gold anodizing. */
   :root{
-    --paper:#070b16; --card:#0d1424; --line:#1b2742;
-    --txt:#e9eefb; --mut:#8fa0c2; --soft:#0a1120; --glow:rgba(91,140,255,.10);
-    --acc:#5b8cff; --err:#ff5d68; --flash:#a78bfa;
-  }
-  @media (prefers-color-scheme: light){
-    :root{ --paper:#eef1f8; --card:#ffffff; --line:#dde3f0;
-           --txt:#111730; --mut:#5d6a8a; --soft:#eef2fb;
-           --glow:rgba(91,140,255,.08); --acc:#3b6ef6; --err:#d93848;
-           --flash:#7c5cf0; }
+    color-scheme:dark;
+    --paper:#0c0d0f; --card:#16171b; --line:#272930;
+    --txt:#ece9e1; --mut:#8f9197; --soft:#101115; --glow:rgba(216,180,97,.08);
+    --acc:#d8b161; --err:#c9706a;
+    --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
   }
   *{box-sizing:border-box; margin:0}
   body{
@@ -27,38 +25,38 @@
     font:15px/1.5 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   .card{
-    width:min(390px, 92vw); background:var(--card);
-    border:1px solid var(--line); border-radius:18px; padding:34px;
-    box-shadow:0 24px 70px rgba(2,6,18,.45);
+    width:min(390px, 92vw); background:var(--card); position:relative; overflow:hidden;
+    border:1px solid var(--line); border-radius:16px; padding:34px;
+    box-shadow:0 24px 70px rgba(0,0,0,.55);
     animation:rise .4s ease-out both;
   }
+  /* the anodized chamfer, same hairline as the cockpit's top bar */
+  .card::before{content:''; position:absolute; left:0; right:0; top:0; height:1px;
+    background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--acc) 60%, transparent) 20%,
+                color-mix(in srgb, var(--acc) 60%, transparent) 80%, transparent)}
   @keyframes rise{from{opacity:0; transform:translateY(8px)}}
   .logo{display:flex; align-items:center; gap:12px; margin-bottom:6px}
   .logo img{width:42px; height:42px; filter:drop-shadow(0 0 12px var(--glow))}
-  h1{font-size:20px; letter-spacing:.01em}
-  .beta{font-size:9.5px; font-weight:800; letter-spacing:.14em; color:var(--flash);
-        border:1px solid color-mix(in srgb, var(--flash) 55%, transparent);
-        background:color-mix(in srgb, var(--flash) 12%, transparent);
-        border-radius:6px; padding:2.5px 7px; vertical-align:middle}
+  h1{font:600 17px/1.1 var(--mono); letter-spacing:.18em; text-transform:uppercase}
   p{color:var(--mut); font-size:13px; margin:10px 0 24px}
-  code{background:var(--soft); border:1px solid var(--line);
-       border-radius:6px; padding:1px 6px; font-size:12px}
+  code{background:var(--soft); border:1px solid var(--line); color:var(--mut);
+       border-radius:6px; padding:1px 6px; font:12px var(--mono)}
   input{
     width:100%; padding:13px 15px; border-radius:11px;
     border:1px solid var(--line); background:var(--soft);
     color:var(--txt); font-size:16px; outline:none; min-height:48px;
     transition:border-color .2s, box-shadow .2s;
   }
-  input:focus{border-color:var(--acc);
-              box-shadow:0 0 0 3px color-mix(in srgb, var(--acc) 22%, transparent)}
+  input:focus{border-color:color-mix(in srgb, var(--acc) 70%, transparent);
+              box-shadow:0 0 0 3px color-mix(in srgb, var(--acc) 18%, transparent)}
   button{
     width:100%; margin-top:15px; padding:13px; border:0; border-radius:11px;
-    background:linear-gradient(135deg, var(--acc), var(--flash));
-    color:#fff; font-size:15px; font-weight:650; cursor:pointer; min-height:48px;
+    background:var(--acc);
+    color:#14100a; font-size:14.5px; font-weight:700; letter-spacing:.02em; cursor:pointer; min-height:48px;
     transition:filter .18s, box-shadow .18s;
   }
-  button:hover{filter:brightness(1.1);
-               box-shadow:0 8px 26px color-mix(in srgb, var(--acc) 35%, transparent)}
+  button:hover{filter:brightness(1.08);
+               box-shadow:0 8px 26px color-mix(in srgb, var(--acc) 30%, transparent)}
   .err{color:var(--err); font-size:13px; margin-top:12px; min-height:18px}
 </style>
 </head>
