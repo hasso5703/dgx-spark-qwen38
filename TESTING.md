@@ -14,6 +14,10 @@ Run everything the way CI does:
 ./ci-local.sh Coverage              # one gate by name fragment
 ```
 
+The full run takes about twelve minutes, and three quarters of that is the
+mutation gate re-running a suite once per injected fault. While working, run the
+gate you care about by name fragment; run the whole thing before pushing.
+
 The runtime is **stdlib only** and stays that way. Three measuring gates need pip
 packages (`coverage`, `hypothesis`); they ask `tests/testpy.sh` for an
 interpreter that has them, and a developer sets that up once:
@@ -50,6 +54,15 @@ are the numbers measured on 2026-09-10 minus a point of slack, and they are
 | `agent_relay.py` | 88% | the rest is socket error paths |
 | `registry.py` | 88% | the rest is filesystem error paths |
 | `cockpit.py` | 58% | 1,889 lines; the auth, CSRF, static, action, job and diagnostics surfaces are covered, the sampler threads are not |
+
+And the root modules, which had no floor at all until 2026-09-10:
+
+| module | floor | why it is where it is |
+|---|---|---|
+| `keepalive-proxy.py` | 74% | the production serving path; the rest is socket teardown |
+| `patch-yarn.py` | 90% | it rewrites the config the engine reads |
+| `oc-fit-limits.py` | 37% | the arithmetic is property-tested, the CLI plumbing is not |
+| `build-token-map.py` | 35% | the ranking is tested; loading a real tokenizer is not offline work |
 
 It was 14% on `cockpit.py` and 68% overall before 2026-09-10, and went 14 to 30
 to 53 to 59 over one day of writing tests. Measuring is what made that visible:
@@ -166,6 +179,33 @@ because a grep for the key also passes when the bundle collected nothing; anothe
 requires the launcher to still contain `--port 30000`, because a bundle that
 gutted the file instead of masking it would also pass.
 
+## The keepalive, which is why the proxy exists
+
+An agent CLI gives up on a silent stream: opencode and the AI SDK were measured
+dying at 140 to 180 seconds, and a 200,000-token prefill on this hardware is
+longer than that, so the proxy writes into the stream while the engine is quiet.
+That loop had **no test**, and it is where a subtle mistake is most expensive:
+v6.4 injected a keepalive in the middle of an SSE event and corrupted the stream.
+
+`tests/test_proxy_keepalive.py` scripts a fake engine's silences to the
+millisecond and pins the contract:
+
+- a silent engine gets keepalives and the real answer still arrives afterwards;
+- the OpenAI keepalive is an **authentic empty chunk** (`choices: []`) and not a
+  comment, because a comment is what client stall detectors ignore; the test
+  parses it as JSON and requires the empty list;
+- the Anthropic route gets the official `event: ping` and never the OpenAI one;
+- **every record the client receives parses on its own**, which is the v6.4 bug
+  as an assertion;
+- a fast answer gets no keepalive at all;
+- past `MAX_SILENCE_S` the request is dropped, not before it, and an Anthropic
+  client is told why rather than having its stream just stop;
+- a clean close with no `[DONE]` is end of stream and the proxy must not invent
+  the `[DONE]` the engine never sent, while a **transport reset** is different and
+  does produce an error event.
+
+That took `keepalive-proxy.py` from 68% to 75%.
+
 ## Concurrency
 
 Threads make failures probabilistic, so `test_concurrency.py` hammers rather than
@@ -221,13 +261,13 @@ on code that was already in production:
 
 | | before | after |
 |---|---|---|
-| offline test functions | 216 | **448** |
+| offline test functions | 216 | **461** |
 | generated inputs per run | 0 | **~17,000** (57 property and fuzz checks x 300) |
 | branch coverage, dashboard total | 68% | **87%** |
 | branch coverage, `cockpit.py` | 14% | **61%** |
 | modules at 0% | 3 | **0** |
 | mutation score, `lifecycle.py` | never measured (74.8% when first asked) | **90.8%** |
-| CI gates | 28 | **36** |
+| CI gates | 28 | **38** |
 | defects found and fixed by the new tests | | **21 crash paths, 1 dead branch, 3 wrong outputs** |
 
 ## Conventions

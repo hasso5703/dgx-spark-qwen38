@@ -71,6 +71,46 @@ jobs:
           n=$(echo "$out" | grep -oE '^proxy fuzz: [0-9]+' | grep -oE '[0-9]+')
           [ "$n" -ge 15 ] || { echo "only $n fuzz checks ran"; exit 1; }
 
+      - name: Coverage floors, the root modules
+        run: |
+          pip install 'coverage==7.16.0' 2>/dev/null || true
+          PY="$(./tests/testpy.sh coverage)"
+          rm -f .coverage*
+          for f in tests/test_proxy_guard.py tests/test_proxy_abort.py \
+                   tests/test_proxy_keepalive.py tests/test_tools.py \
+                   tests/test_oc_fit_limits.py tests/test_oc_merge_limits.py; do
+            "$PY" -m coverage run --branch --parallel-mode --source=. \
+              --omit="dashboard/*,tests/*,.venv-test/*" "$f" >/dev/null 2>&1 || true
+          done
+          "$PY" -m coverage combine -q
+          "$PY" -m coverage report --sort=cover | tee /tmp/rootcov.txt
+          rm -f .coverage*
+          "$PY" - <<'PYEOF'
+          import re, sys
+          # Measured 2026-09-10. keepalive-proxy.py is the production serving path
+          # and had no floor at all until this step; it went 68 to 75% when the
+          # keepalive injection, the silence ceiling and the non-streamed relay
+          # finally got tests. patch-yarn went 0 to 94% the same day.
+          FLOORS = {"keepalive-proxy.py": 74, "patch-yarn.py": 90,
+                    "oc-fit-limits.py": 37, "build-token-map.py": 35}
+          got, bad = {}, []
+          for line in open("/tmp/rootcov.txt"):
+              m = re.match(r"^(\S+\.py)\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)%", line)
+              if m:
+                  got[m.group(1)] = int(m.group(2))
+          for name, floor in FLOORS.items():
+              have = got.get(name)
+              if have is None:
+                  bad.append(f"{name}: not measured at all")
+              elif have < floor:
+                  bad.append(f"{name}: {have}% is under its {floor}% floor")
+              else:
+                  print(f"  ok {name}: {have}% (floor {floor}%)")
+          if bad:
+              print("\n".join("  FAIL " + b for b in bad))
+              sys.exit(1)
+          PYEOF
+
       - name: Mutation score (do the tests catch a wrong operator?)
         run: |
           # The only question that matters for a suite written alongside its code:
@@ -669,6 +709,12 @@ jobs:
 
       - name: keepalive proxy abort contract (offline, fake engine with #35255 rule)
         run: python3 tests/test_proxy_abort.py
+
+      - name: keepalive proxy keepalive injection and silence ceiling (offline, scripted engine)
+        run: python3 tests/test_proxy_keepalive.py
+
+      - name: the measurement and build tools (BPE ranking, grading, YaRN patch)
+        run: python3 tests/test_tools.py
 
       - name: opencode limits fit the served pool (offline)
         run: python3 tests/test_oc_fit_limits.py

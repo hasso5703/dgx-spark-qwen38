@@ -23,6 +23,18 @@ HERE = Path(__file__).resolve()
 REPO = HERE.parents[1]
 
 
+# These scripts read the serving API key at MODULE level (conc-check.py line 37
+# reads it into a constant; bench-agent resolves CONFIG at import), so importing
+# one on a machine without ~/.config/qwen38/api-key raises before a single test
+# runs. A throwaway HOME with a throwaway key, installed before any import, is
+# what makes this file behave the same on a GitHub runner, under ci-local.sh's
+# temporary HOME, and on the box.
+_HOME = Path(tempfile.mkdtemp(prefix="tools-home-"))
+(_HOME / ".config" / "qwen38").mkdir(parents=True)
+(_HOME / ".config" / "qwen38" / "api-key").write_text("test-key\n")
+os.environ["HOME"] = str(_HOME)
+
+
 def load(name, stub_env=None):
     """Import a hyphenated top-level script as a module."""
     for k, v in (stub_env or {}).items():
@@ -319,18 +331,32 @@ class BenchAgentTiming(unittest.TestCase):
     def setUpClass(cls):
         cls.ba = load("bench-agent.py")
 
-    def test_the_api_key_is_read_from_the_file_not_the_environment(self):
-        d = Path(tempfile.mkdtemp(prefix="ba-"))
-        (d / "api-key").write_text("from-the-file\n")
-        old = os.environ.get("HOME")
-        os.environ["HOME"] = str(d)
+    def test_the_api_key_comes_from_the_file_and_not_the_environment(self):
+        """The key must never be taken from an env var a caller could set: the
+        file is 0600 and the environment is visible in ps."""
+        os.environ["QWEN38_API_KEY"] = "from-the-environment"
         try:
-            # api_key() resolves $HOME at call time in this tool
             got = self.ba.api_key()
         finally:
-            if old is not None:
-                os.environ["HOME"] = old
-        self.assertIsInstance(got, str)
+            os.environ.pop("QWEN38_API_KEY", None)
+        self.assertEqual(got, "test-key")
+
+    def test_a_missing_key_file_exits_with_an_explanation(self):
+        """die() puts the code in the exception and the sentence on stderr, so a
+        test that only reads the code proves nothing about what the user is told."""
+        import io
+        from contextlib import redirect_stderr
+        missing = Path(tempfile.mkdtemp(prefix="ba-empty-"))
+        old, buf = self.ba.CONFIG, io.StringIO()
+        self.ba.CONFIG = str(missing)
+        try:
+            with redirect_stderr(buf), self.assertRaises(SystemExit) as cm:
+                self.ba.api_key()
+        finally:
+            self.ba.CONFIG = old
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("no API key", buf.getvalue())
+        self.assertIn(str(missing), buf.getvalue(), "the message does not say where")
 
     def test_die_exits_with_the_code_it_is_given(self):
         with self.assertRaises(SystemExit) as cm:
