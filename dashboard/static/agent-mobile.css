@@ -1,4 +1,4 @@
-/* Spark Cockpit — mobile comfort layer for opencode's web interface.
+/* Spark Cockpit - mobile comfort layer for opencode's web interface.
    Served by the agent relay and injected into the served index.html; it never
    touches opencode's own files. The interface is responsive already, so this
    sheet does not fight its layout: it raises what a thumb and an iPhone
@@ -11,7 +11,7 @@
   /* opencode scopes its theme tokens under :root[data-theme=...], so match the
      attribute to outrank it (this sheet is injected after theirs: at equal
      specificity, last one wins). The body sizes itself with a raw Tailwind
-     value (text-[13px], seen in the live DOM) — the escaped utility override
+     value (text-[13px], seen in the live DOM) - the escaped utility override
      below catches it at equal specificity, later in the cascade. */
   :root, :root[data-theme] {
     --font-size-small: 15px;
@@ -39,7 +39,7 @@
   /* the composer's footer row is where desktop-first shows: attach + model
      picker (capped at 220px) + reasoning-variant picker + send button do not
      fit 393px, the variant picker cannot shrink (no min-width in its classes)
-     and lands on top of send — the overlapping pair on the phone. Cap both
+     and lands on top of send - the overlapping pair on the phone. Cap both
      pickers against the viewport and let them shrink, so the send button
      keeps a clear column; then raise send itself to a thumb size. */
   [data-component=prompt-input-v2] button[data-component=button-v2] {

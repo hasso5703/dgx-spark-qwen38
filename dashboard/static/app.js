@@ -186,8 +186,8 @@ function rMachine(d){
     setText('memlab', fmtB(used) + ' / ' + fmtB(m.MemTotal));
     $('memfill').style.width = pct.toFixed(1) + '%';
     // The gauge turns by the same rule as the chip: headroom in gibibytes, not a
-    // percentage. A loaded lane sits past 90 % of the pool by design — the model is
-    // simply resident — so the resting state is calm champagne, and only real
+    // percentage. A loaded lane sits past 90 % of the pool by design - the model is
+    // simply resident - so the resting state is calm champagne, and only real
     // danger (a prefill eating the floor) lights bronze, then clay. An alarm that
     // rings while everything is fine teaches people to ignore the colour.
     const cls = m.MemAvailable < 4 * GB ? 'err' : m.MemAvailable < 9 * GB ? 'warn' : 'ok';
@@ -422,7 +422,7 @@ function rFeed(d){
     // The kind comes from the server (lifecycle.outcome_kind), so the UI never
     // matches outcome strings itself: it used to, and it painted a client that
     // walked away the same red as a lane that failed.
-    // An ok request is the resting state — dozens of them a minute — so it wears no
+    // An ok request is the resting state - dozens of them a minute - so it wears no
     // colour: graphite. Only bronze (client left) and clay (it broke) light the lamp.
     const cls = {ok: '', gone: 'warn', fail: 'err', live: 'flash live', unknown: ''}[r.kind] ?? 'err';
     const c4 = tr.insertCell(); c4.append(el('span', 'chip ' + cls, r.outcome));
@@ -926,7 +926,7 @@ $('agmax').addEventListener('click', () => setAgentMax(!document.body.classList.
 // The back button floats and the person parks it where it covers nothing.
 // The place is a fraction of the frame (not pixels): a rotation or a window
 // resize puts it back on the same side, at the same height. A drag is never a
-// click — releasing after a move must not close the frame.
+// click - releasing after a move must not close the frame.
 const AGEXIT_KEY = 'cockpit.agent.exitpos';
 const agexitFrame = () => $('agexit').closest('.agentframe');
 function agexitPlace(){

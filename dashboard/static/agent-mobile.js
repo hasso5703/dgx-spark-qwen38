@@ -1,4 +1,4 @@
-/* Spark Cockpit — mobile companion script for opencode's web interface.
+/* Spark Cockpit - mobile companion script for opencode's web interface.
    Served by the agent relay, injected into the served index.html before
    opencode's module (so no CSP inline-script is needed and the theme choice
    lands before the app paints). opencode's own code is never modified.

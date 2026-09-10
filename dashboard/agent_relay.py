@@ -395,8 +395,8 @@ def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
                     payload = inject_mobile(resp.read(resp.length))
                     self.send_header("Content-Length", str(len(payload)))
                     # opencode sends no Cache-Control (Safari then serves the
-                    # document from its heuristic cache and the injection — and
-                    # with it the phone layer — never reaches the browser)
+                    # document from its heuristic cache and the injection - and
+                    # with it the phone layer - never reaches the browser)
                     self.send_header("Cache-Control", "no-cache")
                     self.end_headers()
                     self.wfile.write(payload)

@@ -6,7 +6,7 @@ v1.8.2 opened the Agent tab fullscreen on a phone on the strength of a measureme
 that said opencode's own interface is responsive. It was true at 393 px and false
 in every way that mattered: the composer's footer overlapped its send button, a
 fresh browser's home listed nothing to open (the session lists are per-browser
-local state), the iOS keyboard buried the dock — and a photo attached with the "+"
+local state), the iOS keyboard buried the dock - and a photo attached with the "+"
 button simply never arrived, with no error anywhere. Both stories end here, and
 both end with the failure measured, not guessed.
 
@@ -15,10 +15,10 @@ both end with the failure measured, not guessed.
   secure context**, so iOS Safari and Chrome hide `crypto.subtle` and
   `navigator.clipboard` entirely. The bundle reads `crypto.subtle.digest("SHA-256",
   file)` the moment a file is picked (verified: the only two `crypto.subtle` calls
-  in the whole bundle, both SHA-256 — and five of its seven
+  in the whole bundle, both SHA-256 - and five of its seven
   `navigator.clipboard.writeText` call sites carry no guard at all), the undefined
   read throws, and the throw is swallowed. On the box itself
-  the app is served from `127.0.0.1`, which *is* secure — which is why the exact
+  the app is served from `127.0.0.1`, which *is* secure - which is why the exact
   same build works at the desk and silently loses photos on the phone.
 - **The relay now ships a mobile layer: a stylesheet and a companion script**,
   injected into the served index as same-origin tags before opencode's module
@@ -34,12 +34,12 @@ both end with the failure measured, not guessed.
   ceiling, and a tool-heavy agent session walked straight through it: opencode
   counts tokens by estimate, the proxy counts them with the engine, and the two
   were ≥ 18,297 apart when the engine counted 208,297 for a request opencode had
-  decided to send. Past the ceiling the proxy refuses — including the compaction
+  decided to send. Past the ceiling the proxy refuses - including the compaction
   request that was supposed to rescue the session, because that request carries
   the whole oversized conversation. So the table drops the tier to **175,000**,
   the ceiling minus a margin that covers the drift, `oc-fit-limits` (the cockpit's
   fit button) gets the same rule whenever a lane has a ceiling
-  (`OC_CEILING_MARGIN`, default 25,000 — otherwise one click quietly restored the
+  (`OC_CEILING_MARGIN`, default 25,000 - otherwise one click quietly restored the
   bug), and the CI gate follows. Fresh installs get 175,000; installed boxes pick
   it up on the next update, switch, or fit click.
 - **The cockpit's own face:** graphite-and-champagne, dark only, self-hosted Inter
@@ -48,7 +48,7 @@ both end with the failure measured, not guessed.
   colour only when a client left or broke, and a draggable "back to cockpit" pill.
 - **The suite spent the same day learning to measure itself:** coverage floors set
   from the *most constrained* environment rather than this box, the two pure
-  modules at **100 % branch coverage** — and the honesty that follows it: that
+  modules at **100 % branch coverage** - and the honesty that follows it: that
   same lifecycle.py scores 91.7 % under mutation, because coverage measures
   execution and only mutation measures detection. 41 property checks, a proxy
   fuzzer, a mutation runner that cannot corrupt the tree, 21 cockpit crashes
