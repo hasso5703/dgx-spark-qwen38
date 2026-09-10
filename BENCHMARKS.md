@@ -288,6 +288,38 @@ unit and measured with the same probes:
 | prefix caching, 27K re-serve | 13.0 s cold, 2.2 s cached (x5.9) |
 | agent loop, 6 turns on 8K | median 55.1 ms/tok unpinned, TTFT flat (-2 ms per 1k) |
 
+### Open: code decode reads 41-44 on a lane that has been up half a day (2026-09-10)
+
+Three `bench.sh` batches on the installed `flash-uncensored` lane, taken in
+sequence on a box that had been up 24 h and an engine up 12 h 30 (real agent
+traffic through the proxy in between, nothing running during the batches):
+
+| batch | code | reasoning | math peak | free prose | greedy median |
+|---|---|---|---|---|---|
+| 1 | 41.9 / 41.4 | 41.8 / 43.8 | 43.2 / 38.5 | 27.3 / 27.6 | 41.9 |
+| 2 | 42.9 / 43.7 | 44.2 / 44.6 | 43.7 / 45.5 | 28.7 / 28.7 | 44.0 |
+| 3 | 42.3 / 41.0 | 43.5 / 44.5 | 42.3 / 46.2 | 26.6 / 29.8 | 42.9 |
+
+Against this target's own row above (45.4-46.4 code, 43.7-46.6 math, 27.3-27.7
+prose FR): **prose and math are in family, code is 3 to 4 tok/s low and stays
+low across all three batches**, so it is not the first-batch effect this section
+warns about. What is not held constant: those numbers were taken on a freshly
+booted box, this engine had served half a day of agent traffic, host
+MemAvailable was 11 GiB against 16.6-16.9 GiB idle after a boot, and the
+cumulative accept length since boot reads 2.35. No cause is claimed here. The
+clean way to settle it is a batch right after the next engine start, which is
+also when `--sleep-on-idle` and `SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES` (v1.8.4
+and v1.8.5, both in the launcher, neither active on a process started before
+them) take effect, so that boot gives a real before and after rather than an
+argument.
+
+One instrument bug found taking these: `bench.sh` printed the 27B header and the
+27B reference line whatever lane was serving, so 41.9 read as a regression
+against a baseline belonging to another model. It now asks the engine which model
+it serves, prints that lane's reference, and sends that model name instead of a
+hardcoded `qwen3.8-27b` (which only ever worked because SGLang does not enforce
+the field). `tests/test_bench_lane.py` holds it, fake engine, both lanes.
+
 ### NVIDIA's export, measured then evicted
 
 `flash-nvda` (`nvidia/Qwen3.8-Flash-Next-NVFP4`) was booted from the installed

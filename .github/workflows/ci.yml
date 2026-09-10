@@ -567,6 +567,9 @@ jobs:
       - name: get.sh guards (git fixture, stubbed installer)
         run: python3 tests/test_get_sh.py
 
+      - name: bench.sh names the lane it measures (fake engine)
+        run: python3 tests/test_bench_lane.py
+
       - name: needle.sh separates a lane refusal from a retrieval failure (fake engine)
         run: python3 tests/test_needle_refusal.py
 

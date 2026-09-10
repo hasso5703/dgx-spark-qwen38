@@ -31,8 +31,40 @@ PROBES = [
      "Describe in detail a walk through an autumn forest: the colors of the leaves, the sounds, the smell after rain, and the thoughts that cross your mind.", 800),
 ]
 
+# Which lane is on this port, asked of the engine rather than assumed. bench.sh
+# printed the 27B header and the 27B reference line on a box serving the flash
+# lane, so a perfectly normal 41.9 read as a regression against a baseline that
+# belongs to another model (and the hardcoded model name only worked because
+# SGLang does not enforce it).
+def served_model():
+    req = urllib.request.Request(BASE + "/v1/models",
+                                 headers={"Authorization": f"Bearer {KEY}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return (json.loads(r.read().decode())["data"] or [{}])[0].get("id") or ""
+    except Exception:
+        return ""
+
+
+MODEL = served_model()
+LANE = "flash" if "flash" in MODEL else "27b"
+HEADERS = {
+    "27b": ("Qwen3.8-27B NVFP4+DFlash2 benchmark (batch 1 decode)",
+            "reference box (DFlash2 v1.2+): ~50 greedy median "
+            "(code 41-47 / reasoning 52-57 / math peak 50-60 / free prose ~23)"),
+    # Flash-Next, NEXTN + the reduced draft vocabulary. BENCHMARKS.md, "The
+    # reduced draft vocabulary": code 47.9, math 47.1, prose EN 29.3; the
+    # abliterated target measures 45.4-46.4 / 43.7-46.6 / 27.3-27.7.
+    "flash": ("Qwen3.8-Flash-Next NVFP4+NEXTN benchmark (batch 1 decode)",
+              "reference box (v1.8, token map 65536): code ~47.9 / math ~47.1 / prose ~29\n"
+              "  the abliterated target measures 45.4-46.4 / 43.7-46.6 / 27.3-27.7\n"
+              "  DISCARD THE FIRST BATCH on this lane: one batch right after a boot came in\n"
+              "  at 38.8 / 39.1 / 24.8 and the next three at 47.7-49.1 (BENCHMARKS.md)"),
+}
+
+
 def stream(prompt, temp, max_tokens):
-    body = {"model": "qwen3.8-27b",
+    body = {"model": MODEL or "qwen3.8-27b",
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens, "temperature": temp,
             "stream": True, "stream_options": {"include_usage": True}}
@@ -68,8 +100,10 @@ def stream(prompt, temp, max_tokens):
     out = usage.get("completion_tokens") or n
     return (out - 1) / (t_last - t_first) if t_first and t_last > t_first else -1
 
-print("Qwen3.8-27B NVFP4+DFlash2 benchmark (batch 1 decode)")
-print("reference box (DFlash2 v1.2+): ~50 greedy median (code 41-47 / reasoning 52-57 / math peak 50-60 / free prose ~23)\n")
+title, reference = HEADERS[LANE]
+print(title)
+print(f"served model: {MODEL or 'unknown (the engine did not name it)'}")
+print(f"{reference}\n")
 all_greedy = []
 for name, temp, prompt, mt in PROBES:
     speeds = [stream(prompt, temp, mt) for _ in range(2)]
@@ -82,6 +116,10 @@ for name, temp, prompt, mt in PROBES:
         print("      real speed. Cross-check with bench-matrix.sh (wall-clock method).")
 print(f"\n  greedy median: {statistics.median(all_greedy):.1f} tok/s")
 print("  (numbers vary with content: acceptance length drives everything;")
-print("   math/code accept ~3.3-5.6 tokens/step, free prose ~1.5-2.2 in any")
-print("   language, see BENCHMARKS.md)")
+if LANE == "27b":
+    print("   math/code accept ~3.3-5.6 tokens/step, free prose ~1.5-2.2 in any")
+    print("   language, see BENCHMARKS.md)")
+else:
+    print("   free prose costs this lane about a third of its code rate, on any")
+    print("   engine and drafter measured here, see BENCHMARKS.md)")
 PYEOF
