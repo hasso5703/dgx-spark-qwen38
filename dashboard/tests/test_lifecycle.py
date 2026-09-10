@@ -1,6 +1,5 @@
 """Offline tests for lifecycle.py, built on REAL log lines from this box
 (qwen38-flash boot of 2026-08-28 21:19 and qwen38-sglang boots of 08-28)."""
-import re
 import sys
 import unittest
 from pathlib import Path
@@ -272,13 +271,77 @@ class FeedOutcomes(unittest.TestCase):
 
     SUFFIX = " [12306b relayed, first event at 3.7s, last at 7.3s]"
 
+    # The proxy's outcome vocabulary, CLOSED, with the kind each one must read as.
+    # A closed set is the point: outcome_kind falls back to "fail", so a new
+    # outcome that should have read "gone" or "ok" would be silently mis-coloured
+    # and a test that only checked "the kind is one of five" would pass. Verified
+    # by adding a bogus outcome to the proxy: the earlier version of this class
+    # did not notice, this one does. Adding an outcome means adding it here and
+    # deciding what it is.
+    EXPECTED = {
+        "ok": "ok",
+        "ok get": "ok",
+        "ok non-sse": "ok",
+        "ok non-sse CORRUPTED": "ok",
+        "CLIENT GONE on write": "gone",
+        "CLIENT GONE on write (draining)": "gone",
+        "CLIENT GONE during keepalive": "gone",
+        "no outcome (client vanished mid-request)": "gone",
+        "DROPPED upstream silent": "fail",
+        "UPSTREAM CUT": "fail",
+        "REFUSED corrupted output": "fail",
+        "400 oversize refused": "fail",
+        "503 engine unreachable": "fail",
+        "503 engine unreachable (upstream 502)": "fail",
+        "502 upstream": "fail",
+    }
+
     @classmethod
     def setUpClass(cls):
-        src = (REPO / "keepalive-proxy.py").read_text()
-        raw = re.findall(r'self\._done\(\s*f?"([^"]+)"', src)
-        # f-string holes carry an HTTP status in every case that has one
-        cls.outcomes = sorted({re.sub(r"\{[^}]+\}", "502", o) for o in raw})
+        """Read the vocabulary out of the proxy's AST, not with a regex.
+
+        Two wrong versions before this one, both worth naming. A regex on
+        `self._done(` catches the first string literal only, so
+        `self._done("ok" if kind == "f" else "UPSTREAM CUT")` reported one
+        outcome and hid the other. Then an ast.walk collecting every string
+        Constant picked up the PIECES of the f-strings ("503 engine unreachable
+        (upstream " and ")") as if they were outcomes. Resolving each argument by
+        node type is exact: a literal is itself, an f-string is its parts with a
+        stand-in for the hole, and a conditional is both of its branches.
+        """
+        import ast
+
+        def values(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return {node.value}
+            if isinstance(node, ast.JoinedStr):
+                # every hole in this proxy's _done() f-strings is an HTTP status
+                return {"".join(v.value if isinstance(v, ast.Constant) else "502"
+                                for v in node.values)}
+            if isinstance(node, ast.IfExp):
+                return values(node.body) | values(node.orelse)
+            return set()
+
+        tree = ast.parse((REPO / "keepalive-proxy.py").read_text())
+        found = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "_done"):
+                for arg in node.args:
+                    found |= values(arg)
+        cls.outcomes = sorted(found)
         assert len(cls.outcomes) >= 12, cls.outcomes
+
+    def test_the_proxy_writes_exactly_the_outcomes_this_file_knows(self):
+        """The gate. A new _done() string in the proxy fails here until someone
+        says which of the five kinds it is."""
+        self.assertEqual(set(self.outcomes), set(self.EXPECTED),
+                         "the proxy's outcome vocabulary changed: add the new "
+                         "string to EXPECTED with the kind it must read as")
+
+    def test_each_outcome_reads_as_the_kind_it_was_given(self):
+        for outcome, kind in self.EXPECTED.items():
+            self.assertEqual(lc.parse_feed(self._line(outcome))[0]["kind"], kind, outcome)
 
     def _line(self, outcome, suffix=""):
         return ("2026-09-10T09:00:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 -> "

@@ -270,6 +270,37 @@ on code that was already in production:
 | CI gates | 28 | **38** |
 | defects found and fixed by the new tests | | **21 crash paths, 1 dead branch, 3 wrong outputs** |
 
+## Who tests the gates
+
+A gate that cannot fail is decoration, so each one was verified by breaking the
+thing it guards and checking it caught it (2026-09-10, each restored immediately
+and `git diff` checked clean):
+
+| gate | broken on purpose | caught |
+|---|---|---|
+| Every serving lane parks its scheduler | `--sleep-on-idle` deleted from the flash template | yes |
+| The proxy writes exactly the outcomes this file knows | an outcome renamed in `keepalive-proxy.py` | **no at first**, see below |
+| Mutation score | floor raised to 99% | yes |
+| Coverage floors | floor raised above the measured value | yes |
+| Property-based checks | hypothesis made unavailable | yes |
+| The offline suite touches nothing | a suite writing into `HOME` | yes (found for real) |
+
+The one that did not catch it is the interesting one. The first version asserted
+"every outcome the proxy writes lands on a kind the UI knows", and `outcome_kind`
+falls back to `fail`, so a **new** outcome that should have read `gone` or `ok`
+passed the gate while being mis-coloured in the feed. The vocabulary is now a
+closed set with the kind each string must read as, so adding an outcome to the
+proxy fails CI until someone decides what it is.
+
+Reading the vocabulary out of the proxy took three attempts, which says something
+about extracting facts from source with a regex: `re.findall` on `self._done(`
+caught the first literal only and silently hid `"UPSTREAM CUT"` inside
+`self._done("ok" if kind == "f" else "UPSTREAM CUT")`; then an `ast.walk` over
+every string Constant picked up the **pieces** of the f-strings (`"503 engine
+unreachable (upstream "`) as if they were outcomes. It now resolves each argument
+by node type: a literal is itself, an f-string is its parts with a stand-in for
+the hole, a conditional is both branches.
+
 ## Conventions
 
 - Every test file **runs its own tests when invoked directly** (`python3
