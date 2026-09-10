@@ -49,8 +49,8 @@ VENVS += [REPO / ".venv-test/bin/python", REPO / ".venv/bin/python",
 try:
     from hypothesis import HealthCheck, assume, given, settings
     from hypothesis import strategies as st
-    from hypothesis.stateful import (RuleBasedStateMachine, initialize,
-                                     invariant, rule, run_state_machine_as_test)
+    from hypothesis.stateful import (RuleBasedStateMachine, invariant, rule,
+                                     run_state_machine_as_test)
 except ImportError:                                    # pragma: no cover
     import subprocess
     for cand in VENVS:

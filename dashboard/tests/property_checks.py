@@ -14,7 +14,6 @@ runtime is stdlib-only and a developer must be able to run the tests with no pip
 CI installs it, so there it is a hard gate.
 """
 import importlib.util
-import json
 import os
 import re
 import sys
@@ -26,6 +25,7 @@ DASH = HERE.parents[1]
 REPO = HERE.parents[2]
 sys.path.insert(0, str(DASH))
 
+import agent_relay as ar  # noqa: E402
 import lifecycle as lc  # noqa: E402
 import recipes as rc  # noqa: E402
 
@@ -286,6 +286,131 @@ class ValidateIsClosed(unittest.TestCase):
         self.assertIsInstance(errs, list)
         if not isinstance(blob, dict):
             self.assertEqual(errs, ["recipe must be an object"])
+
+
+class RelayBoundaryIsClosed(unittest.TestCase):
+    """The agent relay puts a browser interface on the tailnet in front of an
+    opencode that can run commands. Its boundary is three pure functions, and a
+    generated input must never get past any of them."""
+
+    HOSTS = st.sampled_from(["127.0.0.1", "127.0.0.1:30091", "box.tailnet.ts.net",
+                             "box.tailnet.ts.net:30091", "[::1]", "[::1]:30091",
+                             "localhost", ""])
+
+    @PROFILE
+    @given(st.text(max_size=60), HOSTS)
+    def test_only_the_relay_s_own_origin_is_allowed(self, origin, host):
+        allowed = ar.origin_allowed(origin, host)
+        name = host.strip().lower()
+        self.assertEqual(allowed,
+                         bool(name) and origin.strip().lower() in
+                         (f"http://{name}", f"https://{name}"),
+                         (origin, host))
+
+    @PROFILE
+    @given(HOSTS)
+    def test_a_null_origin_is_never_allowed(self, host):
+        """A sandboxed iframe and a file:// page both send Origin: null."""
+        for spelling in ("null", "NULL", " null ", "Null"):
+            self.assertFalse(ar.origin_allowed(spelling, host), spelling)
+
+    @PROFILE
+    @given(HOSTS)
+    def test_a_missing_origin_is_allowed_only_because_the_cookie_still_gates_it(self, host):
+        self.assertTrue(ar.origin_allowed(None, host))
+
+    @PROFILE
+    @given(st.text(max_size=40), HOSTS)
+    def test_an_origin_on_another_port_is_not_this_origin(self, prefix, host):
+        assume(host)
+        name = ar.host_name(host)
+        assume(name)
+        for other in (f"http://{name}:1", f"http://{name}.evil.com",
+                      f"http://evil.com/{name}", f"http://{name}@evil.com"):
+            self.assertFalse(ar.origin_allowed(other, host), other)
+
+    @PROFILE
+    @given(st.text(max_size=60))
+    def test_host_name_never_returns_a_port(self, host):
+        name = ar.host_name(host)
+        self.assertIsInstance(name, str)
+        if name and not name.startswith("["):
+            self.assertNotIn(":", name, (host, name))
+
+    @PROFILE
+    @given(st.lists(st.tuples(st.text(max_size=20), st.text(max_size=30)), max_size=12),
+           st.text(min_size=1, max_size=20), st.booleans())
+    def test_no_caller_header_survives_that_the_relay_sets_itself(self, items, upstream, ws):
+        """Whatever the caller sends, the forwarded set contains the relay's own
+        Host, Authorization and connection headers and nothing of the caller's
+        under those names: that is what keeps a client from redirecting the
+        upstream or replaying someone else's credentials."""
+        out = ar.forward_request_headers(items, upstream, "Basic x", websocket=ws)
+        names = [k.lower() for k, _ in out]
+        # everything the relay drops is gone unless the relay re-adds it below
+        relay_adds = {"host", "authorization", "connection"} | ({"upgrade"} if ws else set())
+        for dropped in ar.REQUEST_DROP:
+            d = dropped.lower()
+            self.assertEqual(names.count(d), 1 if d in relay_adds else 0, dropped)
+        # and the caller's own copy of a relay-owned header never survives
+        for name, value in items:
+            if name.lower() in relay_adds:
+                self.assertNotIn((name, value), out, (name, value))
+        self.assertEqual(names.count("connection"), 1)
+        conn = [v for k, v in out if k.lower() == "connection"][0]
+        self.assertEqual(conn, "Upgrade" if ws else "close")
+        self.assertEqual(names.count("upgrade"), 1 if ws else 0)
+
+    @PROFILE
+    @given(st.lists(st.tuples(st.text(max_size=20), st.text(max_size=30)), max_size=12),
+           st.text(min_size=1, max_size=20))
+    def test_the_upstream_host_and_credentials_are_always_the_relay_s_own(self, items, upstream):
+        out = ar.forward_request_headers(items, upstream, "Basic secret")
+        self.assertEqual([v for k, v in out if k.lower() == "host"], [upstream])
+        self.assertEqual([v for k, v in out if k.lower() == "authorization"],
+                         ["Basic secret"])
+
+    @PROFILE
+    @given(st.text(max_size=40))
+    def test_the_upstream_can_never_set_the_cockpit_session_cookie(self, value):
+        """A Set-Cookie from opencode named like the cockpit session would shadow
+        the real one on this host, which is a session fixation on the cockpit."""
+        cookie = f"{ar.SESSION_COOKIE}={value}; Path=/"
+        out = ar.forward_response_headers([("Set-Cookie", cookie),
+                                           ("Set-Cookie", "other=1"),
+                                           ("Content-Type", "text/html")])
+        values = [v for k, v in out if k.lower() == "set-cookie"]
+        self.assertEqual(values, ["other=1"], values)
+
+    @PROFILE
+    @given(st.sampled_from(["", " ", "\t"]), st.text(max_size=20))
+    def test_a_padded_session_cookie_is_still_refused(self, pad, value):
+        cookie = f"{pad}{ar.SESSION_COOKIE.upper()}={value}"
+        out = ar.forward_response_headers([("set-cookie", cookie)])
+        self.assertEqual([v for k, v in out if k.lower() == "set-cookie"], [], cookie)
+
+    @PROFILE
+    @given(HOSTS, st.integers(min_value=1, max_value=65535))
+    def test_the_frame_policy_always_names_exactly_one_extra_origin(self, host, port):
+        policy = ar.frame_policy(host, port)
+        self.assertTrue(policy.startswith("frame-ancestors 'self' "), policy)
+        self.assertEqual(policy.count("http://"), 1, policy)
+        self.assertIn(f":{port}", policy)
+
+    @PROFILE
+    @given(st.text(max_size=200))
+    def test_credentials_are_read_or_absent_never_a_crash(self, text):
+        import tempfile
+        d = Path(tempfile.mkdtemp(prefix="relay-cred-"))
+        f = d / "env"
+        f.write_text(text)
+        got = ar.read_credentials(f)
+        self.assertTrue(got is None or (isinstance(got, tuple) and len(got) == 2))
+        if got:
+            self.assertTrue(got[0] and got[1])
+
+    def test_credentials_from_a_missing_file_are_none(self):
+        self.assertIsNone(ar.read_credentials(Path("/nonexistent/env-file-xyz")))
 
 
 class OcLimitsFitThePool(unittest.TestCase):

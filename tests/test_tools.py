@@ -200,6 +200,118 @@ class Grading(unittest.TestCase):
         self.assertEqual(len(long.split()), 750)
 
 
+class PatchToolsInProcess(unittest.TestCase):
+    """patch-yarn and patch-template are single-main() CLIs that rewrite files,
+    and tests/test_patch_yarn.py and tests/test_patch_template.py drive them
+    end to end as subprocesses, which is the right way to test a CLI.
+
+    Coverage cannot see into a child process without extra plumbing, so those
+    two modules read 0% and 15% while being genuinely tested. Running main() in
+    process here makes the measurement tell the truth, and adds the cases a CLI
+    test reaches least: the argument counts, and the fallbacks.
+    """
+
+    @staticmethod
+    def _cache(repo, sha, nested=False, config=True):
+        base = Path(tempfile.mkdtemp(prefix="hf-"))
+        d = base / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots" / sha
+        d.mkdir(parents=True)
+        if config:
+            inner = {"max_position_embeddings": 262144,
+                     "rope_parameters": {"rope_theta": 10000000,
+                                         "partial_rotary_factor": 0.25}}
+            cfg = {"architectures": ["X"], "text_config": inner} if nested else dict(inner)
+            (d / "config.json").write_text(json.dumps(cfg))
+        return base, d / "config.json"
+
+    def _run_yarn(self, argv):
+        mod = load("patch-yarn.py")
+        old = sys.argv
+        sys.argv = ["patch-yarn.py", *argv]
+        try:
+            mod.main()
+        finally:
+            sys.argv = old
+
+    def test_wrong_argument_counts_exit_with_the_usage(self):
+        for argv in ([], ["one"], ["a", "b", "c", "d", "e"]):
+            with self.assertRaises(SystemExit) as cm:
+                self._run_yarn(argv)
+            self.assertNotEqual(cm.exception.code, 0, argv)
+
+    def test_a_flat_config_gets_yarn_at_the_right_factor(self):
+        """The contract, from the file it writes: rope_type yarn, factor 4, the
+        native window kept as original_max_position_embeddings, and the window
+        itself raised to the 1,010,000 this repo serves. A factor that does not
+        match the ratio is a silently degraded model."""
+        base, cfg = self._cache("Org/Model", "a" * 40)
+        self._run_yarn([str(base), "Org/Model", "a" * 40])
+        got = json.loads(cfg.read_text())
+        rope = got["rope_parameters"]
+        self.assertEqual(rope["rope_type"], "yarn")
+        self.assertEqual(rope["factor"], 4.0)
+        self.assertEqual(rope["original_max_position_embeddings"], 262144)
+        self.assertEqual(got["max_position_embeddings"], 1_010_000)
+        self.assertEqual(rope["rope_theta"], 10000000, "theta was not preserved")
+        self.assertEqual(rope["partial_rotary_factor"], 0.25,
+                         "the partial rotary factor was not preserved")
+
+    def test_the_original_config_is_backed_up_before_it_is_rewritten(self):
+        base, cfg = self._cache("Org/Model", "z" * 40)
+        before = cfg.read_text()
+        self._run_yarn([str(base), "Org/Model", "z" * 40])
+        backup = cfg.with_suffix(".json.pre-yarn")
+        self.assertTrue(backup.exists(), "no backup was left next to the config")
+        self.assertEqual(backup.read_text(), before)
+
+    def test_a_nested_text_config_is_patched_in_place(self):
+        base, cfg = self._cache("Org/Model", "b" * 40, nested=True)
+        self._run_yarn([str(base), "Org/Model", "b" * 40])
+        got = json.loads(cfg.read_text())
+        self.assertIn("text_config", got)
+        inner = got["text_config"]
+        self.assertEqual(inner["max_position_embeddings"], 1_010_000)
+        self.assertEqual(inner["rope_parameters"]["rope_type"], "yarn")
+        self.assertNotIn("max_position_embeddings", set(got) - {"text_config"},
+                         "the outer config was patched instead of the inner one")
+
+    def test_patching_twice_leaves_the_same_config(self):
+        base, cfg = self._cache("Org/Model", "c" * 40)
+        self._run_yarn([str(base), "Org/Model", "c" * 40])
+        once = cfg.read_text()
+        self._run_yarn([str(base), "Org/Model", "c" * 40])
+        self.assertEqual(cfg.read_text(), once, "the second patch changed the config")
+
+    def test_a_ref_name_is_resolved_to_its_sha(self):
+        sha = "d" * 40
+        base, cfg = self._cache("Org/Model", sha)
+        refs = base / "hub" / "models--Org--Model" / "refs"
+        refs.mkdir(parents=True)
+        (refs / "main").write_text(sha + "\n")
+        self._run_yarn([str(base), "Org/Model", "main"])
+        self.assertEqual(json.loads(cfg.read_text())["max_position_embeddings"], 1_010_000)
+
+    def test_an_unknown_revision_falls_back_to_the_newest_snapshot(self):
+        base, cfg = self._cache("Org/Model", "e" * 40)
+        self._run_yarn([str(base), "Org/Model", "f" * 40])
+        self.assertEqual(json.loads(cfg.read_text())["max_position_embeddings"], 1_010_000)
+
+    def test_no_cached_config_is_a_clear_exit_not_a_traceback(self):
+        base, _ = self._cache("Org/Model", "g" * 40, config=False)
+        with self.assertRaises(SystemExit) as cm:
+            self._run_yarn([str(base), "Org/Model", "g" * 40])
+        self.assertIn("not found", str(cm.exception.code))
+
+    def test_a_revision_without_a_snapshot_is_reported_before_the_fallback(self):
+        base, cfg = self._cache("Org/Model", "h" * 40)
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self._run_yarn([str(base), "Org/Model", "i" * 40])
+        self.assertIn("falling back", buf.getvalue())
+
+
 class BenchAgentTiming(unittest.TestCase):
     """bench-agent measures an agent loop. Its only job is to not lie."""
 

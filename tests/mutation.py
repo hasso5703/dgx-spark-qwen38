@@ -15,6 +15,7 @@ constant, return).
 """
 import ast
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -155,15 +156,36 @@ def main():
 
 
 def one(module: Path, suite_cmds, budget, quiet=False) -> float:
+    """Mutate and measure inside a COPY of the repo, never the working tree.
+
+    Rewriting a source file in place has two failure modes that both bit this
+    tool on the day it was written: anything else reading the repo at that
+    instant sees a mutant (a parallel test run reported 46 errors and one
+    baffling parse failure, which was this tool editing recipes.py underneath
+    it), and a kill -9 between the write and the restore leaves a mutated file
+    staged for commit. A throwaway copy has neither.
+    """
+    work = Path(tempfile.mkdtemp(prefix="mutation-"))
+    root = work / "repo"
+    shutil.copytree(REPO, root, symlinks=True,
+                    ignore=shutil.ignore_patterns(".git", ".venv-test", ".venv",
+                                                  "__pycache__", ".hypothesis",
+                                                  "*.pyc", ".coverage*"))
+    try:
+        return _walk(root / module.relative_to(REPO), suite_cmds, budget, root, quiet)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _walk(module: Path, suite_cmds, budget, root: Path, quiet=False) -> float:
     src = module.read_text()
     total = min(count(src), budget)
     if not quiet:
         print(f"{module.name}: {count(src)} mutation points, running {total}")
-    if not run_suite(suite_cmds, REPO):
+    if not run_suite(suite_cmds, root):
         print(f"{module.name}: the suite does not pass on unmutated code; aborting")
         raise SystemExit(2)
     killed, survived = 0, []
-    backup = src
     try:
         for i in range(total):
             new, desc = mutate(src, i)
@@ -171,7 +193,7 @@ def one(module: Path, suite_cmds, budget, quiet=False) -> float:
                 continue
             module.write_text(new)
             try:
-                caught = not run_suite(suite_cmds, REPO)
+                caught = not run_suite(suite_cmds, root)
             except subprocess.TimeoutExpired:
                 caught = True            # a hang is a detection: the suite noticed
             if caught:
@@ -182,7 +204,7 @@ def one(module: Path, suite_cmds, budget, quiet=False) -> float:
                 print(f"\r  {i + 1}/{total} killed={killed} survived={len(survived)}",
                       end="", flush=True)
     finally:
-        module.write_text(backup)
+        module.write_text(src)          # the copy, so this is belt and braces
     score = 100.0 * killed / max(1, killed + len(survived))
     if not quiet:
         print()

@@ -136,7 +136,7 @@ jobs:
           echo "$out" | grep -qE '^property checks: [0-9]+ passed of [0-9]+, [0-9]+ generated examples each$' \
             || { echo "the property suite did not report a run"; echo "$out" | tail -20; exit 1; }
           n=$(echo "$out" | grep -oE '^property checks: [0-9]+' | grep -oE '[0-9]+')
-          [ "$n" -ge 25 ] || { echo "only $n property checks ran"; exit 1; }
+          [ "$n" -ge 40 ] || { echo "only $n property checks ran"; exit 1; }
 
       - name: Pin contracts (every consumer's own block runs against install.sh)
         run: |
