@@ -246,6 +246,78 @@ count-to-100 ceiling is 49.4. Their "1M" is the **KV pool in tokens**, not the
 window: their README states plainly that a 1M context has never been run on
 their host, and their validated ceiling is 524,288.
 
+### What the other one-Spark stacks measured about QUALITY (2026-09-10 survey)
+
+Throughput on this hardware is now published by five groups. Quality is published
+by one, and it is the number that decides everything else, so it is worth setting
+out what they actually did.
+
+**[blazux/qwen3.8-Flash-DGX](https://github.com/blazux/qwen3.8-Flash-DGX)** (vLLM
+with local kernels, RadixArk NVFP4, most recent run 2026-09-08) scores every
+option against a **17-scenario agentic tournament** (tool loops, long-context
+extraction, multi-step reasoning), temperature 0.2, three repeats, out of 51:
+
+| their configuration | tournament | decode |
+|---|---|---|
+| `MODE=nvfp4`, MTP=2 | 45/51 | ~26 tok/s |
+| `MODE=hybrid` (NVFP4 experts + blockwise fp8 side layers), MTP=2 | **45/51** | ~31, or **37 with a reduced draft vocabulary** |
+| hybrid, MTP=3 | 44/51 | not the default for that reason |
+| `KV_DTYPE=fp8_e4m3` (what a 1M pool needs) | "measurable quality cost" | -10% decode, -30% prefill |
+
+Their stated rule is the one this repo would write for itself: "anything that only
+buys tok/s or TTFT and costs even a point there ships as an option, off by
+default." They keep **bf16 KV in production** and ship fp8 KV as opt-in.
+
+**The field agrees on the KV question, and it did not agree quietly.** On the
+thread announcing MiaAI Lab's 1M recipe
+([382446](https://forums.developer.nvidia.com/t/miaai-lab-new-qwen3-8-flash-next-nvfp4-recipe-for-1x-dgx-spark-1m-context-vision-video-37-tok-s-c1/382446),
+2026-09-05), the poster came back the same evening after using it with a desktop
+client and coding agents and reported the fp8-KV build "significantly more
+degraded", ranking quality **blazux NVFP4 > blazux hybrid > MiaAI Lab** despite
+MiaAI's better throughput; two other users on the thread flagged the same thing
+for security-sensitive code. MiaAI's own numbers are strong on every other axis
+(2026-09-06: decode 48.7 tok/s at one stream, 162.9 aggregate at eight, prefill
+1,944 to 2,314 tok/s from 8K to 256K, KV pool 1,431,164 tokens at
+`KV_TARGET_GIB=22`, needle 3/3 at a 400K prefill). The disagreement is not about
+those; it is about what an fp8 KV cache does to an answer.
+
+So the trade on this lane, stated once: **a 1M window on one GB10 is reachable
+today and it is bought with an fp8 KV cache, which two independent parties measure
+as a quality loss on exactly the agentic work this box exists for.** This repo
+serves 262,144 with a bf16 KV cache for that reason, and the 1M mode it does ship
+is on the 27B lane, where the NVFP4 checkpoints carry their own calibrated KV
+scales and an fp8 pool is what the cookbook itself recommends.
+
+**One idea here is worth taking, and it is not the context one.** blazux's
+`hybrid` mode converts the layers RadixArk left in BF16 (attention, QSA, GDN,
+shared experts) to blockwise fp8-e4m3 and measures **+20% decode and +8% KV pool
+at an identical tournament score**. That is speed and context at no measured
+quality cost, which is the only kind of win this repo takes without an argument.
+Two cautions before anyone reads it as a promise: their +20% is against their own
+26 tok/s vLLM baseline, and this lane already decodes at 41 to 48 on SGLang, so
+the headroom they found may simply not exist here; and the conversion is a
+one-time rewrite of a 126 GiB checkpoint that SGLang then has to load. It is a
+project with a real hypothesis, not a flag.
+
+**The two exports, recipe against recipe** (both cards read 2026-09-10), because
+the intuition that NVIDIA's must be the more precise one is wrong:
+
+| | RadixArk (this repo's `flash`) | NVIDIA (`flash-nvda`) |
+|---|---|---|
+| routed MoE experts | NVFP4 W4A4, group 16, FP8 block scales | NVFP4 W4A4, MSE-calibrated scales |
+| attention, QSA, GDN, mHC, shared experts, routers, embeddings, lm_head, vision | **BF16** | **BF16** |
+| the 31 MTP tensors | **BF16** | routed experts in 128x128 block **FP8** |
+| PLE n-gram table | mostly BF16, fp8 tables dequantized to BF16 at load | per-tensor **FP8** |
+| KV cache metadata | none (so `auto` gives bf16) | none |
+| producer | modelopt v0.46.0, 128 CNN/DailyMail articles at 512 tokens | Model Optimizer, mixed precision |
+
+Both leave attention in BF16. Where they differ, **RadixArk is the higher-precision
+one** (its draft head and n-gram table stay BF16), which is the opposite of what
+"the vendor export" suggests, and it is consistent with what this box measured
+when it booted both: a tie inside the spread, with NVIDIA's pool coming out
+75,000 tokens smaller. Neither has ever been separated here on quality, because
+4/4 canaries on both sides is not a test that can separate them.
+
 ### The agent loop, which no published figure covers for SGLang
 
 `./bench-agent.py`: a growing conversation on a shared prefix, one short answer

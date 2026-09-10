@@ -363,6 +363,16 @@ to **2/6 against 6/6 in bf16**, and they keep bf16 as their own production
 setting. The difference from the 27B case is calibration: the NVFP4 and FP8 27B
 checkpoints carry KV scales the engine applies, while nothing calibrates the QSA
 path's cache. A bigger pool is not worth a measured quality drop.
+Two independent parties have since measured the same thing: blazux score fp8 KV as a
+"measurable quality cost" on their 17-scenario agentic tournament and keep bf16 in
+production, and the poster who announced MiaAI Lab's 1M recipe on the NVIDIA forum came
+back the same evening reporting the fp8-KV build "significantly more degraded" in real
+use with coding agents. **A 1M window on one GB10 is reachable today and an fp8 KV cache
+is what buys it**, so this lane serves 262,144 with a bf16 cache and the 1M mode this
+repo ships is the 27B one, where the checkpoints carry their own calibrated KV scales.
+The full survey, including the one idea from those stacks worth taking (blazux's `hybrid`
+side layers: +20% decode and +8% pool at an identical tournament score) is in
+BENCHMARKS.md, "What the other one-Spark stacks measured about QUALITY".
 
 The NEXTN speculative head is the model's own next-token module (its 31
 tensors ship in the checkpoint in BF16, hence `unquant` for the draft): drafts
