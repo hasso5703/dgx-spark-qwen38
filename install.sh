@@ -940,6 +940,16 @@ if [ -f "$OC_USER_CFG" ]; then
     fi
   fi
 fi
+# The default model and the served entry's picker name follow the install, not
+# just the limits: an install that changes lane left opencode offering and
+# defaulting to the previous lane (reference box 2026-09-11: flash selected
+# while stock 1M served). Same helper as switch-model.sh, one label table.
+OC_WINDOW=262144; [ "$CONTEXT_MODE" = "1m" ] && OC_WINDOW=1010000
+python3 "$REPO_DIR/oc-point-default.py" "$CONFIG_DIR/opencode.json" "$LANE" "$MODEL_CHOICE" "$OC_WINDOW" \
+  || die "could not point the generated opencode config at the installed lane"
+if [ -f "$OC_USER_CFG" ]; then
+  python3 "$REPO_DIR/oc-point-default.py" "$OC_USER_CFG" "$LANE" "$MODEL_CHOICE" "$OC_WINDOW" || true
+fi
 # oc: launcher that lifts opencode's hidden 32000 max_tokens cap to the
 # declared output limit (without it, long thinking is cut at 32000 and the
 # turn ends silently). Never clobbers a foreign oc binary (e.g. OpenShift).

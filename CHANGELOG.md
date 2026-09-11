@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.9.1 (2026-09-11): opencode offers and defaults to the lane that serves
+
+Installing stock 1M over an fp8/flash era config left opencode's picker and
+default behind: the Agent tab offered flash while the box served stock, and
+the 27B entry still read FP8. `switch-model.sh` re-pointed both, `install.sh`
+only merged the limits. The default model and the per-target picker names now
+live once, in `oc-point-default.py`, called by both scripts on every config
+they manage (generated artifact and the file opencode reads); the generated
+artifact uses the same names instead of its own generic spelling. With a test
+file on the helper and CI gates on the wiring and the label coverage.
+
 ## v1.9.0 (2026-09-11): the 27B lane drafts from a calibrated NVFP4 head, 16 deep
 
 The screenshots were right. Two independent single-Spark recipes measured the

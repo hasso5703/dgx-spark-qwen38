@@ -29,8 +29,8 @@ jobs:
       - name: Python correctness (ruff F,E9 + compile)
         run: |
           pip install 'ruff==0.5.0'
-          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py tests/*.py dashboard/*.py dashboard/tests/*.py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-fit-limits.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
+          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py oc-point-default.py tests/*.py dashboard/*.py dashboard/tests/*.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
 
       - name: Cockpit unit tests (every tests/test_*.py, discovered)
         run: |
@@ -637,20 +637,21 @@ jobs:
             || { echo "the oc launcher no longer exports the shared ceiling"; exit 1; }
           grep -qF 'oc-limits.sh" --max-out' dashboard/install-agent.sh \
             || { echo "install-agent.sh no longer takes the Agent tab ceiling from the table"; exit 1; }
-          # Every target the installer knows must have a picker label in the switch,
-          # or it silently keeps the previous target's name.
+          # Every target the installer knows must have a picker label, or it
+          # silently keeps the previous target's name. The table lives in
+          # oc-point-default.py (install.sh and switch-model.sh both call it).
           python3 - <<'PYEOF'
           import re, pathlib, sys
           inst = pathlib.Path("install.sh").read_text()
           m = re.search(r'^case "\$MODEL_CHOICE" in\n(.*?)^esac', inst, re.M | re.S)
           arms = re.findall(r'^\s{2}([a-z0-9|-]+)\)', m.group(1), re.M)
           choices = sorted({c for a in arms for c in a.split("|")} - {"*"})
-          sw = pathlib.Path("switch-model.sh").read_text()
+          helper = pathlib.Path("oc-point-default.py").read_text()
           # not anchored: the first entry sits on the same line as "LABEL = {"
-          labels = set(re.findall(r'"([a-z0-9-]+)":\s*"Qwen', sw))
+          labels = set(re.findall(r'"([a-z0-9-]+)":\s*"Qwen', helper))
           missing = [c for c in choices if c not in labels]
           if missing:
-              print("switch-model.sh has no picker label for:", missing); sys.exit(1)
+              print("oc-point-default.py has no picker label for:", missing); sys.exit(1)
           print(f"  {len(choices)} targets, all with a picker label")
           PYEOF
           echo "  the limits table is shared, complete on every target and tier, and refuses nonsense"
@@ -789,6 +790,22 @@ jobs:
 
       - name: opencode limits merge helper (config shapes, JSONC)
         run: python3 tests/test_oc_merge_limits.py
+
+      - name: opencode default model follows the lane (picker names, one table)
+        run: |
+          python3 tests/test_oc_point_default.py
+          # The picker names live in oc-point-default.py and ONLY there:
+          # install.sh and switch-model.sh call it, so the three spellings
+          # (artifact, user config via install, both via switch) cannot drift.
+          grep -q 'oc-point-default.py" "\$CONFIG_DIR/opencode.json"' install.sh \
+            || { echo "install.sh no longer points its artifact at the lane"; exit 1; }
+          grep -q 'oc-point-default.py" "\$OC_USER_CFG"' install.sh \
+            || { echo "install.sh no longer points the user config at the lane"; exit 1; }
+          grep -q 'oc-point-default.py" "\$OC_JSON"' switch-model.sh \
+            || { echo "switch-model.sh no longer points configs at the lane"; exit 1; }
+          if grep -q '^LABEL = {' switch-model.sh; then
+            echo "switch-model.sh carries its own label table again"; exit 1;
+          fi
 
       - name: Vendored Flash overlay integrity
         run: |
