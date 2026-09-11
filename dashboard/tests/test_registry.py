@@ -98,9 +98,13 @@ class Presence(unittest.TestCase):
 class PinModelsCoversInstaller(unittest.TestCase):
     def test_every_served_checkpoint_pin_is_in_pin_models(self):
         text = (REPO / "install.sh").read_text()
-        # <PREFIX>_REPO="owner/name" paired with <PREFIX>_REV=<40 hex>
-        # both regexes capture the PREFIX, so compare prefixes, not full names
-        repos = dict(re.findall(r'^([A-Z0-9_]+)_REPO="([^"]+)"', text, re.M))
+        # <PREFIX>_REPO="owner/name" paired with <PREFIX>_REV=<40 hex>.
+        # Overridable pins use the <PREFIX>_REPO="${<PREFIX>_REPO:-owner/name}"
+        # shape instead (the 27B draft since v1.9): read the default either way.
+        # Both regexes capture the PREFIX, so compare prefixes, not full names.
+        repos = dict(re.findall(r'^([A-Z0-9_]+)_REPO="([^"$][^"]*)"', text, re.M))
+        for p, default in re.findall(r'^([A-Z0-9_]+)_REPO="\$\{\1_REPO:-([^}]+)\}"', text, re.M):
+            repos.setdefault(p, default)
         rev_prefixes = set(re.findall(r'^([A-Z0-9_]+)_REV=', text, re.M))
         pairs = {f"{p}_REV": repo for p, repo in repos.items() if p in rev_prefixes}
         self.assertGreaterEqual(len(pairs), 7, pairs)

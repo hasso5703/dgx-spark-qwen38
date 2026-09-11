@@ -323,6 +323,47 @@ class PatchToolsInProcess(unittest.TestCase):
             self._run_yarn([str(base), "Org/Model", "i" * 40])
         self.assertIn("falling back", buf.getvalue())
 
+    def test_restore_brings_back_the_exact_original_and_consumes_the_backup(self):
+        base, cfg = self._cache("Org/Model", "j" * 40)
+        before = cfg.read_bytes()
+        self._run_yarn([str(base), "Org/Model", "j" * 40])
+        self._run_yarn(["--restore", str(base), "Org/Model", "j" * 40])
+        self.assertEqual(cfg.read_bytes(), before)
+        self.assertFalse(cfg.with_suffix(".json.pre-yarn").exists(),
+                         "the backup must be consumed by the restore")
+
+    def test_restore_on_a_clean_tree_is_a_no_op(self):
+        base, cfg = self._cache("Org/Model", "k" * 40)
+        before = cfg.read_bytes()
+        self._run_yarn(["--restore", str(base), "Org/Model", "k" * 40])
+        self.assertEqual(cfg.read_bytes(), before)
+
+    def test_check_reports_without_touching_anything(self):
+        base, cfg = self._cache("Org/Model", "l" * 40)
+        self._run_yarn(["--check", str(base), "Org/Model", "l" * 40])
+        self.assertEqual(json.loads(cfg.read_text())["max_position_embeddings"], 262144)
+        self._run_yarn([str(base), "Org/Model", "l" * 40])
+        before = cfg.read_bytes()
+        with self.assertRaises(SystemExit) as cm:
+            self._run_yarn(["--check", str(base), "Org/Model", "l" * 40])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(cfg.read_bytes(), before, "--check must not mutate")
+
+    def test_patched_without_a_backup_refuses_with_a_distinct_code(self):
+        base, cfg = self._cache("Org/Model", "m" * 40)
+        self._run_yarn([str(base), "Org/Model", "m" * 40])
+        cfg.with_suffix(".json.pre-yarn").unlink()
+        for mode, code in (("--restore", 3), ("--check", 3)):
+            with self.assertRaises(SystemExit) as cm:
+                self._run_yarn([mode, str(base), "Org/Model", "m" * 40])
+            self.assertEqual(cm.exception.code, code, mode)
+
+    def test_modes_reject_bad_argument_counts(self):
+        for argv in (["--restore"], ["--check", "a", "b", "c", "d", "e"]):
+            with self.assertRaises(SystemExit) as cm:
+                self._run_yarn(argv)
+            self.assertNotEqual(cm.exception.code, 0, argv)
+
 
 class BenchAgentTiming(unittest.TestCase):
     """bench-agent measures an agent loop. Its only job is to not lie."""

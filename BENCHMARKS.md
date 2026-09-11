@@ -423,6 +423,20 @@ N-gram table's mapping is trimmed instead of climbing towards 47.7 GiB. That is
 what makes a 200K prompt a measurement rather than a risk, and why the ceiling
 moved to 200,000.
 
+### Surveyed and rejected: MTP steps 4 (2026-09-11)
+
+Qwen's tech report measures a mean accepted length of 4.07 under four-step
+speculative decoding while this lane runs 3/1/4 and sees 2.15-2.65, so
+`--speculative-num-steps 4` was booted on the reference box, everything else
+identical to the `context` tier. The engine refuses before serving a token:
+`NotImplementedError: Qwen QSA requires speculative_num_draft_tokens <= the
+QSA compress ratio (4): the pending index-key ring holds one group; got 5`.
+Steps 4 implies 5 draft tokens, the ring holds 4, and widening the ring is a
+vendored engine patch (it also costs prose: 25.6 -> 16.4 where measured) on a
+lane whose whole point since v1.8 is serving the official image with nothing
+added. Rejected with the engine's own error as the receipt; the CI gate keeps
+asserting steps 3 on both speculative tiers.
+
 ## The flash target on SGLang (v1.5), measured (2026-08-28)
 
 Same box, same two-call instrument. Serving config: official SGLang image +
@@ -588,6 +602,43 @@ and 258 tok/s at c32** (max-running-requests 32), still climbing at c32. It ship
 108 tok/s c8 with the same drafter: above the old DSpark default, and the fallback if
 NVFP4-target quality evaluations ever demand it.
 
+### The calibrated NVFP4 draft at depth 16: the new default (v1.9, 2026-09-11)
+
+Two outside recipes pointed at the same two levers on this exact target, and
+both checked out on the reference box, same flags otherwise (mem-fraction
+0.50, fp8 KV from the checkpoint's own scales, extra_buffer, DFlash2 overlay
+image `qwen38-dflash2:v1.2.3`):
+
+- `maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal` (@ `bd7a934`): the 5-layer
+  draft quantized to NVFP4 with calibrated activation scales (35 linears,
+  selector/convs/norms kept BF16), served with
+  `--speculative-draft-model-quantization modelopt_fp4`. 3.53 GB -> 1.37 GB
+  of VRAM; the saving becomes KV pool (357,706 tokens here).
+- `--speculative-num-draft-tokens 16` instead of 8. The runtime accepts it
+  (draft verify graph captures with `num_tokens_per_req=16`); the depth was
+  swept outside (D4 33.8, D6 44.1, D8 47.6, D12 55.0, D16 56.6 pooled tok/s
+  on one GB10 suite) and the combined recipe measures +25.19% whole-request
+  throughput there (57.11 -> 71.50 tok/s, 27 frozen payloads, quality frozen
+  24/27 both arms, 21/27 byte-identical).
+
+Measured here (native 262144, thinking on):
+
+| instrument | v1.9 (NVFP4 draft, D16) | v1.2 (BF16 draft, D8) |
+|---|---|---|
+| `./bench.sh` greedy median | **65.3** (code 64.2/65.3, reasoning 65.3/66.2, math 56.6/71.3, prose 24.7/23.0) | 50 (code 41-47, reasoning 52-57, math 50-60, prose ~23) |
+| battery code EN / DE | 40.1 / 34.0 | 41.1 / 33.4-39.4 |
+| battery tech FR / reasoning FR | 32.4 / 49.5 | 25.8 / 43.5 |
+| battery prose EN / FR / DE | 22.1 / 19.5 / 18.3 | 22.1 / 20.2 / 17.2 |
+| KV pool @ 0.50 | 357,706 tokens | not re-recorded (the full 262K window fits in both) |
+| corruption markers / conc smoke | 0 / 4x400 clean | 0 / clean |
+
+Why this preserves the quality story: the draft is verified by the target
+over the whole vocabulary, so a quantized draft can only change speed. The
+one thing quantization could cost is acceptance length (a worse draft gets
+rejected more), and the measurement says it did not: prose holds, structured
+workloads gain. What was NOT adopted: NVIDIA's own 27B NVFP4 export was
+downloaded and diffed (identical 401-layer map, still stamped 0.47.0.dev80
+inside, no KV scales declared): a tie at best, left out.
 
 ## The losslessness study (2026-08-20)
 

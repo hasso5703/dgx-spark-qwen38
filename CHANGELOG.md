@@ -1,5 +1,62 @@
 # Changelog
 
+## v1.9.0 (2026-09-11): the 27B lane drafts from a calibrated NVFP4 head, 16 deep
+
+The screenshots were right. Two independent single-Spark recipes measured the
+same two levers on this exact target (`RadixArk/Qwen3.8-27B-NVFP4` @ `52d1adc`):
+maurienne-ai's calibrated NVFP4 quantization of the DFlash2 draft (the draft
+runs every step, so quantizing it well matters more than its size suggests)
+and a draft depth of 16 instead of 8. Both were re-measured on the reference
+box before being adopted, same target, same flags otherwise:
+
+- **The draft**: `maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal` @ `bd7a934`,
+  served with `--speculative-draft-model-quantization modelopt_fp4`. BF16
+  3.53 GB -> NVFP4 1.37 GB of VRAM, acceptance preserved by calibration
+  (uncalibrated round-to-nearest loses ~13% acceptance; calibrated recovers
+  the whole gap). The freed VRAM becomes KV pool.
+- **The depth**: `--speculative-num-draft-tokens 16` instead of 8. Swept, not
+  guessed: D8 -> D16 alone is +19% pooled throughput at unchanged quality.
+- **Measured here**: `./bench.sh` greedy median **50 -> 65.3 tok/s (+30%)**,
+  code 41-47 -> 64-66, reasoning 52-57 -> 65-66, math peak 50-60 -> 57-71,
+  prose unchanged (23-25); frozen battery `./bench-matrix.sh` code EN 40.1,
+  tech FR 32.4 (was 25.8), reasoning FR 49.5 (was 43.5), prose EN/FR/DE
+  22.1/19.5/18.3 (parity); KV pool 357,706 tokens at mem-fraction 0.50, so a
+  full 262,144-token prompt still fits; 0 corruption markers; 4 concurrent
+  streams clean (4x400 tokens, ~76 tok/s aggregate on prose).
+- **Quality is lossless by construction**: the target verifies every drafted
+  token over the whole vocabulary, so the draft can only change speed, never
+  what the model may say. Independent paired evidence (27 frozen payloads):
+  quality frozen 24/27 in both recipes, 21/27 byte-identical outputs.
+- **What did NOT change, and why**: NVIDIA's own 27B NVFP4 export
+  (`nvidia/Qwen3.8-27B-NVFP4`, ModelOpt 0.48.0) was downloaded and compared
+  field by field: identical quantization map (401 layers, 208 FP8 + 193
+  NVFP4, NVFP4 `lm_head`), internals still stamped 0.47.0.dev80, and
+  `kv_cache_quant_algo: null` where RadixArk declares FP8, so it serves half
+  the pool unless asked explicitly. A tie at best for 21 GB and a validation
+  cycle: not added. The flash lane is untouched (its official image is still
+  the head of its branch, and NVFP4-KV there costs measured quality).
+- Rollback, if the draft ever misbehaves on your workload:
+  `DRAFT2_REPO=z-lab/Qwen3.8-27B-DFlash2
+  DRAFT2_REV=50307d4c4cde6860d4eee73e2547cd786fe8e8a4 DRAFT2_QUANT=unquant
+  DRAFT2_TOKENS=8 ./install.sh`, then restart the unit. A plain re-run keeps
+  whichever draft is installed, the way MODEL_CHOICE is kept.
+- Gates: the 27B templates carry the draft as placeholders (repo, revision,
+  depth, quantization), `run.sh` reads the same pins, the cockpit derives
+  them, and CI asserts the measured triple plus the placeholder wiring.
+- **A bare IPv6 literal no longer comes back unbracketed.** Hypothesis found
+  `host_name("::")` returning `"::"`, which the callers splice into
+  `http://{name}:{port}` URLs. It now returns the bracketed canonical form,
+  with a unit test on both shapes; the relay's origin gate compares raw
+  strings and is untouched.
+- **Coming home from 1m no longer crashes.** A native server dies at load on
+  a YaRN-patched config (measured: target `context_length` 1010000 against a
+  derived 262144), and nothing restored the originals: `patch-yarn.py` grows
+  `--restore` (moves the `.pre-yarn` backup back, consumes it) and `--check`
+  (exit 0 clean, 2 patched-with-backup, 3 patched-without), a native 27B
+  install restores the target and the draft, and `run.sh` preflights the
+  cache and refuses early with the restore path instead of ten minutes into
+  the boot. With tests on both config shapes and a CI gate on the wiring.
+
 ## v1.8.6 (2026-09-10): the phone can finally send a photo, and compaction fires before the proxy says no
 
 v1.8.2 opened the Agent tab fullscreen on a phone on the strength of a measurement

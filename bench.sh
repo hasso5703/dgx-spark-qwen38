@@ -50,8 +50,8 @@ MODEL = served_model()
 LANE = "flash" if "flash" in MODEL else "27b"
 HEADERS = {
     "27b": ("Qwen3.8-27B NVFP4+DFlash2 benchmark (batch 1 decode)",
-            "reference box (DFlash2 v1.2+): ~50 greedy median "
-            "(code 41-47 / reasoning 52-57 / math peak 50-60 / free prose ~23)"),
+            "reference box (calibrated NVFP4 draft D16, v1.9+): ~65 greedy median "
+            "(code 64-66 / reasoning 65-66 / math peak 57-71 / free prose ~23)"),
     # Flash-Next, NEXTN + the reduced draft vocabulary. BENCHMARKS.md, "The
     # reduced draft vocabulary": code 47.9, math 47.1, prose EN 29.3; the
     # abliterated target measures 45.4-46.4 / 43.7-46.6 / 27.3-27.7.

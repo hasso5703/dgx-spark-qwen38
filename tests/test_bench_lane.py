@@ -91,7 +91,7 @@ def main():
         fails.append(f"the flash lane is not named in the header:\n{out[:400]}")
     if "Qwen3.8-27B NVFP4+DFlash2" in out:
         fails.append("the 27B header was printed for the flash lane")
-    if "code 41-47 / reasoning 52-57" in out:
+    if "code 64-66 / reasoning 65-66" in out:
         fails.append("the 27B reference line was printed for the flash lane")
     if "DISCARD THE FIRST BATCH" not in out:
         fails.append("the flash lane's warm-up protocol was not printed")

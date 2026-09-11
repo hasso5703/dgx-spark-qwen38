@@ -526,6 +526,13 @@ class PureHelpers(unittest.TestCase):
         self.assertEqual(ar.host_name("spark.tail.ts.net"), "spark.tail.ts.net")
         self.assertEqual(ar.host_name("[::1]:30090"), "[::1]")
         self.assertEqual(ar.host_name(None), "")
+        # A bare IPv6 literal has no port to strip (a port needs brackets),
+        # but it must come back bracketed: callers build http://{name}:{port}
+        # URLs, and http://::1:30090/ is malformed. Found by hypothesis as
+        # '::' failing test_host_name_never_returns_a_port.
+        self.assertEqual(ar.host_name("::"), "[::]")
+        self.assertEqual(ar.host_name("::1"), "[::1]")
+        self.assertEqual(ar.host_name("fe80::1"), "[fe80::1]")
 
     def test_origin_allowed(self):
         self.assertTrue(ar.origin_allowed(None, "h:1"))

@@ -232,8 +232,8 @@ jobs:
 
       - name: Pin contracts (every consumer's own block runs against install.sh)
         run: |
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|OVERLAY_SERVE_IMAGE|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 18 ] || { echo "run.sh pin contract broken: $n != 18"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|DRAFT2_QUANT|DRAFT2_TOKENS|OVERLAY_SERVE_IMAGE|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 20 ] || { echo "run.sh pin contract broken: $n != 20"; exit 1; }
           n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_SERVE_IMAGE|OVERLAY_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
           [ "$n" -eq 18 ] || { echo "switch-model.sh pin contract broken: $n != 18"; exit 1; }
           # This check must mirror the grep switch-model.sh actually runs, or a
@@ -318,13 +318,20 @@ jobs:
           [ "$(echo "$dl" | wc -l)" -eq 2 ] || { echo "expected exactly MODEL_REPO and DRAFT2_REPO"; exit 1; }
           echo "$dl" | grep -qx MODEL_REPO  || { echo "the target model is not downloaded"; exit 1; }
           echo "$dl" | grep -qx DRAFT2_REPO || { echo "the served drafter is not downloaded"; exit 1; }
-          # and the drafter that IS downloaded must be the one the units serve
-          served=$(grep -hoE -- '--speculative-draft-model-path [^ ]+' \
+          # and the drafter that IS downloaded must be the one the units serve.
+          # Since v1.9 the 27B templates carry the draft as placeholders (the
+          # depth and quantization are pins too), so resolve both symbolic
+          # shapes against install.sh before comparing.
+          pin_repo=$(sed -n 's/^DRAFT2_REPO="${DRAFT2_REPO:-\(.*\)}"$/\1/p' install.sh)
+          [ -n "$pin_repo" ] || { echo "install.sh: DRAFT2_REPO has no literal default"; exit 1; }
+          served=$(grep -hoE -- '--speculative-draft-model-path [^ \\]+' \
                    qwen38-sglang.service.template qwen38-sglang-1m.service.template run.sh \
-                   | awk '{print $2}' | sort -u)
+                   | awk '{print $2}' \
+                   | sed -e "s|__DRAFT2_REPO__|$pin_repo|" -e "s|\"\$DRAFT2_REPO\"|$pin_repo|" \
+                   | sort -u)
           [ "$(echo "$served" | wc -l)" -eq 1 ] || { echo "27B paths disagree on the drafter: $served"; exit 1; }
-          grep -qE "^DRAFT2_REPO=\"?$served" install.sh \
-            || { echo "the units serve $served but DRAFT2_REPO points elsewhere"; exit 1; }
+          [ "$served" = "$pin_repo" ] \
+            || { echo "the units serve $served but DRAFT2_REPO defaults to $pin_repo"; exit 1; }
           # nothing may serve a checkpoint the installer never fetches
           ! grep -qE -- '--speculative-draft-model-path .*DSpark' \
               qwen38-sglang.service.template qwen38-sglang-1m.service.template run.sh \
@@ -335,7 +342,7 @@ jobs:
           render() {
             sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" \
                 -e "s|__PORT__|30000|g" -e "s|__PROXY_PORT__|30001|g" -e "s|__IMAGE__|img:v|g" \
-                -e "s|__HF_CACHE__|/hf|g" -e "s|__DRAFT2_REV__|deadbeef|g" -e "s|__PLE_DIR__|/ple|g" -e "s|__PROMPT_CEILING__|0|g" \
+                -e "s|__HF_CACHE__|/hf|g" -e "s|__DRAFT2_REV__|deadbeef|g" -e "s|__DRAFT2_REPO__|org/draft|g" -e "s|__DRAFT2_QUANT__|modelopt_fp4|g" -e "s|__DRAFT2_TOKENS__|16|g" -e "s|__PLE_DIR__|/ple|g" -e "s|__PROMPT_CEILING__|0|g" \
                 -e "s|__KV_CACHE_ARGS__||g" -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL_REV__|cafe|g" -e "s|__MODEL__|org/repo|g" \
               -e "s|__FLASH_QUANT_ARGS__|--quantization modelopt_fp4 --speculative-draft-model-quantization unquant |g" \
               -e "s|__FLASH_MEM_FRACTION__|0.85|g" -e "s|__PLE_RSS_BUDGET_GB__|8|g" \
@@ -701,8 +708,23 @@ jobs:
           tpl_flags() { sed 's|__MODEL_REV_ARGS__|--revision X|' qwen38-sglang.service.template | sed -n '/ExecStart=/,/--port/p' | grep -oE -- '--[a-z][a-z-]*' | sort -u; }
           run_flags() { sed -n '/exec docker run/,/--port/p' run.sh | grep -oE -- '--[a-z][a-z-]*' | sort -u; }
           diff <(tpl_flags) <(run_flags)
-          vals() { grep -oE -- '--(memory-swap|memory|shm-size|mem-fraction-static|chunked-prefill-size|cuda-graph-max-bs|speculative-num-draft-tokens|max-mamba-cache-size|max-running-requests|torch-compile-max-bs|num-continuous-decode-steps) [^ \\]+' "$1" | sort; }
+          vals() { grep -oE -- '--(memory-swap|memory|shm-size|mem-fraction-static|chunked-prefill-size|cuda-graph-max-bs|max-mamba-cache-size|max-running-requests|torch-compile-max-bs|num-continuous-decode-steps) [^ \\]+' "$1" | sort; }
           diff <(vals qwen38-sglang.service.template) <(vals run.sh)
+          # The draft triple is symbolic on both sides (placeholders in the
+          # templates, "$VARS" in run.sh), so vals() above cannot compare it:
+          # assert the wiring and the measured v1.9 defaults instead.
+          for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template; do
+            grep -q -- '--speculative-draft-model-path __DRAFT2_REPO__' "$t" || { echo "$t lost the draft repo placeholder"; exit 1; }
+            grep -q -- '--speculative-num-draft-tokens __DRAFT2_TOKENS__' "$t" || { echo "$t lost the draft depth placeholder"; exit 1; }
+            grep -q -- '--speculative-draft-model-quantization __DRAFT2_QUANT__' "$t" || { echo "$t lost the draft quantization placeholder"; exit 1; }
+          done
+          grep -q -- '--speculative-draft-model-path "$DRAFT2_REPO"' run.sh || { echo "run.sh no longer serves the pinned draft repo"; exit 1; }
+          grep -q -- '--speculative-num-draft-tokens "$DRAFT2_TOKENS"' run.sh || { echo "run.sh no longer serves the pinned draft depth"; exit 1; }
+          grep -q -- '--speculative-draft-model-quantization "$DRAFT2_QUANT"' run.sh || { echo "run.sh no longer serves the pinned draft quantization"; exit 1; }
+          grep -q 'DRAFT2_REPO="${DRAFT2_REPO:-maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal}"' install.sh || { echo "install.sh: the 27B draft is no longer the calibrated NVFP4 build"; exit 1; }
+          grep -q 'DRAFT2_REV="${DRAFT2_REV:-bd7a934213c47a9e7ef69eef36bb3325f47fd1f1}"' install.sh || { echo "install.sh: the 27B draft revision moved"; exit 1; }
+          grep -q 'DRAFT2_QUANT="${DRAFT2_QUANT:-modelopt_fp4}"' install.sh || { echo "install.sh: the 27B draft quantization moved"; exit 1; }
+          grep -q 'DRAFT2_TOKENS="${DRAFT2_TOKENS:-16}"' install.sh || { echo "install.sh: the 27B draft depth moved"; exit 1; }
           # checkpoint validation must stay pinned-revision-aware (issue #5)
           grep -q 'snapshots/\$REV_SHA' run.sh
 
@@ -720,7 +742,18 @@ jobs:
           done
 
       - name: patch-yarn fixtures (both config shapes, idempotence, revision pin)
-        run: python3 tests/test_patch_yarn.py
+        run: |
+          python3 tests/test_patch_yarn.py
+          # A native install coming home from 1m must restore the pre-YaRN
+          # originals (a patched config crashes a native server at load,
+          # measured 2026-09-11), and run.sh must refuse a patched cache
+          # before booting instead of ten minutes in.
+          grep -q 'patch-yarn.py" --restore "\$HF_CACHE" "\$MODEL_REPO' install.sh \
+            || { echo "install.sh native path no longer restores the target"; exit 1; }
+          grep -q 'patch-yarn.py" --restore "\$HF_CACHE" "\$DRAFT2_REPO' install.sh \
+            || { echo "install.sh native path no longer restores the draft"; exit 1; }
+          grep -q 'patch-yarn.py" --check "\$HF_CACHE" "\$REPO" "\$REV"' run.sh \
+            || { echo "run.sh no longer preflights the YaRN state"; exit 1; }
 
       - name: patch-template fixture (anchors, idempotence, revision pin)
         run: python3 tests/test_patch_template.py

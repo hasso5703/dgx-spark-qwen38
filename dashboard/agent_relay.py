@@ -71,7 +71,14 @@ def host_name(host_header: str | None) -> str:
         return ""
     if h.startswith("["):
         return h.split("]", 1)[0] + "]"
-    return h.rsplit(":", 1)[0] if h.count(":") == 1 else h
+    if h.count(":") == 1:
+        return h.rsplit(":", 1)[0]
+    if ":" in h:
+        # A bare IPv6 literal: no port can follow without brackets, and the
+        # callers build http://{name}:{port} URLs, so return the bracketed
+        # canonical form instead of a string that reads as host:port:port.
+        return f"[{h}]"
+    return h
 
 
 def origin_allowed(origin: str | None, host_header: str | None) -> bool:

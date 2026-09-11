@@ -9,13 +9,13 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── Same pins as install.sh (read from it: single source of truth) ──
-PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|OVERLAY_SERVE_IMAGE|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|DRAFT2_QUANT|DRAFT2_TOKENS|OVERLAY_SERVE_IMAGE|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
 # A count of matched lines was the old check, and adding a pin broke both scripts
 # at once (it did, on 2026-09-08). What matters is not how many lines matched but
 # whether every name this script goes on to use is defined, so that is what is
 # asserted, and a failure says which one.
 eval "$PINS"
-for _v in IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV MODEL_CHOICE CONTEXT_MODE DRAFT2_REPO DRAFT2_REV OVERLAY_SERVE_IMAGE SERVE_IMAGE PORT HF_CACHE CONFIG_DIR; do
+for _v in IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV MODEL_CHOICE CONTEXT_MODE DRAFT2_REPO DRAFT2_REV DRAFT2_QUANT DRAFT2_TOKENS OVERLAY_SERVE_IMAGE SERVE_IMAGE PORT HF_CACHE CONFIG_DIR; do
   eval "[ -n \"\${$_v:-}\" ]" || die "install.sh no longer defines $_v (repo layout changed?)"
 done
 unset _v
@@ -65,6 +65,13 @@ for PAIR in "$MODEL_REPO=$MODEL_REV" "$DRAFT2_REPO=$DRAFT2_REV"; do
   compgen -G "${SNAP}*.safetensors" >/dev/null 2>&1 \
     || die "checkpoint $REPO has no weight files in its pinned snapshot ${REV_SHA:0:12}. Re-run: $PREP"
 done
+# A YaRN-patched cache (left by a 1m install) crashes a native server at load:
+# refuse early with the restore path instead of ten minutes into the boot.
+for PAIR in "$MODEL_REPO=$MODEL_REV" "$DRAFT2_REPO=$DRAFT2_REV"; do
+  REPO="${PAIR%%=*}"; REV="${PAIR#*=}"
+  CHK_OUT="$(python3 "$REPO_DIR/patch-yarn.py" --check "$HF_CACHE" "$REPO" "$REV" 2>&1)" \
+    || { printf '%s\n' "$CHK_OUT" >&2; die "checkpoint $REPO is YaRN-patched for 1M context (details above). With a backup present, restore the native configs with: CONTEXT_MODE=native $PREP --no-start"; }
+done
 docker image inspect "$SERVE_IMAGE" >/dev/null 2>&1 || die "serving image $SERVE_IMAGE not built. Run: $PREP"
 
 # ── Nothing else may be using the GPU or the port (GB10: one engine at a time) ──
@@ -106,9 +113,9 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
     --attention-backend flashinfer --chunked-prefill-size 8192 \
     --disable-prefill-cuda-graph --cuda-graph-max-bs 8 \
     --disable-flashinfer-autotune \
-    --speculative-algorithm DFLASH --speculative-draft-model-path z-lab/Qwen3.8-27B-DFlash2 \
+    --speculative-algorithm DFLASH --speculative-draft-model-path "$DRAFT2_REPO" \
     --speculative-draft-model-revision "$DRAFT2_REV" \
-    --speculative-num-draft-tokens 8 --speculative-draft-model-quantization unquant \
+    --speculative-num-draft-tokens "$DRAFT2_TOKENS" --speculative-draft-model-quantization "$DRAFT2_QUANT" \
     --mamba-radix-cache-strategy extra_buffer --mamba-ssm-dtype bfloat16 \
     --max-mamba-cache-size 96 --max-running-requests 8 \
     --enable-torch-compile --torch-compile-max-bs 4 \

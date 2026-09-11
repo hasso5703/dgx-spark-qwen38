@@ -285,8 +285,11 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str],
                "__SPEC_TOKEN_MAP_LINE__": map_line,
                "__FLASH_MEM_FRACTION__": assigns.get("FLASH_MEM_FRACTION", "0.85"),
                "__PLE_RSS_BUDGET_GB__": assigns.get("PLE_RSS_BUDGET_GB", "8"),
-               "__DRAFT2_REV__": assigns.get("DRAFT2_REV", "__DRAFT2_REV__"),
-               "__DRAFT_REV__": assigns.get("DRAFT_REV", "__DRAFT_REV__")}
+                "__DRAFT2_REV__": assigns.get("DRAFT2_REV", "__DRAFT2_REV__"),
+                "__DRAFT2_REPO__": assigns.get("DRAFT2_REPO", "__DRAFT2_REPO__"),
+                "__DRAFT2_QUANT__": assigns.get("DRAFT2_QUANT", "__DRAFT2_QUANT__"),
+                "__DRAFT2_TOKENS__": assigns.get("DRAFT2_TOKENS", "__DRAFT2_TOKENS__"),
+                "__DRAFT_REV__": assigns.get("DRAFT_REV", "__DRAFT_REV__")}
     rendered = _subst(text, mapping)
     left = sorted(set(re.findall(r"__[A-Z][A-Z0-9_]*__", rendered))) 
     unexpected = [ph for ph in left if ph not in HOST_PLACEHOLDERS]

@@ -2,7 +2,7 @@
 # Qwen3.8 serving stack on DGX Spark (GB10): 27B (SGLang+DFlash2) or Flash-Next
 # 176B (SGLang+NEXTN, PLE table mmap-served from NVMe). Systemd, hardened.
 # Idempotent: safe to re-run at any time (uses local caches when present).
-# Everything is PINNED to the versions validated on 2026-09-08; override with
+# Everything is PINNED to the versions validated on 2026-09-11; override with
 # env vars if you want to try newer builds (see --help). Since v1.8 the flash
 # lane serves an OFFICIAL SGLang image with nothing added, because the cookbook's
 # own image for this hardware ships everything this repo used to graft on
@@ -19,6 +19,8 @@ _ENV_PORT="${PORT:-}"; _ENV_HF_CACHE="${HF_CACHE:-}"
 _ENV_CONTEXT_MODE="${CONTEXT_MODE:-}"; _ENV_PROXY_PORT="${PROXY_PORT:-}"
 _ENV_PLE_DIR="${PLE_DIR:-}"; FLASH_TIER_ENV="${FLASH_TIER:-}"
 _ENV_SERVE_IMAGE="${SERVE_IMAGE:-}"; _ENV_FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-}"
+_ENV_DRAFT2_REPO="${DRAFT2_REPO:-}"; _ENV_DRAFT2_REV="${DRAFT2_REV:-}"
+_ENV_DRAFT2_QUANT="${DRAFT2_QUANT:-}"; _ENV_DRAFT2_TOKENS="${DRAFT2_TOKENS:-}"
 
 # ── Pinned, validated versions (override via env if you know what you do) ──
 # The 27B lane's base image, and it is deliberately still the 2026-08-15 one.
@@ -230,8 +232,22 @@ TOKEN_MAP_NAME="token-map-${SPEC_TOKEN_MAP_SIZE}.pt"
 # with this repo id to classify a leftover DSpark copy, and uninstall.sh lists it.
 DRAFT_REPO="RadixArk/Qwen3.8-27B-DSpark"
 DRAFT_REV="${DRAFT_REV:-85ef153be924f17ce4bf62726954eeaa4a73e854}"
-DRAFT2_REPO="z-lab/Qwen3.8-27B-DFlash2"
-DRAFT2_REV="${DRAFT2_REV:-50307d4c4cde6860d4eee73e2547cd786fe8e8a4}"
+# The DFlash2 drafter the 27B lane serves. Since v1.9 this is maurienne-ai's
+# calibrated NVFP4 build of the z-lab draft (3.53 GB BF16 -> 1.37 GB of VRAM,
+# same acceptance once calibrated), served 16 tokens deep instead of 8.
+# Measured on the reference box, same target, same flags otherwise:
+# bench.sh greedy median 50 -> 65.3 tok/s (+30%), bench-matrix code 41 -> 40,
+# tech-FR 26 -> 32, reasoning-FR 43.5 -> 49.5, prose unchanged, pool 357,706
+# tokens, 0 corruption markers, 4 concurrent streams clean. The drafters are
+# lossless by construction (the target verifies every drafted token), and the
+# depth was swept, not guessed (D8 -> D16 alone is +19% pooled throughput).
+# Rollback to the BF16 draft: DRAFT2_REPO=z-lab/Qwen3.8-27B-DFlash2
+# DRAFT2_REV=50307d4c4cde6860d4eee73e2547cd786fe8e8a4 DRAFT2_QUANT=unquant
+# DRAFT2_TOKENS=8 ./install.sh (then restart the unit).
+DRAFT2_REPO="${DRAFT2_REPO:-maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal}"
+DRAFT2_REV="${DRAFT2_REV:-bd7a934213c47a9e7ef69eef36bb3325f47fd1f1}"
+DRAFT2_QUANT="${DRAFT2_QUANT:-modelopt_fp4}"
+DRAFT2_TOKENS="${DRAFT2_TOKENS:-16}"
 # Context mode: "native" (262144, the validated default) or "1m" (1,010,000
 # via YaRN static scaling, mem-fraction 0.70, plus a keepalive proxy for agent
 # clients; the field-tested preset from the reference box, see the README).
@@ -312,11 +328,15 @@ the port, the HF cache location and the opencode on/off choice are read from
 the installed unit or launcher (or the marker file) unless the env var or flag
 is passed explicitly.
 
-Env overrides (defaults are pinned to the versions validated 2026-09-08):
+Env overrides (defaults are pinned to the versions validated 2026-09-11):
   IMAGE=lmsysorg/sglang:dev-qwen38-27b-dflash2
                                      use the moving tag instead of the digest
   MODEL_REV=main                     use the latest target revision
   DRAFT2_REV=main                    latest DFlash2 draft revision
+  DRAFT2_REPO=z-lab/Qwen3.8-27B-DFlash2 DRAFT2_REV=50307d4c4cde6860d4eee73e2547cd786fe8e8a4 DRAFT2_QUANT=unquant DRAFT2_TOKENS=8
+                                     roll the 27B lane back to the BF16 draft
+                                     at depth 8 (the default since v1.9 is the
+                                     calibrated NVFP4 draft at depth 16)
   MODEL_CHOICE=uncensored            serve the huihui-abliterated model
                                      (edp1096 NVFP4) instead of the stock base
   MODEL_CHOICE=fp8                   serve Qwen's own FP8 release (30.9 GB, about
@@ -480,6 +500,25 @@ elif [ "$INSTALLED_CHOICE" = "27b" ]; then
       echo "      Pass MODEL_CHOICE=stock, uncensored, fp8 or uncensored-fp8 to override."
     else
       echo "Keeping the installed target model: $MODEL_CHOICE ($MODEL_REPO). Pass MODEL_CHOICE= to change."
+    fi
+  fi
+  # Same promise for the drafter: a box rolled back to the BF16 draft via the
+  # env override keeps it across plain re-runs, the way MODEL_CHOICE is kept.
+  if [ -z "$_ENV_DRAFT2_REPO$_ENV_DRAFT2_REV$_ENV_DRAFT2_QUANT$_ENV_DRAFT2_TOKENS" ]; then
+    CUR_DRAFT="$(grep -oE -- '--speculative-draft-model-path [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+    CUR_DRAFT_REV="$(grep -oE -- '--speculative-draft-model-revision [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+    CUR_DRAFT_QUANT="$(grep -oE -- '--speculative-draft-model-quantization [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+    CUR_DRAFT_TOKENS="$(grep -oE -- '--speculative-num-draft-tokens [0-9]+' "$UNIT_PATH" | head -1 | tr -dc '0-9' || true)"
+    if [ -n "$CUR_DRAFT" ] && [ "$CUR_DRAFT" != "$DRAFT2_REPO" ]; then
+      DRAFT2_REPO="$CUR_DRAFT"
+      [ -n "$CUR_DRAFT_REV" ] && DRAFT2_REV="$CUR_DRAFT_REV"
+      [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
+      [ -n "$CUR_DRAFT_TOKENS" ] && DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
+      echo "Keeping the installed drafter: $DRAFT2_REPO (D=$DRAFT2_TOKENS, $DRAFT2_QUANT). Pass DRAFT2_REPO= to change."
+    elif [ -n "$CUR_DRAFT_TOKENS" ] && [ "$CUR_DRAFT_TOKENS" != "$DRAFT2_TOKENS" ]; then
+      DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
+      [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
+      echo "Keeping the installed draft depth: D=$DRAFT2_TOKENS. Pass DRAFT2_TOKENS= to change."
     fi
   fi
 fi
@@ -752,6 +791,21 @@ if [ "$CONTEXT_MODE" = "1m" ]; then
     python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$MODEL_REPO" "$MODEL_REV" || die "YaRN patch failed on the target model"
   fi
   python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$DRAFT2_REPO" "$DRAFT2_REV" || die "YaRN patch failed on the DFlash2 draft"
+else
+  # Coming home from 1m: a native server crashes at load on a YaRN-patched
+  # config (measured 2026-09-11: target context_length 1010000 against a
+  # derived 262144), so a native install restores the pre-YaRN originals.
+  # Refuses with a re-download fix-it when a config is patched but its backup
+  # is gone. Flash configs are never patched (1m is a 27B mode), so only the
+  # 27B lane restores.
+  if [ "$LANE" = "27b" ]; then
+    if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
+      python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$MODEL_REPO" || die "YaRN restore failed on the kept model"
+    else
+      python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$MODEL_REPO" "$MODEL_REV" || die "YaRN restore failed on the target model"
+    fi
+    python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$DRAFT2_REPO" "$DRAFT2_REV" || die "YaRN restore failed on the DFlash2 draft"
+  fi
 fi
 
 if [ "$OPENCODE" -eq 0 ]; then
@@ -996,6 +1050,9 @@ render_tpl() {  # $1 template file; substituted result on stdout
       -e "s|__IMAGE__|$SERVE_IMAGE_FINAL|g" \
       -e "s|__HF_CACHE__|$HF_CACHE|g" \
       -e "s|__DRAFT2_REV__|$DRAFT2_REV|g" \
+      -e "s|__DRAFT2_REPO__|$DRAFT2_REPO|g" \
+      -e "s|__DRAFT2_QUANT__|$DRAFT2_QUANT|g" \
+      -e "s|__DRAFT2_TOKENS__|$DRAFT2_TOKENS|g" \
       -e "s|__MODEL_REV_ARGS__|$MODEL_REV_ARGS|g" \
       -e "s|__MODEL__|$MODEL_REPO|g" \
       -e "s|__PLE_DIR__|$PLE_DIR|g" \

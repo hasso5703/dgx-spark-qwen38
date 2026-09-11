@@ -38,7 +38,8 @@ class ParseAssignments(unittest.TestCase):
         for k in ("STOCK_REPO", "STOCK_REV", "UNC_REPO", "UNC_REV", "FLASH_REPO",
                   "FLASH_REV", "FLASH_NVDA_REPO", "FLASH_NVDA_REV", "FLASH_TIER",
                   "FLASH_MEM_FRACTION", "PLE_RSS_BUDGET_GB", "OVERLAY_FLASH_SERVE_IMAGE",
-                  "FLASH_SERVE_IMAGE", "FLASH_IMAGE", "SERVE_IMAGE", "DRAFT2_REV"):
+                  "FLASH_SERVE_IMAGE", "FLASH_IMAGE", "SERVE_IMAGE", "DRAFT2_REPO",
+                  "DRAFT2_REV", "DRAFT2_QUANT", "DRAFT2_TOKENS"):
             self.assertIn(k, ASSIGNS, k)
         self.assertRegex(ASSIGNS["FLASH_REV"], r"^[0-9a-f]{40}$")
         self.assertTrue(ASSIGNS["FLASH_IMAGE"].startswith("lmsysorg/sglang@sha256:"))
@@ -108,9 +109,10 @@ class ProfileFromText(unittest.TestCase):
         self.assertEqual(p["serve"]["attention_backend"], "flashinfer")
         self.assertEqual(p["serve"]["max_mamba_cache_size"], 96)
         self.assertEqual(p["drafter"]["algorithm"], "DFLASH")
-        self.assertEqual(p["drafter"]["repo"], "z-lab/Qwen3.8-27B-DFlash2")
+        self.assertEqual(p["drafter"]["repo"], "__DRAFT2_REPO__")
         self.assertEqual(p["drafter"]["revision"], "__DRAFT2_REV__")
-        self.assertEqual(p["drafter"]["draft_tokens"], 8)
+        self.assertEqual(p["drafter"]["draft_tokens"], "__DRAFT2_TOKENS__")
+        self.assertEqual(p["drafter"]["quantization"], "__DRAFT2_QUANT__")
         self.assertNotIn("context_length", p["serve"])  # native default, no flag
 
 
@@ -171,6 +173,18 @@ class Builtins(unittest.TestCase):
         self.assertEqual(s["drafter"]["revision"], ASSIGNS["DRAFT2_REV"])
         for k in ("engine", "drafter", "serve", "env"):
             self.assertEqual(s[k], u[k], k)
+
+    def test_27b_serves_the_calibrated_nvfp4_draft(self):
+        # Since v1.9 the 27B lane drafts from maurienne-ai's calibrated NVFP4
+        # build at depth 16, not the BF16 draft at depth 8: +30% decode on the
+        # reference box, measured, same target and flags otherwise.
+        s = rc.builtin("stock", ASSIGNS, TEMPLATES)
+        self.assertEqual(s["drafter"]["algorithm"], "DFLASH")
+        self.assertEqual(s["drafter"]["repo"], "maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal")
+        self.assertEqual(s["drafter"]["revision"], ASSIGNS["DRAFT2_REV"])
+        self.assertRegex(s["drafter"]["revision"], r"^[0-9a-f]{40}$")
+        self.assertEqual(s["drafter"]["draft_tokens"], 16)
+        self.assertEqual(s["drafter"]["quantization"], "modelopt_fp4")
 
     def test_unknown_id(self):
         with self.assertRaises(KeyError):
@@ -627,6 +641,44 @@ class FlashFamily(unittest.TestCase):
             self.assertEqual(rc.validate(rc.builtin(rid, ASSIGNS, TEMPLATES)), [], rid)
 
 
+class FlashTierParity(unittest.TestCase):
+    """install.sh's FLASH_TIER_ARGS and recipes.py's TIER_ARGS are two
+    spellings of the same flags. A silent drift here serves a different
+    engine than the cockpit describes, so the copy is asserted char for
+    char, plus the one number with a hard engine ceiling behind it: the
+    QSA pending ring holds 4 draft tokens, and steps 4 dies at boot with
+    NotImplementedError (measured 2026-09-11), so both speculative tiers
+    stay at steps 3."""
+
+    TIERS = ("context", "concurrency", "throughput")
+
+    @classmethod
+    def install_tiers(cls):
+        text = (REPO / "install.sh").read_text()
+        found = re.findall(r'FLASH_TIER_ARGS="([^"]*)"', text)
+        by_mrr = {}
+        for args in found:
+            m = re.search(r"--max-running-requests (\d+)", args)
+            assert m, f"tier without a request count: {args}"
+            by_mrr[m.group(1)] = args
+        return {"context": by_mrr["4"], "concurrency": by_mrr["8"],
+                "throughput": by_mrr["24"]}
+
+    def test_tier_strings_match_install_sh(self):
+        inst = self.install_tiers()
+        for tier in self.TIERS:
+            with self.subTest(tier):
+                self.assertEqual(rc.TIER_ARGS[tier], inst[tier])
+
+    def test_speculative_tiers_stay_at_three_mtp_steps(self):
+        for tier in ("context", "concurrency"):
+            with self.subTest(tier):
+                m = re.search(r"--speculative-num-steps (\d+)",
+                              rc.TIER_ARGS[tier])
+                self.assertIsNotNone(m, tier)
+                self.assertEqual(int(m.group(1)), 3, tier)
+
+
 class TokenMap(unittest.TestCase):
     """The reduced draft vocabulary is a speculative-path flag. A tier that does
     not speculate must not receive it, and a rendered launcher must carry it
@@ -845,7 +897,10 @@ class SwitchRewrite27B(unittest.TestCase):
         for k, v in {"__IMAGE__": "qwen38-dflash2:v1.2.3", "__KV_CACHE_ARGS__": kv,
                      "__MODEL__": "RadixArk/Qwen3.8-27B-NVFP4",
                      "__MODEL_REV_ARGS__": "--revision " + "a" * 40,
-                     "__MODEL_REV__": "a" * 40, "__DRAFT2_REV__": "b" * 40}.items():
+                     "__MODEL_REV__": "a" * 40, "__DRAFT2_REV__": "b" * 40,
+                     "__DRAFT2_REPO__": "maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal",
+                     "__DRAFT2_QUANT__": "modelopt_fp4",
+                     "__DRAFT2_TOKENS__": "16"}.items():
             text = text.replace(k, v)
         return text
 

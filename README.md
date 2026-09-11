@@ -1,10 +1,10 @@
-# Qwen3.8 on DGX Spark (GB10): 27B at 50 tok/s, Flash-Next 176B on one box
+# Qwen3.8 on DGX Spark (GB10): 27B at 65 tok/s, Flash-Next 176B on one box
 
 One command installs a boot-persistent, hardened serving stack for the Qwen3.8 family on a single DGX Spark, with **seven switchable targets** and **zero quality loss** on each (NVFP4 is the quantization floor, Qwen's own FP8 is available above it; every speculative path is lossless by construction). Since v1.8 the flash lane serves an **official SGLang image** for this hardware with nothing added, serves **4 concurrent requests** where it used to serve one, and got **14 to 25% of its decode back from one flag** (`--speculative-token-map`, see below):
 
 | target | model | engine | headline (measured here) |
 |---|---|---|---|
-| `stock` (default) | Qwen3.8-27B NVFP4 | SGLang + DFlash2 | **50 tok/s** greedy median, 148+ aggregate at 8 streams, optional 1M context |
+| `stock` (default) | Qwen3.8-27B NVFP4 | SGLang + DFlash2 | **65 tok/s** greedy median, 148+ aggregate at 8 streams, optional 1M context |
 | `uncensored` | Qwen3.8-27B abliterated NVFP4 | SGLang + DFlash2 | same speed and serving path as stock |
 | `fp8` | Qwen3.8-27B FP8, Qwen's own release | SGLang + DFlash2 | the quantization reference: 108 tok/s aggregate at 8 streams, ~92K less KV pool |
 | `uncensored-fp8` | Qwen3.8-27B abliterated FP8 | SGLang + DFlash2 | same serving path and same cost as `fp8` |
@@ -12,11 +12,29 @@ One command installs a boot-persistent, hardened serving stack for the Qwen3.8 f
 | `flash-uncensored` | the **abliterated** build of that same tree | SGLang + NEXTN | 205 of 206 shards identical in size to stock, so the same flags: 45-46 on code, **0 refusals of 5** |
 | `flash-nvda` | the same 176B from NVIDIA's mixed-precision export | SGLang + NEXTN | ties the stock export inside the spread, measured here |
 
-The 27B path is the fastest configuration measured so far on GB10 (**SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels**): **50 tok/s greedy median on `./bench.sh` (code 41-47, reasoning 52-57, math peak 60)**, free prose 17-23 in any language, **135-148 tok/s aggregate at 8 concurrent streams, 258 at 32**. Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
+The 27B path is the fastest configuration measured so far on GB10 (**SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels, drafting from a calibrated NVFP4 head 16 deep**): **65 tok/s greedy median on `./bench.sh` (code 64-66, reasoning 65-66, math peak 71)**, free prose 18-25 in any language, **135-148 tok/s aggregate at 8 concurrent streams, 258 at 32** (carried over from the v1.2 battery; the draft only helps concurrency, re-measure on your box with `./bench-matrix.sh`). Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
 
 The flash path serves a model that does not otherwise fit: the 176B checkpoint's 47.7 GiB FP8 N-gram table is **served from a sparse file on NVMe**, read row by row by the gather kernel through GB10's host page tables, leaving the unified pool to the compute weights and a real KV cache. Until v1.7 that was a vendored patch of this repo's own; since v1.8 it is upstream (`--ple-offload-backend file`, [sglang#37068](https://github.com/sgl-project/sglang/pull/37068)) and the overlay is retired, along with the vendored sm_121 QSA kernel and the workaround for the GB10 MTP collapse. **Prefix caching works** (27k tokens re-served in 2.5 s against 12.0 s cold), decode is **47.9 tok/s on code and 47.1 on math** single stream (29-31 on prose), prefill ~2,250 tok/s cold, and image input stays available. Since v1.8 it also takes **`--speculative-token-map`**, which hands the speculative draft the target's `lm_head` sliced to 65,536 rows instead of all 248,320: that removes 2.6 GiB from every engine step on a lane that is memory-bandwidth bound, and it is worth 14 to 25% of decode without changing what the model can say, because the target still verifies every drafted token over the whole vocabulary.
 
 Whatever the target, you get the same surface: an **OpenAI-compatible API** on port 30000 (both lanes also speak the Anthropic protocol), a keepalive proxy for agent CLIs on 30001, and **[opencode](https://opencode.ai) works out of the box** (the installer writes a ready-to-use provider config; the chat template ships pre-patched for agentic clients). The stack is built to grow: more targets, engines and drafters will slot into the same switch surface.
+
+## The whole stack at a glance
+
+```
+                         +-----------------------------+
+  agent CLIs / SDKs ---> | keepalive proxy :30001      |  keepalives, aborts, guards
+  (opencode, Claude)     +-------------+---------------+
+                                       | forwards
+                         +-------------v---------------+
+                         | SGLang engine :30000        |  27B DFlash2 or 176B NEXTN,
+                         | (one lane at a time)        |  OpenAI + Anthropic dialects
+                         +-----------------------------+
+  you, from a browser -->| Spark Cockpit :30090        |  health that is real, actions,
+  (desk or phone)        | + Agent tab (opencode web)  |  jobs, registry, recipes, logs
+                         +-----------------------------+
+```
+
+The engine answers `/health` even when it is wedged, so the cockpit runs a real generation canary and reports `ready`, `loading`, `wedged` or `stopped` from that. Everything privileged the cockpit can do (unit start/stop/restart, lane switch, flush, abort) goes through an exact-argv sudoers allowlist and is audited. The Agent tab frames opencode's own web interface behind the cockpit login, so sessions on the box run from a laptop or a phone with no terminal. Full tour in "The cockpit" below; install with `dashboard/install-dashboard.sh` (opt-in, never run by `install.sh`).
 
 ## Quickstart
 
@@ -51,8 +69,8 @@ First boot takes **~7-9 minutes** for a 27B target (CUDA graph capture + kernel 
 - **Anthropic protocol**: `http://<host>:30000/v1/messages` (`Authorization: Bearer` only, not `x-api-key`)
 - **Don't want a systemd service?** `./install.sh --no-service && ./run.sh`: same config, foreground, no sudo, Ctrl+C and it's gone (27B targets; flash is service-only in this release).
 - Everything is **pinned twice** (base image digest + checkpoint revisions at download, and the same `--revision` passed to the server itself, so an upstream push to a checkpoint repo can never change what you serve; plus sha256-verified overlay files: five for DFlash2, `dflash2/ATTRIBUTION.md`, two for flash, `flash-sglang/ATTRIBUTION.md`). It still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
-- Since 2026-08-21, this same combination (DFLASH2, draft block 8) is the **official recipe in the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**, and since 2026-08-22 there is an official multi-arch image that ships it (`lmsysorg/sglang:dev-qwen38-27b-dflash2`, built from `1cf2b8c`). It is **not** what this repo serves yet, for one reason: it was built on 2026-08-22 and the mrope fix this repo's 27B overlay carries ([sglang#34446](https://github.com/sgl-project/sglang/pull/34446), the fused Qwen3.5 RoPE kernel discarding mrope height and width) merged on 2026-08-30, so serving it as it stands rotates every image token as if it sat at its temporal position on all three axes. The flash lane, whose overlay is entirely upstream, does serve its official image since v1.8.
-  **Where each lane stands against upstream, checked on 2026-09-10 against the GitHub API rather than against dates:** the flash lane serves `4ccff141d`, which **is** the head of the `qwen4-main-squashed` preview branch its features live on, so it is not behind anything; that branch is *diverged* from `main` (995 commits behind, 11 ahead), which is why no main-based image can serve this checkpoint at all: the file-backed PLE table 176B needs to fit one GB10 ([sglang#37068](https://github.com/sgl-project/sglang/pull/37068)) was merged into the preview branch, never into main. The 27B lane is the one with something to gain: the arm64 nightly `lmsysorg/sglang:nightly-cu134-20260909-708f51e` (main at `708f51e44`) contains **all four** of DFlash2 ([#35371](https://github.com/sgl-project/sglang/pull/35371)), the quantized-lm_head selector ([#35496](https://github.com/sgl-project/sglang/pull/35496)), the mrope fix that blocked the official image above ([#34446](https://github.com/sgl-project/sglang/pull/34446)) and the engine-side zombie fix ([#35255](https://github.com/sgl-project/sglang/pull/35255), the one the v1.8.4 proxy works around), each verified as an ancestor with 0 commits behind. The blocker is therefore gone upstream; the migration is not done here, because moving a 27B pin costs a full bench and quality cycle on this box and that has not been run yet. Until it is, the 27B lane keeps its pinned image and the proxy keeps holding the line on both lanes.
+- Since 2026-08-21, this same combination (DFLASH2, draft depth 16 since v1.9) is the **official recipe in the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**, and since 2026-08-22 there is an official multi-arch image that ships it (`lmsysorg/sglang:dev-qwen38-27b-dflash2`, built from `1cf2b8c`). It is **not** what this repo serves yet, for one reason: it was built on 2026-08-22 and the mrope fix this repo's 27B overlay carries ([sglang#34446](https://github.com/sgl-project/sglang/pull/34446), the fused Qwen3.5 RoPE kernel discarding mrope height and width) merged on 2026-08-30, so serving it as it stands rotates every image token as if it sat at its temporal position on all three axes. The flash lane, whose overlay is entirely upstream, does serve its official image since v1.8.
+  **Where each lane stands against upstream, checked on 2026-09-11 against the GitHub API and inside the images rather than against dates:** the flash lane serves `4ccff141d`, which **is** the head of the `qwen4-main-squashed` preview branch its features live on, so it is not behind anything; that branch is *diverged* from `main` (995 commits behind, 11 ahead), which is why no main-based image can serve this checkpoint at all: the file-backed PLE table 176B needs to fit one GB10 ([sglang#37068](https://github.com/sgl-project/sglang/pull/37068)) was merged into the preview branch, never into main. The 27B lane is the one with something to gain: the arm64 nightly `lmsysorg/sglang:nightly-cu134-20260909-708f51e` (main at `708f51e44`) contains **all four** of DFlash2 ([#35371](https://github.com/sgl-project/sglang/pull/35371)), the quantized-lm_head selector ([#35496](https://github.com/sgl-project/sglang/pull/35496)), the mrope fix that blocked the official image above ([#34446](https://github.com/sgl-project/sglang/pull/34446)) and the engine-side zombie fix ([#35255](https://github.com/sgl-project/sglang/pull/35255), the one the v1.8.4 proxy works around), each verified as an ancestor with 0 commits behind. The blocker is therefore gone upstream; the migration is not done here, because moving a 27B pin costs a full bench and quality cycle on this box and that has not been run yet. Until it is, the 27B lane keeps its pinned image and the proxy keeps holding the line on both lanes.
 
 ### Your choices, and how they combine
 
@@ -95,18 +113,18 @@ Re-running the installer (upgrades included) remembers what you chose: the insta
 
 Speculative decoding accepts *predictable* tokens, so speed depends on **what the model generates**, not on one magic number:
 
-Two instruments, both in the box, both reproducible. The headline **50 tok/s greedy median** is `./bench.sh` (streaming decode rate net of TTFT, the repo's historical headline instrument: v1.0-v1.1 measured ~36-40 on it, v1.2 measures 41-57 per probe). The table below is the harsher one: the frozen battery `./bench-matrix.sh` (two-call wall-clock delta, comparable across engines and boxes):
+Two instruments, both in the box, both reproducible. The headline **65 tok/s greedy median** is `./bench.sh` (streaming decode rate net of TTFT, the repo's historical headline instrument: v1.0-v1.1 measured ~36-40 on it, v1.2 measured 41-57 per probe, v1.9 measures 64-71 per probe with the calibrated draft). The table below is the harsher one: the frozen battery `./bench-matrix.sh` (two-call wall-clock delta, comparable across engines and boxes):
 
-| What you generate (thinking on, battery v1) | v1.2 (DFlash2, this repo) | v1.1 (DSpark) | Stable-MTP engines |
-|---|---|---|---|
-| Agentic coding (code, diffs, tool calls) | **32-40 tok/s** | 28-36 | 24-28 |
-| Math & structured reasoning | **41-44** | 38-42 | 24-33 |
-| Technical explanations (FR) | **26** | 23-25 | ~22 |
-| Free-form prose EN / FR / DE | **22 / 20 / 17** | 17 / 14 / 13 | 17-20 |
-| **8 concurrent streams, aggregate** | **135-148** | 100-104 | ~92 |
-| **32 concurrent streams, aggregate** | **258** | not measured | not measured |
+| What you generate (thinking on, battery v1) | v1.9 (NVFP4 draft D16, this repo) | v1.2 (DFlash2, this repo) | v1.1 (DSpark) | Stable-MTP engines |
+|---|---|---|---|---|
+| Agentic coding (code, diffs, tool calls) | **40 / 34** | 32-40 | 28-36 | 24-28 |
+| Math & structured reasoning | **49.5** | 41-44 | 38-42 | 24-33 |
+| Technical explanations (FR) | **32** | 26 | 23-25 | ~22 |
+| Free-form prose EN / FR / DE | **22 / 20 / 18** | 22 / 20 / 17 | 17 / 14 / 13 | 17-20 |
+| **8 concurrent streams, aggregate** | **135-148 (v1.2 battery)** | 135-148 | 100-104 | ~92 |
+| **32 concurrent streams, aggregate** | **258 (v1.2 battery)** | 258 | not measured | not measured |
 
-v1.2 wins every row of the frozen battery except eval-style math (parity with stock), including free prose, historically the weak spot of block drafters. Every number above is deterministic across boots (`--disable-flashinfer-autotune`, see BENCHMARKS.md "The boot lottery") and was re-verified after a full machine reboot, with output-quality canaries passing. This machine serves its own opencode sessions daily on this config (stretched to the 1M preset from the field report below): if something breaks, it breaks here first.
+v1.9 wins every row of the frozen battery against v1.2 except eval-style math (one skipped sample on the v1.9 run; `./bench.sh` math peak 57-71) and holds prose, historically the weak spot of block drafters. Every number above is deterministic across boots (`--disable-flashinfer-autotune`, see BENCHMARKS.md "The boot lottery") and was re-verified after a full machine reboot, with output-quality canaries passing. This machine serves its own opencode sessions daily on this config (stretched to the 1M preset from the field report below): if something breaks, it breaks here first.
 
 **Quality, measured (not claimed).** Same box, v1.2.1, thinking on:
 
@@ -259,9 +277,12 @@ prompt by YouTuber Bijan Bowen:
 - **~360K tokens generated**, 239 agent steps, 274 tool calls, no retry, no manual rescue
 - Result, single HTML file: **https://subway-fps.vercel.app**
 
-Back to native: `CONTEXT_MODE=native ./install.sh` (removes the proxy service; the
-`config.json.pre-yarn` backups let you undo the YaRN patches, though a 1010000
-`max_position_embeddings` is harmless at native context length).
+Back to native: `CONTEXT_MODE=native ./install.sh` (removes the proxy service and
+restores the pre-YaRN `config.json.pre-yarn` originals over the patched
+target and draft configs; a native server crashes at load on a patched config,
+so `run.sh` refuses a patched cache early instead of ten minutes into the
+boot, and the installer refuses with a re-download fix-it when a backup is
+gone).
 
 ## The flash target: Qwen3.8-Flash-Next 176B on one Spark
 
@@ -670,6 +691,20 @@ What it shows and does:
   of the **running** proxy from its startup banner; and whether the engine accepts the
   proxy's request id at all, because without that an abandoned answer can only be
   drained. See the v1.8.4 and v1.8.5 changelog entries.
+- **Jobs.** Bench runs, the 4-canary quality battery, diagnostics bundles and cache
+  operations run as supervised one-at-a-time jobs with live output, instead of
+  commands you type blind into a terminal.
+- **Housekeeping.** Inventory of everything the repo ever put on the box (with
+  one-click reclaim of superseded images, never the current ones), the opencode
+  integration state (limits per lane, default model, output cap), the patched
+  chat templates, the API key (masked, regenerable), and the repo itself
+  (version, upstream tag, changelog, update badge).
+
+Eight tabs, each one a panel above: Overview, Agent, Engines, Requests,
+Machine, Models, Logs, Setup. On a phone the chrome collapses to one identity
+row plus a swipeable section rail, controls are 44 px targets, and the Agent
+tab opens fullscreen (see "On a phone" below): the whole box is operable from
+a hand.
 
 **The privileged surface, stated plainly.** The unit actions need root, so the
 installer writes `/etc/sudoers.d/qwen38-cockpit`: an exact argv allowlist,
@@ -884,7 +919,7 @@ Change history: [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits
 
-All the heavy lifting belongs to the [SGLang](https://github.com/sgl-project/sglang) team (day-0 Qwen3.8 support, the DSPARK and DFLASH implementations, the `lmsysorg/sglang:qwen38-27b` image), [z-lab / Inco AI](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) for the DFlash2 drafter, [MiaAI-Lab](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark) for the quantized-lm_head fix that makes DFlash2 safe on GB10, [r0b0tlab](https://github.com/r0b0tlab/qwen38-27b-nvfp4-sm121-sglang) for the draft-block sweep, [RadixArk](https://huggingface.co/RadixArk) for the NVFP4 + DSpark checkpoints, [DeepSeek](https://arxiv.org/abs/2607.05147) for the DSpark method, [Qwen](https://huggingface.co/Qwen/Qwen3.8-27B) for the model, and [Unsloth](https://unsloth.ai/docs/models/qwen3.8) for their guides. This repo just packages a validated, hardened configuration of their work for GB10 machines. The SGLang cookbook's DGX Spark cell was marked "not yet validated" at the time; consider this an independent field validation (2026-08-15). On 2026-08-21 the cookbook made DFlash2 the official recipe for this model (same algorithm, same draft block 8; its `incoai/Qwen3.8-27B-DFlash2` draft path is byte-identical to the z-lab checkpoint pinned here), with the DGX Spark cell marked "Final Verification In Progress": this repo's validation data is submitted upstream in [sgl-project/sglang#35860](https://github.com/sgl-project/sglang/issues/35860).
+All the heavy lifting belongs to the [SGLang](https://github.com/sgl-project/sglang) team (day-0 Qwen3.8 support, the DSPARK and DFLASH implementations, the `lmsysorg/sglang:qwen38-27b` image), [z-lab / Inco AI](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) for the DFlash2 drafter, [maurienne-ai](https://huggingface.co/maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal) for its calibrated NVFP4 build of that draft (what the 27B lane serves since v1.9), [MiaAI-Lab](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark) for the quantized-lm_head fix that makes DFlash2 safe on GB10, [r0b0tlab](https://github.com/r0b0tlab/qwen38-27b-nvfp4-sm121-sglang) for the draft-block sweep, [RadixArk](https://huggingface.co/RadixArk) for the NVFP4 + DSpark checkpoints, [DeepSeek](https://arxiv.org/abs/2607.05147) for the DSpark method, [Qwen](https://huggingface.co/Qwen/Qwen3.8-27B) for the model, and [Unsloth](https://unsloth.ai/docs/models/qwen3.8) for their guides. This repo just packages a validated, hardened configuration of their work for GB10 machines. The SGLang cookbook's DGX Spark cell was marked "not yet validated" at the time; consider this an independent field validation (2026-08-15). On 2026-08-21 the cookbook made DFlash2 the official recipe for this model (same algorithm, same draft block 8; its `incoai/Qwen3.8-27B-DFlash2` draft path is byte-identical to the z-lab checkpoint this repo served until v1.9), with the DGX Spark cell marked "Final Verification In Progress": this repo's validation data is submitted upstream in [sgl-project/sglang#35860](https://github.com/sgl-project/sglang/issues/35860).
 
 ## License
 

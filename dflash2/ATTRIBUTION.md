@@ -25,8 +25,12 @@ Provenance of the five files:
   The same in-place approach is used by
   [r0b0tlab](https://github.com/r0b0tlab/qwen38-27b-nvfp4-sm121-sglang), whose K sweep
   (block 8 optimal, block 9 collapses) fixed this config's draft token count.
-- Draft model: [z-lab/Qwen3.8-27B-DFlash2](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2)
-  (pinned by revision in `install.sh`).
+- Draft model the overlay was validated with:
+  [z-lab/Qwen3.8-27B-DFlash2](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2).
+  Since v1.9 install.sh serves maurienne-ai's calibrated NVFP4 build of that
+  same draft by default (same architecture, same block size; see the DRAFT2
+  pins in `install.sh` and CHANGELOG v1.9.0). The overlay is engine code and
+  is unchanged by the swap.
 
 ## Patch 2: mrope height and width in the fused Qwen3.5 rope kernel (three files)
 

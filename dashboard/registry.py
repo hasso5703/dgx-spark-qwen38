@@ -21,7 +21,7 @@ PIN_MODELS = {
     "FLASH_NVDA_REV": "nvidia/Qwen3.8-Flash-Next-NVFP4",
     "FLASH_UNC_REV": "dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4",
     "DRAFT_REV": "RadixArk/Qwen3.8-27B-DSpark",
-    "DRAFT2_REV": "z-lab/Qwen3.8-27B-DFlash2",
+    "DRAFT2_REV": "maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal",
 }
 
 PIN_RE = re.compile(r'^\s*([A-Z][A-Z0-9_]*REV)="?\$?\{?[A-Z0-9_:-]*?([0-9a-f]{40})',

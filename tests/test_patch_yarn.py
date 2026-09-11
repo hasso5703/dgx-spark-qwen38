@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """patch-yarn.py on synthetic fixtures: both config shapes (text_config nested
 like the targets, root-level like the DFlash2 draft), key preservation,
-idempotence, backup creation, and exact-revision selection. No network."""
+idempotence, backup creation, exact-revision selection, and the native-mode
+restore path (--restore / --check). No network."""
 import json
 import os
 import shutil
@@ -29,6 +30,11 @@ def run(base: str, repo: str, rev: str) -> str:
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
     return r.stdout
+
+
+def run_mode(mode: str, base: str, repo: str, rev: str):
+    return subprocess.run([sys.executable, SCRIPT, mode, base, repo, rev],
+                          capture_output=True, text=True)
 
 
 def main() -> None:
@@ -64,6 +70,55 @@ def main() -> None:
         c2 = json.load(open(p2))
         assert c2["text_config"]["max_position_embeddings"] == 262144, \
             "the other snapshot must be untouched"
+        # --restore brings back the original and consumes the backup: a box
+        # coming home from 1m serves the pristine config again. Both shapes.
+        for repo, nested in (("org/target", True), ("org/draft", False)):
+            path = (f"{base}/hub/models--{repo.replace('/', '--')}"
+                    f"/snapshots/{sha}/config.json")
+            r = run_mode("--restore", base, repo, sha)
+            assert r.returncode == 0, r.stdout + r.stderr
+            assert "restored" in r.stdout, r.stdout
+            c = json.load(open(path))
+            tc = c.get("text_config", c)
+            assert tc["max_position_embeddings"] == 262144
+            assert tc["rope_parameters"] == {"rope_theta": 10000000,
+                                             "partial_rotary_factor": 0.25}, \
+                "restore must bring back the exact original rope block"
+            assert not os.path.exists(path + ".pre-yarn"), \
+                "the backup is consumed by the restore"
+            # Restoring twice is a no-op, and checking a clean tree is silent.
+            digest_clean = open(path, "rb").read()
+            r = run_mode("--restore", base, repo, sha)
+            assert r.returncode == 0 and "not patched" in r.stdout, \
+                r.stdout + r.stderr
+            assert open(path, "rb").read() == digest_clean, \
+                "a no-op restore must not touch the file"
+            r = run_mode("--check", base, repo, sha)
+            assert r.returncode == 0, r.stdout + r.stderr
+        # --check never mutates: a patched tree reports 2, and the file is
+        # byte-identical afterwards.
+        path = (f"{base}/hub/models--org--target/snapshots/{sha}/config.json")
+        run(base, "org/target", sha)
+        digest_before = open(path, "rb").read()
+        r = run_mode("--check", base, "org/target", sha)
+        assert r.returncode == 2, f"{r.returncode} {r.stdout} {r.stderr}"
+        assert "restorable" in r.stdout, r.stdout
+        assert open(path, "rb").read() == digest_before, "--check must not mutate"
+        # Patched with no backup (hand-patched cache, or a pre-backup era
+        # install): restore and check refuse with a re-download fix-it.
+        os.remove(path + ".pre-yarn")
+        r = run_mode("--restore", base, "org/target", sha)
+        assert r.returncode == 3, f"{r.returncode} {r.stdout} {r.stderr}"
+        assert "re-download" in r.stderr, r.stderr
+        r = run_mode("--check", base, "org/target", sha)
+        assert r.returncode == 3, f"{r.returncode} {r.stdout} {r.stderr}"
+        # --restore honors the exact revision like the patch does.
+        p2 = make_fixture(base, "org/pick", "c" * 40, nested=True)
+        run(base, "org/pick", "c" * 40)
+        make_fixture(base, "org/pick", "d" * 40, nested=True)
+        r = run_mode("--restore", base, "org/pick", "c" * 40)
+        assert r.returncode == 0 and ("c" * 40)[:12] in r.stdout, r.stdout
+        assert json.load(open(p2))["text_config"]["max_position_embeddings"] == 262144
         print("test_patch_yarn: OK")
     finally:
         shutil.rmtree(base, ignore_errors=True)
