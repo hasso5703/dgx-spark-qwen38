@@ -108,6 +108,8 @@ SWITCHES = (
     "--disable-prefill-cuda-graph",
     "--ple-offload-embedding",      # flash lane: the only reason 176B fits one GB10
     "--trust-remote-code",
+    "--enable-linear-replayssm-spec",  # flash lane MTP: verify intermediates on a
+    # fixed ring instead of per-request slots (measured +20% pool here)
 )
 
 
@@ -277,6 +279,12 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str],
     map_line = ""
     if lane == "flash" and "--speculative-algorithm" in tier_args and map_size not in ("0", ""):
         map_line = f"TIER+=(--speculative-token-map /out/token-map-{map_size}.pt)"
+    # Same shape as the token map: a speculative-path addition install.sh makes
+    # unless asked not to. The default lives once, in install.sh; recipes.py
+    # only repeats it, and CI asserts the two spellings agree.
+    if (lane == "flash" and assigns.get("FLASH_REPLAYSSM_SPEC", "1") not in ("0", "")
+            and "--speculative-algorithm" in tier_args):
+        tier_args += " --enable-linear-replayssm-spec"
     mapping = {"__KV_CACHE_ARGS__": kv,
                "__MODEL__": repo, "__MODEL_REV_ARGS__": f"--revision {rev}",
                "__MODEL_REV__": rev, "__IMAGE__": image,

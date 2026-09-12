@@ -218,9 +218,13 @@ python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$TEMPLATE_OUT" "$TARGET_REV" 
 # 3) point the target unit at the exact checkpoint. For the 27B pair, rewrite
 #    ONLY --model-path/--revision (the draft's own revision flag has a
 #    different name and is never touched). For flash, refresh --revision to
-#    the repo pin. Written to a temp file + sudo install -m 644.
+#    the repo pin. The 27B unit is installed with sudo, so it is staged at a
+#    FIXED path the cockpit's exact-argv sudoers allowlist pins (a mktemp name
+#    cannot be pinned); the user-owned flash launcher keeps a temp file.
 TMP_UNIT="$(mktemp)"
-trap 'rm -f "$TMP_UNIT"' EXIT
+STAGE_UNIT="$CONFIG_DIR/qwen38-sglang.service.switch-stage"
+STAGE_CEIL="$CONFIG_DIR/keepalive-ceiling.conf.switch-stage"
+trap 'rm -f "$TMP_UNIT" "$STAGE_UNIT" "$STAGE_CEIL"' EXIT
 if [ "$TARGET_LANE" = "27b" ]; then
   # The KV cache dtype follows the checkpoint, exactly as install.sh decides it:
   # Qwen's FP8 release carries no KV scales and must ask for fp8 explicitly, the
@@ -230,21 +234,21 @@ if [ "$TARGET_LANE" = "27b" ]; then
     fp8|uncensored-fp8) NEW_KV="--kv-cache-dtype fp8_e4m3 " ;;
     *)                  NEW_KV="" ;;
   esac
-  rewrite_27b_unit "$TARGET_UNIT" "$TARGET_REPO" "$TARGET_REV" "$NEW_KV" > "$TMP_UNIT"
-  grep -q -- "--model-path $TARGET_REPO" "$TMP_UNIT" || die "unit rewrite failed"
-  KV_SEEN="$(grep -c -- '--kv-cache-dtype fp8_e4m3' "$TMP_UNIT" || true)"
+  rewrite_27b_unit "$TARGET_UNIT" "$TARGET_REPO" "$TARGET_REV" "$NEW_KV" > "$STAGE_UNIT"
+  grep -q -- "--model-path $TARGET_REPO" "$STAGE_UNIT" || die "unit rewrite failed"
+  KV_SEEN="$(grep -c -- '--kv-cache-dtype fp8_e4m3' "$STAGE_UNIT" || true)"
   case "$CHOICE" in
     fp8|uncensored-fp8)
       [ "$KV_SEEN" -eq 1 ] || die "the rewritten unit lost the fp8 KV cache this target needs (it costs half the pool); re-run MODEL_CHOICE=$CHOICE ./install.sh" ;;
     *)
       [ "$KV_SEEN" -eq 0 ] || die "the rewritten unit still forces an fp8 KV cache; re-run MODEL_CHOICE=$CHOICE ./install.sh" ;;
   esac
-  grep -qE -- '--mem-fraction-static [0-9.]+' "$TMP_UNIT" || die "the rewritten unit lost its memory fraction"
+  grep -qE -- '--mem-fraction-static [0-9.]+' "$STAGE_UNIT" || die "the rewritten unit lost its memory fraction"
   if grep -q -- '--revision ' "$TARGET_UNIT"; then
-    grep -q -- "--revision $TARGET_REV" "$TMP_UNIT" || die "unit revision rewrite failed"
+    grep -q -- "--revision $TARGET_REV" "$STAGE_UNIT" || die "unit revision rewrite failed"
   fi
-  diff "$TMP_UNIT" "$TARGET_UNIT" || true   # show exactly what changes
-  sudo install -m 644 "$TMP_UNIT" "$TARGET_UNIT"
+  diff "$STAGE_UNIT" "$TARGET_UNIT" || true   # show exactly what changes
+  sudo install -m 644 "$STAGE_UNIT" "$TARGET_UNIT"
 else
   # Flash keeps its serving flags in a plain launch script; the unit just
   # points at it. Refresh --revision there.
@@ -300,16 +304,18 @@ sudo systemctl enable "$TARGET_UNIT_NAME" >/dev/null 2>&1 || sudo systemctl enab
 sudo systemctl daemon-reload
 # 4b) the keepalive proxy's one-prompt ceiling follows the lane (v1.5.6 contract, see
 #     install.sh: flash 200000 tokens by default, the 27B lane none), applied now so the
-#     proxy matches the lane that serves after the restart below.
+#     proxy matches the lane that serves after the restart below. Written as a systemd
+#     drop-in, never by editing the unit in place: an in-place sed needs a sudoers
+#     wildcard to stay valid, and a wildcard on sed is root (its w command writes any
+#     file). The drop-in overrides the unit's Environment line; install.sh bakes the
+#     ceiling into the unit and removes this drop-in, so either path converges.
 KA_UNIT="/etc/systemd/system/qwen38-keepalive.service"
 if [ -f "$KA_UNIT" ]; then
   CEIL=0
   [ "$TARGET_LANE" = "flash" ] && CEIL="${PROMPT_CEILING_TOKENS:-200000}"
-  if grep -q '^Environment=PROMPT_CEILING_TOKENS=' "$KA_UNIT"; then
-    sudo sed -i "s/^Environment=PROMPT_CEILING_TOKENS=.*/Environment=PROMPT_CEILING_TOKENS=$CEIL/" "$KA_UNIT"
-  else
-    sudo sed -i "/^Environment=UPSTREAM=/a Environment=PROMPT_CEILING_TOKENS=$CEIL" "$KA_UNIT"
-  fi
+  [[ "$CEIL" =~ ^[0-9]+$ ]] || die "PROMPT_CEILING_TOKENS must be a number (got '$CEIL')"
+  printf '[Service]\nEnvironment=PROMPT_CEILING_TOKENS=%s\n' "$CEIL" > "$STAGE_CEIL"
+  sudo install -m 644 -D "$STAGE_CEIL" "/etc/systemd/system/qwen38-keepalive.service.d/ceiling.conf"
   sudo systemctl daemon-reload
   sudo systemctl restart qwen38-keepalive.service
   echo "keepalive proxy: one-prompt ceiling ${CEIL} tokens for the $TARGET_LANE lane"

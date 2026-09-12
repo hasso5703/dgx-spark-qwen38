@@ -93,6 +93,19 @@ OVERSIZE_MARGIN_FRAC = float(os.environ.get("OVERSIZE_MARGIN_FRAC", "0.08"))
 # per 1k tokens beyond ~90k (measured 29/08), so the ceiling that keeps the box away from
 # the memory edge is a token count set per lane by install.sh, not a share of the pool.
 PROMPT_CEILING_TOKENS = int(os.environ.get("PROMPT_CEILING_TOKENS", "0") or 0)
+# Hard ceiling on one request body, in bytes (0 = none). The oversize guard
+# below only inspects bodies above 200 kB; without a cap a lying or broken
+# Content-Length in the gigabytes is allocated before anything is counted,
+# and a non-numeric one kills the handler thread with a ValueError (measured:
+# the client gets zero bytes back and the journal only says "no outcome").
+# 256 MiB is ~100x the largest legit text request on the 1M lane and leaves
+# heavy vision payloads room.
+MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", str(256 * 1024 * 1024)) or 0)
+# Time to first response byte from the upstream on GETs (models, health, load:
+# always fast or dead). Generations keep no deadline: a cold 690k-token
+# prefill legitimately takes tens of minutes to answer, streaming or not, and
+# any finite timeout there would break that flagship use case.
+UPSTREAM_GET_TIMEOUT_S = float(os.environ.get("UPSTREAM_GET_TIMEOUT_S", "30"))
 
 
 def prompt_limit(pool):
@@ -122,10 +135,13 @@ UNPYTHONIC_PATTERN_MARKS = (rb"\\p{", rb"\\P{", rb"(?<")
 _pattern_drop_logged = set()
 
 
-def _prune_patterns(node, dropped, depth=0):
+def _prune_patterns(node, dropped, depth=0, abandoned=None):
     """Drop, in place, every 'pattern' Python's re refuses. Depth-bounded: a cyclic
-    or absurdly nested schema must not take the proxy down with a RecursionError."""
+    or absurdly nested schema must not take the proxy down with a RecursionError.
+    Subtrees past the bound are left untouched and reported once via abandoned."""
     if depth > 48:
+        if abandoned is not None and not abandoned:
+            abandoned.append(True)
         return
     if isinstance(node, dict):
         pat = node.get("pattern")
@@ -136,10 +152,10 @@ def _prune_patterns(node, dropped, depth=0):
                 node.pop("pattern", None)
                 dropped.append(pat)
         for value in node.values():
-            _prune_patterns(value, dropped, depth + 1)
+            _prune_patterns(value, dropped, depth + 1, abandoned)
     elif isinstance(node, list):
         for value in node:
-            _prune_patterns(value, dropped, depth + 1)
+            _prune_patterns(value, dropped, depth + 1, abandoned)
 
 
 def _tool_param_schemas(j):
@@ -176,8 +192,11 @@ def sanitize_tool_schemas(body, path):
     if not isinstance(j, dict):
         return body, []
     dropped = []
+    truncated = []
     for schema in _tool_param_schemas(j):
-        _prune_patterns(schema, dropped)
+        _prune_patterns(schema, dropped, 0, truncated)
+    if truncated:
+        log("tool schema nested past depth 48: patterns below were not inspected, the engine may still 400")
     if not dropped:
         return body, []
     return json.dumps(j).encode(), dropped
@@ -228,6 +247,36 @@ def _strip_media(messages, media):
     return out
 
 
+def _api_key():
+    with open(os.path.expanduser("~/.config/qwen38/api-key"), encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def parse_body_length(value):
+    """A Content-Length header value -> byte count, or None when it is missing
+    as a number (absent means no body). Negative and non-numeric lengths are
+    client bugs, never a read size."""
+    try:
+        n = int(value or 0)
+    except (ValueError, TypeError):
+        return None
+    return n if n >= 0 else None
+
+
+def body_over_cap(n):
+    """True when this request may not be read at all: without a cap a lying
+    Content-Length in the gigabytes is allocated before anything is counted."""
+    return MAX_BODY_BYTES > 0 and n > MAX_BODY_BYTES
+
+
+def warmup_hold(est, pool):
+    """True when the pool is unknown and even the most optimistic token estimate
+    exceeds what any lane serves: the request must wait for a measurable engine
+    (503), never relay into a restart (scheduler wedge, restart-only cure). est
+    is a lower bound, so holding here can never delay a fittable request."""
+    return pool is None and est > (PROMPT_CEILING_TOKENS or 262144)
+
+
 def tokenize_count(body, path):
     """Exact prompt length from the engine's /tokenize endpoint (chat template
     applied to messages). None when nothing exact is possible for THIS body
@@ -252,7 +301,7 @@ def tokenize_count(body, path):
         else:
             return None
         payload = json.dumps(req).encode()
-        key = open(os.path.expanduser("~/.config/qwen38/api-key")).read().strip()
+        key = _api_key()
     except Exception:
         return None
     try:
@@ -297,7 +346,7 @@ def pool_tokens():
     if _POOL["tokens"] and time.time() - _POOL["ts"] < 600:
         return _POOL["tokens"]
     try:
-        key = open(os.path.expanduser("~/.config/qwen38/api-key")).read().strip()
+        key = _api_key()
         req = urllib.request.Request(UPSTREAM + "/get_server_info", headers={"Authorization": f"Bearer {key}"})
         info = json.loads(urllib.request.urlopen(req, timeout=4).read().decode())
         n = int(info.get("max_total_num_tokens") or 0)
@@ -423,8 +472,11 @@ class H(BaseHTTPRequestHandler):
     def _open(self, body):
         req = urllib.request.Request(UPSTREAM + self.path, data=body,
                                      headers=self._hdrs(), method=self.command)
+        # GETs are metadata and always fast; a generation may legitimately take
+        # tens of minutes before its first byte (cold giant prefill).
+        timeout = UPSTREAM_GET_TIMEOUT_S if self.command == "GET" else None
         try:
-            return urllib.request.urlopen(req, timeout=None), None, None
+            return urllib.request.urlopen(req, timeout=timeout), None, None
         except urllib.error.HTTPError as e:
             return None, e, None
         except (urllib.error.URLError, OSError) as e:
@@ -779,6 +831,8 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 drop_upstream(); self._done("CLIENT GONE on write"); return
         self._finish()
+        try: resp.close()          # the pump thread already ended at EOF; without this
+        except Exception: pass    # the socket waits for the refcount (or cyclic GC)
         self._done("ok" if kind == "f" else "UPSTREAM CUT")
 
     # ---- verbs -------------------------------------------------------------
@@ -788,7 +842,18 @@ class H(BaseHTTPRequestHandler):
         self._bytes = 0; self._first = None; self._last = None
         n0 = self.headers.get("Content-Length") or "0"
         log(f"{self._peer} -> {self.command} {self.path.split('?')[0]} body={n0}b")
-        n = int(self.headers.get("Content-Length") or 0)
+        n = parse_body_length(self.headers.get("Content-Length"))
+        if n is None:
+            self._plain(400, {"Content-Type": "application/json"},
+                        json.dumps({"error": {"type": "invalid_request",
+                                              "message": "keepalive-proxy: Content-Length is not a number"}}).encode())
+            self._done("400 bad Content-Length"); return
+        if with_body and body_over_cap(n):
+            log(f"{self._peer} REFUSED body {n}b over the {MAX_BODY_BYTES}b cap")
+            self._plain(413, {"Content-Type": "application/json"},
+                        json.dumps({"error": {"type": "body_too_large",
+                                              "message": f"keepalive-proxy: request body {n}b exceeds the {MAX_BODY_BYTES}b cap"}}).encode())
+            self._done("413 body over cap"); return
         body = self.rfile.read(n) if (with_body and n) else None
         body, dropped = sanitize_tool_schemas(body, self.path)
         for pat in dropped:                 # once per distinct pattern, not per request
@@ -799,7 +864,20 @@ class H(BaseHTTPRequestHandler):
         if body and self.path.startswith("/v1/") and len(body) > 200_000:
             pool = pool_tokens()
             est = len(body) / CHARS_PER_TOKEN_MIN     # optimistic: fewest tokens the body could be
-            if pool and est > prompt_limit(pool):
+            if pool is None:
+                # The engine just (re)started and its pool is unmeasured: relaying
+                # a monster now is exactly how the scheduler wedges (only a restart
+                # clears it). Small requests still pass, so availability is kept;
+                # anything above the lane's known ceiling waits for a measurable
+                # engine. 503, never 400: the request may be perfectly servable
+                # once the pool is known, so this is "try again", not "refused".
+                if warmup_hold(est, pool):
+                    log(f"{self._peer} REFUSED monster with unknown pool ({len(body)}b, est ~{int(est)} tokens); engine warming up")
+                    self._plain(503, {"Content-Type": "application/json", "Retry-After": "30"},
+                                json.dumps({"error": {"type": "engine_warming",
+                                                      "message": "keepalive-proxy: the engine restarted and its KV pool is not measured yet; retry in a few seconds"}}).encode())
+                    self._done("503 monster held during warmup"); return
+            elif est > prompt_limit(pool):
                 # v6.8: the size estimate only nominates; the engine's tokenizer decides
                 # (a 140k-token English prompt is 479 KB, which the 2.5 chars/token bound
                 # called 192k tokens and refused although the pool served it).
@@ -880,5 +958,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.14 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.15 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     Server(("0.0.0.0", port), H).serve_forever()

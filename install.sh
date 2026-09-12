@@ -191,6 +191,14 @@ esac
 #                high-throughput cell, 83 tok/s of output at 24 upstream and a
 #                ~286k pool, at 15.9 tok/s single stream.
 FLASH_TIER="${FLASH_TIER:-context}"
+# MTP verify intermediates on a fixed ring instead of per-request state slots
+# (the cookbook's EAGLE row on SM120/SM121). Measured on this box 2026-09-12,
+# context tier, same target: pool 463,936 -> 557,312 (+20%, above the previous
+# boot range), decode neutral (42.4 vs 43.1 greedy median, mixed per-probe
+# directions inside the documented uptime drift), canaries 4/4, no corruption.
+# Refused with the throughput tier, which runs no speculation. On unless
+# asked: measured +20% pool on this box, decode neutral, canaries 4/4.
+FLASH_REPLAYSSM_SPEC="${FLASH_REPLAYSSM_SPEC:-1}"
 # Also a function, and for the same reason: the convergence block can adopt the
 # tier the installed launcher is already serving.
 resolve_flash_tier_args() {
@@ -202,6 +210,17 @@ resolve_flash_tier_args() {
     throughput)
       FLASH_TIER_ARGS="--max-running-requests 24 --max-mamba-cache-size 96 --mamba-radix-cache-strategy extra_buffer_lazy" ;;
     *) printf 'ERROR: FLASH_TIER must be "context", "concurrency" or "throughput" (got: %s)\n' "$FLASH_TIER" >&2; exit 1 ;;
+  esac
+  case "$FLASH_REPLAYSSM_SPEC" in
+    0|"") ;;
+    1)
+      # No speculation on throughput, so nowhere to apply it: say so and skip,
+      # instead of failing a convergent throughput reinstall on the new default.
+      case "$FLASH_TIER" in
+        throughput) echo "NOTE: FLASH_REPLAYSSM_SPEC=1 has no speculation to apply to on the throughput tier; ignored" ;;
+        *) FLASH_TIER_ARGS="$FLASH_TIER_ARGS --enable-linear-replayssm-spec" ;;
+      esac ;;
+    *) printf 'ERROR: FLASH_REPLAYSSM_SPEC must be 0 or 1 (got: %s)\n' "$FLASH_REPLAYSSM_SPEC" >&2; return 1 ;;
   esac
 }
 resolve_flash_tier_args
@@ -360,6 +379,10 @@ Env overrides (defaults are pinned to the versions validated 2026-09-11):
   FLASH_TIER=concurrency             flash only: 8 concurrent requests with the
                                      MTP head instead of 4, at a third of the KV
                                      pool; "throughput" is 24 without speculation
+  FLASH_REPLAYSSM_SPEC=0            flash only: keep MTP verify intermediates
+                                     in per-request state slots instead of the
+                                     fixed ring (measured +20% pool on this box,
+                                     decode neutral, canaries 4/4)
   FLASH_MEM_FRACTION=0.85            flash only: static memory fraction
   PLE_RSS_BUDGET_GB=8                flash only: resident-set budget of the
                                      N-gram table's mapping (0 disables the trim)
@@ -537,11 +560,18 @@ if [ -n "$INSTALLED_CHOICE" ]; then
     echo "Keeping the installed context mode: 1m. Pass CONTEXT_MODE=native to change."
   fi
 fi
+# PORT feeds the arithmetic below, so it is validated before it is used.
+[[ "$PORT" =~ ^[0-9]+$ ]] || die "PORT must be a number (got '$PORT')"
 if [ -z "$_ENV_PROXY_PORT" ] && [ -r "/etc/systemd/system/qwen38-keepalive.service" ]; then
   CUR_PROXY="$(grep -oE 'keepalive-proxy\.py [0-9]+' /etc/systemd/system/qwen38-keepalive.service | head -1 | tr -dc '0-9' || true)"
   [ -n "${CUR_PROXY:-}" ] && PROXY_PORT="$CUR_PROXY"
 fi
 PROXY_PORT="${PROXY_PORT:-$((PORT+1))}"
+# A non-number dies here with its name on it, and the engine and its proxy may
+# never share one (each check would see "its" port free, then both services
+# would fight over the same socket at runtime).
+[[ "$PROXY_PORT" =~ ^[0-9]+$ ]] || die "PROXY_PORT must be a number (got '$PROXY_PORT')"
+[ "$PORT" != "$PROXY_PORT" ] || die "PORT and PROXY_PORT are both $PORT: the engine and its keepalive proxy cannot share a port"
 
 if [ "$NO_SERVICE" -eq 1 ] && [ "$NO_START" -eq 1 ]; then
   printf -- '--no-start controls the systemd service; with --no-service there is no service (drop one flag)\n' >&2; exit 1
@@ -578,11 +608,16 @@ echo "GPU: $GPU_NAME"
 case "$GPU_NAME" in *GB10*) ;; *) echo "WARNING: expected GB10, found '$GPU_NAME'. Continuing, but this config was only validated on GB10 (memory sizing may not fit other GPUs)." ;; esac
 command -v docker >/dev/null || die "docker not found. Install Docker + NVIDIA Container Toolkit (stock on DGX OS)."
 command -v python3 >/dev/null || die "python3 not found on the host (needed for the template patcher; stock on DGX OS)."
+command -v ss >/dev/null || die "ss not found (iproute2, stock on DGX OS): the preflight cannot check the ports without it."
 docker info >/dev/null 2>&1 || die "Cannot talk to the docker daemon. Fix: sudo usermod -aG docker \$USER && re-login (or run with a user in the docker group)."
 # /proc/meminfo, not `free`: free(1) localizes its row labels (issue #3)
 TOTAL_GB=$(awk '/^MemTotal/{print int($2/1048576)}' /proc/meminfo)
 [ "$TOTAL_GB" -ge 110 ] || die "This config needs a ~121 GB unified-memory machine; found ${TOTAL_GB} GB."
-FREE_DISK_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
+# Measured where the weights actually land: HF_CACHE may live on another disk,
+# and then free space under $HOME says nothing (the error message used to send
+# people there while measuring here).
+mkdir -p "$HF_CACHE" 2>/dev/null || true
+FREE_DISK_GB=$(df -BG --output=avail "$HF_CACHE" 2>/dev/null | tail -1 | tr -dc '0-9')
 # Fresh installs need ~45 GB for the 27B stack (checkpoints + caches) and
 # ~145 GB for Flash-Next (the NVFP4 checkpoint alone is ~136 GB and doubles as
 # the mmap-served PLE table). Upgrades with the big checkpoint already cached
@@ -597,7 +632,7 @@ if [ "$LANE" = "flash" ] && ! ls "$PLE_DIR"/ple_table_*.bin >/dev/null 2>&1; the
   # be there whether or not a previous boot left one behind.
   NEED_GB=$((NEED_GB + 50))
 fi
-[ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free under \$HOME for the checkpoints and caches; found ${FREE_DISK_GB} GB. Free some space or set HF_CACHE to another disk."
+[ -n "$FREE_DISK_GB" ] && [ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free for the checkpoints and caches under $HF_CACHE; found ${FREE_DISK_GB:-unknown} GB. Free some space or set HF_CACHE to another disk."
 DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
 DOCKER_FREE_GB=$(df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')
 [ "${DOCKER_FREE_GB:-0}" -ge "$DOCKER_NEED_GB" ] || die "Need ~${DOCKER_NEED_GB} GB free on $DOCKER_ROOT for the $IMG_LABEL; found ${DOCKER_FREE_GB:-?} GB (docker images live there, not under \$HOME)."
@@ -761,7 +796,10 @@ fi
 
 step "6/9 API key + patched chat template"
 if [ ! -s "$CONFIG_DIR/api-key" ]; then
-  head -c 24 /dev/urandom | base64 | tr -d '/+=' > "$CONFIG_DIR/api-key"
+  # Subshell umask like install-agent.sh: with umask 022 the file would be
+  # born 644 and world-readable until the chmod below runs.
+  ( umask 077 && head -c 24 /dev/urandom | base64 | tr -d '/+=' > "$CONFIG_DIR/api-key" ) \
+    || die "could not write $CONFIG_DIR/api-key"
   chmod 600 "$CONFIG_DIR/api-key"
   echo "API key generated at $CONFIG_DIR/api-key"
 else
@@ -930,7 +968,7 @@ if [ -f "$OC_USER_CFG" ]; then
     # Never downgrade a 27B unit that serves a larger window than this run's
     # CONTEXT_MODE computed (a native-mode re-install clobbered a 1m user's
     # 700000/200000 back to 194048/64000, reference box 2026-08-30).
-    UNIT_CTX="$(grep -oE -- '--context-length [0-9]+' "$SGL_UNIT_PATH" 2>/dev/null | awk '{print $2}' | head -1)"
+    UNIT_CTX="$(grep -oE -- '--context-length [0-9]+' "$SGL_UNIT_PATH" 2>/dev/null | awk '{print $2}' | head -1 || true)"
     if [ -n "$UNIT_CTX" ] && [ "$UNIT_CTX" -gt 262144 ] && [ "$CONTEXT_MODE" != "1m" ]; then
       echo "NOTE: the installed 27B unit serves --context-length $UNIT_CTX; keeping the existing"
       echo "      opencode limits (these $CONTEXT_MODE-mode values would shrink them). Re-run with"
@@ -1053,26 +1091,30 @@ if [ "$LANE" = "flash" ] && [ -z "$FLASH_QUANT_ARGS" ]; then
 fi
 
 render_tpl() {  # $1 template file; substituted result on stdout
-  sed -e "s|__HOME__|$HOME|g" \
-      -e "s|__USER__|$(id -un)|g" \
-      -e "s|__GROUP__|$(id -gn)|g" \
-      -e "s|__PORT__|$PORT|g" \
-      -e "s|__IMAGE__|$SERVE_IMAGE_FINAL|g" \
-      -e "s|__HF_CACHE__|$HF_CACHE|g" \
-      -e "s|__DRAFT2_REV__|$DRAFT2_REV|g" \
-      -e "s|__DRAFT2_REPO__|$DRAFT2_REPO|g" \
-      -e "s|__DRAFT2_QUANT__|$DRAFT2_QUANT|g" \
-      -e "s|__DRAFT2_TOKENS__|$DRAFT2_TOKENS|g" \
-      -e "s|__MODEL_REV_ARGS__|$MODEL_REV_ARGS|g" \
-      -e "s|__MODEL__|$MODEL_REPO|g" \
-      -e "s|__PLE_DIR__|$PLE_DIR|g" \
-      -e "s|__MODEL_REV__|$MODEL_REV|g" \
-      -e "s|__KV_CACHE_ARGS__|$KV_CACHE_ARGS|g" \
-      -e "s|__FLASH_TIER_ARGS__|$FLASH_TIER_ARGS|g" \
-      -e "s|__FLASH_QUANT_ARGS__|$FLASH_QUANT_ARGS|g" \
-      -e "s|__FLASH_MEM_FRACTION__|$FLASH_MEM_FRACTION|g" \
-      -e "s|__PLE_RSS_BUDGET_GB__|$PLE_RSS_BUDGET_GB|g" \
-      -e "s|__SPEC_TOKEN_MAP_LINE__|$SPEC_TOKEN_MAP_LINE|g" \
+  # Values are paths and versions, and paths may carry sed-special bytes
+  # (& expands to the match, | is the delimiter, backslash escapes): escape
+  # once so a mount point like /mnt/a&b can never corrupt an installed unit.
+  esc() { printf '%s' "$1" | sed -e 's/[\\/&|]/\\&/g'; }
+  sed -e "s|__HOME__|$(esc "$HOME")|g" \
+      -e "s|__USER__|$(esc "$(id -un)")|g" \
+      -e "s|__GROUP__|$(esc "$(id -gn)")|g" \
+      -e "s|__PORT__|$(esc "$PORT")|g" \
+      -e "s|__IMAGE__|$(esc "$SERVE_IMAGE_FINAL")|g" \
+      -e "s|__HF_CACHE__|$(esc "$HF_CACHE")|g" \
+      -e "s|__DRAFT2_REV__|$(esc "$DRAFT2_REV")|g" \
+      -e "s|__DRAFT2_REPO__|$(esc "$DRAFT2_REPO")|g" \
+      -e "s|__DRAFT2_QUANT__|$(esc "$DRAFT2_QUANT")|g" \
+      -e "s|__DRAFT2_TOKENS__|$(esc "$DRAFT2_TOKENS")|g" \
+      -e "s|__MODEL_REV_ARGS__|$(esc "$MODEL_REV_ARGS")|g" \
+      -e "s|__MODEL__|$(esc "$MODEL_REPO")|g" \
+      -e "s|__PLE_DIR__|$(esc "$PLE_DIR")|g" \
+      -e "s|__MODEL_REV__|$(esc "$MODEL_REV")|g" \
+      -e "s|__KV_CACHE_ARGS__|$(esc "$KV_CACHE_ARGS")|g" \
+      -e "s|__FLASH_TIER_ARGS__|$(esc "$FLASH_TIER_ARGS")|g" \
+      -e "s|__FLASH_QUANT_ARGS__|$(esc "$FLASH_QUANT_ARGS")|g" \
+      -e "s|__FLASH_MEM_FRACTION__|$(esc "$FLASH_MEM_FRACTION")|g" \
+      -e "s|__PLE_RSS_BUDGET_GB__|$(esc "$PLE_RSS_BUDGET_GB")|g" \
+      -e "s|__SPEC_TOKEN_MAP_LINE__|$(esc "$SPEC_TOKEN_MAP_LINE")|g" \
       "$1"
 }
 if [ "$LANE" = "flash" ]; then
@@ -1134,6 +1176,14 @@ sed -e "s|__HOME__|$HOME|g" \
     "$REPO_DIR/qwen38-keepalive.service.template" > "$TMP_KA"
 sudo install -m 644 "$TMP_KA" "/etc/systemd/system/$KEEPALIVE_UNIT"; rm -f "$TMP_KA"
 sudo systemctl enable "$KEEPALIVE_UNIT"
+# The ceiling lives in the unit this installer writes. A switch-model.sh
+# drop-in from an earlier lane would override it silently, so it goes: either
+# path converges on the installed lane's ceiling.
+if [ -f "/etc/systemd/system/$KEEPALIVE_UNIT.d/ceiling.conf" ]; then
+  echo "removing the stale keepalive ceiling drop-in (the installed unit carries the ceiling now)"
+  sudo rm -f "/etc/systemd/system/$KEEPALIVE_UNIT.d/ceiling.conf"
+  sudo rmdir "/etc/systemd/system/$KEEPALIVE_UNIT.d" 2>/dev/null || true
+fi
 # The Claude Code warmup was removed in v1.3: clean up what earlier versions
 # installed (only the warmup drop-in; any other drop-in in the .d dir is kept).
 if [ -f "/etc/systemd/system/$UNIT_NAME.d/warmup.conf" ]; then

@@ -92,6 +92,8 @@ KEY="$(cat "$CONFIG_DIR/api-key")"
 mkdir -p "$CONFIG_DIR/sglang-cache"
 echo "Starting in the foreground (first boot ≈ 9 min: torch.compile + CUDA graph capture)."
 echo "  Ready when the log says:  The server is fired up and ready to roll!"
+echo "  Config: native 262144 window, template defaults (memory fraction 0.50)."
+echo "  A hand-tuned service unit may serve a different fraction: compare like with like."
 echo "  Test from another shell:  curl http://127.0.0.1:$PORT/health"
 echo "  opencode:                 provider config at $CONFIG_DIR/opencode.json (README, \"opencode integration\")"
 echo "  Stop:                     Ctrl+C (container removed; compile cache kept for faster next boots)"
@@ -102,6 +104,7 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
   --memory 100g --memory-swap 100g --shm-size 16g --network host --ipc=host \
   -e TORCHINDUCTOR_CACHE_DIR=/cache/inductor \
   -e SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1 \
+  -e HF_HUB_OFFLINE=1 \
   -v "$CONFIG_DIR/sglang-cache":/cache \
   -v "$HF_CACHE":/root/.cache/huggingface \
   -v "$CONFIG_DIR":/out \

@@ -1,5 +1,146 @@
 # Changelog
 
+## v1.10.0 (2026-09-12): measured serving flags, a wildcard-free sudoers file, and a hardened proxy
+
+Five small holes in `keepalive-proxy.py`, each reproduced before fixing, each
+with a regression test in `tests/test_proxy_guard.py` (40 tests, coverage
+floor for the module holds at 75%).
+
+- A lying or broken `Content-Length` no longer decides the allocation: bodies
+  over `MAX_BODY_BYTES` (256 MiB, env-overridable) get 413 before a byte is
+  read, and a non-numeric or negative length gets 400 instead of killing the
+  handler thread with zero bytes back (raw-socket repro: empty reply, then
+  the next request served normally).
+- Upstream calls that are metadata always (`GET`: models, health, load) now
+  have a deadline (`UPSTREAM_GET_TIMEOUT_S`, 30 s). Generations keep none: a
+  cold giant prefill legitimately takes tens of minutes to its first byte.
+- A monster arriving while the pool is unmeasured (engine restart) waits with
+  503 `engine_warming` instead of relaying into a scheduler wedge. Small
+  requests still pass; the estimate is a lower bound, so no fittable request
+  is ever held; 503 and never 400, because the request may serve fine on retry.
+- The SSE socket is now closed explicitly at normal end of stream (it used to
+  wait for the refcount), and the depth bound of the tool-schema guard reports
+  instead of silently skipping (a missing propagation of the flag, caught by
+  the new coverage because the first version of the fix did not take).
+- Not changed on purpose: concurrent drains stay unbounded, because stopping
+  a drain early re-creates the engine-side zombie the drain exists to avoid.
+
+The cockpit runs `switch-model.sh` under NOPASSWD sudo, so its allowlist is a
+root boundary and had three wildcards in it (`install` from any source path,
+`sed -i` with any expression, `journalctl -k` with any flags). A wildcard on
+sed arguments is still root even pinned to one file (its `w` command writes
+any file), so the keepalive ceiling edit is a systemd drop-in now instead of
+an in-place edit, and the 27B unit stages at a fixed path the allowlist pins
+character for character. The `qwen38-flash.service` install line was dead
+privilege (flash switches through its user-owned launcher) and is gone; the
+journal read is the exact argv cockpit.py performs. Two CI gates hold it: no
+`*` on any allowlist line, and staging paths plus journalctl argv
+cross-checked against their callers (plus no `sudo sed` in switch-model.sh).
+
+Side hardening with the same change: the dashboard unit lost its
+`ReadWritePaths=/etc/systemd/system` (every cockpit read there is a
+read_text/is_file, verified; all writes go through sudo lines), while
+`NoNewPrivileges=no` stays: sudo cannot elevate under yes, so yes would
+silently break every button. `install.sh` removes a stale ceiling drop-in
+(the installed unit carries the ceiling again), and `uninstall.sh` lists and
+removes the drop-in dir, knows the served digest image and both flash weight
+trees (`--list` was blind to the 126G served weights), and warns against
+`docker image prune` when digest-pulled images are present.
+
+Same target, native lane, one variable at a time, 2026-09-12 with the box owner
+present. Baseline after a native reinstall (maurienne NVFP4 draft D16, chunk
+8192): pool 342,339, greedy median 63.5 tok/s.
+
+- Chunk 2048 vs 8192: median 63.3 vs 63.5, per-probe inside noise (reasoning
+  60.4/66.2 vs 60.7/66.2, prose identical to the decimal). KEPT 8192: no
+  headline difference, and 8192 protects 1M cold-prefill throughput while the
+  cookbook's 2048 case (smoother inter-token latency under mixed load) has no
+  measured problem behind it here.
+- Draft incoai/Qwen3.8-27B-DFlash2 (the cookbook's, proven byte-identical in
+  structure to z-lab: same size, 81 identical tensor headers) at D8/unquant
+  vs maurienne-ai calibrated NVFP4 at D16: median 52.5 vs 63.5 (code -20%,
+  reasoning -15%, math -30%, prose -5%). KEPT maurienne: the margin is too big
+  for depth alone to explain away, and the NVFP4 draft frees ~2.3 GiB of VRAM
+  into the pool. (The z-lab D8 boot was skipped on purpose: no outcome of it
+  could change the decision.)
+- `HF_HUB_OFFLINE=1` on the native lane: boots identically with a complete
+  cache (7 min, full graph capture, pool + smoke OK). ADOPTED in the native
+  template and run.sh; the CI gate that forbade it is updated with the reason.
+- `--json-model-override-args` instead of file patching for YaRN: BLOCKED with
+  proof. First attempt died on shell quoting (single quotes inside the
+  single-quoted ExecStart); fixed to compact unquoted JSON, the engine then
+  refused the shape outright (`unrecognized arguments`, one arg per nested
+  key). This build wants a flatter form, and the separate DFlash draft config
+  may not take overrides at all (MiaAI's DSpark leak is the same family).
+  Needs source-level research on the override parser, not another blind boot.
+  The file-patch path stays, fully repaired (see below).
+- Found live by the campaign: every native install died at step 8/9 since
+  ~30/08 (a grep for `--context-length` matches nothing on native units and
+  pipefail killed the script; only 1m units ever passed). Fixed with
+  `|| true` plus a CI gate that runs the idiom both ways.
+
+MTP verify intermediates on a fixed ring (`--enable-linear-replayssm-spec`,
+the cookbook's EAGLE row on SM120/SM121), measured on this box 2026-09-12 on
+the `flash-uncensored` target, context tier, everything else equal:
+
+- pool 463,936 -> 557,312 (+20%, above the previous boot range 279-463K);
+- decode neutral: greedy median 42.4 vs 43.1 (code 40.2 / reasoning 45.4 /
+  math 47.1 / prose 28.9 warmed, inside the documented uptime drift);
+- canaries 4/4 (merge, logic, French, primes), no corruption, accept rates
+  healthy. Adopted: the flag ships by default on speculating tiers
+  (`FLASH_REPLAYSSM_SPEC=0` to opt out; the throughput tier skips it with a
+  NOTE). New CI gate exercises the knob matrix, default included.
+
+The `concurrency` tier (8 requests) measured the same day: pool 468,480
+(was 129,792 before the flag), scheduler-capped at exactly 8, host 13G idle,
+single-stream best of the campaign (43.7 / 44.2 / 46.8 / 29.5, median 44.4),
+needle 8/8 exact to 140K at a 13.5 GiB floor, 90.4 tok/s aggregate at 4
+streams. The default stays `context` (4): its pool is larger still (557K),
+its 175K/64K session limits are sized for one or two streams, and
+concurrent-load memory is unmeasured; tier 8 stays a validated option, and
+the README tier table carries the new numbers.
+
+- API key file is born 0600 now (subshell umask, the install-agent.sh
+  pattern): with umask 022 it used to be world-readable until the chmod ran.
+- `PORT`/`PROXY_PORT` are validated as numbers before any arithmetic, and may
+  never be equal (each port check would see "its" port free, then both
+  services would fight over one socket). All three refusals verified live.
+- Disk is measured where the weights land (`HF_CACHE`, not `$HOME`), with an
+  explicit unknown instead of a cryptic integer error when `df` fails; `ss`
+  is a preflight requirement instead of a silent `2>/dev/null`.
+- Unit rendering escapes sed-special bytes in every value (byte-identical
+  output on sane values, proven; a path with `&` used to corrupt or abort
+  the render).
+- `oc-limits.sh --from` a missing file keeps its contract (defaults, rc 0,
+  the switch treats it as leave-everything) but says so on stderr now, gated.
+- `patch-yarn.py` writes atomically (temp file + rename, utf-8 both ways): a
+  kill can no longer leave a truncated config.json behind.
+- `run.sh` prints the served memory fraction at startup (still the native
+  template default 0.50 by contract, CI-gated exact): hand-tuned service
+  units compare like with like.
+- Deliberately unchanged, with the reason written down: `sudo` without `-n`
+  in the install scripts (they are interactive by design, the cockpit uses
+  `-n` everywhere), `set -uo` without `-e` in the two diagnostic helpers
+  (they degrade to FAIL lines, never a silent pass), no `HF_HUB_OFFLINE=1`
+  on the native lane (only the 1M lane needs it; adding it wants a boot
+  test), and `fit()` without a ceiling on proxyless boxes (no proxy
+  enforces one there, so the pool share is the right answer).
+
+Not a code change: the state `patch-yarn --restore` needs. Two pinned
+snapshots (stock 27B target, z-lab rollback draft) were YaRN-patched with no
+`.pre-yarn` backup next to them - every snapshot dir shares one blob per file
+through symlinks, so one old patch had covered three dirs and left no way
+back, and `CONTEXT_MODE=native ./install.sh` would have died on them. Fixed
+by re-downloading just `config.json` at each pin (hash-checked by the Hub
+tooling; the stale `.bak-native` files matched the fresh downloads byte for
+byte, confirming the pristine content three ways), re-linking, and
+re-patching: the re-patched bytes hash identically to before, so the dormant
+1M lane sees nothing change, and `--check` reports patched-with-backup on all
+four pinned snapshots now. A full stray snapshot revision (unreferenced
+anywhere, weights shared with the pin) was removed; it could otherwise hijack
+the newest-by-mtime fallback. Restore itself was proved on copies, not on the
+live cache.
+
 ## v1.9.1 (2026-09-11): opencode offers and defaults to the lane that serves
 
 Installing stock 1M over an fp8/flash era config left opencode's picker and

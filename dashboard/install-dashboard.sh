@@ -60,7 +60,7 @@ sudo install -m 644 "$TMP_UNIT" "$INSTALLED"; rm -f "$TMP_UNIT"
 TMP_SUDO="$(mktemp)"
 # read-only forensics wrapper (scheduler stack dump), referenced by the sudoers line below
 sudo install -m 755 "$HERE/pyspy-scheduler.sh" /usr/local/bin/qwen38-pyspy-scheduler
-sed -e "s|__USER__|$(id -un)|g" "$HERE/sudoers-cockpit.template" > "$TMP_SUDO"
+sed -e "s|__USER__|$(id -un)|g" -e "s|__HOME__|$HOME|g" "$HERE/sudoers-cockpit.template" > "$TMP_SUDO"
 sudo visudo -c -f "$TMP_SUDO" >/dev/null || die "sudoers render failed visudo check, NOT installed"
 sudo install -m 440 "$TMP_SUDO" /etc/sudoers.d/qwen38-cockpit; rm -f "$TMP_SUDO"
 

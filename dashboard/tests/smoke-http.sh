@@ -33,7 +33,21 @@ s = pathlib.Path("install.sh").read_text()
 m = re.search(r"^case \"\$MODEL_CHOICE\" in\n(.*?)^esac", s, re.M | re.S)
 arms = re.findall(r"^\s{2}([a-z0-9|-]+)\)", m.group(1), re.M)
 print(len({c for a in arms for c in a.split("|")} - {"*"}))')"
-ck "recipes: $NTARGETS builtin, flash sans derive" "$NTARGETS 0" "$(curl -s -b "$J" "$BASE/api/recipes" | python3 -c 'import json,sys; d=json.load(sys.stdin); f=[b for b in d["builtin"] if b["recipe"]["id"]=="flash"][0]; print(len(d["builtin"]), len(f["drift"] or []))')"
+ck "recipes: $NTARGETS builtin, served exact, rest checkpoint-only" "ok" "$(curl -s -b "$J" "$BASE/api/recipes" | python3 -c '
+import json,sys
+d = json.load(sys.stdin)
+bltin = d["builtin"]
+n = len(bltin)
+# Serving-flag drift is only ever excused as checkpoint-driven (another target
+# needs another kv/moe/quant pair by design); the served target itself must
+# match its recipe exactly, so at least one builtin reads fully clean.
+allowed = {"model.repo", "model.revision", "serve.kv_cache_dtype",
+           "serve.moe_runner_backend", "serve.quantization"}
+exact = [b["recipe"]["id"] for b in bltin if not (b["drift"] or [])]
+bad = [b["recipe"]["id"] + ":" + ",".join(sorted(x["key"] for x in b["drift"]))
+       for b in bltin if {x["key"] for x in (b["drift"] or [])} - allowed]
+print("ok" if n == int("'"$NTARGETS"'") and exact and not bad else
+      f"builtin={n} exact={exact} drift={bad}")')"
 # Every target the selector offers must be a target the action layer accepts.
 # The switch itself is not run here: this asks the validator, not the box.
 ck "chaque cible du selecteur est acceptee par l'action" "ok" "$(python3 - <<'PYEOF'

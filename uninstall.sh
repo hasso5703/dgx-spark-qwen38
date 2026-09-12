@@ -31,8 +31,8 @@ done
 # v1.2.2, v1.4, v1.5, ...), plus the pinned base images, matched by tag AND by
 # digest: a digest pull leaves no tag behind.
 LOCAL_IMAGE_REPOS="qwen38-dflash2 qwen38-flash"
-BASE_IMAGES="lmsysorg/sglang:qwen38-27b lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1 lmsysorg/sglang:qwen38flashnext lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1 vllm/vllm-openai:qwen38-flash-next vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8"
-HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 Qwen/Qwen3.8-27B-FP8 edp1096/Huihui-Qwen3.8-27B-abliterated-FP8 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal RadixArk/Qwen3.8-Flash-Next-NVFP4"
+BASE_IMAGES="lmsysorg/sglang:qwen38-27b lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1 lmsysorg/sglang:qwen38flashnext lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1 lmsysorg/sglang@sha256:9d2a843c706c74bc259c0d9abf360551eb2734e1e7d255ab012a6965f10480b6 lmsysorg/sglang@sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe vllm/vllm-openai:qwen38-flash-next vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8"
+HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 Qwen/Qwen3.8-27B-FP8 edp1096/Huihui-Qwen3.8-27B-abliterated-FP8 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal RadixArk/Qwen3.8-Flash-Next-NVFP4 nvidia/Qwen3.8-Flash-Next-NVFP4 dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4"
 
 FOUND_IMAGES=()   # "ref|size", deduplicated by image ID (a tag and its digest are one image)
 inventory_images() {
@@ -68,6 +68,7 @@ for u in qwen38-sglang.service qwen38-flash.service qwen38-keepalive.service qwe
   fi
 done
 [ -d /etc/systemd/system/qwen38-sglang.service.d ] && echo "  drop-ins  /etc/systemd/system/qwen38-sglang.service.d (pre-v1.3 warmup lived here)"
+[ -d /etc/systemd/system/qwen38-keepalive.service.d ] && echo "  drop-ins  /etc/systemd/system/qwen38-keepalive.service.d (switch-model.sh ceiling override)"
 [ -d /etc/systemd/system/qwen38-dashboard.service.d ] && echo "  drop-ins  /etc/systemd/system/qwen38-dashboard.service.d (cockpit overrides)"
 [ -f /etc/sudoers.d/qwen38-cockpit ] && echo "  sudoers   /etc/sudoers.d/qwen38-cockpit (cockpit argv allowlist, NOPASSWD)"
 [ -f /usr/local/bin/qwen38-pyspy-scheduler ] && echo "  wrapper   /usr/local/bin/qwen38-pyspy-scheduler (cockpit forensics helper)"
@@ -109,7 +110,7 @@ sudo systemctl disable --now qwen38-dashboard.service 2>/dev/null || true
 sudo systemctl disable --now opencode-web.service 2>/dev/null || true
 docker rm -f qwen38-sglang qwen38-sglang-run qwen38-flash 2>/dev/null || true
 sudo rm -f /etc/systemd/system/qwen38-sglang.service /etc/systemd/system/qwen38-flash.service /etc/systemd/system/qwen38-keepalive.service /etc/systemd/system/qwen38-dashboard.service /etc/systemd/system/opencode-web.service
-sudo rm -rf /etc/systemd/system/qwen38-sglang.service.d /etc/systemd/system/qwen38-dashboard.service.d
+sudo rm -rf /etc/systemd/system/qwen38-sglang.service.d /etc/systemd/system/qwen38-dashboard.service.d /etc/systemd/system/qwen38-keepalive.service.d
 # The cockpit's privileged surface goes with it: a NOPASSWD allowlist left behind
 # after an uninstall is the one leftover that is not merely clutter.
 sudo rm -f /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler
@@ -136,6 +137,10 @@ echo "To also reclaim disk space, run the commands for what the inventory found:
 for entry in ${FOUND_IMAGES[@]+"${FOUND_IMAGES[@]}"}; do
   echo "  docker rmi '${entry%%|*}'    # ${entry##*|}"
 done
+if printf '%s\n' ${FOUND_IMAGES[@]+"${FOUND_IMAGES[@]}"} | grep -q '@sha256:'; then
+  echo "  # never 'docker image prune' on this box: digest-pulled images look"
+  echo "  # dangling and prune deletes them (then a 30 GB re-pull before the lane reboots)"
+fi
 for repo in $HF_REPOS; do
   d="$HF_CACHE/hub/models--${repo//\//--}"
   [ -d "$d" ] && echo "  rm -rf '$d'    # $(dir_size "$d")"

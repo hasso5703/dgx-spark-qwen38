@@ -106,8 +106,14 @@ def main() -> None:
     rp["rope_type"] = "yarn"
     rp["factor"] = 4.0
     rp["original_max_position_embeddings"] = NATIVE_WINDOW
-    with open(path, "w") as f:
+    # Atomic write through a temp file in the same directory: a kill between
+    # truncate and flush used to leave a truncated config.json behind (the
+    # rerun then died parsing it instead of patching it). Same encoding as
+    # the read above, so no round-trip surprises.
+    tmp = path + ".tmp-yarn"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
+    os.replace(tmp, path)
     print(f"YaRN 1M applied to {path} (original backed up as config.json.pre-yarn)")
 
 

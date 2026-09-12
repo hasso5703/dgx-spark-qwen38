@@ -4,9 +4,14 @@
 # The cockpit runs unprivileged; these lines are the entire privileged
 # surface: start/stop/restart of the units of this repo (the three serving
 # units and the opencode web server of the Agent tab), the
-# operations switch-model.sh performs (unit install, enable/disable,
-# daemon-reload, the keepalive ceiling edit), one read-only forensics
-# wrapper, and kernel-journal reads.
+# operations switch-model.sh performs (27B unit install from a fixed staging
+# path, enable/disable, daemon-reload, the keepalive ceiling drop-in), one
+# read-only forensics wrapper, and one fixed kernel-journal read.
+# Deliberately free of wildcards now: a glob on install sources once allowed
+# any file, and a glob on sed arguments is still root (its w command writes
+# any file), so switch-model.sh stages at fixed paths and edits the keepalive
+# ceiling through a drop-in instead. The staging paths below must stay
+# identical to STAGE_UNIT/STAGE_CEIL in switch-model.sh (CI cross-checks).
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-sglang.service
@@ -24,8 +29,7 @@ __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl enable qwen38-flash.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-flash.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
-__USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 * /etc/systemd/system/qwen38-sglang.service
-__USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 * /etc/systemd/system/qwen38-flash.service
-__USER__ ALL=(root) NOPASSWD: /usr/bin/sed -i * /etc/systemd/system/qwen38-keepalive.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 __HOME__/.config/qwen38/qwen38-sglang.service.switch-stage /etc/systemd/system/qwen38-sglang.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 -D __HOME__/.config/qwen38/keepalive-ceiling.conf.switch-stage /etc/systemd/system/qwen38-keepalive.service.d/ceiling.conf
 __USER__ ALL=(root) NOPASSWD: /usr/local/bin/qwen38-pyspy-scheduler
-__USER__ ALL=(root) NOPASSWD: /usr/bin/journalctl -k *
+__USER__ ALL=(root) NOPASSWD: /usr/bin/journalctl -k --since -1h --no-pager -o short-iso

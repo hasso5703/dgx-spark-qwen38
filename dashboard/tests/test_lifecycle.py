@@ -291,6 +291,9 @@ class FeedOutcomes(unittest.TestCase):
         "UPSTREAM CUT": "fail",
         "REFUSED corrupted output": "fail",
         "400 oversize refused": "fail",
+        "400 bad Content-Length": "fail",
+        "413 body over cap": "fail",
+        "503 monster held during warmup": "fail",
         "503 engine unreachable": "fail",
         "503 engine unreachable (upstream 502)": "fail",
         "502 upstream": "fail",
@@ -373,7 +376,8 @@ class FeedOutcomes(unittest.TestCase):
             self.assertEqual(lc.parse_feed(self._line(outcome))[0]["kind"], "gone", outcome)
 
     def test_a_real_failure_still_reads_as_one(self):
-        for outcome in ("503 engine unreachable", "400 oversize refused", "UPSTREAM CUT",
+        for outcome in ("503 engine unreachable", "400 oversize refused", "400 bad Content-Length",
+                        "413 body over cap", "503 monster held during warmup", "UPSTREAM CUT",
                         "DROPPED upstream silent", "REFUSED corrupted output"):
             self.assertEqual(lc.parse_feed(self._line(outcome))[0]["kind"], "fail", outcome)
 

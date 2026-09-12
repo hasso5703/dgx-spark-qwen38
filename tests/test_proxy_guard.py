@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -223,6 +224,16 @@ class ProxyInFrontOfLoadingEngine(unittest.TestCase):
         threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
         with socket.socket() as sk:
             sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        # This class models a loading engine whose pool IS known (200000 via
+        # /get_server_info) while /tokenize still 503s. pool_tokens() needs the
+        # api-key file to ask, so provide one when the (possibly throwaway)
+        # HOME has none; without it the pool reads as unknown and the new
+        # warmup hold answers first (also 503, different type).
+        cls.keyfile = Path.home() / ".config/qwen38/api-key"
+        cls.had_key = cls.keyfile.exists()
+        if not cls.had_key:
+            cls.keyfile.parent.mkdir(parents=True, exist_ok=True)
+            cls.keyfile.write_text("test-key\n")
         env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}")
         cls.proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -235,6 +246,8 @@ class ProxyInFrontOfLoadingEngine(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.proc.terminate(); cls.proc.wait(timeout=5); cls.eng.shutdown()
+        if not cls.had_key:
+            cls.keyfile.unlink()
 
     def _post(self, body):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
@@ -454,6 +467,189 @@ class CorruptionTripwireEndToEnd(unittest.TestCase):
             if CorruptingEngine.aborted: break
             time.sleep(0.05)
         self.assertEqual(CorruptingEngine.aborted, ["rid-corrupt"])
+
+
+class HardeningEngine(http.server.BaseHTTPRequestHandler):
+    """Upstream for the v6.15 hardening gates: unknown pool (500 on
+    /get_server_info), a hanging metadata route, a fast one, and a small
+    SSE generation."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path == "/get_server_info":
+            self.send_response(500); self.end_headers(); return
+        if self.path == "/hang":
+            time.sleep(5)
+            try:
+                self.send_response(200); self.send_header("Content-Length", "2")
+                self.end_headers(); self.wfile.write(b"{}")
+            except Exception:
+                pass
+            return
+        out = b'{"ok": true}'
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out))); self.end_headers()
+        self.wfile.write(out)
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(n)
+        if self.path == "/tokenize":
+            self.send_response(500); self.end_headers(); return
+        ev = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(ev))); self.end_headers()
+        self.wfile.write(ev)
+
+
+class HardeningV615(unittest.TestCase):
+    """v6.15: a lying Content-Length never allocates, a hanging metadata GET
+    never parks a thread, and a monster arriving during a restart waits
+    (503) instead of wedging the scheduler. Small requests still pass."""
+
+    @classmethod
+    def setUpClass(cls):
+        import socket, subprocess
+        cls.eng = http.server.ThreadingHTTPServer(("127.0.0.1", 0), HardeningEngine)
+        threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}",
+                   PROMPT_CEILING_TOKENS="200000", UPSTREAM_GET_TIMEOUT_S="1",
+                   MAX_BODY_BYTES="1000000")
+        cls.proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
+                                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", cls.port), timeout=0.2).close(); break
+            except OSError:
+                time.sleep(0.05)
+        cls.k = importlib.util.module_from_spec(SPEC)
+        SPEC.loader.exec_module(cls.k)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate(); cls.proc.wait(timeout=10)
+        cls.eng.shutdown(); cls.eng.server_close()
+
+    def _raw(self, head, body=b""):
+        import socket
+        sk = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        try:
+            sk.sendall(head + b"\r\n\r\n" + body)
+            sk.settimeout(10)
+            out = b""
+            while b"\r\n\r\n" not in out:
+                chunk = sk.recv(4096)
+                if not chunk:
+                    break
+                out += chunk
+            return out
+        finally:
+            sk.close()
+
+    def test_non_numeric_content_length_is_400(self):
+        out = self._raw(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\nConnection: close")
+        self.assertIn(b" 400 ", out.split(b"\r\n", 1)[0])
+
+    def test_negative_content_length_is_400(self):
+        out = self._raw(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: -5\r\nConnection: close")
+        self.assertIn(b" 400 ", out.split(b"\r\n", 1)[0])
+
+    def test_body_over_cap_is_413_before_any_read(self):
+        out = self._raw(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 2000000\r\nConnection: close")
+        status = out.split(b"\r\n", 1)[0]
+        self.assertIn(b" 413 ", status)
+
+    def _post(self, body):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def test_monster_with_unknown_pool_is_503_not_relayed(self):
+        body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "word " * 150000}]}).encode()
+        self.assertGreater(len(body), 500_000)      # est ~300k tokens, over the 200k ceiling
+        status, raw = self._post(body)
+        self.assertEqual(status, 503)
+        err = json.loads(raw)["error"]
+        self.assertEqual(err["type"], "engine_warming")
+
+    def test_small_body_with_unknown_pool_is_relayed(self):
+        status, raw = self._post(json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode())
+        self.assertEqual(status, 200)
+        self.assertIn(b"hi", raw)
+
+    def test_hanging_metadata_get_is_503(self):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{self.port}/hang", timeout=10)
+            self.fail("the hanging upstream should have been cut")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 503)
+            self.assertEqual(json.loads(e.read())["error"]["type"], "engine_unavailable")
+
+    def test_deep_schema_is_left_untouched_and_reported(self):
+        """Patterns nested past the depth bound are not pruned (no crash, no
+        rewrite); the bound hit is reported instead of failing silently."""
+        node = {"type": "object"}
+        cur = node
+        for _ in range(40):
+            nxt = {"type": "object", "properties": {}}
+            cur["properties"] = {"x": nxt}
+            cur = nxt
+        cur["properties"] = {"a": {"type": "string", "pattern": r"^\p{L}+$"},
+                             "b": {"type": "string", "pattern": r"^\p{N}+$"}}
+        body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                           "tools": [{"type": "function", "function": {"name": "f", "parameters": node}}]}).encode()
+        out, dropped = self.k.sanitize_tool_schemas(body, "/v1/chat/completions")
+        self.assertIs(out, body)
+        self.assertEqual(dropped, [])
+
+
+class HardeningUnits(unittest.TestCase):
+    """The v6.15 decisions as pure units: parseable lengths, the read cap,
+    and the warmup hold, all without a socket."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "kproxy_units", HERE.parents[1] / "keepalive-proxy.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+        self.m.UPSTREAM = "http://127.0.0.1:1"   # nothing answers: pool stays unknown
+        self.m.invalidate_pool()
+
+    def test_parse_body_length(self):
+        self.assertEqual(self.m.parse_body_length(None), 0)
+        self.assertEqual(self.m.parse_body_length(""), 0)
+        self.assertEqual(self.m.parse_body_length("0"), 0)
+        self.assertEqual(self.m.parse_body_length("12"), 12)
+        self.assertIsNone(self.m.parse_body_length("abc"))
+        self.assertIsNone(self.m.parse_body_length("-5"))
+        self.assertIsNone(self.m.parse_body_length("12.5"))
+
+    def test_body_over_cap(self):
+        self.m.MAX_BODY_BYTES = 100
+        self.assertFalse(self.m.body_over_cap(0))
+        self.assertFalse(self.m.body_over_cap(100))
+        self.assertTrue(self.m.body_over_cap(101))
+        self.m.MAX_BODY_BYTES = 0                  # 0 disables the cap
+        self.assertFalse(self.m.body_over_cap(10 ** 12))
+
+    def test_warmup_hold_only_delays_monsters(self):
+        self.assertTrue(self.m.warmup_hold(262145, None))
+        self.assertFalse(self.m.warmup_hold(262144, None))    # boundary: strictly over
+        self.assertFalse(self.m.warmup_hold(10, None))
+        self.assertFalse(self.m.warmup_hold(10 ** 9, 467776))  # known pool: not this gate
+        self.m.PROMPT_CEILING_TOKENS = 200000
+        self.assertTrue(self.m.warmup_hold(200001, None))
+        self.assertFalse(self.m.warmup_hold(200000, None))
 
 
 if __name__ == "__main__":

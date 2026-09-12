@@ -77,6 +77,10 @@ case "$SECOND" in
   --from)
     INVOCATION="${3:-}"
     [ -n "$INVOCATION" ] || usage
+    # A missing file keeps the old contract (defaults, rc 0: switch-model.sh
+    # treats "no limits" as leave-everything, mid-switch is no place to die),
+    # but it says so loudly instead of silently serving another lane's numbers.
+    [ -f "$INVOCATION" ] || echo "oc-limits.sh: --from $INVOCATION is not a file; using defaults" >&2
     ;;
   "")   ;;                       # nothing given: fall back to the defaults below
   *)    SELECTOR="$SECOND" ;;
@@ -102,7 +106,11 @@ case "$CHOICE" in
     # holds alongside the answer).
     case "$TIER" in
       context)     CTX=175000; OUT=64000 ;;   # 239,000 <= the pool; 175,000 = the 200,000 ceiling minus the estimate drift (field 10/09: the engine counted 208,297 prompt tokens while opencode, at context 190,000, still thought it was under its own threshold - opencode counts by estimate, the proxy counts with the engine; a tool-heavy session overruns its own limit by >=18,000 tokens, so the ceiling's slack must cover the drift or the proxy refuses before compaction ever fires)
-      concurrency) CTX=100000; OUT=16000 ;;   # 116,000 <= the 129,792-token pool, 100,000 <= its 119,408 proxy share
+      concurrency) CTX=100000; OUT=16000 ;;   # 116,000 worst case. Measured 2026-09-12
+      # with replayssm-spec the 8-request pool came out at 468,480 (not 129,792),
+      # so these limits are conservative on this box; they stay until concurrent-
+      # load memory is measured (single-stream floor 13.5 GiB proves nothing
+      # about eight heavy streams at once).
       throughput)  CTX=110000; OUT=32000 ;;   # a big pool, but 24 requests share it
       *) printf 'oc-limits: unknown flash tier "%s"\n' "$TIER" >&2; exit 2 ;;
     esac

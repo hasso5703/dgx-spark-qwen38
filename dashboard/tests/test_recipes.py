@@ -246,7 +246,7 @@ class Drift(unittest.TestCase):
                      "__MODEL_REV_ARGS__": "--revision " + f["model"]["revision"],
                      "__MODEL_REV__": f["model"]["revision"],
                      "__FLASH_QUANT_ARGS__": "--quantization modelopt_fp4 ",
-                     "__FLASH_TIER_ARGS__": rc.TIER_ARGS["context"],
+                     "__FLASH_TIER_ARGS__": rc.TIER_ARGS["context"] + " --enable-linear-replayssm-spec",
                      "__FLASH_MEM_FRACTION__": ASSIGNS["FLASH_MEM_FRACTION"],
                      "__PLE_RSS_BUDGET_GB__": ASSIGNS["PLE_RSS_BUDGET_GB"],
                      "__SPEC_TOKEN_MAP_LINE__":
@@ -655,7 +655,9 @@ class FlashTierParity(unittest.TestCase):
     @classmethod
     def install_tiers(cls):
         text = (REPO / "install.sh").read_text()
-        found = re.findall(r'FLASH_TIER_ARGS="([^"]*)"', text)
+        # Tier definitions start with a flag; the replayssm self-append
+        # (FLASH_TIER_ARGS="$FLASH_TIER_ARGS ...") is an augmentation, not a tier.
+        found = re.findall(r'FLASH_TIER_ARGS="(--[^"]*)"', text)
         by_mrr = {}
         for args in found:
             m = re.search(r"--max-running-requests (\d+)", args)

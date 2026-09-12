@@ -432,6 +432,22 @@ jobs:
             echo "the NVDA render must not pass a draft quantization"; exit 1
           fi
           arm() { grep -A2 -E "^ *$1\)$|^ *$1\) " install.sh; }
+          # The replayssm-spec knob: off by default, on for speculating tiers,
+          # refused with throughput (no speculation there) and on bad values.
+          # Sourced as a function so the gate exercises the real code path.
+          knob() { FLASH_TIER="$1" FLASH_REPLAYSSM_SPEC="$2" bash -c '
+            eval "$(sed -n "/^resolve_flash_tier_args() {/,/^}/p" install.sh)"
+            resolve_flash_tier_args >/dev/null 2>&1; echo "rc=$?|$FLASH_TIER_ARGS"'; }
+          case "$(knob context 0)" in rc=0*"replayssm"*) echo "replayssm on at explicit off"; exit 1;; esac
+          knob context 0 | grep -q "rc=0" || { echo "context/off must succeed"; exit 1; }
+          knob context 1 | grep -q "enable-linear-replayssm-spec" || { echo "context/on must carry the flag"; exit 1; }
+          knob concurrency 1 | grep -q "enable-linear-replayssm-spec" || { echo "concurrency/on must carry the flag"; exit 1; }
+          out="$(knob throughput 1)"; echo "$out" | grep -q "rc=0" || { echo "throughput/on must succeed (skip, not fail)"; exit 1; }
+          echo "$out" | grep -q "enable-linear-replayssm-spec" && { echo "throughput must not carry the flag"; exit 1; }
+          knob context 2 | grep -q "rc=1" || { echo "a bad knob value must be refused"; exit 1; }
+          # The default lives once, in install.sh; recipes.py only repeats it.
+          grep -q '^FLASH_REPLAYSSM_SPEC="${FLASH_REPLAYSSM_SPEC:-1}"$' install.sh || { echo "install.sh default moved"; exit 1; }
+          grep -q 'assigns.get("FLASH_REPLAYSSM_SPEC", "1")' dashboard/recipes.py || { echo "recipes.py default disagrees"; exit 1; }
           arm 'flash-nvda' | grep -qE 'FLASH_QUANT_ARGS="--moe-runner-backend flashinfer_cutlass ' \
             || { echo "install.sh: the NVDA arm no longer pins the MoE runner"; exit 1; }
           if arm 'flash-nvda' | grep -q 'speculative-draft-model-quantization'; then
@@ -586,6 +602,9 @@ jobs:
           [ "$(l stock --from "$tmp/u1m.service")" = "700000 200000 local, 1M" ] || { echo "derived 1m wrong"; exit 1; }
           [ "$(l stock --from "$tmp/unat.service")" = "194048 64000 local" ] || { echo "derived native wrong"; exit 1; }
           [ "$(l flash --from /nonexistent)" = "175000 64000 local" ] || { echo "a missing invocation must fall back to the default tier"; exit 1; }
+          out="$(l flash --from /nonexistent 2>/tmp/oclim.err)"; rc=$?
+          [ "$rc" = "0" ] || { echo "a missing invocation must not fail the switch"; exit 1; }
+          grep -q "not a file" /tmp/oclim.err || { echo "a missing invocation must say so on stderr"; exit 1; }
           rm -rf "$tmp"
           # The FP8 pair must ask for strictly less than the NVFP4 pair and fit the
           # measured FP8 pool. We do NOT assert an absolute NVFP4 pool: the repo
@@ -694,15 +713,16 @@ jobs:
 
       - name: Anti-drift, the two unit templates differ only on the four known lines
         run: |
-          filt() { grep -vE 'Description=|--mem-fraction-static|--model-path|TORCHINDUCTOR_CACHE_DIR'; }
+          filt() { grep -vE 'Description=|--mem-fraction-static|--model-path|TORCHINDUCTOR_CACHE_DIR|HF_HUB_OFFLINE'; }
+          # HF_HUB_OFFLINE rides on the filtered TORCHINDUCTOR line in 1m and stands
+          # alone in native: presence is asserted below, not by the diff.
           diff <(filt < qwen38-sglang.service.template) <(filt < qwen38-sglang-1m.service.template)
           grep -q -- '--mem-fraction-static 0.50' qwen38-sglang.service.template
           grep -q -- '--mem-fraction-static 0.70' qwen38-sglang-1m.service.template
           grep -q -- '--context-length 1010000 --model-path __MODEL__ __MODEL_REV_ARGS__' qwen38-sglang-1m.service.template
           grep -q 'HF_HUB_OFFLINE=1' qwen38-sglang-1m.service.template
-          if grep -q 'HF_HUB_OFFLINE' qwen38-sglang.service.template; then
-            echo "the native template must not set HF_HUB_OFFLINE"; exit 1
-          fi
+          grep -q 'HF_HUB_OFFLINE=1' qwen38-sglang.service.template \
+            || { echo "the native template lost HF_HUB_OFFLINE"; exit 1; }
 
       - name: Anti-drift, run.sh serves the native unit's exact flag set and constants
         run: |
@@ -791,6 +811,21 @@ jobs:
       - name: opencode limits merge helper (config shapes, JSONC)
         run: python3 tests/test_oc_merge_limits.py
 
+      - name: Native units carry no context-length flag (install must survive that)
+        run: |
+          # install.sh reads the installed unit's --context-length to protect 1m
+          # users from a shrinking native reinstall. A native unit has no such
+          # flag (262144 is the engine default), so the grep matches nothing,
+          # and under pipefail that killed every native install at step 8/9
+          # (found live 2026-09-12: only 1m units, which carry 1010000, passed).
+          grep -q 'UNIT_CTX="$(grep -oE.*head -1 || true)"' install.sh \
+            || { echo "UNIT_CTX pipeline must tolerate zero matches"; exit 1; }
+          probe() { PROBE_TEXT="$1" bash -e -o pipefail -c '
+            UNIT_CTX="$(printf "%s\n" "$PROBE_TEXT" | grep -oE -- "--context-length [0-9]+" | awk "{print \$2}" | head -1 || true)"
+            printf "%s" "${UNIT_CTX:-empty}"'; }
+          [ "$(probe '--mem-fraction-static 0.50')" = "empty" ] || { echo "native unit must yield empty, not death"; exit 1; }
+          [ "$(probe '--context-length 1010000')" = "1010000" ] || { echo "1m unit must still yield its window"; exit 1; }
+
       - name: opencode default model follows the lane (picker names, one table)
         run: |
           python3 tests/test_oc_point_default.py
@@ -853,6 +888,84 @@ jobs:
                   print("  " + b)
               sys.exit(1)
           print(f"switch-model.sh privileged calls: all covered ({len(allowed)} allowlist entries)")
+          PY
+
+      - name: Sudoers allowlist has no wildcards and matches its callers
+        run: |
+          # The cockpit runs switch-model.sh under NOPASSWD sudo, so every
+          # privileged argv there must appear here character for character, and
+          # no line may hide a wildcard (a glob on install sources once allowed
+          # any file; a glob on sed arguments is still root, its w command
+          # writes any file, so the ceiling edit is a drop-in now).
+          python3 - <<'PY'
+          import pathlib, re, sys
+          alw = pathlib.Path("dashboard/sudoers-cockpit.template").read_text()
+          bad = [ln for ln in alw.splitlines()
+                 if ln.strip().startswith("__USER__") and "*" in ln]
+          if bad:
+              print("wildcard in sudoers allowlist:")
+              print("\n".join("  " + b for b in bad)); sys.exit(1)
+          sw = pathlib.Path("switch-model.sh").read_text()
+          for var, tail in (("STAGE_UNIT", "qwen38-sglang.service.switch-stage"),
+                            ("STAGE_CEIL", "keepalive-ceiling.conf.switch-stage")):
+              m = re.search(rf'^{var}="\$CONFIG_DIR/([^"]+)"', sw, re.M)
+              if not m or not m.group(1).endswith(tail):
+                  print(f"{var} staging path changed or missing in switch-model.sh"); sys.exit(1)
+              want = f"__HOME__/.config/qwen38/{m.group(1)}"
+              if want not in alw:
+                  print(f"staging source not in allowlist: {want}"); sys.exit(1)
+          ck = pathlib.Path("dashboard/cockpit.py").read_text()
+          calls = re.findall(r'run\(\["sudo", "-n", "/usr/bin/journalctl", ([^\]]+)\]', ck)
+          if not calls:
+              print("cockpit sudo journalctl call not found"); sys.exit(1)
+          for c in calls:
+              args = " ".join(re.findall(r'"([^"]+)"', c))
+              if f"/usr/bin/journalctl {args}" not in alw:
+                  print(f"cockpit journalctl argv not in allowlist: {args}"); sys.exit(1)
+          if re.search(r"^ *sudo sed ", sw, re.M):
+              print("sudo sed in switch-model.sh: use the ceiling drop-in instead"); sys.exit(1)
+          unit = pathlib.Path("dashboard/qwen38-dashboard.service.template").read_text()
+          if "ReadWritePaths=/etc/systemd/system" in unit:
+              print("dashboard unit still writable on /etc/systemd/system (cockpit only reads there)"); sys.exit(1)
+          print("sudoers allowlist: no wildcards, staging paths and journalctl argv match their callers")
+          PY
+
+      - name: Uninstall inventory knows the current pins
+        run: |
+          # --list is the authority on what belongs to the project: when a pin
+          # moves in install.sh, the inventory must follow or image/weight
+          # orphans go silent (seen 2026-09-12: the served 126G dealignai
+          # weights and the served digest image were both invisible).
+          python3 - <<'PY'
+          import pathlib, re, sys
+          inst = pathlib.Path("install.sh").read_text()
+          un = pathlib.Path("uninstall.sh").read_text()
+          bad = []
+          for var in ("IMAGE", "FLASH_IMAGE", "DFLASH2_OFFICIAL_IMAGE"):
+              m = re.search(rf'^{var}.*?(lmsysorg/sglang@sha256:[0-9a-f]{{64}})', inst, re.M)
+              if not m or m.group(1) not in un:
+                  bad.append(var)
+          def pin_repo(var):
+              # plain ="..." form, else the ${VAR:-default} form (matched with
+              # a literal prefix search: an f-string cannot spell those braces)
+              m = re.search(rf'^{var}="([^"]+)"', inst, re.M)
+              if m and not m.group(1).startswith("${"):
+                  return m.group(1)
+              pre = var + '="${' + var + ':-'
+              for line in inst.splitlines():
+                  if line.startswith(pre) and line.endswith('}"'):
+                      return line[len(pre):-2]
+              return None
+
+          for var in ("STOCK_REPO", "UNC_REPO", "FP8_REPO", "UNCFP8_REPO",
+                      "FLASH_REPO", "FLASH_NVDA_REPO", "FLASH_UNC_REPO", "DRAFT2_REPO"):
+              val = pin_repo(var)
+              if not val or val not in un:
+                  bad.append(var)
+          if bad:
+              print("install.sh pins missing from uninstall.sh inventory:")
+              print("\n".join("  " + b for b in bad)); sys.exit(1)
+          print("uninstall inventory: all serving pins covered")
           PY
 
       - name: Cockpit and agent unit templates render, and their installers know every placeholder
