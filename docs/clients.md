@@ -1,0 +1,133 @@
+# Client compatibility
+
+The stack serves two dialects through one hardened entry point. This page
+says which, what each client must send, and what is measured on the
+reference box versus what is merely how a client is configured.
+
+## The surface
+
+Agent clients should connect to the **keepalive proxy** (default
+`:30001`), not the engine directly: it injects the SSE keepalives that stop
+client watchdogs from killing long prefills, aborts decodes when clients
+disappear, caps and refuses what cannot be served with a body a client can
+act on, and aborts decodes that emit the corruption marker. The engine
+port (`:30000`) speaks the same APIs without that protection; the proxy is
+the door this repo leaves unlocked-for-your-clients, the engine is the door
+it assumes you walk through on a trusted network.
+
+| | path | dialect |
+|---|---|---|
+| chat | `POST /v1/chat/completions` | OpenAI |
+| models | `GET /v1/models` | OpenAI |
+| messages | `POST /v1/messages` | Anthropic-compatible (Claude Code, Claude-family SDKs) |
+| health | `GET /health` | plain text; stays open even when client keys are on |
+
+Authentication on every path except `/health`: `Authorization: Bearer
+<key>`, the key in `~/.config/qwen38/api-key` (0600). The Anthropic
+dialect is Bearer-only: an `x-api-key` header is not read. The engine
+enforces the key; the proxy forwards it verbatim.
+
+Served model names: `qwen3.8-27b` (27B lane, both context modes) and
+`qwen3.8-flash-next` (flash lane). Send the name, not the checkpoint path.
+
+Reasoning effort is a first-class field in both dialects (`low`, `medium`,
+`xhigh`; the template maps `max`/`high` to `xhigh` and `minimal` to `low`,
+see README "Reasoning-effort variants"). Long turns cost time at the
+engine's speed, not yours: an `xhigh` turn can stream for minutes on a
+correct answer, and several clients have wall-clock watchdogs that read
+that as a hang. Prefer `medium` for interactive editing, `low` for
+mechanical edits, and keep `xhigh` for the hard turn.
+
+Oversize behavior differs by lane, deliberately: the 27B units pass
+`--allow-auto-truncate` (an oversized prompt is truncated, which is often
+what an agent wanted), the flash lane does not (it refuses instead), and
+the flash proxy carries a 250,000-token ceiling that answers 413 with a
+message naming the ceiling and the retry shape.
+
+## Measured on the reference box
+
+- **opencode**: the primary client; the installer writes its provider
+  config (effort variants, default model follows the target). Everything
+  in README applies through the proxy.
+- **Claude Code (legacy support)**: works through the proxy on the
+  Anthropic dialect. The env block that makes it behave:
+
+  ```bash
+  ANTHROPIC_BASE_URL=http://<host>:30001   ANTHROPIC_AUTH_TOKEN="<key>"
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144    # or 1010000 with CONTEXT_MODE=1m
+  API_TIMEOUT_MS=3600000
+  CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=1800000
+  CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000
+  ```
+
+  The idle-timeout variables are the difference between "hangs" and "slow";
+  they are named in issue #2 and in the failure family diagnosed in
+  issue #1 (clients cap total turn duration, not idle time). Quality and
+  tool calls were validated here; the client itself is not the maintained
+  integration.
+- **VS Code Copilot BYOK**: reports the same total-duration watchdog in
+  issue #1 (VSCode Copilot gives no timeout env to widen it). The fix that
+  worked for the reporter is the config shape in that issue: chat-completions
+  apiType, the proxy URL, effort fields per the client's own schema; keep
+  effort at `medium` or `low` while streaming turns are long.
+
+## Standard OpenAI-compatible clients (configured here, not measured)
+
+Anything that takes `base_url` + API key points at
+`http://<host>:30001/v1` with the API key as the token, and gets the
+`qwen3.8-27b` model name. Two examples because they are the ones asked for
+most; the configurations are their vendors' standard OpenAI fields, and
+the claims below about the engine side are the ones this repo has verified:
+
+- **Open WebUI**: `OPENAI_API_BASE_URL=http://<host>:30001/v1`, key as
+  above; model discovery via `GET /v1/models` answers through the proxy.
+- **Cursor / Continue / Zed assistant**: OpenAI provider, same base and
+  key. Vision requests pass the proxy's media pricing (image parts cost a
+  declared token count each, see BENCHMARKS.md "What an image costs").
+
+If you run one of these in anger and it disagrees with something here, a
+box-report issue with the client's exact request body is the contribution
+that moves this section.
+
+## Optional TLS (v6.16)
+
+For a client that will only speak TLS, or a network segment that requires
+it, the proxy speaks TLS when you name the certificate, and only then. The
+drop-in survives re-installs (`systemctl edit` writes a drop-in directory
+that `install.sh` does not touch):
+
+```bash
+sudo systemctl edit qwen38-keepalive   # creates the override; content:
+[Service]
+Environment=QWEN38_TLS_CERT=/etc/ssl/qwen38/cert.pem
+Environment=QWEN38_TLS_KEY=/etc/ssl/qwen38/key.pem
+sudo systemctl restart qwen38-keepalive
+```
+
+Bring your own certificate: a tailnet CA cert, a LAN-trust one, whatever
+your clients already trust. TLS 1.2 is the floor; a cert that cannot be
+read or parsed makes the unit refuse to start rather than come up plain
+(verified by `tests/test_proxy_tls.py`, including that no plaintext socket
+survives beside the TLS one).
+
+## Optional per-client identity (v6.16)
+
+One key, one trust realm is the default, and it is fine for one operator.
+To know which client sent what (and to stop sharing a single secret):
+
+```bash
+sudo mkdir -p /etc/qwen38 && sudo install -m 0600 keys.json /etc/qwen38/client-keys.json
+sudo systemctl edit qwen38-keepalive
+[Service]
+Environment=QWEN38_CLIENT_KEYS_FILE=/etc/qwen38/client-keys.json
+sudo systemctl restart qwen38-keepalive
+```
+
+`keys.json` is `{"<bearer-token>": "<label>", ...}`; each client sends its
+own token as the Bearer value. A request whose token is not listed gets a
+401 in its own dialect and never reaches the engine; the label appears on
+every journal line of the request (`journalctl -u qwen38-keepalive`), so
+per-client throughput and refusals become readable without a telemetry
+component. `/health` stays open for monitoring. A missing, empty or
+malformed keys file stops the unit at start: the wall is present or the
+unit is down, never silently absent.
