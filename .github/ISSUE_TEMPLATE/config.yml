@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or idea, not a bug or a box report
+    url: https://github.com/hasso5703/dgx-spark-qwen38/discussions
+    about: Discussion is where a feature earns its issue; an issue that turns out to be a question costs the next bug report its triage.
