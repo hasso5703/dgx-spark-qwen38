@@ -1071,6 +1071,11 @@ if [ "$NO_SERVICE" -eq 1 ]; then
 fi
 
 step "8/9 Installing the systemd service (sudo needed)"
+# The step below is the first of 24 sudo calls, and a dead timestamp used to
+# kill the install here with no message at all (set -e on a bare `sudo cp`,
+# reference box 2026-09-13, three times in one afternoon: background runs and
+# passwordless contexts have no tty for sudo to ask on). Refuse by name first.
+sudo -n true 2>/dev/null || die "sudo needs a fresh timestamp before the systemd step: run 'sudo -v', then re-run ./install.sh (completed steps are skipped)"
 UNIT_PATH="/etc/systemd/system/$UNIT_NAME"
 if [ -f "$UNIT_PATH" ]; then
   # Safety net for hand-tuned units: the previous unit stays recoverable.
