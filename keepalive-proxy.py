@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.16). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.17). No content logging, and the only
 rewriting is the tool-schema guard (role 4).
 
 Four roles, nothing else:
@@ -22,6 +22,16 @@ Four roles, nothing else:
    engine validates them with a Python regex and 400s the request otherwise. Nothing
    else in the body is ever touched.
 
+v6.17: the identity wall learns the second half of its job. v6.16 named WHO;
+admission is a separate question, and forwarding the client's token verbatim
+meant a labeled request met the engine's own --api-key and died there: the
+wall identified everyone and admitted no one (found live on the reference
+box, not in a test: the fake engines enforce nothing, the real one does).
+QWEN38_UPSTREAM_API_KEY names the engine's key to the proxy; when both are
+set, the client's bearer names them on the journal line and the engine's key
+admits them upstream, on relays and on abort calls alike. Without it the old
+verbatim behavior stays, and the banner warns loudly: an engine with no key
+check of its own, or one shared key on purpose, changes nothing.
 v6.16: two walls operators kept building in front of this box, built in but opt-in.
 Optional TLS: name a certificate with QWEN38_TLS_CERT (and QWEN38_TLS_KEY when the key
 is a separate file) and the listening socket speaks it; unset changes nothing for the
@@ -31,9 +41,8 @@ request without a listed key gets 401 in its own dialect, /health stays open for
 monitoring, and the label rides every journal line of that request (who sent what,
 the question one shared key can never answer). A keys file that is missing, malformed
 or empty makes the unit refuse to start: an identity wall that vanished silently is
-worse than no wall. Authorization is still forwarded verbatim, so this is identity
-and not a second wall to fall out of: the engine's own --api-key keeps guarding the
-engine.
+worse than no wall. What the engine sees is v6.17's business now (which key
+admits a named client); naming them is this version's.
 v6.15: an image costs what it costs, and a refusal a client can act on. The oversize
       guard charged every media part a flat 4,096 tokens. Measured against this engine at
       twelve sizes, an agent screenshot really costs 880 (1280x720) to 1,562 (1680x950),
@@ -175,6 +184,10 @@ CORRUPTION_MARK = "!"
 # the socket speaks it. The proxy invents no trust, it speaks the one you point at.
 TLS_CERT = os.environ.get("QWEN38_TLS_CERT", "")
 TLS_KEY  = os.environ.get("QWEN38_TLS_KEY", "")
+# The engine's own key, held by the proxy for admission (v6.17). Unset means the
+# client's header goes through verbatim, exactly as before: fine for an engine
+# with no key check of its own, or one shared key on purpose.
+UPSTREAM_API_KEY = os.environ.get("QWEN38_UPSTREAM_API_KEY", "")
 # Optional per-client identity: JSON {"<bearer token>": "<label>"}. None means the
 # wall is off: one key, one trust realm, exactly as before.
 CLIENT_KEYS_FILE = os.environ.get("QWEN38_CLIENT_KEYS_FILE", "")
@@ -190,6 +203,21 @@ if CLIENT_KEYS_FILE:
                          "malformed or empty; refusing to start with the identity wall "
                          "silently off\n")
         sys.exit(1)
+
+
+def _upstream_auth(handler):
+    """The Authorization value the engine must see on a forwarded request.
+
+    Identity is two keys, not one: the client's bearer named them (the guard
+    already checked the map and labeled the journal line), and the engine's
+    own key admits them. Without the upstream key the client's header goes
+    through verbatim, exactly as before v6.17, and meets the engine's own key
+    check there: right for an engine with no check of its own, or one shared
+    key on purpose, and the startup banner says which mode is on.
+    """
+    if CLIENT_KEYS and UPSTREAM_API_KEY:
+        return "Bearer " + UPSTREAM_API_KEY
+    return handler.headers.get("Authorization")
 
 
 # Tool-schema guard (v6.13): SGLang validates every tool's parameter schema with
@@ -653,6 +681,11 @@ class H(BaseHTTPRequestHandler):
 
     def _hdrs(self):
         h = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+        auth = _upstream_auth(self)
+        if auth:
+            h["Authorization"] = auth
+        else:
+            h.pop("Authorization", None)
         rid = self._forced_rid()
         if rid:
             h["X-Override-Rid"] = rid
@@ -816,7 +849,7 @@ class H(BaseHTTPRequestHandler):
             return False
         try:
             hdrs = {"Content-Type": "application/json"}
-            auth = self.headers.get("Authorization")
+            auth = _upstream_auth(self)
             if auth: hdrs["Authorization"] = auth
             req = urllib.request.Request(UPSTREAM + "/abort_request",
                                          json.dumps({"rid": rid}).encode(), hdrs)
@@ -1173,9 +1206,13 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.16 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.17 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     if CLIENT_KEYS:
         log(f"client keys on: {len(CLIENT_KEYS)} identities ({CLIENT_KEYS_FILE})")
+        if UPSTREAM_API_KEY:
+            log("upstream key on: named clients are admitted upstream as the engine's key")
+        else:
+            log("WARNING: no QWEN38_UPSTREAM_API_KEY: named clients meet the engine's own key check verbatim")
     httpd = Server(("0.0.0.0", port), H)
     if TLS_CERT:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
