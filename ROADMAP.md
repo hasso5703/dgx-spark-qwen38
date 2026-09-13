@@ -5,7 +5,7 @@ so that "on the roadmap" means a checkbox with a definition of done, not a
 mood. Statuses: shipped, in progress, planned, considered (considered items
 have a reason they are not yet planned, stated here or in an issue).
 
-## Shipped, current: v1.10.x
+## Shipped, current: v1.11
 
 Two lanes (27B NVFP4/FP8 with DFlash2 drafting; 176B flash-next with NEXTN
 and the PLE table on NVMe), five switchable targets, the cockpit, the
@@ -13,12 +13,16 @@ keepalive proxy with its byte guards and the corruption tripwire, 1M and
 native context presets, opencode out of the box, and the frozen benchmark
 battery (v1) that keeps every number in this repo comparable across years.
 
-## In progress
+## Shipped this cycle: v1.11
 
-- **v1.11 (next release)**: proxy v6.16 (optional TLS, optional per-client
-  identity), `--enable-metrics` on every lane (a re-run and a restart carry
-  it onto existing boxes), the governance layer (SECURITY, CONTRIBUTING,
-  ARCHITECTURE, the pin-watch workflow) and the v6.16 client documentation.
+Proxy v6.16 (optional TLS, optional per-client identity), `--enable-metrics`
+on every lane (a re-run and a restart carry it onto existing boxes), the
+governance layer (SECURITY, CONTRIBUTING, ARCHITECTURE, ROADMAP, the
+pin-watch workflow, the issue templates) and the v6.16 client docs. The
+metrics flag is live on a box once it has been re-installed and restarted;
+the cockpit drift panel says so, per lane, until it is.
+
+## In progress
 - **Mirrors of every pin** (planned next): the checkpoints, the draft and
   the base images mirrored into an org this project controls, and
   `MIRROR.md` as the runbook, so a deleted upstream revision is an
