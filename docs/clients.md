@@ -120,14 +120,22 @@ sudo mkdir -p /etc/qwen38 && sudo install -m 0600 keys.json /etc/qwen38/client-k
 sudo systemctl edit qwen38-keepalive
 [Service]
 Environment=QWEN38_CLIENT_KEYS_FILE=/etc/qwen38/client-keys.json
+Environment=QWEN38_UPSTREAM_API_KEY=<the engine key from ~/.config/qwen38/api-key>
 sudo systemctl restart qwen38-keepalive
 ```
 
 `keys.json` is `{"<bearer-token>": "<label>", ...}`; each client sends its
-own token as the Bearer value. A request whose token is not listed gets a
-401 in its own dialect and never reaches the engine; the label appears on
-every journal line of the request (`journalctl -u qwen38-keepalive`), so
-per-client throughput and refusals become readable without a telemetry
-component. `/health` stays open for monitoring. A missing, empty or
-malformed keys file stops the unit at start: the wall is present or the
-unit is down, never silently absent.
+own token as the Bearer value. Identity is two keys, not one, and the two
+halves live in different places on purpose: the client's bearer names them
+(the guard checks the map and labels the journal line), and
+`QWEN38_UPSTREAM_API_KEY` admits them (the proxy sends the engine's key
+upstream on relays and abort calls alike). Without the upstream key the
+client's token goes through verbatim and meets the engine's own key check
+there, which is correct only for an engine with no check of its own: the
+proxy warns about the combination at startup. A request whose token is not
+listed gets a 401 in its own dialect and never reaches the engine; the label
+appears on every journal line of the request (`journalctl -u
+qwen38-keepalive`), so per-client throughput and refusals become readable
+without a telemetry component. `/health` stays open for monitoring. A
+missing, empty or malformed keys file stops the unit at start: the wall is
+present or the unit is down, never silently absent.

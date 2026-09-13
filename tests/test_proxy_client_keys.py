@@ -14,6 +14,13 @@ The proxy is imported fresh per scenario (environment first, then exec_module),
 and every request crosses a real socket into the real handler: the module
 executes where coverage can see it, which matters, because the wall is
 exactly the kind of code a floor was set to keep covered.
+
+v6.17's lesson is the engine below: unlike the other proxy test engines, this
+one enforces a key, because the real one does. v6.16's wall identified every
+labeled client and admitted none (their tokens met the engine's own key check
+verbatim), and no test could see it against an engine that lets everything
+through. The admission scenarios at the bottom exist so that hole cannot
+reopen unnoticed.
 """
 import http.server
 import importlib.util
@@ -36,11 +43,33 @@ BODY = json.dumps({"model": "x", "messages": []}).encode()
 
 class Engine(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # Unlike the other proxy test engines, this one enforces a key, because
+    # the real one does: v6.16's tests passed against an engine that lets
+    # everything through, which is exactly why the verbatim-forwarding hole
+    # survived them. require_key names the engine's key; last_auth records
+    # what the proxy actually sent upstream on the last request.
+    require_key = None
+    last_auth = None
 
     def log_message(self, *a):
         pass
 
+    def _admit(self):
+        Engine.last_auth = self.headers.get("Authorization")
+        if Engine.require_key and Engine.last_auth != "Bearer " + Engine.require_key:
+            body = json.dumps({"error": {"message": "engine: bad key",
+                                         "type": "invalid_request_error"}}).encode()
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
+        return True
+
     def do_POST(self):
+        if not self._admit():
+            return
         n = int(self.headers.get("Content-Length") or "0")
         self.rfile.read(n)
         body = json.dumps({"id": "chatcmpl-test", "choices": []}).encode()
@@ -51,6 +80,8 @@ class Engine(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if not self._admit():
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", "2")
@@ -61,7 +92,7 @@ class Engine(http.server.BaseHTTPRequestHandler):
 _fresh = [0]
 
 
-def fresh_proxy_module(upstream_port, keys_path=None):
+def fresh_proxy_module(upstream_port, keys_path=None, upstream_key=None):
     """Import the proxy with the environment the scenario calls for.
 
     Module import is when the keys wall is built, so the scenario has to
@@ -72,16 +103,21 @@ def fresh_proxy_module(upstream_port, keys_path=None):
     spec = importlib.util.spec_from_file_location(
         "kproxy_keys_%d" % _fresh[0], REPO / "keepalive-proxy.py")
     mod = importlib.util.module_from_spec(spec)
-    saved = [os.environ.get(k) for k in ("UPSTREAM", "QWEN38_CLIENT_KEYS_FILE")]
+    names = ("UPSTREAM", "QWEN38_CLIENT_KEYS_FILE", "QWEN38_UPSTREAM_API_KEY")
+    saved = [os.environ.get(k) for k in names]
     os.environ["UPSTREAM"] = "http://127.0.0.1:%d" % upstream_port
     if keys_path is None:
         os.environ.pop("QWEN38_CLIENT_KEYS_FILE", None)
     else:
         os.environ["QWEN38_CLIENT_KEYS_FILE"] = keys_path
+    if upstream_key is None:
+        os.environ.pop("QWEN38_UPSTREAM_API_KEY", None)
+    else:
+        os.environ["QWEN38_UPSTREAM_API_KEY"] = upstream_key
     try:
         spec.loader.exec_module(mod)
     finally:
-        for key, value in zip(("UPSTREAM", "QWEN38_CLIENT_KEYS_FILE"), saved):
+        for key, value in zip(names, saved):
             if value is None:
                 os.environ.pop(key, None)
             else:
@@ -121,6 +157,10 @@ class ClientKeys(unittest.TestCase):
         cls.engine.shutdown()
         cls.engine.server_close()
 
+    def setUp(self):
+        Engine.require_key = None
+        Engine.last_auth = None
+
     def keys_file(self, text):
         fd, path = tempfile.mkstemp(suffix=".json", text=True)
         with open(fd, "w") as f:
@@ -128,8 +168,8 @@ class ClientKeys(unittest.TestCase):
         self.addCleanup(os.unlink, path)
         return path
 
-    def live(self, keys_path=None):
-        mod = fresh_proxy_module(self.eport, keys_path)
+    def live(self, keys_path=None, upstream_key=None):
+        mod = fresh_proxy_module(self.eport, keys_path, upstream_key)
         srv = mod.Server(("127.0.0.1", 0), mod.H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.shutdown)
@@ -179,6 +219,28 @@ class ClientKeys(unittest.TestCase):
     def test_health_stays_open_without_a_key(self):
         port = self.live(self.keys_file('{"tok-alice":"alice"}'))
         self.assertEqual(get(port, "/health"), 200)
+
+    def test_upstream_key_admits_named_client_as_engine_key(self):
+        Engine.require_key = "engine-K"
+        port = self.live(self.keys_file('{"tok-alice":"alice"}'), upstream_key="engine-K")
+        status, _ = post(port, "/v1/chat/completions", "tok-alice")
+        self.assertEqual(status, 200)
+        self.assertEqual(Engine.last_auth, "Bearer engine-K")
+
+    def test_verbatim_without_upstream_key_named_client_meets_engine_check(self):
+        Engine.require_key = "engine-K"
+        port = self.live(self.keys_file('{"tok-alice":"alice"}'))
+        status, body = post(port, "/v1/chat/completions", "tok-alice")
+        self.assertEqual(status, 401)
+        self.assertNotIn("client key", json.loads(body)["error"]["message"])
+        self.assertEqual(Engine.last_auth, "Bearer tok-alice")
+
+    def test_upstream_key_stays_dormant_when_wall_off(self):
+        Engine.require_key = "engine-K"
+        port = self.live(upstream_key="engine-K")
+        status, _ = post(port, "/v1/chat/completions", "engine-K")
+        self.assertEqual(status, 200)
+        self.assertEqual(Engine.last_auth, "Bearer engine-K")
 
     def test_missing_empty_broken_keys_files_refuse_to_be_imported(self):
         for path, text in ((None, "/nonexistent/keys.json"), ("{}", "{}"), ("{not json", "{not json")):
