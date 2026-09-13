@@ -560,6 +560,15 @@ if [ -n "$INSTALLED_CHOICE" ]; then
     echo "Keeping the installed context mode: 1m. Pass CONTEXT_MODE=native to change."
   fi
 fi
+# die() is defined before its first call, not down at the steps: these port
+# refusals are the first thing in the script that can reject an invocation, and
+# calling a function the shell has not seen yet printed "command not found" and
+# exited through the ERR trap, losing the message that names the problem
+# (reproduced by tests/test_install_preflight.py, which pins all three
+# refusals below; a function defined below a call that fires is how a bug
+# shipped as a feature for a whole release).
+die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
 # PORT feeds the arithmetic below, so it is validated before it is used.
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "PORT must be a number (got '$PORT')"
 if [ -z "$_ENV_PROXY_PORT" ] && [ -r "/etc/systemd/system/qwen38-keepalive.service" ]; then
@@ -598,7 +607,7 @@ if [ "$NO_SERVICE" -eq 1 ] && [ "$LANE" = "flash" ]; then
 fi
 
 step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
-die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+# (die() is defined above, before the port validations that call it first.)
 
 step "1/9 Preflight checks"
 [ "$(uname -m)" = "aarch64" ] || die "This setup targets GB10 (aarch64). Detected: $(uname -m)."
