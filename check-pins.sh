@@ -10,9 +10,11 @@
 #   ./check-pins.sh          # every pin
 #   ./check-pins.sh flash    # only the pins whose name matches
 #
-# Exit 0 when every checked pin resolves, 1 otherwise. CI does not run this (a
-# green build must not depend on Hugging Face being up); run it before a release
-# and when an install fails on a fresh box.
+# Exit 0 when every checked pin resolves, 1 otherwise. CI does not run this
+# (a green build must not depend on Hugging Face being up); run it before a
+# release and when an install fails on a fresh box. The "pin watch" scheduled
+# workflow runs it daily and files a labeled issue when a pin dies: a watch,
+# never a gate; the build stays offline-honest either way.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILTER="${1:-}"

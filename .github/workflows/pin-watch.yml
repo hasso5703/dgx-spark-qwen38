@@ -1,0 +1,67 @@
+# Pin watch: asks Hugging Face and the registry, daily, whether every pin in
+# install.sh still resolves upstream. This is NOT a build gate and never
+# runs ci.yml's suite: a green build must not depend on Hugging Face being
+# up (check-pins.sh's own header). What this does is turn "an upstream
+# deleted a pinned revision" from a silent time bomb (fresh installs fail on
+# the one box that does not have the bytes yet) into an issue that names the
+# dead pin, filed once, by whoever noticed it: the scheduled run.
+name: pin watch
+
+on:
+  schedule:
+    # Daily, off the hour and off the :00 crowd.
+    - cron: '17 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: pins
+        name: Resolve every pin (network on purpose)
+        run: |
+          set -o pipefail
+          rc=0
+          ./check-pins.sh | sed -r 's/\x1b\[[0-9;]*m//g' > /tmp/pins.txt || rc=$?
+          cat /tmp/pins.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - if: steps.pins.outputs.rc != '0'
+        name: File one issue when a pin died (never a duplicate of an open one)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          open="$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=pin-watch" \
+                  --jq length 2>/dev/null || echo 0)"
+          if [ "$open" -gt 0 ]; then
+            echo "an open pin-watch issue exists, not filing another"
+            exit 0
+          fi
+          DEAD="$(grep -m1 FAIL /tmp/pins.txt | tr -s ' ' | cut -d' ' -f2- || true)"
+          {
+            echo '### A pin no longer resolves upstream'
+            echo
+            echo './check-pins.sh failed on the scheduled run. A dead pin is'
+            echo 'a time bomb: machines that already hold the bytes keep'
+            echo 'serving, fresh installs fail. Full output below.'
+            echo
+            echo '```'
+            cat /tmp/pins.txt
+            echo '```'
+            echo
+            echo 'First, confirm it is real: gated repos answer 401/403 and'
+            echo 'are not failures, and a flaky endpoint retries. Then re-pin'
+            echo 'install.sh to a surviving revision with the bench and'
+            echo 'quality cycle the target table demands, or mirror the bytes.'
+          } > /tmp/pin-body.md
+          gh issue create -R "$GITHUB_REPOSITORY" --label pin-watch \
+            --title "a pin died: ${DEAD:0:80}" \
+            --body-file /tmp/pin-body.md
