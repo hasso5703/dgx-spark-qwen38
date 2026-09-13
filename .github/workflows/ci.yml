@@ -77,8 +77,8 @@ jobs:
           PY="$(./tests/testpy.sh coverage)"
           rm -f .coverage*
           for f in tests/test_proxy_guard.py tests/test_proxy_abort.py \
-                   tests/test_proxy_keepalive.py tests/test_tools.py \
-                   tests/test_oc_fit_limits.py tests/test_oc_merge_limits.py; do
+                   tests/test_proxy_keepalive.py tests/test_proxy_client_keys.py \
+                   tests/test_tools.py tests/test_oc_fit_limits.py tests/test_oc_merge_limits.py; do
             "$PY" -m coverage run --branch --parallel-mode --source=. \
               --omit="dashboard/*,tests/*,.venv-test/*" "$f" >/dev/null 2>&1 || true
           done

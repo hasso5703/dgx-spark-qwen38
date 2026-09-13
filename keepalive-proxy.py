@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.15). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.16). No content logging, and the only
 rewriting is the tool-schema guard (role 4).
 
 Four roles, nothing else:
@@ -22,6 +22,18 @@ Four roles, nothing else:
    engine validates them with a Python regex and 400s the request otherwise. Nothing
    else in the body is ever touched.
 
+v6.16: two walls operators kept building in front of this box, built in but opt-in.
+Optional TLS: name a certificate with QWEN38_TLS_CERT (and QWEN38_TLS_KEY when the key
+is a separate file) and the listening socket speaks it; unset changes nothing for the
+loopback and tailnet users this box is designed for. Optional per-client identity:
+QWEN38_CLIENT_KEYS_FILE is a JSON map of bearer token to label; when set, a /v1/
+request without a listed key gets 401 in its own dialect, /health stays open for
+monitoring, and the label rides every journal line of that request (who sent what,
+the question one shared key can never answer). A keys file that is missing, malformed
+or empty makes the unit refuse to start: an identity wall that vanished silently is
+worse than no wall. Authorization is still forwarded verbatim, so this is identity
+and not a second wall to fall out of: the engine's own --api-key keeps guarding the
+engine.
 v6.15: an image costs what it costs, and a refusal a client can act on. The oversize
       guard charged every media part a flat 4,096 tokens. Measured against this engine at
       twelve sizes, an agent screenshot really costs 880 (1280x720) to 1,562 (1680x950),
@@ -80,7 +92,7 @@ before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
 / max 1307 ms through the proxy vs a steady 118 ms direct. read1() returns as
 soon as bytes are available, so the stream stays token by token.
 """
-import base64, json, math, os, queue, re, socket, sys, threading, time, urllib.request, urllib.error, uuid
+import base64, json, math, os, queue, re, socket, ssl, sys, threading, time, urllib.request, urllib.error, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -158,6 +170,26 @@ MEDIA_HEADER_BYTES = 48 * 1024
 # its state rather than the model writing prose. 0 disables the guard.
 CORRUPTION_RUN = int(os.environ.get("CORRUPTION_RUN", "128") or 0)
 CORRUPTION_MARK = "!"
+
+# Optional TLS: name the operator's own certificate (tailnet CA, LAN-trusted) and
+# the socket speaks it. The proxy invents no trust, it speaks the one you point at.
+TLS_CERT = os.environ.get("QWEN38_TLS_CERT", "")
+TLS_KEY  = os.environ.get("QWEN38_TLS_KEY", "")
+# Optional per-client identity: JSON {"<bearer token>": "<label>"}. None means the
+# wall is off: one key, one trust realm, exactly as before.
+CLIENT_KEYS_FILE = os.environ.get("QWEN38_CLIENT_KEYS_FILE", "")
+CLIENT_KEYS = None
+if CLIENT_KEYS_FILE:
+    try:
+        with open(CLIENT_KEYS_FILE) as _kf:
+            CLIENT_KEYS = json.load(_kf)
+    except Exception:
+        CLIENT_KEYS = None
+    if not isinstance(CLIENT_KEYS, dict) or not CLIENT_KEYS:
+        sys.stderr.write(f"[proxy] QWEN38_CLIENT_KEYS_FILE={CLIENT_KEYS_FILE} is missing, "
+                         "malformed or empty; refusing to start with the identity wall "
+                         "silently off\n")
+        sys.exit(1)
 
 
 # Tool-schema guard (v6.13): SGLang validates every tool's parameter schema with
@@ -999,6 +1031,19 @@ class H(BaseHTTPRequestHandler):
         self._bytes = 0; self._first = None; self._last = None
         n0 = self.headers.get("Content-Length") or "0"
         log(f"{self._peer} -> {self.command} {self.path.split('?')[0]} body={n0}b")
+        if CLIENT_KEYS and self.path.split('?')[0].startswith("/v1/"):
+            auth = (self.headers.get("Authorization") or "").strip()
+            label = CLIENT_KEYS.get(auth[7:].strip()) if auth.startswith("Bearer ") else None
+            if label is None:
+                log(f"{self._peer} REFUSED unknown client key on {self.path.split('?')[0]}")
+                err = ({"type": "error", "error": {"type": "authentication_error",
+                               "message": "keepalive-proxy: missing or unknown client key"}}
+                       if self.path.startswith("/v1/messages") else
+                       {"error": {"type": "invalid_request",
+                                 "message": "keepalive-proxy: missing or unknown client key"}})
+                self._plain(401, {"Content-Type": "application/json"}, json.dumps(err).encode())
+                self._done("401 unknown client key"); return
+            self._peer = f"{self._peer} key={label}"
         n = parse_body_length(self.headers.get("Content-Length"))
         if n is None:
             self._plain(400, {"Content-Type": "application/json"},
@@ -1128,5 +1173,17 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.15 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
-    Server(("0.0.0.0", port), H).serve_forever()
+    log(f"v6.16 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    if CLIENT_KEYS:
+        log(f"client keys on: {len(CLIENT_KEYS)} identities ({CLIENT_KEYS_FILE})")
+    httpd = Server(("0.0.0.0", port), H)
+    if TLS_CERT:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        try:
+            ctx.load_cert_chain(TLS_CERT, TLS_KEY or None)
+        except Exception as e:
+            sys.exit(f"[proxy] refusing to start: certificate {TLS_CERT} is not usable ({e})")
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        log(f"TLS on (cert {TLS_CERT})")
+    httpd.serve_forever()
