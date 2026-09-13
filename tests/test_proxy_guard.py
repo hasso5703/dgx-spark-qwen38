@@ -165,7 +165,9 @@ class ProxyGuard(unittest.TestCase):
         n = self.mod.tokenize_count(body, "/v1/chat/completions")
         _path, sent = FakeTokenize.seen[-1]
         self.assertNotIn("image_url", json.dumps(sent))
-        self.assertEqual(n, 3 + self.mod.TOKENS_PER_MEDIA)
+        # No readable header in that filler, so the image gets the geometric
+        # ceiling rather than a flat guess, and never its base64 as text.
+        self.assertEqual(n, 3 + self.mod._image_ceiling())
 
     def test_anthropic_image_block_counted_not_tokenized(self):
         body = json.dumps({"model": "m", "messages": [{"role": "user", "content": [
@@ -174,7 +176,7 @@ class ProxyGuard(unittest.TestCase):
         n = self.mod.tokenize_count(body, "/v1/messages")
         _path, sent = FakeTokenize.seen[-1]
         self.assertNotIn("BBBB", json.dumps(sent))
-        self.assertEqual(n, 2 + self.mod.TOKENS_PER_MEDIA)
+        self.assertEqual(n, 2 + self.mod._image_ceiling())
 
     # ---- media is priced, not guessed (v6.15) -----------------------------
     # The engine's numbers below are measured on the reference box (2026-09-13,
@@ -236,12 +238,29 @@ class ProxyGuard(unittest.TestCase):
             {"type": "text", "text": "two words"}]}]}).encode()
         self.assertEqual(self.mod.tokenize_count(body, "/v1/messages"), 2 + 882)
 
-    def test_unreadable_or_remote_media_keeps_the_flat_budget(self):
-        """Nothing is guessed downward: no header, no dimensions, flat budget."""
+    def test_an_unreadable_image_is_charged_its_geometric_ceiling(self):
+        """Nothing is ever guessed downward.
+
+        A 3840x2160 screenshot really costs 8,162, so the old flat 4,096 would
+        UNDER-count an image it could not parse, which is the direction that
+        lets an oversize prompt through to the engine. An image is bounded by
+        the processor's max_pixels, so the fallback is that bound.
+        """
         for block in (
             {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}},
             {"type": "image_url", "image_url": {"url": "data:image/heic;base64,AAAAAAAAAAAA"}},
+            {"type": "image", "source": {"type": "url", "url": "https://example.invalid/a.png"}},
+        ):
+            with self.subTest(block=block["type"]):
+                self.assertEqual(self.mod._media_tokens(block), self.mod._image_ceiling())
+        self.assertGreater(self.mod._image_ceiling(), self.mod._image_tokens(3840, 2160))
+
+    def test_media_that_is_not_an_image_keeps_the_flat_budget(self):
+        """Audio, video and documents have no geometry to bound them."""
+        for block in (
             {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+            {"type": "document", "source": {"type": "base64", "data": "AAAA"}},
+            {"type": "video_url", "video_url": {"url": "https://example.invalid/a.mp4"}},
         ):
             with self.subTest(block=block["type"]):
                 self.assertEqual(self.mod._media_tokens(block), self.mod.TOKENS_PER_MEDIA)

@@ -62,6 +62,13 @@ TIER=(__FLASH_TIER_ARGS__)
 # verifies over the whole vocabulary, so this changes speed, never output.
 __SPEC_TOKEN_MAP_LINE__
 
+# No --allow-auto-truncate. It was here undocumented until 2026-09-13, when a
+# probe asked for a prompt above the window and got back prompt_tokens exactly
+# equal to max_req_input_len (262,138) with a confident answer and no warning:
+# the engine had silently thrown away the overflow. The keepalive proxy already
+# refuses anything above the lane's ceiling with a clear 400, so the flag bought
+# nothing and cost the one failure mode worse than a refusal, which is a wrong
+# answer from a context that was quietly cut.
 exec /usr/bin/docker run --rm --name qwen38-flash --gpus all \
   --memory 110g --memory-swap 110g --shm-size 16g --network host --ipc=host \
   -v __HF_CACHE__:/root/.cache/huggingface \
@@ -82,7 +89,6 @@ exec /usr/bin/docker run --rm --name qwen38-flash --gpus all \
     --mem-fraction-static __FLASH_MEM_FRACTION__ \
     --context-length 262144 \
     --chunked-prefill-size 4096 \
-    --allow-auto-truncate \
     --sleep-on-idle \
     "${TIER[@]}" \
     --reasoning-parser qwen3 --tool-call-parser qwen3_coder \

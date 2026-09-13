@@ -181,7 +181,7 @@ if refused:
           "(no keepalive, no guard: that is how the ceiling itself was measured).")
 if MEM and mem_floors:
     print(f"MEM SUMMARY: lowest MemAvailable during a prompt {min(mem_floors):.1f} GiB, now {mem_avail_gib():.1f} GiB "
-          "(the flash lane keeps the memory it took; under ~10 GiB the box is near the livelock edge, see README)")
+          "(the flash lane keeps the memory it took; the ~10 GiB edge came from the v1.5 engine, whose PLE mapping faulted in whole folios. Measured 2026-09-13 on the v1.8 engine: a 249,838-token prompt costs 1.6 GiB and retrieves exactly with the floor at 6.9 GiB)")
 if not attempted:
     print("nothing was measured: every depth was refused by the lane's own limit")
     raise SystemExit(2)

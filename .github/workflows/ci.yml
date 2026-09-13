@@ -398,6 +398,18 @@ jobs:
           grep -q -- '--mem-fraction-static 0.85' /tmp/flash.rendered
           grep -q -- '--max-mamba-cache-size' /tmp/flash.rendered
           grep -q -- '--speculative-token-map /out/token-map-65536.pt' /tmp/flash.rendered
+          # No --allow-auto-truncate, ever. A prompt above the window must come back
+          # as an error, not as a confident answer from a context the engine quietly
+          # cut: probed 2026-09-13, an over-long prompt returned prompt_tokens exactly
+          # equal to max_req_input_len (262,138) with the needle gone and no warning.
+          # The keepalive proxy refuses above the lane's ceiling with a clear 400, so
+          # the flag only ever bought silence.
+          for f in qwen38-flash-launch.sh.template qwen38-sglang.service.template \
+                   qwen38-sglang-1m.service.template run.sh; do
+            # comments are allowed to name the flag; a live line is not
+            ! grep -v '^[[:space:]]*#' "$f" | grep -q -- '--allow-auto-truncate' \
+              || { echo "$f truncates an over-long prompt silently instead of refusing it"; exit 1; }
+          done
           grep -q -- '--speculative-draft-model-quantization unquant' /tmp/flash.rendered
           grep -q -- '--api-key' /tmp/flash.rendered
           grep -q 'chat-template-flashnext.jinja' /tmp/flash.rendered
@@ -581,7 +593,7 @@ jobs:
           # Every flash target, every tier: the default tier was never asserted
           # before (the old gate fell through to the throughput arm).
           for t in flash flash-uncensored flash-nvda; do
-            [ "$(l "$t" context)" = "175000 64000 local" ] || { echo "$t/context drifted"; exit 1; }
+            [ "$(l "$t" context)" = "225000 32000 local" ] || { echo "$t/context drifted"; exit 1; }
             [ "$(l "$t" concurrency)" = "100000 16000 local" ] || { echo "$t/concurrency drifted"; exit 1; }
             [ "$(l "$t" throughput)" = "110000 32000 local" ] || { echo "$t/throughput drifted"; exit 1; }
           done
@@ -601,7 +613,7 @@ jobs:
           [ "$(l flash --from "$tmp/l24.sh")" = "110000 32000 local" ] || { echo "derived tier (24) wrong"; exit 1; }
           [ "$(l stock --from "$tmp/u1m.service")" = "700000 200000 local, 1M" ] || { echo "derived 1m wrong"; exit 1; }
           [ "$(l stock --from "$tmp/unat.service")" = "194048 64000 local" ] || { echo "derived native wrong"; exit 1; }
-          [ "$(l flash --from /nonexistent)" = "175000 64000 local" ] || { echo "a missing invocation must fall back to the default tier"; exit 1; }
+          [ "$(l flash --from /nonexistent)" = "225000 32000 local" ] || { echo "a missing invocation must fall back to the default tier"; exit 1; }
           out="$(l flash --from /nonexistent 2>/tmp/oclim.err)"; rc=$?
           [ "$rc" = "0" ] || { echo "a missing invocation must not fail the switch"; exit 1; }
           grep -q "not a file" /tmp/oclim.err || { echo "a missing invocation must say so on stderr"; exit 1; }
@@ -628,13 +640,41 @@ jobs:
           # sends, and that step is measured at up to 43,863 tokens on this lane
           # (2,156 steps, opencode's session store, 2026-09). 190,000 did not
           # leave it and sessions died mid-conversation with a proxy 400.
-          CEILING=200000; RESERVE=20000; WORST_STEP=43863
+          CEILING=250000; RESERVE=20000; WORST_STEP=43863
           read -r FCTX _ _ <<<"$(l flash context)"
           [ $(( FCTX - RESERVE + WORST_STEP )) -le "$CEILING" ] \
             || { echo "flash/context $FCTX leaves no room for one agent step under the $CEILING ceiling"; exit 1; }
+          # And the number the installer and the switch actually write must be that
+          # same ceiling, or the table is sized against a ceiling nothing enforces.
+          for f in install.sh switch-model.sh; do
+            grep -q "PROMPT_CEILING_TOKENS:-$CEILING" "$f" \
+              || { echo "$f does not default the flash ceiling to $CEILING"; exit 1; }
+          done
+          # preserve_recent_tokens: opencode caps its own default at 15,000 whatever
+          # the window, which on this lane would summarise 190,000 tokens to keep
+          # 15,000. The table's value must be a real share of the threshold and must
+          # stay below it, or select() keeps everything and summarises the lot.
+          KEEP=$(l --preserve "$FCTX")
+          [ "$KEEP" -gt 15000 ] || { echo "preserve $KEEP is no better than opencode's own cap"; exit 1; }
+          [ "$KEEP" -lt $(( FCTX - RESERVE )) ] || { echo "preserve $KEEP is not below the threshold"; exit 1; }
+          [ "$(l --preserve 100000)" = "20000" ] || { echo "--preserve drifted on a small window"; exit 1; }
+          ! l --preserve nope 2>/dev/null || { echo "--preserve must refuse a non-number"; exit 1; }
+          # Both writers must go through it rather than carrying their own number.
+          grep -q 'oc-limits.sh" --preserve' install.sh \
+            || { echo "install.sh does not size the compaction block from the table"; exit 1; }
+          grep -q 'oc-limits.sh" --preserve' switch-model.sh \
+            || { echo "switch-model.sh does not size the compaction block from the table"; exit 1; }
+          # Writing the limits is not delivering them: `opencode serve` reads
+          # opencode.json once at startup and never again (2026-09-13: the file said
+          # 225,000 while the running server still answered 175,000 on /config), so
+          # both writers must restart it.
+          for f in install.sh switch-model.sh; do
+            grep -q 'systemctl restart opencode-web.service' "$f" \
+              || { echo "$f rewrites the opencode limits without restarting the server that reads them"; exit 1; }
+          done
           # The fit tool must land on the same number as the table, or one click
           # of the cockpit's fit button quietly restores the bug.
-          FIT=$(python3 -c "import importlib.util as i; s = i.spec_from_file_location('f', 'oc-fit-limits.py'); m = i.module_from_spec(s); s.loader.exec_module(m); print(m.fit(564352, 200000)[0])")
+          FIT=$(python3 -c "import importlib.util as i; s = i.spec_from_file_location('f', 'oc-fit-limits.py'); m = i.module_from_spec(s); s.loader.exec_module(m); print(m.fit(564352, 250000)[0])")
           [ "$FIT" = "$FCTX" ] \
             || { echo "oc-fit-limits fits $FIT where the table says $FCTX"; exit 1; }
           # And both callers go through it, rather than carrying a second copy.
@@ -699,6 +739,7 @@ jobs:
             rm -f /tmp/octest/opencode.json; mkdir -p /tmp/octest
             OC_LANE="$1" OC_27B="$2" OC_FLASH="$3" OC_PORT=30001 OC_CTX="$4" OC_OUT="$5" \
             OC_LABEL=local OC_CONTEXT_MODE="$6" OC_CONFIG_DIR=/tmp/octest \
+            OC_KEEP="$(./oc-limits.sh --preserve "$4")" \
             python3 <(sed -n '/^OC_LANE=/,/^PYEOF$/p' install.sh | sed -n '/^import json$/,/^PYEOF$/p' | sed '$d')
           }
           gen 27b 1 0 194048 64000 native
@@ -709,6 +750,9 @@ jobs:
           m = c["provider"]["qwen38"]["models"]["qwen3.8-27b"]
           assert set(m["variants"]) == {"low", "medium", "xhigh"}
           assert c["model"] == "qwen38/qwen3.8-27b"
+          # the compaction block is sized from the installed target, never left to
+          # opencode's 15,000 default (which would summarise most of this window)
+          assert c["compaction"] == {"preserve_recent_tokens": 43000, "prune": True}, c["compaction"]
           PY
           gen flash 0 1 110000 32000 native
           python3 - <<'PY'
@@ -719,6 +763,7 @@ jobs:
           assert m["limit"] == {"context": 110000, "input": 110000, "output": 32000}
           assert set(m["variants"]) == {"low", "medium", "xhigh"}
           assert c["model"] == "flashnext/qwen3.8-flash-next"
+          assert c["compaction"]["preserve_recent_tokens"] == 22000, c["compaction"]
           PY
           gen flash 1 1 110000 32000 1m
           python3 - <<'PY'

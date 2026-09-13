@@ -900,10 +900,14 @@ OC_PORT="$PROXY_PORT"
 OC_27B=0; OC_FLASH=0
 { [ "$LANE" = "27b" ] || [ -f "$SGL_UNIT_PATH" ]; } && OC_27B=1
 { [ "$LANE" = "flash" ] || [ -f "$FLASH_UNIT_PATH" ]; } && OC_FLASH=1
+# How much of a conversation survives a compaction verbatim, from the same table.
+OC_KEEP="$("$REPO_DIR/oc-limits.sh" --preserve "$OC_CTX")" \
+  || die "oc-limits.sh --preserve failed for $OC_CTX (repo bug: please open an issue)"
 # The other engine's limits, for when both providers are present: the 27B block
 # keeps its context-mode limits, flash always serves its native window.
 OC_LANE="$LANE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
 OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$CONTEXT_MODE" \
+OC_KEEP="$OC_KEEP" \
 OC_CONFIG_DIR="$CONFIG_DIR" python3 - <<'PYEOF' || die "could not write the opencode provider config"
 import json
 import os
@@ -946,7 +950,17 @@ if os.environ["OC_FLASH"] == "1":
                                   "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)", fctx, fout)
 
 default = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8-27b"
+# Compaction is global in opencode.json, not per-model, so it is sized from the
+# INSTALLED target (oc-limits.sh --preserve) and rewritten by every install and
+# switch. preserve_recent_tokens exists because opencode's own default clamps it
+# at 15,000 whatever the window: on a 262K lane a compaction at 205,000 tokens
+# would keep 15,000 and summarise the other 190,000, which is not using the
+# window, it is refilling it from scratch. prune lets opencode clear stale tool
+# output (never the last two turns, never the most recent 40,000 tokens of it)
+# instead of summarising everything, which is the cheaper way to stay under the
+# ceiling on an agent lane that reads a lot of files.
 doc = {"$schema": "https://opencode.ai/config.json", "provider": providers,
+       "compaction": {"preserve_recent_tokens": int(os.environ["OC_KEEP"]), "prune": True},
        "model": default, "small_model": default}
 with open(f"{cfg_dir}/opencode.json", "w") as f:
     json.dump(doc, f, indent=2)
@@ -955,6 +969,7 @@ print(f"wrote {cfg_dir}/opencode.json (default {default}, "
       f"providers: {', '.join(providers) or 'none'})")
 PYEOF
 echo "opencode limits: context $OC_CTX, output $OC_OUT, port $OC_PORT"
+echo "  compaction fires at $((OC_CTX - 20000)) tokens and keeps $OC_KEEP verbatim"
 echo "  no opencode config yet:  mkdir -p ~/.config/opencode && cp $CONFIG_DIR/opencode.json ~/.config/opencode/opencode.json"
 echo "  existing config:         merge the \"qwen38\" provider block into it (README, \"opencode integration\")"
 # An existing opencode.json keeps the user's other providers, but its limits for
@@ -964,6 +979,7 @@ OC_USER_CFG="$HOME/.config/opencode/opencode.json"
 if [ -f "$OC_USER_CFG" ]; then
   if [ "${LANE:-27b}" = "flash" ]; then
     python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" flashnext qwen3.8-flash-next "$OC_CTX" "$OC_OUT" || true
+    python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" --compaction "$OC_KEEP" || true
   else
     # Never downgrade a 27B unit that serves a larger window than this run's
     # CONTEXT_MODE computed (a native-mode re-install clobbered a 1m user's
@@ -975,6 +991,7 @@ if [ -f "$OC_USER_CFG" ]; then
       echo "      CONTEXT_MODE=1m to manage them, or edit $OC_USER_CFG yourself."
     else
       python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" qwen38 qwen3.8-27b "$OC_CTX" "$OC_OUT" || true
+      python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" --compaction "$OC_KEEP" || true
     fi
   fi
 fi
@@ -987,6 +1004,18 @@ python3 "$REPO_DIR/oc-point-default.py" "$CONFIG_DIR/opencode.json" "$LANE" "$MO
   || die "could not point the generated opencode config at the installed lane"
 if [ -f "$OC_USER_CFG" ]; then
   python3 "$REPO_DIR/oc-point-default.py" "$OC_USER_CFG" "$LANE" "$MODEL_CHOICE" "$OC_WINDOW" || true
+fi
+# Every opencode.json this install touches has been written by now, so the server
+# that reads them can be restarted. It parses opencode.json ONCE at startup and
+# never again (measured 2026-09-13: the file said 225,000 while the running
+# server still answered 175,000 on /config), so without this the Agent tab keeps
+# compacting against the previous install's window. Last, not mid-write: a
+# restart before the user's own config is merged would reload the old numbers.
+if systemctl list-unit-files opencode-web.service >/dev/null 2>&1 \
+   && systemctl is-active --quiet opencode-web.service; then
+  sudo systemctl restart opencode-web.service \
+    && echo "opencode-web.service restarted so it reads the new limits" \
+    || echo "NOTE: restart opencode-web.service by hand, or the Agent tab keeps the old limits"
 fi
 # oc: launcher that lifts opencode's hidden 32000 max_tokens cap to the
 # declared output limit (without it, long thinking is cut at 32000 and the
@@ -1149,18 +1178,29 @@ KEEPALIVE_UNIT="qwen38-keepalive.service"
 # always refuses a prompt above its share of the KV pool as well, so the smaller of
 # the two binds and a tier with a small pool needs no separate ceiling.
 #
-# Flash lane, 128,000 from v1.5.6 to v1.7: the prefill of a long prompt grew the
-# engine's memory by ~0.27 GiB per 1k tokens beyond ~90k (measured 29/08, a 120k
-# prompt cost ~9 GiB of host headroom), which put a 150k prompt at the memory edge.
-# That growth was the PLE table's mapping faulting in whole page-cache folios, and
-# v1.8 serves an engine that trims it: measured on the reference box at the context
-# tier, a 120k prompt now takes 0.0-0.1 GiB of headroom (3 trials, needle 3/3) and a
-# 200,058-token prompt takes 3.5 GiB and retrieves exactly, leaving 12.6 GiB free
-# against the ~10 GiB livelock edge. So the ceiling is 200,000. Above that is
-# deliberately unmeasured here: 262k would land near that edge, and on this box a
-# livelock costs a power cycle.
+# Flash lane, 128,000 from v1.5.6 to v1.7 and 200,000 from v1.8: the prefill of a
+# long prompt grew the engine's memory by ~0.27 GiB per 1k tokens beyond ~90k
+# (measured 29/08, a 120k prompt cost ~9 GiB of host headroom), which put a 150k
+# prompt at the memory edge. That growth was the PLE table's mapping faulting in
+# whole page-cache folios, and v1.8 serves an engine that trims it.
+#
+# How far it trims was only half measured: 200,058 tokens cost 3.5 GiB, and above
+# that was left deliberately unmeasured because a livelock on this box costs a
+# power cycle. Measured on 2026-09-13, MemAvailable sampled through each prefill,
+# engine up 19 h with the PLE budget already filled:
+#
+#     195,784 tokens -> 1.16 GiB of host headroom,  94.7 s
+#     225,051 tokens -> 1.57 GiB,                  111.3 s
+#     249,500 tokens -> 1.52 GiB,                  126.1 s, floor 7.0 GiB
+#
+# The cost is flat past 200k and an order of magnitude below what the v1.5 engine
+# paid, so memory is no longer what caps this lane. What caps it is the engine's
+# own wall, max_req_input_len = 262,138: the ceiling is 250,000, which leaves
+# 12,138 tokens of slack under it. That band matters because until 2026-09-13 the
+# launcher passed --allow-auto-truncate and a prompt over the wall came back
+# silently cut rather than refused.
 PROMPT_CEILING=0
-[ "$LANE" = "flash" ] && PROMPT_CEILING="${PROMPT_CEILING_TOKENS:-200000}"
+[ "$LANE" = "flash" ] && PROMPT_CEILING="${PROMPT_CEILING_TOKENS:-250000}"
 # Every service install gets the keepalive proxy: SGLang buffers tool-call
 # arguments while they stream (127 s of measured silence on a 400-line write,
 # at native context) and agent CLIs abort a silent stream (~140-180 s for

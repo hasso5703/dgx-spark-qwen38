@@ -303,7 +303,7 @@ fi
 sudo systemctl enable "$TARGET_UNIT_NAME" >/dev/null 2>&1 || sudo systemctl enable "$TARGET_UNIT_NAME"
 sudo systemctl daemon-reload
 # 4b) the keepalive proxy's one-prompt ceiling follows the lane (v1.5.6 contract, see
-#     install.sh: flash 200000 tokens by default, the 27B lane none), applied now so the
+#     install.sh: flash 250000 tokens by default, the 27B lane none), applied now so the
 #     proxy matches the lane that serves after the restart below. Written as a systemd
 #     drop-in, never by editing the unit in place: an in-place sed needs a sudoers
 #     wildcard to stay valid, and a wildcard on sed is root (its w command writes any
@@ -312,7 +312,7 @@ sudo systemctl daemon-reload
 KA_UNIT="/etc/systemd/system/qwen38-keepalive.service"
 if [ -f "$KA_UNIT" ]; then
   CEIL=0
-  [ "$TARGET_LANE" = "flash" ] && CEIL="${PROMPT_CEILING_TOKENS:-200000}"
+  [ "$TARGET_LANE" = "flash" ] && CEIL="${PROMPT_CEILING_TOKENS:-250000}"
   [[ "$CEIL" =~ ^[0-9]+$ ]] || die "PROMPT_CEILING_TOKENS must be a number (got '$CEIL')"
   printf '[Service]\nEnvironment=PROMPT_CEILING_TOKENS=%s\n' "$CEIL" > "$STAGE_CEIL"
   sudo install -m 644 -D "$STAGE_CEIL" "/etc/systemd/system/qwen38-keepalive.service.d/ceiling.conf"
@@ -342,10 +342,17 @@ if read -r SW_CTX SW_OUT _SW_LABEL \
    && [ -n "${SW_CTX:-}" ]; then
   if [ "$TARGET_LANE" = "flash" ]; then SW_PROV=flashnext; SW_MODEL=qwen3.8-flash-next
   else SW_PROV=qwen38; SW_MODEL=qwen3.8-27b; fi
+  # The compaction block is global, so it is sized from the target's context and
+  # rewritten with the limits: a switch that moved the threshold and left the old
+  # preserve_recent_tokens behind would compact the new lane against the old
+  # lane's window. Same table, same call as install.sh.
+  SW_KEEP="$("$REPO_DIR/oc-limits.sh" --preserve "$SW_CTX")" || SW_KEEP=""
   for OC_JSON in "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json"; do
     [ -f "$OC_JSON" ] || continue
     python3 "$REPO_DIR/oc-merge-limits.py" "$OC_JSON" "$SW_PROV" "$SW_MODEL" "$SW_CTX" "$SW_OUT" \
       || echo "NOTE: could not update the limits in $OC_JSON; check them by hand ($SW_CTX/$SW_OUT)"
+    [ -n "$SW_KEEP" ] && { python3 "$REPO_DIR/oc-merge-limits.py" "$OC_JSON" --compaction "$SW_KEEP" \
+      || echo "NOTE: could not update the compaction block in $OC_JSON; check it by hand ($SW_KEEP)"; }
   done
 else
   echo "NOTE: oc-limits.sh gave no limits for $CHOICE; the opencode limits were left as they were"
@@ -361,6 +368,19 @@ for OC_JSON in "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json
   python3 "$REPO_DIR/oc-point-default.py" "$OC_JSON" "$TARGET_LANE" "$CHOICE" "$OC_WINDOW" \
     || echo "NOTE: could not update $OC_JSON (hand-edited?); set its \"model\" field yourself"
 done
+# 4d) the opencode server, if this box runs one, is restarted so the numbers above
+#     actually reach it. `opencode serve` reads opencode.json ONCE at startup and
+#     never again: measured 2026-09-13, the file on disk said 225,000 while the
+#     running server still answered 175,000 on /config. Every switch before this
+#     rewrote the limits correctly and left the Agent tab compacting against the
+#     previous lane's window, which is a silent version of the mid-session 400
+#     this whole table exists to prevent.
+if systemctl list-unit-files opencode-web.service >/dev/null 2>&1 \
+   && systemctl is-active --quiet opencode-web.service; then
+  sudo systemctl restart opencode-web.service \
+    && echo "opencode-web.service restarted so it reads the new limits" \
+    || echo "NOTE: could not restart opencode-web.service; restart it by hand or the Agent tab keeps the old limits"
+fi
 fi
 
 RUNNING=""

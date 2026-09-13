@@ -1,5 +1,64 @@
 # Changelog
 
+## v1.10.2 (2026-09-13): the window the model actually has
+
+The flash lane serves a 262,144-token window and opencode was allowed 175,000 of
+it, so a third of the machine was never used. The ceiling that capped it was not
+wrong, it was **stale**: it came from the v1.5 engine, whose PLE mapping faulted
+in whole page-cache folios and made a long prefill cost ~0.27 GiB per 1k tokens
+past 90k. v1.8 serves an engine that trims that, and nobody had re-measured.
+
+Measured now, on this box, MemAvailable sampled through every prefill, engine up
+19 h with the PLE budget already filled:
+
+| prompt | host headroom it cost | wall clock | needle |
+|---|---|---|---|
+| 195,784 tokens | 1.16 GiB | 94.7 s | 1/1 exact at 200,058 |
+| 225,051 tokens | 1.57 GiB | 111.3 s | 1/1 exact at 230,231 |
+| 249,500 tokens | 1.52 GiB | 126.1 s, floor 6.9 GiB | 1/1 exact at 249,838 |
+
+Flat past 200k, an order of magnitude under what the v1.5 engine paid, and exact
+retrieval at every depth. **Memory is no longer what caps this lane.** What caps
+it is the engine's own `max_req_input_len`, 262,138.
+
+- **The one-prompt ceiling is 250,000** (was 200,000), leaving 12,138 tokens of
+  slack under the engine's wall. The flash `context` tier becomes **225,000 /
+  32,000** (was 175,000 / 64,000; 32,000 of output is what a turn on this lane
+  actually needs, and the 32,000 it gives back is context). Compaction now fires
+  at **205,000** instead of 155,000, and the chain still closes on the measured
+  worst step: `225,000 - 20,000 + 43,863 = 248,863 <= 250,000`.
+- **`--allow-auto-truncate` is gone from the launcher, and gated out of every
+  lane.** It was there undocumented. A probe asked for a prompt above the window
+  and got back `prompt_tokens` exactly equal to `max_req_input_len` with a
+  confident answer, the needle gone, and no warning anywhere: the engine had
+  quietly cut the context and answered from what was left. The proxy already
+  refuses above the ceiling with a clear 400, so the flag bought nothing and cost
+  the one failure worse than a refusal. Takes effect on the next engine start.
+- **Compaction stops throwing the window away.** opencode's own
+  `preserve_recent_tokens` default is `min(15000, max(2000, threshold/4))`, and
+  that 15,000 cap was chosen for 128K models: on this lane a compaction at
+  205,000 tokens would keep 15,000 and summarise the other 190,000. The installed
+  value is opencode's own intent without the cap, a quarter of the threshold
+  (**51,000** here), sized from the installed target by `oc-limits.sh --preserve`
+  and rewritten by every install and switch. `prune` goes on with it, so stale
+  tool output is cleared instead of the whole conversation being summarised.
+- **A switch now reaches the server that reads the numbers.** `opencode serve`
+  parses `opencode.json` once at startup and never again: with 225,000 on disk,
+  the running server still answered 175,000 on `/config`. Every switch before
+  this rewrote the limits correctly and left the Agent tab compacting against the
+  previous lane's window. `install.sh` and `switch-model.sh` restart
+  `opencode-web.service` when it is running, and CI holds it.
+- **An image the guard cannot parse is charged its ceiling, not a flat budget.**
+  A 3840x2160 screenshot really costs 8,162 tokens, so the flat 4,096 fallback
+  under-counted it, which is the direction that lets an oversize prompt through.
+  An image is bounded by the processor's `max_pixels`, so the fallback is that
+  bound (16,386). Audio, video and documents keep the flat budget: no geometry to
+  reason from.
+
+Verified end to end on the box: the ceiling raised live, needle 3/3 at depth, a
+248,800-token prompt served through the proxy, and one above 250,000 still
+refused with `code: context_length_exceeded`.
+
 ## v1.10.1 (2026-09-13): an image costs what it costs
 
 The flash lane kept dying mid-session with a proxy 400, and the number in that

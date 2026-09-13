@@ -100,6 +100,45 @@ def main() -> None:
     assert "output is 5" in m._verify(p, "qwen38", "qwen3.8-27b", 5, 9)
     assert "vanished" in m._verify(p, "qwen38", "nope", 5, 5)
 
+    # 6. --compaction writes the top-level block, on a config that has one and on
+    #    one that does not, and never touches the rest of the file. opencode's own
+    #    default caps preserve_recent_tokens at 15,000 whatever the window, which
+    #    on a 262K lane throws the window away the moment compaction fires.
+    def compact(path, keep):
+        r = subprocess.run([sys.executable, SCRIPT, path, "--compaction", str(keep)],
+                           capture_output=True, text=True)
+        return r.returncode, (r.stdout + r.stderr).strip()
+
+    def doc_of(path):
+        return json.loads(re.sub(r"^\s*//.*$", "", open(path).read(), flags=re.M))
+
+    p = write(tmp, wrap('{"context": 1, "input": 1, "output": 1}'))
+    rc, out = compact(p, 50000)
+    assert rc == 0 and "preserve_recent_tokens=50000" in out, out
+    d = doc_of(p)
+    assert d["compaction"] == {"preserve_recent_tokens": 50000, "prune": True}, d.get("compaction")
+    assert "user comment kept" in open(p).read(), "the JSONC comment was dropped"
+    assert d["provider"]["other"]["models"]["x"]["limit"] == {"context": 1, "input": 1, "output": 1}
+    rc, out = compact(p, 50000)
+    assert rc == 0 and "unchanged" in out, out
+    rc, out = compact(p, 60000)                       # an existing block is rewritten in place
+    assert rc == 0 and doc_of(p)["compaction"]["preserve_recent_tokens"] == 60000
+    assert doc_of(p)["compaction"]["prune"] is True
+
+    # A block that already exists with other keys keeps them, and prune is turned on.
+    body = ('{\n  "compaction": {"auto": true, "preserve_recent_tokens": 9, "prune": false},\n'
+            '  "provider": {"qwen38": {"models": {"qwen3.8-27b": {"limit": '
+            '{"context": 1, "input": 1, "output": 1}}}}}\n}\n')
+    p = write(tmp, body)
+    rc, out = compact(p, 50000)
+    assert rc == 0, out
+    d = doc_of(p)["compaction"]
+    assert d == {"auto": True, "preserve_recent_tokens": 50000, "prune": True}, d
+
+    # And the verifier refuses a block that does not carry what was asked.
+    assert m._verify_compaction(p, 50000) == ""
+    assert "expected 7" in m._verify_compaction(p, 7)
+
     print("test_oc_merge_limits: OK")
 
 

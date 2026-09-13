@@ -142,6 +142,14 @@ MEDIA_MAX_PIXELS = int(os.environ.get("MEDIA_MAX_PIXELS", "16777216"))    # size
 # Tokens a single image adds beyond its cells: <|vision_start|> and <|vision_end|>.
 # The stripped body loses the whole block, so the delta is cells + 2 (measured).
 MEDIA_WRAP_TOKENS = 2
+# An IMAGE whose header the parser does not recognise is still bounded: the
+# processor clamps it to MEDIA_MAX_PIXELS, so no image can ever cost more than
+# that many cells. Charging the bound (16,384 at the stock geometry) instead of
+# the flat budget keeps the guard honest in the direction that matters, because
+# a 3840x2160 screenshot really costs 8,162 and the flat 4,096 would UNDER-count
+# it. opencode only ever attaches jpeg, png, gif and webp, all four of which the
+# parser reads, so this is the belt to the parser's braces.
+IMAGE_BLOCKS = ("image", "image_url")
 # Bytes of the payload to look at when reading an image header. PNG, GIF and WebP
 # carry the size in the first 32; JPEG hides it behind APPn segments and quant
 # tables, so the scan needs room, and 48 KiB covers an EXIF thumbnail too.
@@ -325,22 +333,30 @@ def _media_payload(block):
     return None
 
 
+def _image_ceiling():
+    """The most tokens any image can cost: the processor clamps it to MEDIA_MAX_PIXELS."""
+    return MEDIA_MAX_PIXELS // (MEDIA_PATCH_PX * MEDIA_PATCH_PX) + MEDIA_WRAP_TOKENS
+
+
 def _media_tokens(block):
-    """What this media part adds to the prompt: measured for an image whose header
-    we can read, the flat fallback for everything else (audio, video, documents,
-    a remote URL the engine will fetch, an unknown container)."""
+    """What this media part adds to the prompt.
+
+    Measured from the header when we can read it. When we cannot: the geometric
+    ceiling if the block says it is an image (bounded, so guess upward), the flat
+    budget otherwise (audio, video, documents: no bound to reason from)."""
+    fallback = _image_ceiling() if block.get("type") in IMAGE_BLOCKS else TOKENS_PER_MEDIA
     data = _media_payload(block)
     if not data:
-        return TOKENS_PER_MEDIA
+        return fallback
     prefix = data[:(MEDIA_HEADER_BYTES * 4 // 3) // 4 * 4]
     try:
         raw = base64.b64decode(prefix, validate=False)
     except Exception:
-        return TOKENS_PER_MEDIA
+        return fallback
     dims = _image_dims(raw)
     if not dims:
-        return TOKENS_PER_MEDIA
-    return _image_tokens(*dims) or TOKENS_PER_MEDIA
+        return fallback
+    return _image_tokens(*dims) or fallback
 
 
 def _anthropic_as_openai(j, media):

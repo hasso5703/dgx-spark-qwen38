@@ -17,6 +17,7 @@
 #   ./oc-limits.sh <choice> <tier-or-mode>        # explicit: what install.sh knows
 #   ./oc-limits.sh <choice> --from <invocation>   # derived: what a switch can read
 #   ./oc-limits.sh --max-out                      # the ceiling every caller shares
+#   ./oc-limits.sh --preserve <ctx>               # tokens a compaction keeps verbatim
 #
 # `choice` is a target name. The second argument is the flash serving tier
 # (context | concurrency | throughput) for a flash target, or the 27B context
@@ -69,6 +70,33 @@ if [ "$CHOICE" = "--max-out" ]; then
   printf '%s\n' "$MAXOUT"
   exit 0
 fi
+# --preserve: how much of the recent conversation survives a compaction verbatim.
+#
+# opencode's default is min(15,000, max(2,000, threshold/4)), and that 15,000 cap
+# is the problem on a big window: it was chosen for models with a 128K context,
+# and on this lane it means a compaction at 205,000 tokens keeps 15,000 and
+# summarises the other 190,000. The window is then not being used, it is being
+# refilled from scratch every time.
+#
+# So the installed value is opencode's own intent without the cap: a quarter of
+# the compaction threshold, which is limit.context minus the 20,000 opencode
+# reserves. Rounded to 1,000. Sized from the INSTALLED target because the key is
+# global in opencode.json while the threshold is per-target: install.sh and
+# switch-model.sh rewrite it with the limits, so it always tracks the lane that
+# serves. A value at or above the threshold would make select() keep everything
+# and summarise the lot, which is the failure this avoids, so it is capped at
+# a third of the threshold.
+if [ "$CHOICE" = "--preserve" ]; then
+  CTX_IN="${2:-}"
+  case "$CTX_IN" in ''|*[!0-9]*) printf 'oc-limits: --preserve needs a context size\n' >&2; exit 2 ;; esac
+  THRESH=$(( CTX_IN - 20000 ))
+  [ "$THRESH" -gt 0 ] || { printf '0\n'; exit 0; }
+  KEEP=$(( THRESH / 4 ))
+  CAP=$(( THRESH / 3 ))
+  [ "$KEEP" -gt "$CAP" ] && KEEP="$CAP"
+  printf '%s\n' "$(( KEEP / 1000 * 1000 ))"
+  exit 0
+fi
 SECOND="${2:-}"
 INVOCATION=""
 SELECTOR=""
@@ -115,17 +143,33 @@ case "$CHOICE" in
     # decides between turns, then a single turn appends its tool results and sends.
     # So the rule is threshold + one worst step <= the proxy's ceiling. Measured
     # here over 2,156 flash-lane steps (opencode's own session store, 2026-09): the
-    # largest single-step prompt growth is 43,863 tokens, p99 18,512. 175,000 gives
-    # 155,000 + 43,863 = 198,863 against a 200,000 ceiling. 190,000 gave 213,863 and
-    # is why sessions died mid-conversation.
+    # largest single-step prompt growth is 43,863 tokens, p99 18,512.
     #
-    # The refusals of 09/09 and 10/09 that first pushed this number down were read
-    # as opencode "drifting" from the engine's count. They were not: the proxy was
-    # charging every image a flat 4,096 tokens where the engine charges 880 to 1,562
-    # for an agent screenshot, so a session holding 24 of them was refused ~61,000
-    # tokens early. Fixed in the proxy (v6.15), which is where it belonged.
+    #     225,000 - 20,000 + 43,863 = 248,863  <=  250,000 ceiling
+    #
+    # The ceiling is 250,000 because the box was measured there rather than assumed
+    # (2026-09-13, this engine, MemAvailable sampled through each prefill):
+    #
+    #     195,784 tokens -> 1.16 GiB of host headroom,  94.7 s
+    #     225,051 tokens -> 1.57 GiB,                  111.3 s
+    #     249,500 tokens -> 1.52 GiB,                  126.1 s, floor 7.0 GiB
+    #
+    # The old 128,000 and 200,000 ceilings came from a v1.5 engine whose PLE mapping
+    # faulted in whole page-cache folios (~0.27 GiB per 1k tokens past 90k, and 3.5
+    # GiB at 200k). v1.8 serves an engine that does not: a full-depth prefill now
+    # costs about 1.5 GiB and leaves 7 GiB, so the memory argument for stopping at
+    # 200,000 no longer holds and the window the model actually has is usable.
+    # What does still hold is the engine's own wall, max_req_input_len = 262,138:
+    # 250,000 leaves 12,138 tokens of slack under it, which is the band that keeps
+    # a mis-count on the proxy's side from reaching a truncation on the engine's.
+    #
+    # The 175,000 this replaces, and the 190,000 before it, were both set by reading
+    # proxy refusals as opencode "drifting" from the engine's count. It does not
+    # drift: the proxy was charging every image a flat 4,096 tokens where the engine
+    # charges 880 to 1,562 for an agent screenshot, so a session holding 24 of them
+    # was refused ~61,000 tokens early. Fixed in the proxy (v6.15).
     case "$TIER" in
-      context)     CTX=175000; OUT=64000 ;;   # 239,000 <= the pool; 175,000 keeps one whole agent step between compaction and the 200,000 ceiling (see below)
+      context)     CTX=225000; OUT=32000 ;;   # 257,000 <= the pool; keeps one whole agent step between compaction and the 250,000 ceiling (see above)
       concurrency) CTX=100000; OUT=16000 ;;   # 116,000 worst case. Measured 2026-09-12
       # with replayssm-spec the 8-request pool came out at 468,480 (not 129,792),
       # so these limits are conservative on this box; they stay until concurrent-
