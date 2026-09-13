@@ -615,10 +615,28 @@ jobs:
             read -r CTX OUT _ <<<"$(l $c 1m)"
             [ "$CTX" -lt "$NV_CTX" ] && [ "$OUT" -lt "$NV_OUT" ] \
               || { echo "$c must ask for less than NVFP4"; exit 1; }
-            worst=$(( CTX * 971 / 1000 + OUT ))   # opencode compacts at ~97% of limit.context
+            # opencode compacts when the last usage reaches limit.input minus
+            # min(20,000, its output cap), so the threshold is CTX - 20,000 exactly
+            # (opencode 1.18.27, SessionCompaction), not a percentage.
+            worst=$(( CTX - 20000 + OUT ))
             [ "$worst" -le 771139 ] \
               || { echo "$c: 1m worst case $worst exceeds the measured FP8 pool"; exit 1; }
           done
+          # A lane with a prompt ceiling must leave one whole agent step between
+          # opencode's compaction threshold and that ceiling. opencode decides
+          # between turns; the turn that follows appends its tool results and
+          # sends, and that step is measured at up to 43,863 tokens on this lane
+          # (2,156 steps, opencode's session store, 2026-09). 190,000 did not
+          # leave it and sessions died mid-conversation with a proxy 400.
+          CEILING=200000; RESERVE=20000; WORST_STEP=43863
+          read -r FCTX _ _ <<<"$(l flash context)"
+          [ $(( FCTX - RESERVE + WORST_STEP )) -le "$CEILING" ] \
+            || { echo "flash/context $FCTX leaves no room for one agent step under the $CEILING ceiling"; exit 1; }
+          # The fit tool must land on the same number as the table, or one click
+          # of the cockpit's fit button quietly restores the bug.
+          FIT=$(python3 -c "import importlib.util as i; s = i.spec_from_file_location('f', 'oc-fit-limits.py'); m = i.module_from_spec(s); s.loader.exec_module(m); print(m.fit(564352, 200000)[0])")
+          [ "$FIT" = "$FCTX" ] \
+            || { echo "oc-fit-limits fits $FIT where the table says $FCTX"; exit 1; }
           # And both callers go through it, rather than carrying a second copy.
           grep -q 'oc-limits.sh" "$MODEL_CHOICE" "$OC_SELECTOR"' install.sh \
             || { echo "install.sh no longer reads the shared limits table"; exit 1; }

@@ -40,14 +40,31 @@ BOOT_MARGIN = float(os.environ.get("OC_BOOT_MARGIN", "0.10"))
 # more pool than any real answer needs.
 OUTPUT_SHARE = 0.25
 OUTPUT_CAP = 200_000
-# When a lane sets a prompt ceiling, the opencode context must sit under it by
-# more than zero: opencode counts tokens by estimate while the proxy counts
-# with the engine, and a tool-heavy session overruns its own limit by the gap
-# (field 2026-09-10: the engine counted 208,297 tokens while opencode, at
-# context 190,000 under a 200,000 ceiling, had not yet fired compaction).
+# When a lane sets a prompt ceiling, the opencode context must sit under it, and
+# by how much is a derivation, not a guess.
+#
+# opencode compacts when the LAST response's reported usage reaches
+# limit.input - min(COMPACTION_RESERVE, its output cap), so its threshold is
+# context - COMPACTION_RESERVE (opencode 1.18.27, SessionCompaction). It decides
+# between turns; the next turn then appends its tool results and sends. So what
+# must fit under the ceiling is threshold + one worst step:
+#
+#     context - COMPACTION_RESERVE + WORST_STEP <= ceiling
+#     context <= ceiling - (WORST_STEP - COMPACTION_RESERVE)
+#
+# WORST_STEP is measured, not assumed: 43,863 tokens, the largest single-step
+# prompt growth over 2,156 flash-lane steps in opencode's own session store
+# (2026-09; p99 is 18,512). The derived minimum is 23,863; it is rounded up to
+# the next 5,000 so this tool and the oc-limits.sh table land on the same number
+# (200,000 - 25,000 = 175,000) instead of one grid step apart.
+#
 # Context == ceiling means the proxy refuses before compaction fires, which is
 # the exact failure this tool exists to prevent.
-CEILING_MARGIN = int(os.environ.get("OC_CEILING_MARGIN", "25_000"))
+COMPACTION_RESERVE = int(os.environ.get("OC_COMPACTION_RESERVE") or "20_000")
+WORST_STEP = int(os.environ.get("OC_WORST_STEP") or "43_863")
+_MARGIN_FLOOR = max(0, WORST_STEP - COMPACTION_RESERVE)
+CEILING_MARGIN = int(os.environ.get("OC_CEILING_MARGIN") or
+                     -(-_MARGIN_FLOOR // 5000) * 5000)
 LANE_MODEL = {"qwen3.8-27b": "qwen38", "qwen3.8-flash-next": "flashnext"}
 
 

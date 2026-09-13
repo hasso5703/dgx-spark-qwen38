@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.14). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.15). No content logging, and the only
 rewriting is the tool-schema guard (role 4).
 
 Four roles, nothing else:
@@ -22,6 +22,18 @@ Four roles, nothing else:
    engine validates them with a Python regex and 400s the request otherwise. Nothing
    else in the body is ever touched.
 
+v6.15: an image costs what it costs, and a refusal a client can act on. The oversize
+      guard charged every media part a flat 4,096 tokens. Measured against this engine at
+      twelve sizes, an agent screenshot really costs 880 (1280x720) to 1,562 (1680x950),
+      so a session holding 24 of them carried ~61,000 tokens of context it was not using:
+      on 2026-09-12 a 139,868-token conversation was refused as "200,684 prompt tokens".
+      Every oversize refusal this box has logged was such a session. The guard now reads
+      the image header (PNG, JPEG, GIF, WebP) and prices it with the vision tower's own
+      geometry (patch 16 x merge 2, clamped into the processor's pixel range), exact at
+      all twelve sizes; the flat budget survives only for what has no readable header.
+      The refusal also says "the prompt is too long" and carries
+      error.code=context_length_exceeded, because a client that does not recognise the
+      refusal as an overflow just resends the same prompt: opencode did, twice, 3 s apart.
 v6.14: an abandoned request no longer becomes a zombie. Three holes, all measured here on
       2026-09-09 (6,582 flood lines in one day, one request decoding 6 minutes for nobody):
       a client that gave up during prefill left a request the proxy could not name, because
@@ -68,7 +80,7 @@ before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
 / max 1307 ms through the proxy vs a steady 118 ms direct. read1() returns as
 soon as bytes are available, so the stream stays token by token.
 """
-import json, os, queue, re, socket, sys, threading, time, urllib.request, urllib.error, uuid
+import base64, json, math, os, queue, re, socket, sys, threading, time, urllib.request, urllib.error, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -117,7 +129,23 @@ def prompt_limit(pool):
 
 
 MEDIA_BLOCKS = ("image", "image_url", "input_audio", "video_url", "document", "audio_url")
-TOKENS_PER_MEDIA = int(os.environ.get("TOKENS_PER_MEDIA", "4096"))   # generous per image/audio part
+# Fallback budget for a media part whose real cost cannot be derived: audio, video,
+# documents, and images whose header the parser below does not recognise. An IMAGE
+# is never guessed at any more, because guessing was the bug (see _image_tokens).
+TOKENS_PER_MEDIA = int(os.environ.get("TOKENS_PER_MEDIA", "4096"))
+# Vision geometry of every checkpoint this repo serves (patch_size 16, merge_size 2
+# in preprocessor_config.json, identical on the 27B and flash lanes): the vision
+# tower sees a grid of MEDIA_PATCH_PX-sized cells and emits one token per cell.
+MEDIA_PATCH_PX   = int(os.environ.get("MEDIA_PATCH_PX", "32"))
+MEDIA_MIN_PIXELS = int(os.environ.get("MEDIA_MIN_PIXELS", "65536"))       # size.shortest_edge
+MEDIA_MAX_PIXELS = int(os.environ.get("MEDIA_MAX_PIXELS", "16777216"))    # size.longest_edge
+# Tokens a single image adds beyond its cells: <|vision_start|> and <|vision_end|>.
+# The stripped body loses the whole block, so the delta is cells + 2 (measured).
+MEDIA_WRAP_TOKENS = 2
+# Bytes of the payload to look at when reading an image header. PNG, GIF and WebP
+# carry the size in the first 32; JPEG hides it behind APPn segments and quant
+# tables, so the scan needs room, and 48 KiB covers an EXIF thumbnail too.
+MEDIA_HEADER_BYTES = 48 * 1024
 # Corruption tripwire: consecutive "!" (token id 0) that mean the decode path lost
 # its state rather than the model writing prose. 0 disables the guard.
 CORRUPTION_RUN = int(os.environ.get("CORRUPTION_RUN", "128") or 0)
@@ -202,11 +230,124 @@ def sanitize_tool_schemas(body, path):
     return json.dumps(j).encode(), dropped
 
 
+def _image_dims(raw):
+    """(width, height) from the first bytes of an image, or None.
+
+    Only the header is read: the payload is a base64 screenshot that can run to
+    megabytes and this runs on every oversize check.
+    """
+    try:
+        if raw[:8] == b"\x89PNG\r\n\x1a\n" and raw[12:16] == b"IHDR":
+            return (int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big"))
+        if raw[:6] in (b"GIF87a", b"GIF89a"):
+            return (int.from_bytes(raw[6:8], "little"), int.from_bytes(raw[8:10], "little"))
+        if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            chunk = raw[12:16]
+            if chunk == b"VP8X":
+                return (1 + int.from_bytes(raw[24:27], "little"),
+                        1 + int.from_bytes(raw[27:30], "little"))
+            if chunk == b"VP8L":
+                bits = int.from_bytes(raw[21:25], "little")
+                return (1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF))
+            if chunk == b"VP8 ":
+                return (int.from_bytes(raw[26:28], "little") & 0x3FFF,
+                        int.from_bytes(raw[28:30], "little") & 0x3FFF)
+        if raw[:2] == b"\xff\xd8":
+            i = 2
+            while i + 9 < len(raw):
+                if raw[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = raw[i + 1]
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                    i += 2
+                    continue
+                if marker == 0xDA:                       # start of scan: no size past here
+                    return None
+                seglen = int.from_bytes(raw[i + 2:i + 4], "big")
+                if seglen < 2:
+                    return None
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    return (int.from_bytes(raw[i + 7:i + 9], "big"),
+                            int.from_bytes(raw[i + 5:i + 7], "big"))
+                i += 2 + seglen
+    except Exception:
+        return None
+    return None
+
+
+def _image_tokens(w, h):
+    """Prompt tokens one image of this size really costs.
+
+    Qwen2/3-VL smart_resize: the image is rounded to a whole number of
+    MEDIA_PATCH_PX cells, clamped into [MEDIA_MIN_PIXELS, MEDIA_MAX_PIXELS], and
+    the vision tower emits one token per cell. Measured against this engine on
+    2026-09-13 at twelve sizes from 64x64 to 4500x4500: exact every time.
+
+    The flat TOKENS_PER_MEDIA this replaces was wrong in both directions and the
+    over-charge was the expensive one: an agent screenshot (1280x720 to
+    1680x950) really costs 880 to 1,562 tokens, so a session holding 24 of them
+    was charged about 61,000 tokens of context it was not using and refused at
+    "200,684 prompt tokens" while the engine was serving 139,868 (field
+    2026-09-12). Every oversize refusal this box has ever logged happened in a
+    session with images in context.
+    """
+    f = MEDIA_PATCH_PX
+    if w <= 0 or h <= 0:
+        return None
+    wb = max(f, int(round(w / f)) * f)
+    hb = max(f, int(round(h / f)) * f)
+    if wb * hb > MEDIA_MAX_PIXELS:
+        beta = math.sqrt((w * h) / MEDIA_MAX_PIXELS)
+        wb = max(f, math.floor(w / beta / f) * f)
+        hb = max(f, math.floor(h / beta / f) * f)
+    elif wb * hb < MEDIA_MIN_PIXELS:
+        beta = math.sqrt(MEDIA_MIN_PIXELS / (w * h))
+        wb = math.ceil(w * beta / f) * f
+        hb = math.ceil(h * beta / f) * f
+    return (wb // f) * (hb // f) + MEDIA_WRAP_TOKENS
+
+
+def _media_payload(block):
+    """The base64 text of a media block, whichever dialect carries it."""
+    if not isinstance(block, dict):
+        return None
+    url = block.get("image_url")
+    if isinstance(url, dict):
+        url = url.get("url")
+    if isinstance(url, str) and url.startswith("data:"):
+        head, _, data = url.partition(",")
+        return data if "base64" in head else None
+    src = block.get("source")
+    if isinstance(src, dict) and src.get("type") == "base64":
+        data = src.get("data")
+        return data if isinstance(data, str) else None
+    return None
+
+
+def _media_tokens(block):
+    """What this media part adds to the prompt: measured for an image whose header
+    we can read, the flat fallback for everything else (audio, video, documents,
+    a remote URL the engine will fetch, an unknown container)."""
+    data = _media_payload(block)
+    if not data:
+        return TOKENS_PER_MEDIA
+    prefix = data[:(MEDIA_HEADER_BYTES * 4 // 3) // 4 * 4]
+    try:
+        raw = base64.b64decode(prefix, validate=False)
+    except Exception:
+        return TOKENS_PER_MEDIA
+    dims = _image_dims(raw)
+    if not dims:
+        return TOKENS_PER_MEDIA
+    return _image_tokens(*dims) or TOKENS_PER_MEDIA
+
+
 def _anthropic_as_openai(j, media):
     """Anthropic /v1/messages body -> OpenAI-shaped messages for /tokenize.
-    Text blocks are kept, media blocks are counted in media[0] (their base64 is
-    not prompt text), other blocks (tool_use, tool_result) go through their JSON,
-    close enough for a guard that keeps an 8 percent margin."""
+    Text blocks are kept, media blocks add their measured token cost to media[0]
+    (their base64 is not prompt text), other blocks (tool_use, tool_result) go
+    through their JSON, close enough for a guard that keeps an 8 percent margin."""
     def flat(content):
         if isinstance(content, str):
             return content
@@ -217,7 +358,7 @@ def _anthropic_as_openai(j, media):
             elif b.get("type") == "text":
                 parts.append(str(b.get("text", "")))
             elif b.get("type") in MEDIA_BLOCKS:
-                media[0] += 1          # counted as a fixed token budget, never as base64 text
+                media[0] += _media_tokens(b)   # measured from its header, never from its base64 text
             else:
                 parts.append(json.dumps(b, ensure_ascii=False))
         return "\n".join(parts)
@@ -231,7 +372,7 @@ def _anthropic_as_openai(j, media):
 
 
 def _strip_media(messages, media):
-    """OpenAI messages with content parts: keep text parts, count media parts."""
+    """OpenAI messages with content parts: keep text parts, price media parts."""
     out = []
     for m in messages:
         if not isinstance(m, dict) or not isinstance(m.get("content"), list):
@@ -240,7 +381,7 @@ def _strip_media(messages, media):
         parts = []
         for part in m["content"]:
             if isinstance(part, dict) and part.get("type") in MEDIA_BLOCKS:
-                media[0] += 1
+                media[0] += _media_tokens(part)
             else:
                 parts.append(part)
         out.append({**m, "content": parts or ""})
@@ -321,7 +462,7 @@ def tokenize_count(body, path):
         n = int(json.loads(raw.decode()).get("count", -1))
     except Exception:
         return None
-    return n + media[0] * TOKENS_PER_MEDIA if n >= 0 else None
+    return n + media[0] if n >= 0 else None
 
 
 _POOL = {"tokens": None, "ts": 0.0}
@@ -897,13 +1038,26 @@ class H(BaseHTTPRequestHandler):
                     log(f"{self._peer} oversize check: {count} tokens fit ({limit} usable of pool {pool})")
                 if reason:
                     ceil = f", one-prompt ceiling {PROMPT_CEILING_TOKENS}" if PROMPT_CEILING_TOKENS > 0 else ""
-                    msg = (f"keepalive-proxy: this request is {reason}; this lane serves at most {limit} "
-                           f"prompt tokens (KV pool {pool} tokens{ceil}) and the engine would hang instead "
-                           f"of refusing it. The engine itself is up: shorten the context (compaction) "
-                           f"or serve a larger pool.")
+                    # The wording is not decoration. An agent client only recovers from
+                    # this if it recognises the refusal as a context overflow: opencode
+                    # matches the provider's message against a fixed vocabulary (and
+                    # error.code against "context_length_exceeded"), and on a hit it
+                    # compacts, drops the media attachments, and carries on. The old
+                    # message matched nothing in that vocabulary, so the session simply
+                    # resent the same prompt and got the same 400: measured 2026-09-12,
+                    # two identical refusals 3 s apart with no compaction between them.
+                    # "the prompt is too long" and error.code are what make it recover.
+                    msg = (f"keepalive-proxy: the prompt is too long for this lane. This request is "
+                           f"{reason}; this lane serves at most {limit} prompt tokens (KV pool {pool} "
+                           f"tokens{ceil}) and the engine would hang instead of refusing it. The engine "
+                           f"itself is up: compact the conversation, drop image attachments, or serve a "
+                           f"larger pool.")
                     log(f"{self._peer} REFUSED oversize ({len(body)}b, {reason}, limit {limit})")
                     self._plain(400, {"Content-Type": "application/json"},
-                                json.dumps({"error": {"type": "context_too_long", "message": msg}}).encode())
+                                json.dumps({"error": {"type": "context_too_long",
+                                                      "code": "context_length_exceeded",
+                                                      "param": "messages",
+                                                      "message": msg}}).encode())
                     self._done("400 oversize refused"); return
         resp, herr, cerr = self._open(body)
         if cerr is not None:

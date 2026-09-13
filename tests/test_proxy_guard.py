@@ -176,6 +176,76 @@ class ProxyGuard(unittest.TestCase):
         self.assertNotIn("BBBB", json.dumps(sent))
         self.assertEqual(n, 2 + self.mod.TOKENS_PER_MEDIA)
 
+    # ---- media is priced, not guessed (v6.15) -----------------------------
+    # The engine's numbers below are measured on the reference box (2026-09-13,
+    # RadixArk/Qwen3.8-Flash-Next-NVFP4, patch 16 x merge 2): the formula matched
+    # the engine's own prompt_tokens exactly at all twelve sizes tried.
+    MEASURED = {(1280, 720): 882, (1400, 800): 1102, (1600, 900): 1402,
+                (1680, 950): 1562, (923, 2000): 1800, (2000, 2000): 3846,
+                (3840, 2160): 8162, (4000, 4000): 15627,
+                (64, 64): 66, (200, 150): 72, (390, 844): 314, (4500, 4500): 16386}
+
+    @staticmethod
+    def _png(w, h):
+        """A PNG that is nothing but a valid header: the parser reads no further."""
+        import struct, zlib
+        ihdr = struct.pack(">II", w, h) + bytes([8, 2, 0, 0, 0])
+        return (b"\x89PNG\r\n\x1a\n"
+                + struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr
+                + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr)))
+
+    def test_image_tokens_match_the_engine_at_every_measured_size(self):
+        for (w, h), expected in self.MEASURED.items():
+            with self.subTest(size=f"{w}x{h}"):
+                self.assertEqual(self.mod._image_tokens(w, h), expected)
+
+    def test_image_dims_read_png_jpeg_gif_webp_headers(self):
+        import struct
+        self.assertEqual(self.mod._image_dims(self._png(1680, 950)), (1680, 950))
+        jpeg = (b"\xff\xd8"
+                + b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\x00" + b"\x00" * 9
+                + b"\xff\xc0" + struct.pack(">H", 17) + b"\x08" + struct.pack(">HH", 950, 1680)
+                + b"\x03" + b"\x00" * 9)
+        self.assertEqual(self.mod._image_dims(jpeg), (1680, 950))
+        self.assertEqual(self.mod._image_dims(b"GIF89a" + struct.pack("<HH", 640, 480)), (640, 480))
+        webp = (b"RIFF" + b"\x00" * 4 + b"WEBPVP8X" + b"\x00" * 8
+                + (1679).to_bytes(3, "little") + (949).to_bytes(3, "little"))
+        self.assertEqual(self.mod._image_dims(webp), (1680, 950))
+
+    def test_screenshot_costs_what_the_engine_charges_not_the_flat_budget(self):
+        """The field failure of 2026-09-12: 24 screenshots in one conversation.
+
+        Charged flat, they were 98,304 tokens and the request was refused at
+        "200,684 prompt tokens"; the engine was serving 139,868. Counted from
+        their headers they are 37,488, and the same conversation fits.
+        """
+        import base64
+        url = "data:image/png;base64," + base64.b64encode(self._png(1680, 950)).decode()
+        shots = [{"type": "image_url", "image_url": {"url": url}} for _ in range(24)]
+        body = json.dumps({"model": "m", "messages": [{"role": "user", "content":
+            [{"type": "text", "text": "one two three"}] + shots}]}).encode()
+        n = self.mod.tokenize_count(body, "/v1/chat/completions")
+        self.assertEqual(n, 3 + 24 * 1562)
+        self.assertLess(n, 24 * self.mod.TOKENS_PER_MEDIA)
+
+    def test_anthropic_image_block_priced_from_its_header(self):
+        import base64
+        body = json.dumps({"model": "m", "messages": [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                         "data": base64.b64encode(self._png(1280, 720)).decode()}},
+            {"type": "text", "text": "two words"}]}]}).encode()
+        self.assertEqual(self.mod.tokenize_count(body, "/v1/messages"), 2 + 882)
+
+    def test_unreadable_or_remote_media_keeps_the_flat_budget(self):
+        """Nothing is guessed downward: no header, no dimensions, flat budget."""
+        for block in (
+            {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}},
+            {"type": "image_url", "image_url": {"url": "data:image/heic;base64,AAAAAAAAAAAA"}},
+            {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+        ):
+            with self.subTest(block=block["type"]):
+                self.assertEqual(self.mod._media_tokens(block), self.mod.TOKENS_PER_MEDIA)
+
     def test_prompt_limit_pool_share_and_ceiling(self):
         saved = self.mod.PROMPT_CEILING_TOKENS
         try:
@@ -272,6 +342,121 @@ class ProxyInFrontOfLoadingEngine(unittest.TestCase):
         status, _headers, raw = self._post(json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode())
         self.assertEqual(status, 503)
         self.assertEqual(json.loads(raw)["error"]["type"], "engine_unavailable")
+
+
+class SmallPoolEngine(http.server.BaseHTTPRequestHandler):
+    """A healthy engine with a tiny pool: it answers /get_server_info and counts
+    with /tokenize, so the guard has everything it needs to refuse on size."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path == "/get_server_info":
+            out = json.dumps({"max_total_num_tokens": 20000}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(out)))
+            self.end_headers(); self.wfile.write(out); return
+        self.send_response(404); self.end_headers()
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+        if self.path == "/tokenize":
+            text = " ".join(str(m.get("content", "")) for m in body.get("messages", []))
+            out = json.dumps({"count": len(text.split()), "max_model_len": 262144}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out))); self.end_headers()
+            self.wfile.write(out); return
+        self.send_response(404); self.end_headers()
+
+
+class RefusalIsRecognisableAsOverflow(unittest.TestCase):
+    """v6.15: a refusal a client cannot classify is a refusal it cannot recover from.
+
+    opencode (and every AI-SDK client) decides "this is a context overflow, compact
+    and retry" by matching the provider's message against a fixed vocabulary, or by
+    reading error.code == "context_length_exceeded". The v6.14 message matched
+    nothing in that vocabulary and carried no code, so the session resent the same
+    prompt and got the same 400: measured on this box 2026-09-12 23:18:00 and
+    23:18:03, two identical refusals 3 s apart, no compaction between them.
+
+    The regexes below are opencode 1.18.27's own list, read out of the binary."""
+
+    OPENCODE_OVERFLOW_VOCABULARY = [
+        r"prompt is too long", r"request_too_large", r"input is too long for requested model",
+        r"exceeds the context window", r"input token count.*exceeds the maximum",
+        r"tokens in request more than max tokens allowed", r"maximum prompt length is \d+",
+        r"reduce the length of the messages", r"maximum context length is \d+ tokens",
+        r"exceeds the limit of \d+", r"exceeds the available context size",
+        r"greater than the context length", r"context window exceeds limit",
+        r"exceeded model token limit", r"context[_ ]length[_ ]exceeded",
+        r"request entity too large", r"context length is only \d+ tokens",
+        r"input length.*exceeds.*context length", r"model_context_window_exceeded",
+        r"too many tokens", r"token limit exceeded",
+    ]
+    # The same client refuses to treat these as overflow even when the rest matches.
+    OPENCODE_NOT_OVERFLOW = [r"^(throttling error|service unavailable):", r"rate limit", r"too many requests"]
+
+    @classmethod
+    def setUpClass(cls):
+        import socket, subprocess, sys, time
+        cls.eng = http.server.HTTPServer(("127.0.0.1", 0), SmallPoolEngine)
+        threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        cls.keyfile = Path.home() / ".config/qwen38/api-key"
+        cls.had_key = cls.keyfile.exists()
+        if not cls.had_key:
+            cls.keyfile.parent.mkdir(parents=True, exist_ok=True)
+            cls.keyfile.write_text("test-key\n")
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}")
+        cls.proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
+                                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", cls.port), timeout=0.2).close(); break
+            except OSError:
+                time.sleep(0.05)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate(); cls.proc.wait(timeout=5); cls.eng.shutdown()
+        if not cls.had_key:
+            cls.keyfile.unlink()
+
+    def _refusal(self):
+        body = json.dumps({"model": "m", "messages": [
+            {"role": "user", "content": "word " * 120000}]}).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                self.fail(f"an oversize body was relayed: {r.status}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())["error"]
+
+    def test_the_refusal_matches_the_client_overflow_vocabulary(self):
+        import re
+        _status, err = self._refusal()
+        hits = [p for p in self.OPENCODE_OVERFLOW_VOCABULARY if re.search(p, err["message"], re.I)]
+        self.assertTrue(hits, f"no client would classify this as an overflow: {err['message']}")
+        for p in self.OPENCODE_NOT_OVERFLOW:
+            self.assertIsNone(re.search(p, err["message"], re.I),
+                              f"{p!r} makes the client treat an overflow as a rate limit")
+
+    def test_the_refusal_carries_the_machine_readable_code(self):
+        status, err = self._refusal()
+        self.assertEqual(status, 400)
+        self.assertEqual(err["code"], "context_length_exceeded")
+
+    def test_the_refusal_keeps_its_own_type_for_needle_sh(self):
+        """needle.sh reads error.type to tell a refusal from a missed needle."""
+        _status, err = self._refusal()
+        self.assertEqual(err["type"], "context_too_long")
+
+    def test_the_refusal_still_says_what_and_why(self):
+        _status, err = self._refusal()
+        self.assertIn("prompt tokens", err["message"])
+        self.assertIn("KV pool", err["message"])
 
 
 class PoolCacheInvalidation(unittest.TestCase):

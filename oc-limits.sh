@@ -104,8 +104,28 @@ case "$CHOICE" in
     fi
     # The budget is min(the proxy's one-prompt ceiling, what the tier's KV pool
     # holds alongside the answer).
+    #
+    # Where the context-tier number comes from, since it is not the ceiling:
+    # opencode does NOT estimate its context. It compacts when the LAST response's
+    # reported usage reaches limit.input minus min(20,000, its output cap), so the
+    # threshold is simply CTX - 20,000 (opencode 1.18.27, SessionCompaction). The
+    # numbers it compares are the engine's own prompt_tokens, exact.
+    #
+    # What can still overrun the ceiling is the step AFTER that check: opencode
+    # decides between turns, then a single turn appends its tool results and sends.
+    # So the rule is threshold + one worst step <= the proxy's ceiling. Measured
+    # here over 2,156 flash-lane steps (opencode's own session store, 2026-09): the
+    # largest single-step prompt growth is 43,863 tokens, p99 18,512. 175,000 gives
+    # 155,000 + 43,863 = 198,863 against a 200,000 ceiling. 190,000 gave 213,863 and
+    # is why sessions died mid-conversation.
+    #
+    # The refusals of 09/09 and 10/09 that first pushed this number down were read
+    # as opencode "drifting" from the engine's count. They were not: the proxy was
+    # charging every image a flat 4,096 tokens where the engine charges 880 to 1,562
+    # for an agent screenshot, so a session holding 24 of them was refused ~61,000
+    # tokens early. Fixed in the proxy (v6.15), which is where it belonged.
     case "$TIER" in
-      context)     CTX=175000; OUT=64000 ;;   # 239,000 <= the pool; 175,000 = the 200,000 ceiling minus the estimate drift (field 10/09: the engine counted 208,297 prompt tokens while opencode, at context 190,000, still thought it was under its own threshold - opencode counts by estimate, the proxy counts with the engine; a tool-heavy session overruns its own limit by >=18,000 tokens, so the ceiling's slack must cover the drift or the proxy refuses before compaction ever fires)
+      context)     CTX=175000; OUT=64000 ;;   # 239,000 <= the pool; 175,000 keeps one whole agent step between compaction and the 200,000 ceiling (see below)
       concurrency) CTX=100000; OUT=16000 ;;   # 116,000 worst case. Measured 2026-09-12
       # with replayssm-spec the 8-request pool came out at 468,480 (not 129,792),
       # so these limits are conservative on this box; they stay until concurrent-

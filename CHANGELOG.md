@@ -1,5 +1,55 @@
 # Changelog
 
+## v1.10.1 (2026-09-13): an image costs what it costs
+
+The flash lane kept dying mid-session with a proxy 400, and the number in that
+400 was wrong. On 2026-09-12 a conversation was refused as **200,684 prompt
+tokens** against the lane's 200,000 ceiling. The engine was serving **139,868**.
+
+The gap was 24 screenshots. The proxy's oversize guard cannot ask `/tokenize`
+to price an image (SGLang returns the 3-token placeholder, not the expansion),
+so since v6.8 it charged every media part a flat **4,096 tokens**. Measured
+against this engine at twelve sizes, an agent screenshot really costs **880**
+(1280x720) to **1,562** (1680x950): 24 of them were charged 98,304 where the
+engine charges 37,488. Every oversize refusal this box has ever logged, all
+eight of them since 2026-09-09, happened in a session holding images.
+
+- **The guard now prices an image from its own header** (PNG, JPEG, GIF, WebP)
+  with the vision tower's geometry: `round(w/32) * round(h/32)` cells, clamped
+  into the processor's pixel range, plus the two wrapper tokens. Exact against
+  the engine's own `prompt_tokens` at all twelve sizes tried, including both
+  clamp branches (64x64 up to `min_pixels`, 4500x4500 down from `max_pixels`),
+  and exact end to end at 1, 5 and 24 images. Every checkpoint this repo serves
+  has the same geometry (`patch_size` 16, `merge_size` 2), so one formula covers
+  both lanes. `TOKENS_PER_MEDIA` survives as the fallback for what has no
+  readable header: audio, video, documents, a remote URL the engine will fetch.
+- **The refusal is now one a client can act on.** opencode recovers from a
+  context overflow by compacting *and dropping the media attachments*, which is
+  exactly the right move here, but it only does it when it recognises the
+  provider's error: a fixed message vocabulary, or `error.code ==
+  "context_length_exceeded"`. The old message matched nothing and carried no
+  code, so the session resent the same prompt and got the same 400. That is
+  what the field log shows: 23:18:00 refused at 200,684, 23:18:03 refused at
+  200,735, no compaction in between. The refusal now says "the prompt is too
+  long" and carries the code. `error.type` stays `context_too_long`, because
+  `needle.sh` reads it.
+- **The 175,000 context tier keeps its number and loses its reason.** It was set
+  by reading the 09/09 and 10/09 refusals as opencode "estimating" its context
+  and drifting from the engine. It does not estimate: it compacts when the last
+  response's reported usage reaches `limit.input - min(20,000, output cap)`, and
+  those are the engine's own numbers. What it *cannot* see is the step it is
+  about to take, so the real rule is `threshold + one worst step <= ceiling`.
+  Measured over 2,156 flash-lane steps in opencode's session store: worst step
+  **43,863** tokens, p99 18,512. 175,000 gives 155,000 + 43,863 = 198,863 under
+  a 200,000 ceiling and holds; 190,000 gave 213,863 and did not. `oc-fit-limits`
+  derives its margin from those two measurements instead of asserting 25,000,
+  and a CI gate holds the invariant and the agreement between tool and table.
+
+Tests: 4 new in `tests/test_proxy_guard.py` for the pricing (the twelve measured
+sizes, the four header formats, the 24-screenshot conversation, the fallbacks)
+and 4 for the refusal shape, including the client's own overflow vocabulary read
+out of the binary. 49 tests in that file, all suites green.
+
 ## v1.10.0 (2026-09-12): measured serving flags, a wildcard-free sudoers file, and a hardened proxy
 
 Five small holes in `keepalive-proxy.py`, each reproduced before fixing, each
