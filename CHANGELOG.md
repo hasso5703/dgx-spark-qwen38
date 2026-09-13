@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.11.1 (2026-09-13): the identity wall learns admission
+
+A one-fix patch, and an honest one: v6.16's per-client identity named every
+labeled client and admitted none. The client's bearer went upstream verbatim
+and met the engine's own `--api-key` there, so each identified request died
+with the engine's 401 past a wall that had correctly identified it. No test
+caught it because every fake engine in the suite lets everything through;
+the reference box caught it, on its real engine, the day v1.11 landed there.
+That biography is the whole argument for the fix carrying its own enforcing
+fake engine: the admission scenarios below exist so this exact hole cannot
+reopen unnoticed.
+
+- **Proxy v6.17**: `QWEN38_UPSTREAM_API_KEY` names the engine's key to the
+  proxy. When both halves are set, the client's bearer names them on the
+  journal line and the engine's key admits them upstream, on relays and on
+  abort calls alike (the abort path had the same verbatim habit). Without the
+  upstream key the old verbatim behavior stays, for an engine with no key
+  check of its own or one shared key on purpose, and the startup banner warns
+  loudly about the combination. `docs/clients.md` now teaches the two-key
+  model instead of the one-key story v1.11 shipped.
+- Three new admission tests (substitution observed engine-side, verbatim
+  pinned as the documented fallback, upstream key dormant with the wall
+  off); root proxy coverage 78% over its 74% floor.
+- Deploys onto a running box with a keepalive-proxy restart only: no engine
+  restart, no re-install, the drift panel has nothing to say about it.
 ## v1.11 (2026-09-13): the walls this box kept being built around, built in and fail-closed
 
 A serving stack that stays a weekend project grows walls in front of it: someone's nginx
