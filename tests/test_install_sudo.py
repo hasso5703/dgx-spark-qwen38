@@ -22,12 +22,31 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 
+def _pins_cached():
+    """Steps 1-7 verify the pinned bytes before anything else, so without the
+    local cache the run dies at step 1 instead of reaching the step-8 refusal
+    under test. ci-local runs this file under a witness HOME with no cache on
+    purpose: skipping there is the test respecting the witness, not dodging.
+    """
+    cache = Path(os.environ.get("HF_CACHE", Path.home() / ".cache" / "huggingface"))
+    if not cache.is_dir():
+        return False
+    try:
+        proc = subprocess.run(["docker", "images", "--format", "{{.Repository}}"],
+                              capture_output=True, text=True, timeout=60)
+    except Exception:
+        return False
+    return proc.returncode == 0 and "lmsysorg/sglang" in proc.stdout.split()
+
+
 class SudoTicketRefusal(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if platform.machine() != "aarch64" or not shutil.which("docker"):
             raise unittest.SkipTest(
                 "needs the reference class of machine (aarch64, docker, cached pins)")
+        if not _pins_cached():
+            raise unittest.SkipTest("needs the pinned bytes cached (steps 1-7 verify them first)")
         stub = tempfile.mkdtemp()
         sudo = os.path.join(stub, "sudo")
         with open(sudo, "w") as f:
