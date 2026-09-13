@@ -80,6 +80,11 @@ discussion, not a disclosure.
   `uncensored-fp8` and `flash-uncensored` exist as pinned checkpoints
   because the operator asked for them; nothing in the serving stack filters
   or vets what they answer.
+- **`/metrics` is open on the engine port.** Since the Prometheus flag ships on
+  every lane, request rates and queue depths are readable by anything that can
+  reach the engine port. That is the port's existing trust model (a trusted
+  network by design, see the plain HTTP edge above); the metrics endpoint adds
+  counters to it, not a new surface to authenticate against.
 - **The cockpit assumes one admin user.** The sudo allowlist covers this
   repo's argv, but a hostile local user with your shell can do what you can
   do: this box is yours, and it is not a multi-tenant host.
