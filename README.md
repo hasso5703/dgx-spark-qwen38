@@ -139,6 +139,9 @@ v1.9 wins every row of the frozen battery against v1.2 except eval-style math (o
 
 Full study (methodology, engine-vs-engine matrix, an independent reproduction, the physics of the GB10 ceiling, and a frozen benchmark battery you can run against **any** engine, `./bench-matrix.sh`): in **[BENCHMARKS.md](BENCHMARKS.md)**.
 
+**Client integration** (endpoints, Claude Code, VS Code Copilot, Open WebUI, Cursor, optional TLS and per-client identity): in **[docs/clients.md](docs/clients.md)**.
+**Trust model and private reporting**: in **[SECURITY.md](SECURITY.md)**. **The layout, the state files, the invariants CI holds**: in **[ARCHITECTURE.md](ARCHITECTURE.md)**. **Where this is going**: in **[ROADMAP.md](ROADMAP.md)**. **To contribute**: start with **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
 How the repo is tested, and what the tests found in code that was already in production: in **[TESTING.md](TESTING.md)**. Measured branch coverage with a floor per module, property-based checks over generated inputs, a fuzzed and state-machine-simulated proxy, and a mutation score, because a suite written alongside its own code has to be asked whether it would notice the code being wrong (`lifecycle.py`: 74.8% of injected faults caught before that question was asked, 90.8% after).
 
 ## ⚠️ The GB10 unified-memory trap (read this before changing anything)
