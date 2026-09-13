@@ -1,5 +1,74 @@
 # Changelog
 
+## v1.11 (2026-09-13): the walls this box kept being built around, built in and fail-closed
+
+A serving stack that stays a weekend project grows walls in front of it: someone's nginx
+for TLS, someone's sidecar for "which laptop sent this", someone's Prometheus exporter.
+This release moves the three that keep coming into the stack itself, opt-in, each one
+designed so the loopback-and-tailnet default does not notice, and none of them allowed
+to half-exist: **a wall that vanished silently is worse than no wall**, the sentence this
+version turns into code. It is also the release where the repo starts behaving like the
+years-long project it claims to be: the governance documents, the daily supply-chain
+alarm, and the releases that had stopped being tagged are all caught up.
+
+- **Proxy v6.16, TLS**: name `QWEN38_TLS_CERT` (and `QWEN38_TLS_KEY` when the key is a
+  separate file) and the socket speaks the operator's certificate, TLS 1.2 floor, and
+  the unit refuses to start rather than bind plain beside the promise of TLS. Unset,
+  the socket is byte-for-byte what it was: this feature must not be able to change a
+  loopback box. `tests/test_proxy_tls.py` drives the real production entry point with
+  an openssl-generated cert and proves all three: handshake works, nothing plain
+  answers beside the TLS socket, a cert that cannot load boots nothing. It found its
+  first bug while being written (`ssl.TLSVersion.TLS1_2` does not exist; `TLSv1_2`
+  does), which is the whole argument for testing a wall by walking through its door.
+- **Proxy v6.16, per-client identity**: `QWEN38_CLIENT_KEYS_FILE`, a JSON map of bearer
+  token to label. When set, a `/v1/` request whose token is not on the list gets a 401
+  **in its own dialect** (`authentication_error` parses on the Claude side, `error.type`
+  on the OpenAI side), `/health` stays open because a monitored endpoint behind an
+  identity wall stops being monitoring, and the label rides every journal line of the
+  request: per-client throughput and refusals become `journalctl`, with no telemetry
+  component anywhere. A missing, empty or malformed keys file stops the unit at import:
+  fail closed is tested as a `SystemExit`, not as a hope. The engine's `--api-key` is
+  untouched and still enforced: this is identity, not a second key to rotate twice.
+- **Prometheus on every lane**: `--enable-metrics` in both 27B units, the flash launcher
+  and `run.sh`, carried by a new CI gate the same shape as `--sleep-on-idle`'s.
+  `/metrics` is unauthenticated on the engine port, which already assumes a trusted
+  network for its whole surface; README and SECURITY.md say so plainly. The flag lands
+  at the next `./install.sh` re-run and engine start; on the reference box the cockpit
+  drift panel reads `recipe true, installed false` for exactly that reason, and that
+  reading is the panel working, not a defect.
+- **The closed outcome vocabulary caught its own new member**: registering the v6.16
+  401 failed the vocabulary gate until someone (it, eventually) decided the kind: `fail`,
+  the same reading its 400 and 413 siblings got. The gate did its job before a human
+  had to.
+- **The installer's three port refusals say their own name**: `die()` was defined below
+  the port validations that call it first, so `PORT=abc ./install.sh` printed
+  "die: command not found" through the ERR trap and lost the message; `tests/test_install_preflight.py`
+  pins all three refusals with a minimal-environment run that is safe on any machine.
+- **Governance**: SECURITY.md names the trust boundaries that are contracts (exact-argv
+  sudoers, session cookie, bundle masking, byte caps) and the ones that are design
+  edges (plain HTTP by network choice, one key one realm, `AGENT_AUTO` as deliberate
+  escalation); CONTRIBUTING.md points at every gate that will catch you instead of at
+  vibes; ARCHITECTURE.md is the map the CHANGELOG is not; ROADMAP.md gives "on the
+  roadmap" checkboxes and gives considered features their reasons. Issue templates make
+  a box report carry its conditions or explain why not. Dependabot is allowed to touch
+  the GitHub Actions versions and nothing else.
+- **A daily supply-chain alarm**: the `pin watch` workflow runs `check-pins.sh` on a
+  schedule and files one labeled issue when a pin stops resolving upstream, never a
+  duplicate; the build itself stays network-free by contract, the watch is a watch.
+- **The mirror, honestly**: `MIRROR.md` and `mirror-pins.sh` (plan-only by default,
+  `--dry-run` needs no credentials) are the runbook for holding every pinned byte; the
+  license table in it is empty of conclusions on purpose and the first mirrored byte
+  waits for nine dated human license checks and one org decision.
+- **Caught up**: v1.10.1 and v1.10.2 get their tags and GitHub releases (they had
+  drifted two releases), the README's doc map gains the four governance links, and
+  `docs/clients.md` answers the client questions the issues keep asking, with the line
+  between "measured on the reference box" and "standard vendor configuration" drawn
+  where the repo draws it.
+
+Thirteen new tests (4 preflight, 3 TLS, 6 identity), the root coverage of
+`keepalive-proxy.py` up to 77% against its 74% floor, and the whole offline suite green
+on the most constrained environment the project knows: a GitHub runner with no docker,
+no systemctl, no GPU.
 ## v1.10.2 (2026-09-13): the window the model actually has
 
 The flash lane serves a 262,144-token window and opencode was allowed 175,000 of
