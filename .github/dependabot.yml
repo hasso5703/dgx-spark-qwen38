@@ -1,0 +1,15 @@
+# Actions drift is drift too: the repo pins twice on purpose, and a workflow
+# pinned to a 3-year-old checkout action is the same kind of silent rot as an
+# unpinned model. Weekly bump PRs for the actions themselves, nothing else
+# (the dependencies that matter here are the pins in install.sh, and those
+# move only through a measured release, never through a bot).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: 07:00
+      timezone: Europe/Paris
+    labels: [ci]
