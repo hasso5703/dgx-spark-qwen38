@@ -56,7 +56,7 @@ OUTPUT_CAP = 200_000
 # prompt growth over 2,156 flash-lane steps in opencode's own session store
 # (2026-09; p99 is 18,512). The derived minimum is 23,863; it is rounded up to
 # the next 5,000 so this tool and the oc-limits.sh table land on the same number
-# (200,000 - 25,000 = 175,000) instead of one grid step apart.
+# (250,000 - 25,000 = 225,000) instead of one grid step apart.
 #
 # Context == ceiling means the proxy refuses before compaction fires, which is
 # the exact failure this tool exists to prevent.
