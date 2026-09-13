@@ -126,5 +126,6 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
     --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
     --chat-template /out/chat-template-sglang.jinja \
     --sleep-on-idle \
+    --enable-metrics \
     --api-key "$KEY" \
     --host 0.0.0.0 --port "$PORT"

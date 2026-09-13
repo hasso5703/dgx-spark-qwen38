@@ -105,6 +105,10 @@ SWITCHES = (
     "--allow-auto-truncate",        # truncate an oversize prompt instead of erroring
     "--enable-torch-compile",       # 27B lane: compiled decode
     "--disable-flashinfer-autotune",
+    "--enable-metrics",              # Prometheus counters on /metrics: the scrape
+                                    # endpoint every fleet asks for; unauthenticated
+                                    # on the engine port, same trust model as that
+                                    # port's whole surface (SECURITY.md)
     "--disable-prefill-cuda-graph",
     "--ple-offload-embedding",      # flash lane: the only reason 176B fits one GB10
     "--trust-remote-code",
