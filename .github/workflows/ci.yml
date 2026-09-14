@@ -268,7 +268,16 @@ jobs:
           done
           PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)"
           eval "$PINS"
-          [ -n "$UNC_REV" ] && [ -n "$STOCK_REV" ] && [ "$MODEL_CHOICE" = "stock" ] && [ "$CONTEXT_MODE" = "native" ]
+          [ -n "$UNC_REV" ] && [ -n "$STOCK_REV" ] && [ "$MODEL_CHOICE" = "stock" ]
+          # CONTEXT_MODE is deliberately EMPTY here since v1.12.1. The pins at
+          # the top of install.sh are read by run.sh and switch-model.sh, which
+          # is why this block evals them, and the context mode is no longer one
+          # of them: empty means "not chosen yet", and the default (1m on the
+          # 27B lane) is resolved further down the installer, where the lane and
+          # --no-service are known. A value here would be the old bug back, a
+          # default decided above the flags that have to shape it.
+          [ -z "$CONTEXT_MODE" ] || { echo "CONTEXT_MODE must default to empty, got '$CONTEXT_MODE'"; exit 1; }
+          grep -q 'CONTEXT_MODE=1m$' install.sh || { echo "install.sh no longer resolves a 1m default"; exit 1; }
           PINS_F="$(grep -E '^(FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_BASE_IMAGE)=' install.sh)"
           eval "$PINS_F"
           [ "${#FLASH_REV}" -eq 40 ] || { echo "FLASH_REV is not a 40-char sha"; exit 1; }
@@ -881,6 +890,9 @@ jobs:
       - name: The cockpit ships with a plain install (flags, marker, wiring)
         run: python3 tests/test_install_cockpit.py
 
+      - name: A plain 27B install serves 1M, and refuses nobody for it
+        run: python3 tests/test_install_context_mode.py
+
       - name: Everything install.sh leaves behind is in the uninstall inventory
         run: python3 tests/test_uninstall_inventory.py
 
@@ -1069,8 +1081,22 @@ jobs:
           if re.search(r"^ *sudo sed ", sw, re.M):
               print("sudo sed in switch-model.sh: use the ceiling drop-in instead"); sys.exit(1)
           unit = pathlib.Path("dashboard/qwen38-dashboard.service.template").read_text()
-          if "ReadWritePaths=/etc/systemd/system" in unit:
-              print("dashboard unit still writable on /etc/systemd/system (cockpit only reads there)"); sys.exit(1)
+          # Inverted on 2026-09-14, because the old assertion was the bug. It
+          # read "cockpit only reads there", and the cockpit's own Switch button
+          # writes there through the allowlist above. ProtectSystem=full gives
+          # the unit a mount namespace with /etc bound read-only, and sudo does
+          # not leave a mount namespace, so root inside it cannot write either:
+          # every allowlisted write below failed with "Read-only file system"
+          # while this gate certified the unit as correct.
+          if "ReadWritePaths=/etc/systemd/system" not in unit:
+              print("dashboard unit cannot write /etc/systemd/system, so its own"
+                    " allowlisted writes fail inside ProtectSystem's namespace"); sys.exit(1)
+          # And every path the switch writes under /etc has to be inside it.
+          rw = {l.split("=", 1)[1] for l in unit.splitlines() if l.startswith("ReadWritePaths=")}
+          for dest in re.findall(r"sudo install [^\n]*?(/etc/[A-Za-z0-9_./$-]+)", sw):
+              if not any(dest == r or dest.startswith(r.rstrip("/") + "/") for r in rw):
+                  print(f"switch-model.sh writes {dest}, which no ReadWritePaths of the"
+                        f" cockpit unit covers: the Switch button cannot do it"); sys.exit(1)
           print("sudoers allowlist: no wildcards, staging paths and journalctl argv match their callers")
           PY
 

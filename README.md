@@ -51,8 +51,9 @@ curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get
 Options ride on the **bash side** of the pipe (an env prefix on `curl` would not reach the installer):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=uncensored CONTEXT_MODE=1m bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=uncensored bash
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=flash bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | CONTEXT_MODE=native bash
 ```
 
 Or the explicit way:
@@ -83,7 +84,7 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 | Model | `MODEL_CHOICE=stock`, `uncensored`, `fp8`, `uncensored-fp8`, `flash`, `flash-uncensored`, `flash-nvda` | `stock` | 27B NVFP4 stock or abliterated, the same pair in Qwen's FP8, or Flash-Next 176B in one of three NVFP4 exports (see the seven targets) |
 | Reduced draft vocabulary | `SPEC_TOKEN_MAP_SIZE=65536`, or `0` to serve without it | `65536` | flash only: hands the speculative draft the target's `lm_head` sliced to that many rows, which is 14 to 25% of decode and cannot change what the model may say |
 | Flash serving tier | `FLASH_TIER=context`, `concurrency`, `throughput` | `context` | flash only: 4 concurrent requests and a pool that takes a full 262K prompt, 8 requests at a third of the pool, or 24 without speculation |
-| Context mode (27B) | `CONTEXT_MODE=native` or `1m` | `native` | `1m` = 1,010,000 window, mem-fraction 0.70, proxy required (see the 1M section) |
+| Context mode (27B) | `CONTEXT_MODE=native` or `1m` | **`1m`** since v1.12.1 | 1,010,000 window via YaRN, mem-fraction 0.70, proxy required, limits fitted to the real pool at the end of the install (see the 1M section). The flash lane and `--no-service` are native either way, with no refusal; a re-run keeps whatever is already installed, both directions |
 | systemd service | default, or `--no-service` | service | `--no-service`: foreground with `./run.sh`, no sudo, 27B native only |
 | Start now | default, or `--no-start` | starts | install everything, start later with `sudo systemctl start` |
 | opencode integration | default, or `--no-opencode` | on | on = ready config + `oc` launcher + default model following every switch; off = none of that, your own opencode config is never touched. `--with-opencode` turns it back on |
@@ -98,14 +99,14 @@ Combinations that make sense:
 ```bash
 # one-liner forms (variables on the bash side, flags after "bash -s --")
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash                                  # everything: 27B stock, native, service, opencode, cockpit
-curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | CONTEXT_MODE=1m bash                  # 27B stock, 1M context
-curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=uncensored CONTEXT_MODE=1m bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | CONTEXT_MODE=native bash              # the 262144 window instead
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=uncensored bash           # abliterated 27B, 1M context
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=flash bash               # Flash-Next lane (service only)
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --no-opencode              # API only, no opencode files
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --no-cockpit               # engine and proxy only, no web UI
 # clone forms
 ./install.sh --no-service && ./run.sh                    # no systemd, foreground, Ctrl+C stops it
-CONTEXT_MODE=1m ./install.sh --no-start                  # prepare the 1M unit, start it yourself later
+CONTEXT_MODE=native ./install.sh                         # the 262144 window on a 1M box
 ./install.sh --with-opencode                             # turn the opencode integration back on
 ./switch-model.sh stock | uncensored | flash             # change model later, no reinstall (then stop/start the units it prints)
 ```
@@ -199,12 +200,21 @@ On service installs the generated config points at the **keepalive proxy port** 
 
 ## The 1M context mode
 
+Since v1.12.1 this is what a plain 27B install serves. It was opt-in behind an
+env var until then, which meant the window this whole stack is built around was
+off for anybody who had not read this section.
+
 ```bash
-CONTEXT_MODE=1m ./install.sh        # combines freely with MODEL_CHOICE=uncensored
-# one-liner: curl -fsSL .../get.sh | CONTEXT_MODE=1m bash
+curl -fsSL .../get.sh | bash        # 1M, and combines freely with MODEL_CHOICE=uncensored
+CONTEXT_MODE=native ./install.sh    # the 262144 window instead
 ```
 
-This installs, as one converging command, the exact preset that serves the reference box
+The flash lane and `--no-service` cannot serve it and stay native with no
+refusal, because a default must never reject something the operator did not
+type. A re-run keeps the mode already installed, in both directions: an update
+does not patch YaRN into the configs of a box that chose native.
+
+This is, as one converging command, the exact preset that serves the reference box
 daily since 2026-08-22:
 
 - **1,010,000-token window** via YaRN static scaling (factor 4.0,
@@ -219,13 +229,14 @@ daily since 2026-08-22:
   overlap, so treat **863K as the floor to plan against** until a fresh campaign
   settles it. DFlash2 acceptance is unchanged either way, and a real 690K-token
   request has been served (cold prefill 40 min, then cached).
-- **Fit the limits to your own boot.** The generated opencode limits below are
-  static, and their 1m worst case (compaction at ~680K plus 200K of output) sits
-  **above the 863,398 floor**: on an unlucky boot a long session can meet a proxy
-  refusal mid-conversation, which is the field case that produced this tool. After
-  the engine is up, run `python3 oc-fit-limits.py` (or the cockpit's button): it
-  reads the pool your boot actually got and rewrites the limits to fit it, up or
-  down. The FP8 targets ship lower static limits already, because their pool is
+- **The limits are fitted to your own boot, automatically.** The generated
+  opencode limits below are static, and their 1m worst case (compaction at ~680K
+  plus 200K of output) sits **above the 863,398 floor**: on an unlucky boot a long
+  session can meet a proxy refusal mid-conversation, which is the field case that
+  produced this tool. Since v1.12.1, `install.sh` runs `oc-fit-limits.py` itself at
+  the end of every 1m install, once the engine is up: it reads the pool your boot
+  actually got and rewrites the limits to fit it, up or down. Run it by hand (or
+  press the cockpit's button) after any later reboot you want re-fitted. The FP8 targets ship lower static limits already, because their pool is
   about 92,000 tokens smaller.
 - **The keepalive proxy becomes load-bearing.** Every service install ships it (see
   "opencode integration"), but at 1M it is not optional: a cold 690K-token prefill can

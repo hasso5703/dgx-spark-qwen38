@@ -315,12 +315,18 @@ DRAFT2_REPO="${DRAFT2_REPO:-maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal}"
 DRAFT2_REV="${DRAFT2_REV:-bd7a934213c47a9e7ef69eef36bb3325f47fd1f1}"
 DRAFT2_QUANT="${DRAFT2_QUANT:-modelopt_fp4}"
 DRAFT2_TOKENS="${DRAFT2_TOKENS:-16}"
-# Context mode: "native" (262144, the validated default) or "1m" (1,010,000
-# via YaRN static scaling, mem-fraction 0.70, plus a keepalive proxy for agent
-# clients; the field-tested preset from the reference box, see the README).
-CONTEXT_MODE="${CONTEXT_MODE:-native}"
+# Context mode: "1m" (1,010,000 via YaRN static scaling, mem-fraction 0.70,
+# plus the keepalive proxy for agent clients) or "native" (262144). Since
+# v1.12.1 an unset CONTEXT_MODE means 1m on the 27B lane: it is the preset the
+# reference box has served daily since 2026-08-22, and a stack whose headline
+# window has to be asked for by name ships it off for almost everybody.
+# Empty here means "not chosen yet". The default is resolved further down,
+# once the lane, the flags and the installed unit are all known, because the
+# two paths that cannot serve 1m (the flash lane and --no-service) have to
+# fall back to native in silence rather than refuse a default nobody typed.
+CONTEXT_MODE="${CONTEXT_MODE:-}"
 case "$CONTEXT_MODE" in
-  native|1m) ;;
+  native|1m|"") ;;
   *) printf 'ERROR: CONTEXT_MODE must be "native" or "1m" (got: %s)\n' "$CONTEXT_MODE" >&2; exit 1 ;;
 esac
 if [ "$LANE" = "flash" ] && [ "$CONTEXT_MODE" = "1m" ]; then
@@ -452,8 +458,12 @@ Env overrides (defaults are pinned to the versions validated 2026-09-11):
                                      N-gram table's mapping (0 disables the trim)
   PLE_DIR=~/flashnext-ple            flash only: where the 47.7 GiB backing file
                                      of the N-gram table lives
-  CONTEXT_MODE=1m                    1,010,000-token context via YaRN static
-                                     scaling, 27B targets only (README, "The 1M context mode")
+  CONTEXT_MODE=native                the 262144 window instead of the 1,010,000
+                                     one. Since v1.12.1 a 27B install serves 1m
+                                     by default (YaRN static scaling, README,
+                                     "The 1M context mode"); the flash lane and
+                                     --no-service are native either way, and a
+                                     re-run keeps whatever is already installed
   PROXY_PORT=30001                   keepalive proxy port (default: PORT+1)
   OVERLAY_FLASH=1                    flash: serve the locally built overlay
                                      image of v1.7 instead of the official one
@@ -618,10 +628,18 @@ if [ -n "$INSTALLED_CHOICE" ]; then
     HF_CACHE="$CUR_HF"
     echo "Keeping the installed HF cache location: $HF_CACHE. Pass HF_CACHE= to change."
   fi
-  if [ "$INSTALLED_CHOICE" = "27b" ] && [ "$LANE" != "flash" ] \
-     && [ -z "$_ENV_CONTEXT_MODE" ] && grep -q -- '--context-length 1010000' "$SGL_UNIT_PATH"; then
-    CONTEXT_MODE=1m
-    echo "Keeping the installed context mode: 1m. Pass CONTEXT_MODE=native to change."
+  if [ "$INSTALLED_CHOICE" = "27b" ] && [ "$LANE" != "flash" ] && [ -z "$_ENV_CONTEXT_MODE" ]; then
+    if grep -q -- '--context-length 1010000' "$SGL_UNIT_PATH"; then
+      CONTEXT_MODE=1m
+      echo "Keeping the installed context mode: 1m. Pass CONTEXT_MODE=native to change."
+    elif [ -z "$CONTEXT_MODE" ]; then
+      # The other direction, and since v1.12.1 it has to exist: with 1m as the
+      # default, a plain re-run on a box installed native would patch YaRN into
+      # its cached configs and move its memory fraction, which is not what an
+      # update means. An installed choice wins over a default, both ways.
+      CONTEXT_MODE=native
+      echo "Keeping the installed context mode: native. Pass CONTEXT_MODE=1m to change."
+    fi
   fi
 fi
 # (die() is defined at the top of this file, above the root wall that is now the
@@ -660,6 +678,22 @@ elif [ "$WITH_OPENCODE" -eq 0 ] && [ -f "$OC_OFF_MARK" ]; then
   OPENCODE=0
   echo "Keeping the opencode integration off (your earlier --no-opencode). Pass --with-opencode to re-enable."
 fi
+# The default context mode, resolved here because everything it depends on (the
+# lane, --no-service, and what the installed unit already says) is only known
+# now. An explicit CONTEXT_MODE still refuses the combinations it cannot serve,
+# a few lines below; a default must never refuse anything.
+if [ -z "$CONTEXT_MODE" ]; then
+  if [ "$LANE" = "flash" ]; then
+    CONTEXT_MODE=native
+  elif [ "$NO_SERVICE" -eq 1 ]; then
+    CONTEXT_MODE=native
+    echo "--no-service installs the native 262144 window (1m needs the keepalive proxy service)."
+  else
+    CONTEXT_MODE=1m
+    echo "Context mode: 1m (1,010,000 tokens). Pass CONTEXT_MODE=native for the 262144 window."
+  fi
+fi
+
 if [ "$NO_COCKPIT" -eq 1 ] && [ "$WITH_COCKPIT" -eq 1 ]; then
   printf -- '--no-cockpit and --with-cockpit contradict each other (drop one flag)\n' >&2; exit 1
 fi
@@ -1402,6 +1436,19 @@ except Exception as e:
        && docker image inspect "$OVERLAY_FLASH_SERVE_IMAGE" >/dev/null 2>&1; then
       echo "  Note: $OVERLAY_FLASH_SERVE_IMAGE is kept as this lane's rollback (OVERLAY_FLASH=1 ./install.sh)."
     fi
+    # The 1m limits the generator writes are static, and their worst case
+    # (compaction at about 680,000 plus 200,000 of output) sits ABOVE the
+    # 863,398-token floor this pool has been measured at: on an unlucky boot a
+    # long session meets the proxy's refusal mid-conversation, which is the
+    # field case that produced oc-fit-limits.py in the first place. That was a
+    # documented manual step while 1m was opt-in. It cannot stay one now that
+    # 1m is what a plain install serves.
+    if [ "$CONTEXT_MODE" = "1m" ] && [ "$OPENCODE" -eq 1 ]; then
+      echo "fitting the opencode limits to the KV pool this boot actually got:"
+      python3 "$REPO_DIR/oc-fit-limits.py" --engine "http://127.0.0.1:$PORT" \
+        || echo "  NOTE: could not fit them; run python3 oc-fit-limits.py yourself, or the cockpit's button"
+    fi
+
     # ── 10/10 ───────────────────────────────────────────────────────────────
     # The cockpit is installed here, not by a second command the operator has to
     # find: a one-liner that leaves an engine and no way to drive it is half an

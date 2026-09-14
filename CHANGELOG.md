@@ -1,5 +1,62 @@
 # Changelog
 
+## v1.12.1 (2026-09-14): the 1M window by default, and a cockpit that can actually switch
+
+v1.12.0 made the one-liner install the whole box. It still installed the wrong
+box: 262,144 tokens, with the 1,010,000-token window this stack is built
+around sitting behind `CONTEXT_MODE=1m`, an env var documented in a section of
+a README that a first install has no reason to have read. A headline feature
+that has to be asked for by name is off for almost everybody.
+
+- **`CONTEXT_MODE` unset now means `1m` on the 27B lane**: YaRN static scaling
+  into both cached configs, `--context-length 1010000`, `mem-fraction-static`
+  0.70, the keepalive proxy that was already installed. `CONTEXT_MODE=native`
+  is the opt-out.
+- **The paths that cannot serve it fall back in silence.** The flash lane
+  serves its own native 262,144 window and `--no-service` has no proxy service,
+  and both used to *refuse* `CONTEXT_MODE=1m` by name. A refusal is right for a
+  value the operator typed and wrong for a default they did not, so the default
+  is now resolved after the flags are parsed, where the lane and `--no-service`
+  are both known, instead of at the top of the file where neither is.
+- **Convergence gained its other direction.** Only the 1m case was converged
+  before (nothing could downgrade a 1m box), which was enough while the default
+  was native. With the default flipped, a plain re-run on a box installed
+  native would have patched YaRN into its cached configs and moved its memory
+  fraction. An installed choice now wins over the default both ways, and says
+  which one it kept.
+- **The 1m limits are fitted to the real pool at the end of the install.** The
+  static 1m limits overshoot the measured 863,398-token floor, so on an unlucky
+  boot a long session meets the proxy's refusal mid-conversation. Running
+  `oc-fit-limits.py` afterwards was a documented manual step, which is
+  acceptable for an opt-in mode and not for the default; `install.sh` now runs
+  it itself once the engine answers.
+
+- **The cockpit could not write a unit file, and the gate said it could.**
+  `ProtectSystem=full` gives the dashboard unit a mount namespace with `/etc`
+  bound read-only, and sudo does not leave a mount namespace: root inside it
+  cannot write to a read-only mount either. The exact-argv sudoers allowlist
+  authorised every write the Switch button makes, and every one of them failed
+  with "Read-only file system" the moment it touched a file rather than calling
+  `systemctl` (which is done by PID 1, outside the namespace, and always
+  worked). A CI gate asserted `ReadWritePaths=/etc/systemd/system` was ABSENT,
+  under the comment "cockpit only reads there", so the design read as complete.
+  Found on the reference box, 2026-09-14: a switch to the flash lane disabled
+  the 27B unit, then died creating the keepalive ceiling drop-in, leaving one
+  lane disabled and the other enabled but not serving. The unit now carves
+  `/etc/systemd/system` back out of the protection, which changes nothing about
+  who may write there (the cockpit runs unprivileged, file permissions are
+  unchanged, the allowlist is still the only way in) and stops the namespace
+  from vetoing writes the allowlist already permits. The gate is inverted and
+  gained a second half: every `/etc` path `switch-model.sh` writes must be
+  inside one of the unit's `ReadWritePaths`, or the button cannot do its job.
+  Both halves negative-controlled.
+
+`tests/test_install_context_mode.py` holds all four, including the fresh-box
+default, which is invisible on any machine that already has a unit (correctly:
+convergence wins there) and is tested against a copy of the installer whose
+unit paths point at an empty directory, with the rewrite itself asserted so a
+rename upstream fails loudly instead of silently testing `/etc` again.
+
 ## v1.12.0 (2026-09-14): one command, and the thing you open
 
 Two failures with the same root: an installer that finishes is not the same as

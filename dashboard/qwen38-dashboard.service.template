@@ -27,12 +27,31 @@ Restart=always
 RestartSec=3
 # The cockpit is a viewer plus a narrow action surface; keep it boxed.
 # NoNewPrivileges stays no: the action surface shells out to sudo -n, which
-# cannot elevate under yes. /etc is read-only (ProtectSystem=full): every
-# read of /etc/systemd/system in cockpit.py is a read_text/is_file, and every
-# write there goes through a sudo install line in the allowlist instead.
+# cannot elevate under yes. ProtectSystem=full keeps /usr, /boot and the rest
+# of /etc read-only for everything in this unit's process tree.
+#
+# /etc/systemd/system is carved back out, and it has to be. ProtectSystem works
+# by giving the unit its own MOUNT NAMESPACE with those paths bound read-only,
+# and sudo does not leave a mount namespace: a sudo call from the cockpit is
+# root, and root cannot write to a read-only mount either. The comment that
+# used to sit here claimed the opposite ("every write goes through a sudo
+# install line in the allowlist instead"), and the allowlist entries were
+# genuinely there, so the design read as complete while the Switch button
+# could not perform a switch. Found on the reference box, 2026-09-14: a switch
+# to the flash lane disabled the old unit (systemctl, done by PID 1, works),
+# then died on `install: cannot create directory
+# '/etc/systemd/system/qwen38-keepalive.service.d': Read-only file system`,
+# leaving one lane disabled and the other enabled but not serving.
+#
+# This is not a loosening of who may write there. The cockpit runs as __USER__,
+# and file permissions on /etc/systemd/system are unchanged, so it still cannot
+# write a byte on its own; the only way in remains an exact-argv line of
+# /etc/sudoers.d/qwen38-cockpit. All this does is stop the namespace from
+# vetoing the writes the allowlist already authorises.
 NoNewPrivileges=no
 ProtectSystem=full
 ReadWritePaths=__HOME__/.config/qwen38
+ReadWritePaths=/etc/systemd/system
 PrivateTmp=true
 
 [Install]

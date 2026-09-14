@@ -15,10 +15,20 @@ PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|
 # whether every name this script goes on to use is defined, so that is what is
 # asserted, and a failure says which one.
 eval "$PINS"
-for _v in IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV MODEL_CHOICE CONTEXT_MODE DRAFT2_REPO DRAFT2_REV DRAFT2_QUANT DRAFT2_TOKENS OVERLAY_SERVE_IMAGE SERVE_IMAGE PORT HF_CACHE CONFIG_DIR; do
+for _v in IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV MODEL_CHOICE DRAFT2_REPO DRAFT2_REV DRAFT2_QUANT DRAFT2_TOKENS OVERLAY_SERVE_IMAGE SERVE_IMAGE PORT HF_CACHE CONFIG_DIR; do
   eval "[ -n \"\${$_v:-}\" ]" || die "install.sh no longer defines $_v (repo layout changed?)"
 done
 unset _v
+# CONTEXT_MODE is checked for being DEFINED, not for being non-empty: since
+# v1.12.1 install.sh leaves it empty on purpose ("not chosen yet") and resolves
+# the default further down, once the lane and the flags are known. The pin block
+# must still break if the name disappears, which is what this line is for.
+grep -qE '^CONTEXT_MODE=' "$REPO_DIR/install.sh" \
+  || die "install.sh no longer defines CONTEXT_MODE (repo layout changed?)"
+# run.sh is the foreground path, which serves the native window by definition.
+# An explicit CONTEXT_MODE=1m from the environment survives this and is refused
+# by name below, which is the behaviour that path has always had.
+CONTEXT_MODE="${CONTEXT_MODE:-native}"
 case "${MODEL_CHOICE}" in
   stock)      MODEL_REPO="$STOCK_REPO"; MODEL_REV="${MODEL_REV:-$STOCK_REV}" ;;
   uncensored) MODEL_REPO="$UNC_REPO";   MODEL_REV="${MODEL_REV:-$UNC_REV}" ;;

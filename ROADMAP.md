@@ -5,7 +5,7 @@ so that "on the roadmap" means a checkbox with a definition of done, not a
 mood. Statuses: shipped, in progress, planned, considered (considered items
 have a reason they are not yet planned, stated here or in an issue).
 
-## Shipped, current: v1.12
+## Shipped, current: v1.12.1
 
 Two lanes (27B NVFP4/FP8 with DFlash2 drafting; 176B flash-next with NEXTN
 and the PLE table on NVMe), five switchable targets, the cockpit, the
@@ -13,9 +13,12 @@ keepalive proxy with its byte guards and the corruption tripwire, 1M and
 native context presets, opencode out of the box, and the frozen benchmark
 battery (v1) that keeps every number in this repo comparable across years.
 
-## Shipped this cycle: v1.12
+## Shipped this cycle: v1.12.1
 
-One command installs the whole box, cockpit included, and ends on its URL;
+The 1M context window is what a plain 27B install serves, with the two paths
+that cannot serve it falling back silently and the opencode limits fitted to
+the pool the boot actually got. One command installs the whole box, cockpit
+included, and ends on its URL;
 neither entry point installs as root, after a `sudo bash` run on the reference
 box succeeded silently into `/root` and left every client holding a key the
 engine did not have. Plus the CI gate that discovered four tracked test files
