@@ -34,17 +34,19 @@ Whatever the target, you get the same surface: an **OpenAI-compatible API** on p
                          +-----------------------------+
 ```
 
-The engine answers `/health` even when it is wedged, so the cockpit runs a real generation canary and reports `ready`, `loading`, `wedged` or `stopped` from that. Everything privileged the cockpit can do (unit start/stop/restart, lane switch, flush, abort) goes through an exact-argv sudoers allowlist and is audited. The Agent tab frames opencode's own web interface behind the cockpit login, so sessions on the box run from a laptop or a phone with no terminal. Full tour in "The cockpit" below; install with `dashboard/install-dashboard.sh` (opt-in, never run by `install.sh`).
+The engine answers `/health` even when it is wedged, so the cockpit runs a real generation canary and reports `ready`, `loading`, `wedged` or `stopped` from that. Everything privileged the cockpit can do (unit start/stop/restart, lane switch, flush, abort) goes through an exact-argv sudoers allowlist and is audited. The Agent tab frames opencode's own web interface behind the cockpit login, so sessions on the box run from a laptop or a phone with no terminal. Full tour in "The cockpit" below. Since v1.12 it is **installed by the one-liner like everything else**: when the installer finishes it prints the URL, and that page is where this box is meant to be driven from. `--no-cockpit` opts out, and the choice sticks.
 
 ## Quickstart
 
 Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). Free disk: **~84 GB** for a 27B target (~39 under `$HOME` for checkpoints and caches, ~45 on the Docker partition for the 39 GB image; caching the other 27B targets adds ~21 GB per NVFP4 target and ~31 GB per FP8 one), **~225 GB** for a flash target (~175 under `$HOME`: the ~126 GB checkpoint, ~124 for NVIDIA's export, plus the 47.7 GiB sparse file the N-gram table is served from and rewritten into on every boot; ~35 on the Docker partition for the 30 GB image).
 
-One command, first install and updates alike (clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer):
+One command, first install and updates alike. It clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer, which installs **the whole box**: engine, keepalive proxy, opencode wiring, the cockpit and its Agent tab. It ends by printing the cockpit URL, and there is nothing left to run by hand.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
 ```
+
+**No `sudo` in front of it, ever.** The installer calls `sudo` itself, for the privileged steps and for nothing else. Under `sudo`, `$HOME` is `/root`: the clone, the API key, the chat template and the compile cache all land in `/root`, the units are rendered pointing there, and the engine then installs, starts and serves perfectly well with a key nobody has, so every client reading `~/.config/qwen38/api-key` gets 401. Both entry points refuse root before writing anything (`tests/test_install_root_refusal.py`).
 
 Options ride on the **bash side** of the pipe (an env prefix on `curl` would not reach the installer):
 
@@ -88,18 +90,19 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 | Ports | `PORT=`, `PROXY_PORT=` | 30000, 30001 | agent clients use the proxy port |
 | Storage | `HF_CACHE=`, `PLE_DIR=` | `~/.cache/huggingface`, `~/flashnext-ple` | checkpoints, and the 48 GB flash PLE backing file |
 | Clone location | `DIR=` (one-liner only) | `~/dgx-spark-qwen38` | must be a clone of this repo on `main` |
-| Cockpit dashboard | `dashboard/install-dashboard.sh`, `DASH_PORT=`, `DASH_BIND=` | not installed, loopback when installed | opt-in, never run by `install.sh`; installs a sudoers allowlist, see "The cockpit" |
-| Agent tab (opencode in the cockpit) | `dashboard/install-agent.sh`, `AGENT_PORT=`, `AGENT_BIND=`, `OPENCODE_PORT=` | not installed; relay on the tailnet address when installed | opt-in, needs the cockpit and opencode on your PATH; opencode itself stays on loopback, see "The Agent tab" |
+| Cockpit dashboard | default, or `--no-cockpit` | installed and enabled; bound to the tailnet address when the box has one, else loopback | installed by `install.sh` since v1.12, and its URL is the last thing the installer prints. `DASH_PORT=`/`DASH_BIND=` on `dashboard/install-dashboard.sh` change port and bind; a re-run keeps them. Installs a sudoers allowlist, see "The cockpit" |
+| Agent tab (opencode in the cockpit) | default when opencode is on your PATH, or `--no-cockpit` | installed with the cockpit; relay on the tailnet address | skipped with a note when opencode is missing, which costs one tab and never the install; `dashboard/install-agent.sh` with `AGENT_PORT=`, `AGENT_BIND=`, `OPENCODE_PORT=` to retune. opencode itself stays on loopback, see "The Agent tab" |
 
 Combinations that make sense:
 
 ```bash
 # one-liner forms (variables on the bash side, flags after "bash -s --")
-curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash                                  # 27B stock, native, service, opencode on
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash                                  # everything: 27B stock, native, service, opencode, cockpit
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | CONTEXT_MODE=1m bash                  # 27B stock, 1M context
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=uncensored CONTEXT_MODE=1m bash
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=flash bash               # Flash-Next lane (service only)
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --no-opencode              # API only, no opencode files
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --no-cockpit               # engine and proxy only, no web UI
 # clone forms
 ./install.sh --no-service && ./run.sh                    # no systemd, foreground, Ctrl+C stops it
 CONTEXT_MODE=1m ./install.sh --no-start                  # prepare the 1M unit, start it yourself later
@@ -645,20 +648,32 @@ on the engine port, the same trust model that port's whole surface already
 assumes (trusted network: loopback, tailnet; see SECURITY.md), and it arrives at
 your next `./install.sh` re-run and engine start.
 
-## The cockpit (opt-in web dashboard)
+## The cockpit (installed by default)
 
 A local dashboard for this stack: what is served right now, whether it is
 healthy for real, and the handful of actions you would otherwise type by hand.
-Single-file stdlib backend, no pip and no venv. It is **not** part of
-`install.sh`; you install it on purpose:
+Single-file stdlib backend, no pip and no venv. Since v1.12 `install.sh`
+installs it as step 10/10, once the engine has answered a real generation, and
+prints its URL as the last thing it says. You do not run anything else:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
+# ... ends with:  ▶ OPEN THE COCKPIT:  http://<address>:30090
+# the login is the API key from ~/.config/qwen38/api-key
+```
+
+On a first install it binds the box's **tailnet address** when there is one, so
+the page opens from your laptop or your phone over a private network, and
+`127.0.0.1` otherwise. A re-run never changes that: `install-dashboard.sh`
+converges on the installed unit, so an upgrade cannot flip a reachable cockpit
+back to loopback. Install it alone, or change the bind, with the same script:
 
 ```bash
 dashboard/install-dashboard.sh          # DASH_PORT=30090 by default
-# open http://127.0.0.1:30090, the login is the API key from ~/.config/qwen38/api-key
 ```
 
-It binds to `127.0.0.1` by default. To open it on your laptop instead of on the
-box, set `DASH_BIND` at install time:
+To open a loopback-bound cockpit from another machine, set `DASH_BIND` and
+re-run it:
 
 ```bash
 DASH_BIND=0.0.0.0 dashboard/install-dashboard.sh        # every interface
@@ -784,8 +799,10 @@ node dashboard/tests/mobile-check.mjs http://<the box's tailnet address>:30090
 Since v1.7.0 the cockpit can hold opencode's own web interface, so a session on the
 box runs from the laptop without a terminal: sessions, the project picker, file
 diffs, the terminal panel, the same config, plugins, skills and MCP servers as the
-`oc` command. It is opt-in and needs the cockpit installed and opencode 1.18 or
-newer on your PATH:
+`oc` command. Since v1.12 `install.sh` installs it with the cockpit whenever
+opencode 1.18 or newer is on your PATH; when it is not, the installer says so
+and skips that one tab rather than failing an install that is otherwise up. Run
+it by hand after installing opencode, or to retune it:
 
 ```bash
 dashboard/install-agent.sh

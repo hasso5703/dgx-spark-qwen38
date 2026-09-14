@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Install the cockpit's Agent tab: opencode's web interface, behind the cockpit
-# login. Opt-in, idempotent, never run by install.sh. Two pieces land:
+# login. Idempotent, and safe to run alone. Since v1.12 install.sh runs this with
+# the cockpit whenever opencode is on the PATH, and skips it with a note when it
+# is not: a missing tab is not a reason to fail an install. Two pieces land:
 #
 #   opencode-web.service      `opencode serve` on 127.0.0.1:OPENCODE_PORT (default
 #                             4096), as you, with Basic credentials generated once
@@ -17,8 +19,8 @@
 # or on the tailnet address, open it through the tailnet address. A cockpit bound
 # to 127.0.0.1 only gets a loopback relay, usable on the box itself.
 #
-# Requires: the cockpit installed (dashboard/install-dashboard.sh) and opencode
-# 1.18 or newer on your PATH (https://opencode.ai). Re-run after `opencode
+# Requires: the cockpit installed (dashboard/install-dashboard.sh, or any plain
+# install.sh run) and opencode 1.18 or newer on your PATH (https://opencode.ai). Re-run after `opencode
 # upgrade` is not needed: the unit points at the opencode command as found on
 # your PATH (a symlink stays a symlink), the cockpit's Restart button serves the
 # new version. Variables: OPENCODE_PORT, AGENT_PORT, AGENT_BIND (an address, or

@@ -11,6 +11,54 @@
 set -euo pipefail
 trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-running ./install.sh is safe: completed steps are skipped.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
+# die() is the first thing this file defines, not something down at the steps:
+# the refusal below is the first thing that can reject an invocation, and
+# calling a function the shell has not seen yet printed "command not found" and
+# exited through the ERR trap, losing the message that names the problem
+# (tests/test_install_preflight.py pins that failure mode on the port checks).
+die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# ── The first wall: this installer does not run as root ──────────────────────
+# Everything it writes is addressed from $HOME, and the units it renders carry
+# those paths plus User=$(id -un). Put sudo in front and $HOME is /root: the
+# config dir becomes /root/.config/qwen38 with a BRAND NEW API key, the engine
+# unit points --api-key at that file, and every client reading
+# ~/.config/qwen38/api-key gets 401 from an engine that is otherwise perfectly
+# healthy. Nothing fails loudly, which is what makes it expensive: on the
+# reference box, 2026-09-13, `curl .../get.sh | sudo bash` installed, started,
+# served, and answered a key nobody had; it took a read of the sudo audit log
+# to see why. This installer calls sudo itself, for the privileged steps and
+# for nothing else, so there is never a reason to put sudo in front of it.
+# (id -u rather than $EUID: the refusal is testable that way, and a PATH that
+# can lie about id could edit this file anyway.)
+if [ "$(id -u)" = "0" ]; then
+  if [ -n "${SUDO_USER:-}" ]; then
+    # || true, and it is load bearing: getent exits 2 on an unknown user, and
+    # under set -e + pipefail that killed this very refusal through the ERR
+    # trap, printing "Install failed at line ..." instead of the message. A
+    # refusal that cannot survive its own lookup is not a refusal.
+    SUDO_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+    die "do not put sudo in front of this installer.
+
+  you ran     : sudo ...   (your login is $SUDO_USER)
+  run instead : curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
+  or locally  : ./install.sh      (it calls sudo itself, for the steps that need it)
+
+Under sudo, HOME is /root: the API key, the chat template and the compile cache
+land in /root/.config/qwen38 and the units point there. The engine then installs,
+starts and serves normally with a key nobody has, and every client reading
+${SUDO_HOME:-/home/$SUDO_USER}/.config/qwen38/api-key gets 401 from it."
+  fi
+  [ "${ALLOW_ROOT:-0}" = "1" ] || die "this installer runs as the user who will use the box, not as root.
+
+Everything it writes is addressed from \$HOME (~/.config/qwen38), and the units it
+renders carry that path plus User=$(id -un). As root that is /root, which is not
+where your clients, your cockpit or your opencode config look.
+
+  log in as that user and run it there
+  or, if this box genuinely has no other user: ALLOW_ROOT=1 ./install.sh"
+fi
+
 # Remember which knobs the operator set explicitly on THIS invocation, before
 # the defaults below fill them in: an explicit env var beats the installed
 # unit, which beats the defaults (see the convergence block further down).
@@ -319,18 +367,31 @@ NO_START=0
 NO_SERVICE=0
 NO_OPENCODE=0
 WITH_OPENCODE=0
+NO_COCKPIT=0
+WITH_COCKPIT=0
 for arg in "$@"; do
   case "$arg" in
     --no-start) NO_START=1 ;;
     --no-service) NO_SERVICE=1 ;;
     --no-opencode) NO_OPENCODE=1 ;;
     --with-opencode) WITH_OPENCODE=1 ;;
+    --no-cockpit) NO_COCKPIT=1 ;;
+    --with-cockpit) WITH_COCKPIT=1 ;;
     --with-claude-warmup)
       echo "NOTE: --with-claude-warmup was removed in v1.3 (the repo's client story moved to opencode)."
       echo "      The flag is ignored; an installed warmup drop-in from an earlier version is cleaned up." ;;
     -h|--help)
       cat <<'HLP'
 Usage: ./install.sh [--no-start] [--no-service] [--no-opencode | --with-opencode]
+                   [--no-cockpit | --with-cockpit]
+
+Run it as yourself. Never with sudo in front: it calls sudo itself for the
+privileged steps, and under sudo every path it writes moves to /root (see the
+refusal at the top of this file).
+
+A plain run installs the whole box: engine, keepalive proxy, opencode wiring,
+the cockpit and its Agent tab. When it finishes it prints the cockpit URL, and
+from there you start, stop, switch, watch and benchmark without a terminal.
 
   --no-start            install everything but don't start the service now
   --no-service          no systemd, no sudo: just prepare everything (image,
@@ -340,6 +401,9 @@ Usage: ./install.sh [--no-start] [--no-service] [--no-opencode | --with-opencode
                         oc launcher, and switch-model.sh leaves your opencode
                         default model alone). Remembered by later runs.
   --with-opencode       re-enable it after a --no-opencode
+  --no-cockpit          skip the web cockpit and its Agent tab (no dashboard
+                        unit, no sudoers allowlist). Remembered by later runs.
+  --with-cockpit        re-enable it after a --no-cockpit
 
 Re-running over an existing install keeps the operator's choices: the target
 model (any of the seven), the context mode (native/1m), the flash serving tier,
@@ -560,14 +624,11 @@ if [ -n "$INSTALLED_CHOICE" ]; then
     echo "Keeping the installed context mode: 1m. Pass CONTEXT_MODE=native to change."
   fi
 fi
-# die() is defined before its first call, not down at the steps: these port
-# refusals are the first thing in the script that can reject an invocation, and
-# calling a function the shell has not seen yet printed "command not found" and
-# exited through the ERR trap, losing the message that names the problem
-# (reproduced by tests/test_install_preflight.py, which pins all three
-# refusals below; a function defined below a call that fires is how a bug
-# shipped as a feature for a whole release).
-die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+# (die() is defined at the top of this file, above the root wall that is now the
+# first refusal to call it. It moved out of the steps in v1.10.2 because of the
+# port refusals below: a function defined under a call that fires printed
+# "command not found" and lost the message. tests/test_install_preflight.py
+# pins that, tests/test_install_root_refusal.py pins the wall.)
 
 # PORT feeds the arithmetic below, so it is validated before it is used.
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "PORT must be a number (got '$PORT')"
@@ -599,6 +660,28 @@ elif [ "$WITH_OPENCODE" -eq 0 ] && [ -f "$OC_OFF_MARK" ]; then
   OPENCODE=0
   echo "Keeping the opencode integration off (your earlier --no-opencode). Pass --with-opencode to re-enable."
 fi
+if [ "$NO_COCKPIT" -eq 1 ] && [ "$WITH_COCKPIT" -eq 1 ]; then
+  printf -- '--no-cockpit and --with-cockpit contradict each other (drop one flag)\n' >&2; exit 1
+fi
+# Since v1.12 the cockpit is part of a plain install: the one-liner has to leave
+# a box you can open and drive, not a box plus a second command to find in a
+# README. The choice persists exactly like the opencode one, in a marker file,
+# so --no-cockpit is not quietly undone by the next upgrade.
+CK_OFF_MARK="$CONFIG_DIR/cockpit.off"
+COCKPIT=1
+if [ "$NO_COCKPIT" -eq 1 ]; then
+  COCKPIT=0
+  mkdir -p "$CONFIG_DIR"
+  [ -f "$CK_OFF_MARK" ] || printf 'disabled with ./install.sh --no-cockpit on %s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" > "$CK_OFF_MARK"
+elif [ "$WITH_COCKPIT" -eq 1 ]; then
+  rm -f "$CK_OFF_MARK"
+elif [ -f "$CK_OFF_MARK" ]; then
+  COCKPIT=0
+  echo "Keeping the cockpit off (your earlier --no-cockpit). Pass --with-cockpit to re-enable."
+fi
+# --no-service means no systemd at all, and the cockpit is a systemd unit.
+[ "$NO_SERVICE" -eq 1 ] && COCKPIT=0
+
 if [ "$NO_SERVICE" -eq 1 ] && [ "$CONTEXT_MODE" = "1m" ]; then
   printf -- 'CONTEXT_MODE=1m needs the systemd path (keepalive proxy service); ./run.sh serves the native config only.\nEither drop --no-service, or pass CONTEXT_MODE=native explicitly.\n' >&2; exit 1
 fi
@@ -609,7 +692,7 @@ fi
 step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
 # (die() is defined above, before the port validations that call it first.)
 
-step "1/9 Preflight checks"
+step "1/10 Preflight checks"
 [ "$(uname -m)" = "aarch64" ] || die "This setup targets GB10 (aarch64). Detected: $(uname -m)."
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found. Is the NVIDIA driver stack installed? (stock on DGX OS)"
 GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
@@ -667,7 +750,7 @@ fi
 echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
 
 if [ "$LANE" = "flash" ]; then
-  step "2/9 Pulling the official SGLang Flash-Next image (~30 GB, one-time, resumable)"
+  step "2/10 Pulling the official SGLang Flash-Next image (~30 GB, one-time, resumable)"
   # An OVERLAY_FLASH=1 install builds on the 2026-08-26 base, not on the image
   # the lane serves by default, so it is that one that has to be here.
   PULL_TARGET="$FLASH_IMAGE"
@@ -675,12 +758,12 @@ if [ "$LANE" = "flash" ]; then
   docker pull "$PULL_TARGET" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try FLASH_IMAGE=lmsysorg/sglang:dev-qwen38-next-local ./install.sh"
   PULLED_IMAGE="$PULL_TARGET"
 else
-  step "2/9 Pulling the SGLang image (~39 GB, one-time, resumable)"
+  step "2/10 Pulling the SGLang image (~39 GB, one-time, resumable)"
   docker pull "$IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:qwen38-27b ./install.sh"
   PULLED_IMAGE="$IMAGE"
 fi
 
-step "3/9 Verifying the container can see the GPU"
+step "3/10 Verifying the container can see the GPU"
 # --entrypoint: the image ships NVIDIA's own entrypoint script
 # (/opt/nvidia/nvidia_entrypoint.sh), which prints a banner and runs its argument;
 # overriding it is what makes this a plain nvidia-smi call with plain output.
@@ -690,10 +773,10 @@ GPU_SEEN="$(docker run --rm --gpus all --entrypoint nvidia-smi "$PULLED_IMAGE" -
 echo "OK, container sees: $GPU_SEEN"
 
 if [ "$LANE" = "flash" ]; then
-  step "4/9 Downloading the Flash-Next checkpoint (~136 GB, one-time, reuses/resumes any local copy)"
+  step "4/10 Downloading the Flash-Next checkpoint (~136 GB, one-time, reuses/resumes any local copy)"
   echo "This is the big one: at 100 MB/s it takes ~25 min. Interrupting is safe, re-running resumes."
 else
-  step "4/9 Downloading checkpoints (~28 GB, one-time, reuses/resumes any local copy)"
+  step "4/10 Downloading checkpoints (~28 GB, one-time, reuses/resumes any local copy)"
 fi
 mkdir -p "$HF_CACHE" "$CONFIG_DIR/sglang-cache"
 # A kept custom model is already serving from this cache: skip its download.
@@ -752,7 +835,7 @@ PYEOF
 
 LANE_OVERLAY="$OVERLAY_27B"; [ "$LANE" = "flash" ] && LANE_OVERLAY="$OVERLAY_FLASH"
 if [ "$LANE_OVERLAY" != "1" ]; then
-  step "5/9 Serving image: the pinned official one, nothing to build"
+  step "5/10 Serving image: the pinned official one, nothing to build"
   echo "$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
   if [ "$LANE" = flash ]; then
     echo "OVERLAY_FLASH=1 ./install.sh rebuilds the local overlay image of v1.7 instead (the rollback)."
@@ -761,11 +844,11 @@ if [ "$LANE_OVERLAY" != "1" ]; then
     echo "         inputs are silently rotated wrong. See dflash2/ATTRIBUTION.md."
   fi
 elif [ "$LANE" = "flash" ]; then
-  step "5/9 Building the Flash-Next overlay image (OVERLAY_FLASH=1: pinned base + verified files + gate checks, offline, ~2 min)"
+  step "5/10 Building the Flash-Next overlay image (OVERLAY_FLASH=1: pinned base + verified files + gate checks, offline, ~2 min)"
   BASE_IMAGE="$OVERLAY_FLASH_BASE_IMAGE" TAG="$FLASH_SERVE_IMAGE" "$REPO_DIR/flash-sglang/build-image.sh" \
     || die "Flash overlay image build failed: see flash-sglang/ATTRIBUTION.md; the checksums and in-image checks run before tagging, so a failure means a corrupted checkout (git status) or an upstream image layout change. The overlay is the rollback path: the default install needs no build."
 else
-  step "5/9 Building the DFlash2 serving image (pinned base + 8 verified files, offline, ~1 min)"
+  step "5/10 Building the DFlash2 serving image (pinned base + 8 verified files, offline, ~1 min)"
   BASE_IMAGE="$IMAGE" TAG="$SERVE_IMAGE" "$REPO_DIR/dflash2/build-image.sh" \
     || die "DFlash2 image build failed: see dflash2/ATTRIBUTION.md; the checksums are verified before building, so a mismatch means a corrupted checkout (git status)."
 fi
@@ -803,7 +886,7 @@ if [ "$LANE" = "flash" ] && [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ]; then
   fi
 fi
 
-step "6/9 API key + patched chat template"
+step "6/10 API key + patched chat template"
 if [ ! -s "$CONFIG_DIR/api-key" ]; then
   # Subshell umask like install-agent.sh: with umask 022 the file would be
   # born 644 and world-readable until the chmod below runs.
@@ -856,7 +939,7 @@ else
 fi
 
 if [ "$OPENCODE" -eq 0 ]; then
-  step "7/9 opencode integration: off"
+  step "7/10 opencode integration: off"
   mkdir -p "$CONFIG_DIR"
   [ -f "$OC_OFF_MARK" ] || printf 'disabled with ./install.sh --no-opencode on %s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" > "$OC_OFF_MARK"
   if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
@@ -867,7 +950,7 @@ if [ "$OPENCODE" -eq 0 ]; then
   echo "Your own ~/.config/opencode/opencode.json is never touched either way. Re-enable: ./install.sh --with-opencode"
 else
 rm -f "$OC_OFF_MARK"
-step "7/9 opencode provider config + oc launcher"
+step "7/10 opencode provider config + oc launcher"
 # A complete, ready-to-use opencode config (https://opencode.ai). The limits
 # satisfy the serving window with margin in BOTH modes, including when
 # opencode's hidden 32000 output cap is lifted by the oc launcher below:
@@ -1067,10 +1150,11 @@ if [ "$NO_SERVICE" -eq 1 ]; then
   printf '\n\033[1;32m✅ Prepared (no systemd, nothing needed sudo).\033[0m\n'
   echo "  Run in the foreground: ./run.sh     (Ctrl+C stops it; first boot ≈ 9 min)"
   echo "  Everything it uses lives in $CONFIG_DIR and $HF_CACHE: delete those to remove."
+  echo "  No cockpit either: it is a systemd unit, and --no-service installs none."
   exit 0
 fi
 
-step "8/9 Installing the systemd service (sudo needed)"
+step "8/10 Installing the systemd service (sudo needed)"
 # The step below is the first of 24 sudo calls, and a dead timestamp used to
 # kill the install here with no message at all (set -e on a bare `sudo cp`,
 # reference box 2026-09-13, three times in one afternoon: background runs and
@@ -1256,13 +1340,14 @@ if [ "$NO_START" -eq 1 ]; then
     echo "      sudo systemctl stop $OTHER_UNIT && sudo systemctl start $UNIT_NAME"
   fi
   echo "also start the keepalive proxy with: sudo systemctl start $KEEPALIVE_UNIT"
+  [ "$COCKPIT" -eq 1 ] && echo "the cockpit is not installed on the --no-start path: ./dashboard/install-dashboard.sh once the engine runs"
   exit 0
 fi
 
 if [ "$LANE" = "flash" ]; then
-  step "9/9 Starting (every boot ≈ 12-15 min: the weight load writes the whole 47.7 GiB PLE table into its file, then CUDA graph capture)"
+  step "9/10 Starting (every boot ≈ 12-15 min: the weight load writes the whole 47.7 GiB PLE table into its file, then CUDA graph capture)"
 else
-  step "9/9 Starting (first boot ≈ 9 min: torch.compile + CUDA graph capture; later boots are faster)"
+  step "9/10 Starting (first boot ≈ 9 min: torch.compile + CUDA graph capture; later boots are faster)"
 fi
 if [ -n "$OTHER_UNIT" ] && systemctl is-active --quiet "$OTHER_UNIT" 2>/dev/null; then
   echo "stopping the other engine first ($OTHER_UNIT): one engine at a time on a GB10"
@@ -1317,26 +1402,95 @@ except Exception as e:
        && docker image inspect "$OVERLAY_FLASH_SERVE_IMAGE" >/dev/null 2>&1; then
       echo "  Note: $OVERLAY_FLASH_SERVE_IMAGE is kept as this lane's rollback (OVERLAY_FLASH=1 ./install.sh)."
     fi
-    # The cockpit imports this repo's python once, at start. An update that
-    # leaves it running serves the new html from disk against the old python in
-    # memory, which on 2026-09-08 meant the switch selector offered a target the
-    # action layer refused. If it is installed and running, it gets restarted.
-    if systemctl is-active --quiet qwen38-dashboard.service 2>/dev/null; then
+    # ── 10/10 ───────────────────────────────────────────────────────────────
+    # The cockpit is installed here, not by a second command the operator has to
+    # find: a one-liner that leaves an engine and no way to drive it is half an
+    # install. It runs AFTER the engine answered a real generation, so the page
+    # it opens on is a working box rather than a loading screen, and a cockpit
+    # that fails to install never fails the engine that is already serving.
+    COCKPIT_URL=""
+    if [ "$COCKPIT" -eq 1 ]; then
+      step "10/10 Spark Cockpit (the web UI this box is meant to be driven from)"
+      DASH_ENV=()
+      if [ ! -f /etc/systemd/system/qwen38-dashboard.service ]; then
+        # First install only. A re-run passes nothing, so install-dashboard.sh
+        # converges on the bind and port already installed: an upgrade must
+        # never flip a reachable cockpit back to loopback.
+        # Loopback alone is useless on a headless box and 0.0.0.0 puts the login
+        # on every interface, so the default is the tailnet address when the box
+        # has one: private by construction, reachable from a laptop or a phone.
+        TS_IP4="$(tailscale ip -4 2>/dev/null | head -1 || true)"
+        if [ -n "$TS_IP4" ]; then
+          DASH_ENV=(DASH_BIND="$TS_IP4")
+          echo "first cockpit install: binding the tailnet address $TS_IP4 (the API key is the only gate)"
+        else
+          echo "first cockpit install: no tailnet address on this box, binding 127.0.0.1."
+          echo "  to reach it from another machine: DASH_BIND=0.0.0.0 ./dashboard/install-dashboard.sh"
+        fi
+      fi
+      if env ${DASH_ENV[@]+"${DASH_ENV[@]}"} "$REPO_DIR/dashboard/install-dashboard.sh"; then
+        # The Agent tab needs opencode on PATH. Not having it costs one tab, and
+        # one missing tab is not a reason to fail an install that is otherwise up.
+        if [ "$OPENCODE" -eq 1 ] && command -v opencode >/dev/null 2>&1; then
+          "$REPO_DIR/dashboard/install-agent.sh" \
+            || echo "NOTE: the Agent tab did not install; the rest of the cockpit is up (retry: ./dashboard/install-agent.sh)"
+        elif [ "$OPENCODE" -eq 1 ]; then
+          echo "NOTE: opencode is not on your PATH, so the Agent tab is not installed."
+          echo "      install it (https://opencode.ai), then run: ./dashboard/install-agent.sh"
+        fi
+        # The URL to print is the installed unit's own bind and port, read back
+        # rather than assumed: install-agent.sh re-renders that unit, and a
+        # converged re-run may be serving on an address this run never chose.
+        CK_UNIT=/etc/systemd/system/qwen38-dashboard.service
+        CK_PORT="$({ grep -m1 -E '^Environment=COCKPIT_PORT=' "$CK_UNIT" || true; } | cut -d= -f3-)"
+        CK_BIND="$({ grep -m1 -E '^Environment=COCKPIT_BIND=' "$CK_UNIT" || true; } | cut -d= -f3-)"
+        CK_HOST="${CK_BIND:-127.0.0.1}"
+        case "$CK_HOST" in
+          0.0.0.0|::|"[::]")
+            # A wildcard bind is not an address you can type: name one.
+            CK_HOST="$(tailscale ip -4 2>/dev/null | head -1 || true)"
+            [ -n "$CK_HOST" ] || CK_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+            [ -n "$CK_HOST" ] || CK_HOST="127.0.0.1" ;;
+        esac
+        COCKPIT_URL="http://$CK_HOST:${CK_PORT:-30090}"
+      else
+        echo "NOTE: the cockpit did not install. The engine above is up and serving."
+        echo "      retry with ./dashboard/install-dashboard.sh (logs: journalctl -u qwen38-dashboard -n 30)"
+      fi
+    elif systemctl is-active --quiet qwen38-dashboard.service 2>/dev/null; then
+      # --no-cockpit with one already running: it imports this repo's python at
+      # start, so an update that leaves it running serves the new html against
+      # the old python in memory (2026-09-08: the switch selector offered a
+      # target the action layer refused). Restart it, do not reinstall it.
       echo "restarting the cockpit so it picks up this repo's code (it imports it at start)"
       sudo systemctl restart qwen38-dashboard.service \
         || echo "  NOTE: could not restart it; do it by hand or its controls and its checks disagree"
     fi
+
     printf '\n\033[1;32m✅ Installed, verified, and enabled at boot.\033[0m\n'
+    if [ -n "$COCKPIT_URL" ]; then
+      printf '\n\033[1;36m  ▶ OPEN THE COCKPIT:  %s\033[0m\n' "$COCKPIT_URL"
+      echo "    log in with the API key in $CONFIG_DIR/api-key"
+      echo
+      echo "    Start, stop and switch the served model, watch every live request,"
+      echo "    read the engine logs, run the benchmarks and drive an agent, from"
+      echo "    that page. Nothing else needs installing or starting by hand."
+      echo
+      echo "  Raw endpoints, for clients that ask for them:"
+    else
+      echo
+    fi
+    echo "  Agent CLIs : http://<host>:$PROXY_PORT (keepalive proxy, use THIS for opencode)"
     echo "  OpenAI     : http://<host>:$PORT/v1/chat/completions"
     echo "  Anthropic  : http://<host>:$PORT/v1/messages   (Bearer auth only)"
-    echo "  Agent CLIs : http://<host>:$PROXY_PORT (keepalive proxy, use THIS for opencode)"
     echo "  API key    : $CONFIG_DIR/api-key"
     if [ "$OPENCODE" -eq 1 ]; then
       echo "  opencode   : provider config ready at $CONFIG_DIR/opencode.json (README, \"opencode integration\")"
     else
       echo "  opencode   : integration off (--no-opencode); ./install.sh --with-opencode turns it on"
     fi
-    [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh"
+    [ "$COCKPIT" -eq 0 ] && echo "  cockpit    : off (--no-cockpit); ./install.sh --with-cockpit turns it on"
+    [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh  (or the Benchmarks tab of the cockpit)"
     exit 0
   fi
   ST="$(systemctl is-active "$UNIT_NAME" || true)"

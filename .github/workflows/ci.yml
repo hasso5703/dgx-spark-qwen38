@@ -872,6 +872,74 @@ jobs:
       - name: get.sh guards (git fixture, stubbed installer)
         run: python3 tests/test_get_sh.py
 
+      - name: Neither entry point installs as root (faked uid, both shapes)
+        run: python3 tests/test_install_root_refusal.py
+
+      - name: install.sh port refusals name the value they reject
+        run: python3 tests/test_install_preflight.py
+
+      - name: The cockpit ships with a plain install (flags, marker, wiring)
+        run: python3 tests/test_install_cockpit.py
+
+      - name: Everything install.sh leaves behind is in the uninstall inventory
+        run: python3 tests/test_uninstall_inventory.py
+
+      - name: keepalive proxy TLS surface
+        run: python3 tests/test_proxy_tls.py
+
+      - name: No test file in tests/ is left unrun
+        run: |
+          # Gate 8 counts declared against ran for dashboard/tests. tests/ had
+          # no equivalent, only the hand-kept list of named steps above, and on
+          # 2026-09-14 four tracked files sat in that directory with no step
+          # naming them: test_install_preflight.py, test_install_sudo.py,
+          # test_proxy_tls.py and test_uninstall_inventory.py. A test nobody
+          # runs is worse than no test, because it reads as coverage.
+          #
+          # tests/ holds two shapes. Most files are unittest modules, and those
+          # are discovered below, so they cannot be forgotten. The rest are
+          # plain scripts with a main() that exits non-zero (fake engines for
+          # bench.sh, needle.sh and the tools), which unittest cannot discover,
+          # so each of those has to be named by a step of its own.
+          python3 - <<'PY'
+          import pathlib, sys
+          ci = pathlib.Path(".github/workflows/ci.yml").read_text()
+          orphans = []
+          for f in sorted(pathlib.Path("tests").glob("test_*.py")):
+              if "def test_" in f.read_text():
+                  continue          # unittest module: the discovery below runs it
+              if f.name not in ci:
+                  orphans.append(f.name)
+          if orphans:
+              print("script-style test files that no CI step names:")
+              for o in orphans:
+                  print("  tests/" + o + "  ->  add:  run: python3 tests/" + o)
+              sys.exit(1)
+          print("every script-style test file is named by a step")
+          PY
+          files=$(cd tests && grep -l 'def test_' test_*.py | sort | tr '\n' ' ')
+          mods=$(for f in $files; do printf 'tests.%s ' "${f%.py}"; done)
+          echo "unittest suites: $mods"
+          declared=$(cd tests && cat $files | grep -c 'def test_')
+          out=$(python3 -m unittest $mods 2>&1)
+          echo "$out" | grep -vF ResourceWarning | tail -5
+          ran=$(echo "$out" | grep -oE '^Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
+          echo "declared $declared, ran $ran"
+          [ "$ran" = "$declared" ] || { echo "unittest ran $ran of $declared declared tests"; exit 1; }
+          # And each one must run its own tests when invoked directly: a file
+          # without a __main__ block exits 0 having run nothing. A SkipTest out
+          # of setUpClass counts as one skip with testsRun 0, which is how
+          # test_install_sudo.py declared two tests and ran none on every
+          # runner until this gate existed; skip with a class decorator.
+          for f in $files; do
+            n="${f%.py}"
+            d=$(grep -c 'def test_' "tests/$f" || true)
+            o=$(python3 "tests/$f" 2>&1 || true)
+            r=$(echo "$o" | grep -oE 'Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
+            echo "  $f run directly: ran $r of $d"
+            [ "$r" = "$d" ] || { echo "$f ran $r of its $d declared tests when invoked directly"; exit 1; }
+          done
+
       - name: bench.sh names the lane it measures (fake engine)
         run: python3 tests/test_bench_lane.py
 
@@ -892,7 +960,7 @@ jobs:
           # install.sh reads the installed unit's --context-length to protect 1m
           # users from a shrinking native reinstall. A native unit has no such
           # flag (262144 is the engine default), so the grep matches nothing,
-          # and under pipefail that killed every native install at step 8/9
+          # and under pipefail that killed every native install at step 8/10
           # (found live 2026-09-12: only 1m units, which carry 1010000, passed).
           grep -q 'UNIT_CTX="$(grep -oE.*head -1 || true)"' install.sh \
             || { echo "UNIT_CTX pipeline must tolerate zero matches"; exit 1; }

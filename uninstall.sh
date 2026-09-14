@@ -80,6 +80,7 @@ if [ -d "$CONFIG_DIR" ]; then
   [ -f "$CONFIG_DIR/opencode-web.env" ] && echo "  config    $CONFIG_DIR/opencode-web.env (Agent tab: credentials of the opencode web server)"
   [ -f "$CONFIG_DIR/claude-code.env" ] && echo "  legacy    $CONFIG_DIR/claude-code.env (pre-v1.3 client config, unmaintained)"
   [ -f "$CONFIG_DIR/opencode.off" ] && echo "  marker    $CONFIG_DIR/opencode.off (opencode integration disabled with --no-opencode)"
+  [ -f "$CONFIG_DIR/cockpit.off" ] && echo "  marker    $CONFIG_DIR/cockpit.off (cockpit disabled with --no-cockpit)"
 fi
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
   echo "  launcher  $HOME/.local/bin/oc (this repo's opencode launcher)"

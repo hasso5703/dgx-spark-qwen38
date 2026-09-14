@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Install Spark Cockpit as a systemd service. Opt-in: install.sh never runs this.
-# Idempotent. Installs: qwen38-dashboard.service (DASH_BIND:DASH_PORT) and the
-# narrow sudoers allowlist for the unit start/stop/restart buttons.
-# DASH_BIND defaults to 127.0.0.1 on a first install. Set it to reach the cockpit
+# Install Spark Cockpit as a systemd service. Idempotent, and safe to run alone.
+# Since v1.12 install.sh runs this as its step 10/10, so a plain install leaves a
+# cockpit you can open; --no-cockpit is how you opt out of that.
+# Installs: qwen38-dashboard.service (DASH_BIND:DASH_PORT) and the narrow sudoers
+# allowlist for the unit start/stop/restart buttons.
+# DASH_BIND defaults to 127.0.0.1 on a first install (install.sh passes the box's
+# tailnet address instead when it has one, so the page opens from a laptop). Set it to reach the cockpit
 # from another machine, e.g. DASH_BIND=0.0.0.0 (every interface) or
 # DASH_BIND=<tailscale ip> (that interface only). The API key is the only gate, so
 # keep it on a private network: a Tailscale tailnet or a LAN you trust, never the

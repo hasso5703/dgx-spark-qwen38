@@ -28,7 +28,7 @@ Everything the stack writes to the machine lives in one config dir,
 `~/.config/qwen38` (called `CONFIG_DIR` in every script): the API key (0600,
 also the cockpit login), the patched chat templates, the flash launcher, the
 reduced draft vocabulary, the deployed copy of the proxy, the opencode
-config artifact, the `opencode.off` and cockpit state files
+config artifact, the `opencode.off` and `cockpit.off` markers, the cockpit state files
 (`cockpit-secret` 0600, `cockpit-events.jsonl`, `cockpit-history.json`,
 `wedge-*.txt` dumps), and unit backups (`*.bak-preupdate`). Outside it:
 systemd units in `/etc/systemd/system`, one sudoers file in
@@ -40,7 +40,7 @@ launcher in `~/.local/bin`, and the two weight trees (HF cache, PLE dir).
 
 | file | the job | notes worth reading |
 |---|---|---|
-| `install.sh` | converging installer: reads the installed unit so a re-run keeps your target, port, cache and context mode, then renders every artifact from the pins | the convergence block and `resolve_flash_*_args` (a flag computed before convergence caused the worst bug in v1.8.0); pins at the top are a contract, not decoration |
+| `install.sh` | converging installer: refuses root before it writes, reads the installed unit so a re-run keeps your target, port, cache and context mode, renders every artifact from the pins, installs the cockpit as step 10/10 and ends on its URL | the convergence block and `resolve_flash_*_args` (a flag computed before convergence caused the worst bug in v1.8.0); pins at the top are a contract, not decoration |
 | `keepalive-proxy.py` | the only component that reads bytes it does not control | keepalive at SSE event boundaries, zombie abort ordering (`x-override-rid`, abort *before* close, drain otherwise), oversize guard that counts via `/tokenize` and prices images from their headers, corruption tripwire; the `v6.x` header is its real version, read live by the cockpit |
 | `run.sh` / `switch-model.sh` / `uninstall.sh` / `get.sh` | foreground serving, surgical live switch, read-only-first removal, one-liner bootstrap | the switch never restarts a service by itself and never touches images; it stages unit files at fixed paths because the cockpit's sudoers pins that argv exactly |
 | `oc-limits.sh` | the one table of opencode limits, three callers | the comment block next to each number *is* the measurement record; the ceiling/threshold/two-thousand-step invariant is CI-held |
@@ -79,6 +79,16 @@ launcher in `~/.local/bin`, and the two weight trees (HF cache, PLE dir).
 10. Coverage floors only rise, set from the most constrained runner; the
     pure-logic modules are at 100% branch coverage and the mutation score is
     the real quality gate.
+11. No test file in `tests/` is left unrun: the unittest modules are
+    discovered, the script-style ones must each be named by a step, and
+    declared must equal ran both in aggregate and per file. Four tracked
+    files had fallen off the hand-kept list, and one suite declared two
+    tests and ran zero on every runner (a `SkipTest` out of `setUpClass`
+    reports one skip with `testsRun` 0; skip with a class decorator).
+12. Neither entry point installs as root. A `sudo bash` run succeeds into
+    `/root` with a new API key and leaves every client on 401 against a
+    healthy engine, which is the one failure shape this stack has that
+    produces no error anywhere.
 
 ## How a change moves through the repo
 

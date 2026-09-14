@@ -1,5 +1,70 @@
 # Changelog
 
+## v1.12.0 (2026-09-14): one command, and the thing you open
+
+Two failures with the same root: an installer that finishes is not the same as
+a box you can use. The one-liner left an engine and an API port, and left the
+cockpit, which is the whole point of the last four releases, behind a second
+command in a README nobody reads after a 30 GB download. And it accepted being
+run as root, which on the reference box on 2026-09-13 produced the worst
+outcome this stack has ever produced: a **silent success into the wrong home**.
+
+`curl .../get.sh | sudo bash` cloned into `/root`, wrote `/root/.config/qwen38`
+with a brand new API key, rendered both units as `User=root` pointing at it,
+started the engine, passed its own generation smoke test and reported success.
+Every client on the box then got 401 from an engine that was healthy, serving
+and green in every check, because they all read `~/.config/qwen38/api-key`.
+Nothing failed, so nothing could be read from a log; it took the sudo audit
+trail to see what had happened. A wall that only exists in a README is not a
+wall.
+
+- **Neither entry point installs as root.** `get.sh` refuses before it clones,
+  `install.sh` refuses before it writes, and the refusal knows which mistake
+  was made: with `SUDO_USER` set it names the login, the API key path that
+  would stop working and the command that works, with no override, because
+  there is always a right answer (drop the sudo). A genuine root login is
+  merely unusual: refused by default, `ALLOW_ROOT=1` gets through.
+- **The cockpit ships with a plain install**, as step 10/10, after the engine
+  has answered a real generation, so the page it opens on is a working box.
+  The Agent tab comes with it when opencode is on the PATH, and is skipped
+  with a note when it is not: a missing tab never fails an install. A cockpit
+  that fails to install never fails an engine that is already serving.
+- **The installer ends on the cockpit URL**, read back from the installed
+  unit rather than assumed, with a wildcard bind turned into an address you
+  can actually type. The raw endpoints moved below it: they are what you use
+  when you are not using the cockpit, not the headline.
+- On a first install the cockpit binds the box's **tailnet address** when it
+  has one, loopback otherwise. A re-run passes nothing and converges on the
+  installed unit, so an upgrade still cannot flip a reachable cockpit back to
+  loopback. `--no-cockpit` opts out and the choice persists in a marker file,
+  `~/.config/qwen38/cockpit.off`, the way the opencode choice does.
+
+Three bugs the new tests found while they were being written, each of them the
+same shape as the release itself, a guard that could not survive its own path:
+
+- The sudo refusal died before printing. `getent passwd` exits 2 on an unknown
+  user and, under `set -e` with `pipefail`, that killed the very refusal that
+  was looking the user up: the operator got "Install failed at line 36"
+  instead of the message. Third time a refusal in this file has been lost that
+  way, second time it shipped.
+- **Four tracked test files were run by no CI step at all**:
+  `test_install_preflight.py`, `test_install_sudo.py`, `test_proxy_tls.py` and
+  `test_uninstall_inventory.py`. Gate 8 counts declared against ran, but only
+  for `dashboard/tests`; `tests/` had a hand-kept list of named steps and four
+  files had fallen off it. They all pass, which is not the point: a test nobody
+  runs reads as coverage.
+- `test_install_sudo.py` declared two tests and ran **zero** wherever it
+  skipped, which is every GitHub runner: a `SkipTest` raised from `setUpClass`
+  is reported as one skip with `testsRun` 0. Skipping with a class decorator
+  counts each test. Found by the new gate, on its first run.
+
+The new gate, `No test file in tests/ is left unrun`, closes the class: the
+unittest modules are discovered rather than listed, the script-style files
+(the fake engines for `bench.sh`, `needle.sh` and the tools) must each be named
+by a step, declared must equal ran in aggregate and per file, and both halves
+were negative-controlled against a file that declares tests without running
+them and a script file no step names.
+
 ## v1.11.1 (2026-09-13): the identity wall learns admission
 
 A one-fix patch, and an honest one: v6.16's per-client identity named every

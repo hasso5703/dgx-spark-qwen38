@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # One-liner bootstrap: first install AND update, same command, any directory:
 #   curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
+# NO sudo in front, ever: install.sh calls sudo itself for the steps that need
+# it, and under sudo every path it writes moves to /root (refused below).
+# It installs the whole box, engine and proxy and cockpit, and prints the
+# cockpit URL when it is done.
 # Pass install.sh options after `bash -s --`, e.g.:
 #   curl -fsSL .../get.sh | bash -s -- --no-service
 # Env overrides pass through (PORT=, HF_CACHE=, DIR= for a custom clone location).
@@ -8,6 +12,32 @@
 set -euo pipefail
 
 main() {
+  # ── This does not run under sudo, and the refusal comes before the clone ──
+  # Piped into `sudo bash`, every path below moves to /root: the clone lands in
+  # /root/dgx-spark-qwen38 and install.sh then writes /root/.config/qwen38 with
+  # a brand new API key, leaving a healthy engine that answers 401 to every
+  # client reading ~/.config/qwen38/api-key. That happened on the reference box
+  # on 2026-09-13. install.sh calls sudo itself, for the steps that need it.
+  # install.sh refuses again on its own; this one exists so the refusal lands
+  # before anything is written, and names the command that was actually typed.
+  if [ "$(id -u)" = "0" ]; then
+    if [ -n "${SUDO_USER:-}" ]; then
+      printf '\n\033[1;31mERROR:\033[0m do not pipe this into "sudo bash" (your login is %s).\n\n' "$SUDO_USER" >&2
+      printf '  run : curl -fsSL %s/raw/main/get.sh | bash\n' "https://github.com/hasso5703/dgx-spark-qwen38" >&2
+      printf '        (no sudo in front: the installer calls sudo itself, for the steps that need it)\n\n' >&2
+      printf 'Under sudo, HOME is /root: the clone and the API key land there, the units point\n' >&2
+      printf 'at them, and every client reading ~/.config/qwen38/api-key gets 401 from an engine\n' >&2
+      printf 'that installed, started and served perfectly well.\n' >&2
+      exit 1
+    fi
+    if [ "${ALLOW_ROOT:-0}" != "1" ]; then
+      printf '\n\033[1;31mERROR:\033[0m run this as the user who will use the box, not as root.\n' >&2
+      printf '  everything it installs is addressed from $HOME, which as root is /root.\n' >&2
+      printf '  if this box genuinely has no other user: ALLOW_ROOT=1 before the pipe.\n' >&2
+      exit 1
+    fi
+  fi
+
   REPO_URL="https://github.com/hasso5703/dgx-spark-qwen38"
   DEFAULT_DIR="$HOME/dgx-spark-qwen38"
   command -v git >/dev/null || { echo "ERROR: git is required (stock on DGX OS)." >&2; exit 1; }
