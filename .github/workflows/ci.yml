@@ -757,7 +757,7 @@ jobs:
           c = json.load(open("/tmp/octest/opencode.json"))
           assert set(c["provider"]) == {"qwen38"}, c["provider"].keys()
           m = c["provider"]["qwen38"]["models"]["qwen3.8-27b"]
-          assert set(m["variants"]) == {"low", "medium", "xhigh"}
+          assert set(m["variants"]) == {"lean", "low", "medium", "xhigh"}, m["variants"]
           assert c["model"] == "qwen38/qwen3.8-27b"
           # the compaction block is sized from the installed target, never left to
           # opencode's 15,000 default (which would summarise most of this window)
@@ -770,7 +770,7 @@ jobs:
           assert set(c["provider"]) == {"flashnext"}, c["provider"].keys()
           m = c["provider"]["flashnext"]["models"]["qwen3.8-flash-next"]
           assert m["limit"] == {"context": 110000, "input": 110000, "output": 32000}
-          assert set(m["variants"]) == {"low", "medium", "xhigh"}
+          assert set(m["variants"]) == {"lean", "low", "medium", "xhigh"}, m["variants"]
           assert c["model"] == "flashnext/qwen3.8-flash-next"
           assert c["compaction"]["preserve_recent_tokens"] == 22000, c["compaction"]
           PY
@@ -890,6 +890,9 @@ jobs:
       - name: The cockpit ships with a plain install (flags, marker, wiring)
         run: python3 tests/test_install_cockpit.py
 
+      - name: The lean level, end to end (template, render, opencode, proxy)
+        run: python3 tests/test_lean_level.py
+
       - name: A plain 27B install serves 1M, and refuses nobody for it
         run: python3 tests/test_install_context_mode.py
 
@@ -966,6 +969,46 @@ jobs:
 
       - name: opencode limits merge helper (config shapes, JSONC)
         run: python3 tests/test_oc_merge_limits.py
+
+      - name: No grep pipeline can die on zero matches (set -e + pipefail)
+        run: |
+          # The class, not the instance. `grep` exits 1 when it matches nothing,
+          # and under `set -e` with `pipefail` a VAR="$(... grep ... | ...)"
+          # assignment then kills the script on the spot, with no message,
+          # wherever it happens to sit. It has now shipped twice:
+          #   install.sh, 2026-09-12: UNIT_CTX, so every native install died at
+          #   step 8 (only 1m units, which carry --context-length, got through).
+          #   switch-model.sh, 2026-09-14: OC_WINDOW, same flag, same reason, so
+          #   a switch to a native 27B target reported failure three lines from
+          #   the end, having already swapped and enabled the lane, leaving
+          #   opencode's default model pointed at the lane it had just left.
+          # Both were fixed one line at a time. This gate is the class: every
+          # such assignment in the scripts that set pipefail must tolerate zero
+          # matches. It also found LAUNCH_IMAGE, which had the same hole and an
+          # explicit empty-case guard three lines below that could never run.
+          python3 - <<'PY'
+          import pathlib, re, sys
+          bad = []
+          for name in ("install.sh", "switch-model.sh", "run.sh", "uninstall.sh", "get.sh", "bench.sh"):
+              src = pathlib.Path(name).read_text()
+              if "pipefail" not in src:
+                  continue
+              for n, line in enumerate(src.splitlines(), 1):
+                  if line.lstrip().startswith("#"):
+                      continue
+                  # VAR="$( ... grep ... )" on one line
+                  if not re.match(r'^\s*[A-Za-z_][A-Za-z0-9_]*="\$\(.*\bgrep\b.*\)"\s*$', line):
+                      continue
+                  if "|| true" in line or "||true" in line:
+                      continue
+                  bad.append(f"{name}:{n}: {line.strip()[:110]}")
+          if bad:
+              print("these die on zero matches under set -e + pipefail; end them with `|| true`:")
+              for b in bad:
+                  print("  " + b)
+              sys.exit(1)
+          print("every grep command substitution tolerates zero matches")
+          PY
 
       - name: Native units carry no context-length flag (install must survive that)
         run: |

@@ -27,14 +27,57 @@ EFFORT_ANCHOR = (
     "    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}"
 )
 EFFORT_PATCHED = (
-    "    {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\n"
+    "    {%- set resolved_reasoning_effort = reasoning_effort|default('@@DEF@@') %}\n"
     "    {%- if resolved_reasoning_effort in ('max', 'high') %}\n"
     "        {%- set resolved_reasoning_effort = 'xhigh' %}\n"
     "    {%- elif resolved_reasoning_effort == 'minimal' %}\n"
     "        {%- set resolved_reasoning_effort = 'low' %}\n"
     "    {%- endif %}\n"
-    "    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}"
+    "    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low', 'lean') %}"
 )
+
+# -- Patch 3: the "lean" effort level, and it becomes the default -------------
+# Qwen ships three levels and defaults to the most expensive one. Measured on
+# this box (Qwen3.8-27B NVFP4 on SGLang, 7,008 runs; method and tables in
+# LEAN.md):
+#
+#   On 364 public problems (HumanEval 164 + GSM8K 200), xhigh costs 3.19x the
+#   thinking tokens of medium [2.73, 3.69] and scores 2.2 points LOWER
+#   (McNemar p=0.057). On HumanEval alone it is 4.3 points lower at p=0.039,
+#   and five of its ten failures there are truncations: it spent the whole
+#   budget thinking and returned nothing.
+#
+#   On 58 underspecified requests, xhigh spends 2,478 thinking tokens and 237
+#   seconds each against 420 and 73 for medium, truncates 10.3% of the time and
+#   returns an empty answer 6.9% of the time.
+#
+# "lean" is 74 words that cost 0.436x the thinking tokens of medium
+# [0.40, 0.47] on those 58 requests with no measured quality change, and 0.047x
+# of xhigh [0.04, 0.06] with 17.2 points MORE usable answers [+10.9, +24.1].
+#
+# Qwen's three levels are left byte-identical: ask for medium and you get
+# Qwen's medium, so numbers stay comparable with everyone else's. Only the
+# DEFAULT moves, which is what every client that sends nothing receives.
+# LEAN_DEFAULT=0 keeps Qwen's xhigh default while still offering the level.
+LEAN_INSTRUCTIONS = "Answer immediately, with no reasoning, whenever the request asks for something you can simply write down: a rename, a reformat, a definition, a lookup, a single concrete edit. Reason only when producing the answer needs steps you cannot skip.\n\nIf the request is underspecified, pick the most common sensible interpretation, state it in one line, and proceed. If you notice yourself checking something twice, or weighing the same options again, stop there and commit."
+LEAN_ANCHOR = "    {%- if resolved_reasoning_effort == 'xhigh' %}\n"
+LEAN_PATCHED = (
+    "    {%- if resolved_reasoning_effort == 'lean' %}\n"
+    "        {%- set reasoning_instructions = '" + LEAN_INSTRUCTIONS + "' %}\n"
+    "    {%- elif resolved_reasoning_effort == 'xhigh' %}\n"
+)
+
+# Patch 4: the refusal message must name what is actually supported, or a client
+# that sends a bad value is told to use a default that is no longer the default.
+MSG_ANCHOR = (
+    "        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ "
+    "'. Supported types are xhigh (default), medium, and low.') }}"
+)
+MSG_PATCHED = (
+    "        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ "
+    "'. Supported types are lean (default), xhigh, medium, and low.') }}"
+)
+
 SYSTEM_ANCHOR = (
     "    {%- if message.role == \"system\" %}\n"
     "        {%- if not loop.first %}\n"
@@ -76,8 +119,16 @@ def main() -> None:
             print(f"note: {len(hits)} snapshots present, using the most recent: {chosen.split('/')[-2][:12]}")
     tpl = open(chosen, encoding="utf-8").read()
 
+    # LEAN_DEFAULT=0 installs the level without making it the default, for a box
+    # that wants Qwen's shipped behaviour until it has run its own numbers.
+    lean_default = os.environ.get("LEAN_DEFAULT", "1") != "0"
+    effort_patched = EFFORT_PATCHED.replace("@@DEF@@", "lean" if lean_default else "xhigh")
+    print(f"default reasoning effort: {'lean' if lean_default else 'xhigh'}")
+
     for name, anchor, patched, marker in (
-        ("reasoning_effort", EFFORT_ANCHOR, EFFORT_PATCHED, "'minimal'"),
+        ("reasoning_effort", EFFORT_ANCHOR, effort_patched, "'minimal'"),
+        ("lean", LEAN_ANCHOR, LEAN_PATCHED, "'lean' %}"),
+        ("effort-message", MSG_ANCHOR, MSG_PATCHED, "lean (default)"),
         ("system-reminder", SYSTEM_ANCHOR, SYSTEM_PATCHED, "<system-reminder>"),
     ):
         if anchor in tpl:

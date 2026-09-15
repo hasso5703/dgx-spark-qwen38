@@ -37,19 +37,27 @@ def main() -> None:
     try:
         sha = "c" * 40
         repo = "org/custom-model"
-        stock_body = "HEAD\n" + pt.EFFORT_ANCHOR + "\nMID\n" + pt.SYSTEM_ANCHOR + "\nTAIL\n"
+        # Every anchor the script looks for, in the order the upstream template has
+        # them. A fixture missing one makes the patcher refuse the whole template,
+        # which is the behaviour tested below for a REAL upstream change and not
+        # something this fixture should be triggering by accident.
+        stock_body = ("HEAD\n" + pt.EFFORT_ANCHOR + "\n" + pt.MSG_ANCHOR + "\nMID\n"
+                      + pt.LEAN_ANCHOR + pt.SYSTEM_ANCHOR + "\nTAIL\n")
         make_fixture(base, repo, sha, stock_body)
         out = os.path.join(base, "out.jinja")
         log = run(base, out, sha, repo)
-        assert log.count("applied") == 2, log
+        assert log.count("applied") == 4, log
         patched = open(out).read()
         assert "'minimal'" in patched, "effort patch must map the minimal tier"
+        assert "resolved_reasoning_effort == 'lean'" in patched, "lean patch must add the level"
+        assert "default('lean')" in patched, "lean must become the default"
+        assert "lean (default), xhigh, medium, and low" in patched, "the refusal must name lean"
         assert "<system-reminder>" in patched, "system patch must render reminders"
         assert patched.startswith("HEAD\n") and patched.endswith("TAIL\n")
         # A template that already carries both fixes: succeed, change nothing.
         make_fixture(base, repo, sha, patched)
         log2 = run(base, out, sha, repo)
-        assert log2.count("already present") == 2, log2
+        assert log2.count("already present") == 4, log2
         assert open(out).read() == patched
         # Exact-revision selection with a newer decoy snapshot.
         decoy = make_fixture(base, repo, "d" * 40, "DECOY " + stock_body)

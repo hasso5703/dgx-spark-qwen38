@@ -3,6 +3,7 @@
 
 Usage: oc-merge-limits.py <target opencode.json> <provider> <model id> <context> <output>
        oc-merge-limits.py <target opencode.json> --compaction <preserve_recent_tokens>
+       oc-merge-limits.py <target opencode.json> <provider> <model id> --add-variant <level>
 
 Only the "limit" object of the named provider/model is rewritten, in place,
 by targeted text substitution: comments, ordering and the user's other
@@ -113,9 +114,71 @@ def merge_compaction(path: str, keep: int) -> int:
     return 0
 
 
+def _verify_variant(path, provider, model, level) -> str:
+    try:
+        doc = json.loads(re.sub(r"^\s*//.*$", "", open(path).read(), flags=re.M))
+    except json.JSONDecodeError as e:
+        return f"file no longer parses: {e}"
+    v = (((doc.get("provider") or {}).get(provider) or {}).get("models", {})
+         .get(model, {}).get("variants") or {})
+    got = (v.get(level) or {}).get("chat_template_kwargs", {}).get("reasoning_effort")
+    return "" if got == level else f"variant {level} reads back as {got!r}"
+
+
+def add_variant(path: str, provider: str, model: str, level: str) -> int:
+    """Put a reasoning-effort variant into an existing opencode.json.
+
+    install.sh writes a complete config into CONFIG_DIR, but the file opencode
+    actually reads is the operator's own, and only the limits were ever merged
+    into it. A level added to the generated artifact therefore never reached the
+    picker: "lean" existed everywhere except where it could be selected.
+    """
+    try:
+        text = open(path).read()
+    except OSError as e:
+        print(f"cannot read {path}: {e}")
+        return 1
+    try:
+        doc = json.loads(re.sub(r"^\s*//.*$", "", text, flags=re.M))
+    except json.JSONDecodeError as e:
+        print(f"{path} is not valid JSON(C): {e}")
+        return 1
+    mdl = ((doc.get("provider") or {}).get(provider) or {}).get("models", {}).get(model)
+    if mdl is None:
+        print(f"{provider}/{model} not in {path}: nothing to merge")
+        return 3
+    if (mdl.get("variants") or {}).get(level):
+        print(f"{provider}/{model} already offers the {level} variant: unchanged")
+        return 0
+    entry = f'"{level}": {{"chat_template_kwargs": {{"reasoning_effort": "{level}"}}}}'
+    i = text.index(f'"{provider}"')
+    i = text.index(f'"{model}"', i)
+    if mdl.get("variants") is not None:
+        j = text.index('"variants"', i)
+        k = text.index("{", text.index(":", j))          # opening brace of the object
+        new_text = text[:k + 1] + "\n              " + entry + "," + text[k + 1:]
+    else:
+        j = text.index('"limit"', i)
+        k = text.index("}", j)                            # end of the limit object
+        new_text = text[:k + 1] + ',\n            "variants": {' + entry + "}" + text[k + 1:]
+    backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(path, backup)
+    with open(path, "w") as f:
+        f.write(new_text)
+    bad = _verify_variant(path, provider, model, level)
+    if bad:
+        shutil.copy2(backup, path)
+        print(f"{path}: refused, {bad}; restored from {backup}.")
+        return 1
+    print(f"{provider}/{model}: {level} variant added (backup {backup})")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 4 and argv[2] == "--compaction":
         return merge_compaction(argv[1], int(argv[3]))
+    if len(argv) == 6 and argv[4] == "--add-variant":
+        return add_variant(argv[1], argv[2], argv[3], argv[5])
     if len(argv) != 6:
         print(__doc__)
         return 2

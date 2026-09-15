@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.17). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.18). No content logging, and the only
 rewriting is the tool-schema guard (role 4).
 
 Four roles, nothing else:
@@ -21,6 +21,10 @@ Four roles, nothing else:
    Python's re cannot compile are dropped from tool parameter schemas, because the
    engine validates them with a Python regex and 400s the request otherwise. Nothing
    else in the body is ever touched.
+
+v6.18: a reasoning-effort level the chat template knows but SGLang's request
+model does not is relayed through chat_template_kwargs instead of being
+refused at the door. Nothing in SGLang's own enum is touched.
 
 v6.17: the identity wall learns the second half of its job. v6.16 named WHO;
 admission is a separate question, and forwarding the client's token verbatim
@@ -229,6 +233,7 @@ def _upstream_auth(handler):
 # cannot compile costs the caller nothing and keeps the lane usable.
 UNPYTHONIC_PATTERN_MARKS = (rb"\\p{", rb"\\P{", rb"(?<")
 _pattern_drop_logged = set()
+_effort_move_logged = set()
 
 
 def _prune_patterns(node, dropped, depth=0, abandoned=None):
@@ -271,6 +276,53 @@ def _tool_param_schemas(j):
                            fn.get("parameters") if isinstance(fn, dict) else None):
                 if isinstance(schema, dict):
                     yield schema
+
+
+
+# SGLang validates reasoning_effort at the API boundary against a literal enum
+# compiled into its own request model: none, minimal, low, medium, high, xhigh,
+# max. A level this repo adds to the chat template is therefore refused with a
+# pydantic validation error before the template is ever rendered, even though
+# the template understands it perfectly. The same value passed inside
+# chat_template_kwargs is not validated and reaches the template, which is the
+# path opencode happens to use. A client that sends the level this repo
+# documents should not have to know which of the two doors is open.
+#
+# Only a value the engine would reject is moved, and only for chat completions.
+# Anything in the enum is left exactly where the client put it, so this can
+# never change the meaning of a request the engine would have accepted.
+SGLANG_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def route_reasoning_effort(body, path):
+    """The body to forward, and the level moved (or None). Untouched on any doubt."""
+    if not body or not path.startswith("/v1/chat/completions"):
+        return body, None
+    if b'"reasoning_effort"' not in body:
+        return body, None               # hot path: one substring scan, no parse
+    try:
+        j = json.loads(body)
+    except Exception:
+        return body, None               # not JSON we can fix: let the engine decide
+    if not isinstance(j, dict):
+        return body, None
+    eff = j.get("reasoning_effort")
+    if not isinstance(eff, str) or eff in SGLANG_EFFORTS:
+        return body, None
+    kw = j.get("chat_template_kwargs")
+    if kw is None:
+        kw = {}
+    elif not isinstance(kw, dict):
+        return body, None               # the client means something else by that key
+    if "reasoning_effort" in kw:
+        return body, None               # the client already chose the open door
+    kw["reasoning_effort"] = eff
+    j["chat_template_kwargs"] = kw
+    del j["reasoning_effort"]
+    try:
+        return json.dumps(j).encode(), eff
+    except Exception:
+        return body, None
 
 
 def sanitize_tool_schemas(body, path):
@@ -1091,6 +1143,11 @@ class H(BaseHTTPRequestHandler):
             self._done("413 body over cap"); return
         body = self.rfile.read(n) if (with_body and n) else None
         body, dropped = sanitize_tool_schemas(body, self.path)
+        body, moved_effort = route_reasoning_effort(body, self.path)
+        if moved_effort and moved_effort not in _effort_move_logged:
+            _effort_move_logged.add(moved_effort)   # once per level, not per request
+            log(f"{self._peer} reasoning_effort={moved_effort!r} is not in SGLang's enum; "
+                f"relayed inside chat_template_kwargs so the chat template can read it")
         for pat in dropped:                 # once per distinct pattern, not per request
             if pat not in _pattern_drop_logged:
                 _pattern_drop_logged.add(pat)
@@ -1206,7 +1263,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.17 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.18 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     if CLIENT_KEYS:
         log(f"client keys on: {len(CLIENT_KEYS)} identities ({CLIENT_KEYS_FILE})")
         if UPSTREAM_API_KEY:

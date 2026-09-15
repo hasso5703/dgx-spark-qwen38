@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.13.0 (2026-09-15): `lean`, a fourth reasoning-effort level, and it is the default
+
+Qwen3.8-27B defaults to `xhigh`, the most expensive of its three levels, and the
+levels are not modes: they are three sentences the chat template prepends to the
+system message, measurable as 42, 30 and 0 tokens of prompt. That is the whole
+mechanism, which is what makes it addressable with words.
+
+Measured here on 7,008 runs, the shipped default is not only slower, it is
+worse. On 364 public problems (HumanEval 164 with the dataset's tests executed,
+GSM8K 200 on the exact final number) `xhigh` costs **3.19x** the thinking tokens
+of `medium` [2.73, 3.69] and scores 2.2 points lower on a paired McNemar test
+(p=0.057); on HumanEval alone it is 4.3 points lower at p=0.039, and five of its
+ten failures there are truncations, where it spent the whole 16,000-token budget
+thinking and returned nothing. `low`, the fix the community recommends, loses
+significantly (p=0.021) for an 11% saving.
+
+- **`lean`**: 74 words, added as a fourth level and made the default. On the
+  same 364 problems it costs **0.71x** the thinking tokens of `medium`
+  [0.66, 0.77] with no detectable quality change (-1.1 points, p=0.344). On 58
+  deliberately underspecified requests, the shape that makes this model spiral,
+  it costs **0.436x** of `medium` [0.40, 0.47] and **0.047x** of `xhigh`
+  [0.04, 0.06] while producing **17.2 points more usable answers** than `xhigh`
+  [+10.9, +24.1], with zero empty answers and zero truncations against 6.9% and
+  10.3%. Live check on one request: 990 tokens and 19.0 s against 9,084 and
+  190.9 s.
+- **Qwen's three levels come out byte-identical.** Ask for `medium` and you get
+  Qwen's `medium`. A repo that quietly redefines a standard level makes every
+  number measured with it incomparable with everyone else's.
+- `LEAN_DEFAULT=0 ./install.sh` installs the level without taking the default.
+- **Proxy v6.18**: SGLang validates `reasoning_effort` at the API boundary
+  against an enum compiled into its own request model, so a level the chat
+  template understands is refused before the template runs. The same value
+  inside `chat_template_kwargs` is not validated and reaches it, which is the
+  door opencode happens to use. The proxy now moves a level SGLang refuses into
+  that field, and touches nothing in SGLang's own enum.
+- **The level reaches the config opencode actually reads.** `install.sh` writes
+  a complete config into `CONFIG_DIR`, but only merged *limits* into the
+  operator's own file, so a new level appeared everywhere except where it could
+  be selected. `oc-merge-limits.py --add-variant` closes that.
+
+[LEAN.md](LEAN.md) carries the method, the pre-registered falsification
+criteria, the three-state functional scoring (a component whose code is run,
+with "not checkable" kept separate from "broken"), the fairness replay that
+tripled the token cap to show the truncations were not an artefact, and the
+things that did not work: an expert persona (no gain, and twice the tokens used
+alone), a decisiveness instruction (nothing left to remove, `lean` already sits
+at 0.00 backtracking markers per thousand), Chain of Draft (cheapest, and it
+loses quality), and four candidates designed from an error analysis that all
+cost tokens and gained nothing. It also states what was prepared and not run: a
+557-problem held-out set with an identical-twin null control.
+
 ## v1.12.1 (2026-09-14): the 1M window by default, and a cockpit that can actually switch
 
 v1.12.0 made the one-liner install the whole box. It still installed the wrong

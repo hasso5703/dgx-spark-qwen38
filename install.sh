@@ -1040,8 +1040,11 @@ import os
 
 cfg_dir = os.environ["OC_CONFIG_DIR"]
 lane = os.environ["OC_LANE"]
+# "lean" first: it is the level the patched template defaults to, so a picker
+# that lists it first shows the level a client gets when it selects nothing.
+# The three Qwen levels stay, unchanged, for anyone who wants them by name.
 variants = {lvl: {"chat_template_kwargs": {"reasoning_effort": lvl}}
-            for lvl in ("low", "medium", "xhigh")}
+            for lvl in ("lean", "low", "medium", "xhigh")}
 key_ref = f"{{file:{cfg_dir}/api-key}}"
 base_url = f"http://127.0.0.1:{os.environ['OC_PORT']}/v1"
 
@@ -1106,6 +1109,10 @@ if [ -f "$OC_USER_CFG" ]; then
   if [ "${LANE:-27b}" = "flash" ]; then
     python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" flashnext qwen3.8-flash-next "$OC_CTX" "$OC_OUT" || true
     python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" --compaction "$OC_KEEP" || true
+    # The lean level exists in this lane's template because the run above just
+    # patched it. It is offered only for the lane being installed: a provider
+    # entry advertising a level the served template does not know answers 500.
+    python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" flashnext qwen3.8-flash-next --add-variant lean || true
   else
     # Never downgrade a 27B unit that serves a larger window than this run's
     # CONTEXT_MODE computed (a native-mode re-install clobbered a 1m user's
@@ -1119,6 +1126,9 @@ if [ -f "$OC_USER_CFG" ]; then
       python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" qwen38 qwen3.8-27b "$OC_CTX" "$OC_OUT" || true
       python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" --compaction "$OC_KEEP" || true
     fi
+    # Offered whatever the limits branch decided above: the level comes from the
+    # template this run patched, not from the context mode.
+    python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" qwen38 qwen3.8-27b --add-variant lean || true
   fi
 fi
 # The default model and the served entry's picker name follow the install, not

@@ -281,7 +281,9 @@ else
   # sm_121 kernel). Say so instead of letting it pass.
   # Since v1.8 the launcher names the pinned official image (a digest), and
   # an OVERLAY_FLASH=1 install still names a local qwen38-flash:tag. Read either.
-  LAUNCH_IMAGE="$(grep -oE '^[[:space:]]*(qwen38-flash:[A-Za-z0-9._-]+|lmsysorg/sglang@sha256:[0-9a-f]{64})' "$FLASH_LAUNCH" | tr -d '[:space:]' | head -1)"
+  # Same class as OC_WINDOW below: the empty case is handled three lines down
+  # ([ -n "$LAUNCH_IMAGE" ]), and without || true set -e never lets it get there.
+  LAUNCH_IMAGE="$(grep -oE '^[[:space:]]*(qwen38-flash:[A-Za-z0-9._-]+|lmsysorg/sglang@sha256:[0-9a-f]{64})' "$FLASH_LAUNCH" | tr -d '[:space:]' | head -1 || true)"
   case "$LAUNCH_IMAGE" in
     qwen38-flash:*) WANT_IMAGE="${OVERLAY_FLASH_SERVE_IMAGE:-}" ;;   # an OVERLAY_FLASH=1 box
     *)              WANT_IMAGE="${FLASH_IMAGE:-}" ;;                  # the default: the pinned official image
@@ -364,7 +366,15 @@ for OC_JSON in "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json
   # so reading the unit labelled every flash switch "(local)" instead of
   # "(local, 262K)". Default model and picker name share one table in
   # oc-point-default.py with install.sh, so the three spellings cannot drift.
-  OC_WINDOW="$(grep -oE -- '--context-length [0-9]+' "$INVOCATION" 2>/dev/null | awk '{print $2}' | head -1)"
+  # || true, and it is the whole reason a switch to a native 27B target died
+  # here on 2026-09-14: a native unit carries NO --context-length (262144 is the
+  # engine default), grep exits 1 on zero matches, and under set -e with
+  # pipefail that killed the script silently, three lines before the end. The
+  # lane had already been swapped and enabled, so the box served the 27B while
+  # opencode's default model still pointed at flashnext: a switch that reported
+  # failure and had in fact done nine tenths of the job. install.sh carries the
+  # same pipeline and was fixed the same way on 2026-09-12; this copy was not.
+  OC_WINDOW="$(grep -oE -- '--context-length [0-9]+' "$INVOCATION" 2>/dev/null | awk '{print $2}' | head -1 || true)"
   python3 "$REPO_DIR/oc-point-default.py" "$OC_JSON" "$TARGET_LANE" "$CHOICE" "$OC_WINDOW" \
     || echo "NOTE: could not update $OC_JSON (hand-edited?); set its \"model\" field yourself"
 done
