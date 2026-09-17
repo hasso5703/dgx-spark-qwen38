@@ -178,7 +178,7 @@ exactly as upstream's own adopter keeps it.
 Everything in this directory is now in an official image, and the flash lane
 serves that image directly. `install.sh` builds nothing unless you ask for the
 old path with `OVERLAY_FLASH=1`, which is kept working and CI-checked as the
-rollback. The 27B lane still builds its own overlay: see dflash2/ATTRIBUTION.md
+rollback. The 27B lane had its own overlay until v1.14, when measurement retired it
 for the one fix that is not upstream in an image built for this hardware.
 
 What replaced what, all of it merged into SGLang's `qwen4-main-squashed` branch

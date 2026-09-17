@@ -550,7 +550,9 @@ class ContextModeRecipes(unittest.TestCase):
     def test_1m_mode_carries_the_1m_settings(self):
         r = rc.builtin("stock", self.assigns, self.templates, "1m")
         self.assertEqual(r["serve"]["context_length"], 1010000)
-        self.assertEqual(r["serve"]["mem_fraction"], 0.70)
+        # 0.76 since v1.14, see the IMAGE pin in install.sh: the official image
+        # claims a smaller static budget than the locally built one it replaced.
+        self.assertEqual(r["serve"]["mem_fraction"], 0.76)
         self.assertEqual(r["env"].get("SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN"), "1")
 
     def test_an_unknown_mode_is_refused(self):
@@ -922,7 +924,7 @@ class SwitchRewrite27B(unittest.TestCase):
 
     def test_the_kv_dtype_follows_the_target_both_ways(self):
         for template, frac in (("qwen38-sglang.service.template", "0.50"),
-                               ("qwen38-sglang-1m.service.template", "0.70")):
+                               ("qwen38-sglang-1m.service.template", "0.76")):
             for src in ("", "--kv-cache-dtype fp8_e4m3 "):
                 for dst_choice, dst in self.KV.items():
                     with self.subTest(f"{template} {src!r}->{dst_choice}"):

@@ -16,12 +16,12 @@ jobs:
 
       - name: Shell syntax
         run: |
-          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/install-agent.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh; do
+          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/install-agent.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh; do
             bash -n "$f"
           done
 
       - name: shellcheck (warning severity)
-        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh dflash2/build-image.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/install-agent.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh
+        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/install-agent.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh
 
       - name: opencode plugin syntax (node)
         run: node --check extras/opencode/auto-continue.js
@@ -232,10 +232,10 @@ jobs:
 
       - name: Pin contracts (every consumer's own block runs against install.sh)
         run: |
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|DRAFT2_QUANT|DRAFT2_TOKENS|OVERLAY_SERVE_IMAGE|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 20 ] || { echo "run.sh pin contract broken: $n != 20"; exit 1; }
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_SERVE_IMAGE|OVERLAY_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 18 ] || { echo "switch-model.sh pin contract broken: $n != 18"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|DRAFT2_QUANT|DRAFT2_TOKENS|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 19 ] || { echo "run.sh pin contract broken: $n != 19"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 17 ] || { echo "switch-model.sh pin contract broken: $n != 17"; exit 1; }
           # This check must mirror the grep switch-model.sh actually runs, or a
           # renamed pin passes CI and breaks the switch at runtime. It did: the
           # four FP8 names were read by the script and guarded by nothing.
@@ -790,7 +790,7 @@ jobs:
           # alone in native: presence is asserted below, not by the diff.
           diff <(filt < qwen38-sglang.service.template) <(filt < qwen38-sglang-1m.service.template)
           grep -q -- '--mem-fraction-static 0.50' qwen38-sglang.service.template
-          grep -q -- '--mem-fraction-static 0.70' qwen38-sglang-1m.service.template
+          grep -q -- '--mem-fraction-static 0.76' qwen38-sglang-1m.service.template
           grep -q -- '--context-length 1010000 --model-path __MODEL__ __MODEL_REV_ARGS__' qwen38-sglang-1m.service.template
           grep -q 'HF_HUB_OFFLINE=1' qwen38-sglang-1m.service.template
           grep -q 'HF_HUB_OFFLINE=1' qwen38-sglang.service.template \
@@ -960,9 +960,6 @@ jobs:
 
       - name: needle.sh separates a lane refusal from a retrieval failure (fake engine)
         run: python3 tests/test_needle_refusal.py
-
-      - name: Vendored DFlash2 overlay integrity
-        run: cd dflash2 && sha256sum -c MANIFEST.sha256
 
       - name: uninstall inventory runs clean on a bare machine
         run: ./uninstall.sh --list
@@ -1154,7 +1151,7 @@ jobs:
           inst = pathlib.Path("install.sh").read_text()
           un = pathlib.Path("uninstall.sh").read_text()
           bad = []
-          for var in ("IMAGE", "FLASH_IMAGE", "DFLASH2_OFFICIAL_IMAGE"):
+          for var in ("IMAGE", "FLASH_IMAGE"):
               m = re.search(rf'^{var}.*?(lmsysorg/sglang@sha256:[0-9a-f]{{64}})', inst, re.M)
               if not m or m.group(1) not in un:
                   bad.append(var)

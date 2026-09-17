@@ -175,7 +175,10 @@ class TheWiring(unittest.TestCase):
     def test_the_1m_unit_template_is_the_one_that_carries_the_window(self):
         tpl = (REPO / "qwen38-sglang-1m.service.template").read_text()
         self.assertIn("--context-length 1010000", tpl)
-        self.assertIn("--mem-fraction-static 0.70", tpl)
+        # 0.76 since v1.14: the official image claims a smaller static budget
+        # than the locally built one did, so the same 0.70 cost 15% of the pool
+        # while leaving 10 GB unused. Measured, see the IMAGE pin in install.sh.
+        self.assertIn("--mem-fraction-static 0.76", tpl)
         self.assertIn("SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1", tpl)
 
 

@@ -7,7 +7,7 @@
 # lane serves an OFFICIAL SGLang image with nothing added, because the cookbook's
 # own image for this hardware ships everything this repo used to graft on
 # locally; the 27B lane still builds its overlay, for the one reason named at
-# IMAGE below (see dflash2/ATTRIBUTION.md and flash-sglang/ATTRIBUTION.md).
+# IMAGE below (see flash-sglang/ATTRIBUTION.md).
 set -euo pipefail
 trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-running ./install.sh is safe: completed steps are skipped.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
@@ -71,26 +71,32 @@ _ENV_DRAFT2_REPO="${DRAFT2_REPO:-}"; _ENV_DRAFT2_REV="${DRAFT2_REV:-}"
 _ENV_DRAFT2_QUANT="${DRAFT2_QUANT:-}"; _ENV_DRAFT2_TOKENS="${DRAFT2_TOKENS:-}"
 
 # ── Pinned, validated versions (override via env if you know what you do) ──
-# The 27B lane's base image, and it is deliberately still the 2026-08-15 one.
-# The cookbook now has an official multi-arch DFLASH2 image
-# (lmsysorg/sglang:dev-qwen38-27b-dflash2, built from 1cf2b8c) which would let
-# this lane drop its overlay the way the flash lane did in v1.8, and it ships
-# two DFlash2 improvements this base predates (the grouped dynamic convolution
-# and the candidate selector, sglang#35371, plus the quantized target lm_head
-# the selector projects through, sglang#35496). It is not adopted yet for one
-# reason: it was built on 2026-08-22 and the mrope fix this repo's overlay
-# carries (sglang#34446, "the fused Qwen3.5 RoPE kernel discards mrope height
-# and width") merged on 2026-08-30, so serving that image as it stands would
-# rotate every image token as if it sat at its temporal position on all three
-# axes. The port is not mechanical: between the two bases mrope.py changed API
-# (get_exec() -> attention_backends()) and qwen3_5.py changed by 398 lines. See
-# dflash2/ATTRIBUTION.md, "The 27B migration, and what blocks it".
-IMAGE="${IMAGE:-lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1}"  # = lmsysorg/sglang:qwen38-27b, 2026-08-15
-# The official DFLASH2 image, pinned so a box can pull and compare it, and so the
-# day the mrope fix lands in one of these builds this is a one-line change.
-# shellcheck disable=SC2034  # a documented pin, not a used value: it is what this
-# lane switches to the day the mrope fix lands in a build for this hardware.
-DFLASH2_OFFICIAL_IMAGE="lmsysorg/sglang@sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe"  # = lmsysorg/sglang:dev-qwen38-27b-dflash2 (1cf2b8c), 2026-08-22
+# The 27B lane's image, and since v1.14 it is the official release, served
+# directly with no overlay built on top of it. Until v1.13 this lane built its
+# own image (the 2026-08-15 base plus eight sha256-verified files) for two
+# reasons, and both were retired by measurement on 2026-09-17 rather than by
+# assumption:
+#   - DFlash2 itself, merged upstream 2026-08-19 (sglang#35371) together with
+#     the quantized target lm_head the candidate selector projects through
+#     (sglang#35496). Both are in v0.5.19: diffed file by file against the
+#     overlay, not one function of it is missing upstream, and upstream carries
+#     about ten this box never had.
+#   - The mrope fix (sglang#34446, "the fused Qwen3.5 RoPE kernel discards mrope
+#     height and width", merged 2026-08-30), whose failure mode is silent image
+#     corruption. v0.5.19 is built after it: checked in the image, its
+#     fused_qk_rmsnorm_rope_gate.py carries mrope_axis_map, same as the overlay.
+# The sm_121 objection that kept this lane off the release is retired too, and it
+# was never a departure: v0.5.19 reports arch_list up to sm_120 and ships
+# sgl_kernel variants for sm90 and sm100 only, but SO DOES the image this lane
+# served before it, byte for byte (15301320 and 14711496). GB10 loads the sm100
+# cubin either way.
+# Measured on the box, same flags, same probes, 2026-09-17: greedy median 71.4
+# against 69.8 tok/s, acceptance 4.29 against 4.09, conc-check 40/40 serial and
+# 160/160 at concurrency 8 on both, needle retrieval exact at 300,108 prompt
+# tokens on both (514 s against 493 s, the one point where the release is
+# behind). The KV pool needs the fraction moved from 0.70 to 0.76 to match, for
+# the reason written at CONTEXT_MODE below.
+IMAGE="${IMAGE:-lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9}"  # = lmsysorg/sglang:v0.5.19, 2026-09-04
 # Target model choice: "stock" (validated censored base, default) or "uncensored"
 # (huihui-ai abliteration re-quantized with the identical RadixArk modelopt
 # NVFP4 recipe: same architecture, chat template, MTP + vision, ~22 GB).
@@ -315,7 +321,7 @@ DRAFT2_REPO="${DRAFT2_REPO:-maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal}"
 DRAFT2_REV="${DRAFT2_REV:-bd7a934213c47a9e7ef69eef36bb3325f47fd1f1}"
 DRAFT2_QUANT="${DRAFT2_QUANT:-modelopt_fp4}"
 DRAFT2_TOKENS="${DRAFT2_TOKENS:-16}"
-# Context mode: "1m" (1,010,000 via YaRN static scaling, mem-fraction 0.70,
+# Context mode: "1m" (1,010,000 via YaRN static scaling, mem-fraction 0.76,
 # plus the keepalive proxy for agent clients) or "native" (262144). Since
 # v1.12.1 an unset CONTEXT_MODE means 1m on the 27B lane: it is the preset the
 # reference box has served daily since 2026-08-22, and a stack whose headline
@@ -324,6 +330,26 @@ DRAFT2_TOKENS="${DRAFT2_TOKENS:-16}"
 # once the lane, the flags and the installed unit are all known, because the
 # two paths that cannot serve 1m (the flash lane and --no-service) have to
 # fall back to native in silence rather than refuse a default nobody typed.
+# The fraction is 0.76 since v1.14, and the number is the image's, not a taste.
+# The official image sizes its static budget more conservatively than the
+# locally built one this lane served before: at an identical 0.70 it came up
+# with a 770,118-token pool against 906,524, while leaving 29.89 GB of GPU
+# memory unused against 19.38. It was never short of memory, it just did not
+# claim it. 0.76 hands the pool back (902,398 measured, inside the boot-to-boot
+# spread this box shows on one image: 906,524 then 910,203) and still leaves a
+# wider margin than the old pin did, 21.30 GB against 19.38. Worth knowing
+# before raising it further: the old image already sat at 93.7 GB inside a
+# container capped at 100 GB, so it was the tighter of the two.
+# The fraction is 0.76 since v1.14, and the number is the image's, not a taste.
+# The official image sizes its static budget more conservatively than the
+# locally built one this lane served before: at an identical 0.70 it came up
+# with a 770,118-token pool against 906,524, while leaving 29.89 GB of GPU
+# memory unused against 19.38. It was never short of memory, it just did not
+# claim it. 0.76 hands the pool back (902,398 measured, inside the boot-to-boot
+# spread this box shows on one image: 906,524 then 910,203) and still leaves a
+# wider margin than the old pin did, 21.30 GB against 19.38. Worth knowing
+# before raising it further: the old image already sat at 93.7 GB inside a
+# container capped at 100 GB, so it was the tighter of the two.
 CONTEXT_MODE="${CONTEXT_MODE:-}"
 case "$CONTEXT_MODE" in
   native|1m|"") ;;
@@ -335,32 +361,22 @@ if [ "$LANE" = "flash" ] && [ "$CONTEXT_MODE" = "1m" ]; then
   exit 1
 fi
 # What actually gets served. Until v1.7 both lanes served a locally built image:
-# the pinned official base plus sha256-verified overlay files (dflash2/ for the
-# 27B pair, flash-sglang/ for Flash-Next), because no official image carried
-# DFLASH2 or ran Flash-Next on one GB10. Both are upstream now, so the default
-# is the pinned base itself and no image is built on that lane. The overlay
-# stays the rollback: kept working, checksummed and CI-checked.
-# The two lanes differ here since v1.8, and the reason is above: everything the
-# flash overlay carried is upstream in an image built for this hardware, and one
-# thing the 27B overlay carries is not. So the flash lane serves the pinned
-# official image directly and builds nothing, while the 27B lane still builds
-# its overlay. OVERLAY= sets both at once; OVERLAY_27B= and OVERLAY_FLASH= set
-# one. OVERLAY_27B=0 is a real choice with a known cost: it drops the mrope fix,
-# so text is unaffected and image inputs are silently wrong.
-OVERLAY_27B="${OVERLAY_27B:-${OVERLAY:-1}}"
+# the pinned official base plus sha256-verified overlay files, because no
+# official image carried DFLASH2 or ran Flash-Next on one GB10. Both are
+# upstream now, so both lanes serve the pinned official image directly and
+# build nothing. The flash lane crossed over in v1.8; the 27B lane followed in
+# v1.14, once the two things holding it back were measured rather than assumed
+# (see the IMAGE pin above). OVERLAY_FLASH=1 rebuilds the flash lane's old
+# locally-patched image, which is the only overlay this repo still carries.
 OVERLAY_FLASH="${OVERLAY_FLASH:-${OVERLAY:-0}}"
-# The local tags of the overlay path. Every line below sits at column 0 and
+# The local tag of the flash overlay path. Every line below sits at column 0 and
 # refers only to names defined above it, because run.sh and switch-model.sh read
 # these assignments out of this file and eval them with nothing else bound.
-OVERLAY_SERVE_IMAGE="qwen38-dflash2:v1.2.3"
 OVERLAY_FLASH_SERVE_IMAGE="qwen38-flash:v1.6.0-kda"
-SERVE_IMAGE="${SERVE_IMAGE:-$OVERLAY_SERVE_IMAGE}"
+SERVE_IMAGE="${SERVE_IMAGE:-$IMAGE}"
 FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-$FLASH_IMAGE}"
-# The non-default overlay choices, applied only when the operator did not name a
+# The non-default overlay choice, applied only when the operator did not name a
 # serving image outright.
-if [ -z "$_ENV_SERVE_IMAGE" ] && [ "$OVERLAY_27B" != "1" ]; then
-  SERVE_IMAGE="$IMAGE"
-fi
 if [ -z "$_ENV_FLASH_SERVE_IMAGE" ] && [ "$OVERLAY_FLASH" = "1" ]; then
   FLASH_SERVE_IMAGE="$OVERLAY_FLASH_SERVE_IMAGE"
 fi
@@ -418,8 +434,7 @@ the installed unit or launcher (or the marker file) unless the env var or flag
 is passed explicitly.
 
 Env overrides (defaults are pinned to the versions validated 2026-09-11):
-  IMAGE=lmsysorg/sglang:dev-qwen38-27b-dflash2
-                                     use the moving tag instead of the digest
+  IMAGE=lmsysorg/sglang:latest       use the moving tag instead of the digest
   MODEL_REV=main                     use the latest target revision
   DRAFT2_REV=main                    latest DFlash2 draft revision
   DRAFT2_REPO=z-lab/Qwen3.8-27B-DFlash2 DRAFT2_REV=50307d4c4cde6860d4eee73e2547cd786fe8e8a4 DRAFT2_QUANT=unquant DRAFT2_TOKENS=8
@@ -467,9 +482,6 @@ Env overrides (defaults are pinned to the versions validated 2026-09-11):
   PROXY_PORT=30001                   keepalive proxy port (default: PORT+1)
   OVERLAY_FLASH=1                    flash: serve the locally built overlay
                                      image of v1.7 instead of the official one
-  OVERLAY_27B=0                      27B: serve the official base with no
-                                     overlay, which DROPS the mrope fix
-                                     (sglang#34446): image inputs go wrong
   SERVE_IMAGE=ref                    serving image for the 27B lane
   FLASH_SERVE_IMAGE=ref              serving image for the Flash-Next lane
   HF_CACHE=/path                     HuggingFace cache location (~28 GB for a 27B
@@ -867,24 +879,17 @@ for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
 print("checkpoints ready", flush=True)
 PYEOF
 
-LANE_OVERLAY="$OVERLAY_27B"; [ "$LANE" = "flash" ] && LANE_OVERLAY="$OVERLAY_FLASH"
+LANE_OVERLAY=0; [ "$LANE" = "flash" ] && LANE_OVERLAY="$OVERLAY_FLASH"
 if [ "$LANE_OVERLAY" != "1" ]; then
   step "5/10 Serving image: the pinned official one, nothing to build"
   echo "$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
   if [ "$LANE" = flash ]; then
     echo "OVERLAY_FLASH=1 ./install.sh rebuilds the local overlay image of v1.7 instead (the rollback)."
-  else
-    echo "WARNING: OVERLAY_27B=0 drops the mrope fix (sglang#34446): text is unaffected, image"
-    echo "         inputs are silently rotated wrong. See dflash2/ATTRIBUTION.md."
   fi
-elif [ "$LANE" = "flash" ]; then
+else
   step "5/10 Building the Flash-Next overlay image (OVERLAY_FLASH=1: pinned base + verified files + gate checks, offline, ~2 min)"
   BASE_IMAGE="$OVERLAY_FLASH_BASE_IMAGE" TAG="$FLASH_SERVE_IMAGE" "$REPO_DIR/flash-sglang/build-image.sh" \
     || die "Flash overlay image build failed: see flash-sglang/ATTRIBUTION.md; the checksums and in-image checks run before tagging, so a failure means a corrupted checkout (git status) or an upstream image layout change. The overlay is the rollback path: the default install needs no build."
-else
-  step "5/10 Building the DFlash2 serving image (pinned base + 8 verified files, offline, ~1 min)"
-  BASE_IMAGE="$IMAGE" TAG="$SERVE_IMAGE" "$REPO_DIR/dflash2/build-image.sh" \
-    || die "DFlash2 image build failed: see dflash2/ATTRIBUTION.md; the checksums are verified before building, so a mismatch means a corrupted checkout (git status)."
 fi
 
 # The reduced draft vocabulary. Built inside the serving image, so the tokenizer
@@ -990,7 +995,8 @@ step "7/10 opencode provider config + oc launcher"
 # opencode's hidden 32000 output cap is lifted by the oc launcher below:
 #   native: 194048 + 64000 = 258048 <= 262144 - 4096
 #   1m:     700000 (compaction at 680000) + 200000 = 880000 <= worst measured
-#           KV pool at mem-fraction 0.70 (boot lottery floor: 917877 measured)
+#           KV pool at mem-fraction 0.76 (902398 measured 2026-09-17 on the
+#           official image; the same box spreads 906524-910203 across boots)
 # Service installs point agent clients at the keepalive proxy (step 8): SGLang
 # buffers tool-call arguments at any context length and agent CLIs abort
 # silent streams. --no-service has no proxy: direct server port for ./run.sh.
@@ -1430,11 +1436,11 @@ except Exception as e:
       done
     fi
     while IFS= read -r tagref; do
-      # Never offer to delete what is being served, nor either overlay tag: since
-      # v1.8 the flash overlay image IS the rollback for that lane, and the 27B
-      # overlay image is what that lane serves.
+      # Never offer to delete what is being served, nor the flash overlay tag:
+      # since v1.8 the flash overlay image IS the rollback for that lane. The 27B
+      # overlay tag is offered, since v1.14 serves the official image instead.
       [ -n "$tagref" ] && [ "$tagref" != "$SERVE_IMAGE" ] && [ "$tagref" != "$FLASH_SERVE_IMAGE" ] \
-        && [ "$tagref" != "$OVERLAY_SERVE_IMAGE" ] && [ "$tagref" != "$OVERLAY_FLASH_SERVE_IMAGE" ] \
+        && [ "$tagref" != "$OVERLAY_FLASH_SERVE_IMAGE" ] \
         && case "$LEFTOVER_NOTES" in *"'$tagref'"*) ;; *) LEFTOVER_NOTES="${LEFTOVER_NOTES}      docker rmi '$tagref'\n" ;; esac
     done < <({ docker images --format '{{.Repository}}:{{.Tag}}' qwen38-dflash2 2>/dev/null; docker images --format '{{.Repository}}:{{.Tag}}' qwen38-flash 2>/dev/null; } || true)
     if [ -n "$LEFTOVER_NOTES" ]; then

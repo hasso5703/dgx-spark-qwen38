@@ -255,7 +255,9 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str],
         repo, rev = assigns[f"{pfx}_REPO"], assigns[f"{pfx}_REV"]
         image = _deref(assigns["SERVE_IMAGE"], assigns)
         base = assigns.get("IMAGE")
-        overlay = "dflash2" if image != base else None
+        # Since v1.14 this lane serves the pinned official image too, so an image
+        # that differs from the base can only be one the operator named.
+        overlay = "custom" if image != base else None
     # The unit templates carry the KV cache choice as a placeholder because it is
     # per-target; substitute it the way install.sh does so an FP8 recipe shows the
     # flag that defines it instead of leaving a placeholder behind.

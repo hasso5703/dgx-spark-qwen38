@@ -45,7 +45,7 @@ launcher in `~/.local/bin`, and the two weight trees (HF cache, PLE dir).
 | `run.sh` / `switch-model.sh` / `uninstall.sh` / `get.sh` | foreground serving, surgical live switch, read-only-first removal, one-liner bootstrap | the switch never restarts a service by itself and never touches images; it stages unit files at fixed paths because the cockpit's sudoers pins that argv exactly |
 | `oc-limits.sh` | the one table of opencode limits, three callers | the comment block next to each number *is* the measurement record; the ceiling/threshold/two-thousand-step invariant is CI-held |
 | `dashboard/` | the cockpit: state from a real generation canary, not `/health` (a wedged SGLang answers `/health` fine) | `lifecycle.py` is the pure state machine (100% branch coverage, mutation-scored), `recipes.py` derives "what the repo says this lane runs" from the repo's own text, `registry.py` knows the checkpoints, `agent_relay.py` is the browser boundary; every privileged call is exact argv through sudo, every action audited |
-| `dflash2/`, `flash-sglang/` | vendored engine overlays, sha256-manifested, provenance in their ATTRIBUTION.md | both are rollback paths since v1.8 (their content is upstream in the served image); the manifests are regenerated with intent, a tampered file refuses to build |
+| `flash-sglang/` | vendored engine overlay, sha256-manifested, provenance in its ATTRIBUTION.md | the flash lane's rollback path since v1.8 (its content is upstream in the served image); the manifest is regenerated with intent, a tampered file refuses to build. The 27B lane had one too until v1.14, retired once measurement showed upstream carried all of it |
 | `bench.sh`, `bench-matrix.sh`, `needle.sh`, `bench-agent.py`, `conc-check.py` | the instruments: single-lane probe, frozen comparable battery, long-context retrieval, the agent-loop shape, the concurrency question | the battery is versioned and frozen so numbers stay comparable across years; `bench.sh` asks the engine which model it serves before printing a reference |
 | `patch-yarn.py`, `patch-template.py`, `build-token-map.py`, `oc-*.py`, `oc-*.sh` | the config surgery, all idempotent, all reversible | patch-yarn has `--restore`/`--check` because a native install coming home from 1m would otherwise crash at load |
 | `check-pins.sh` | supply-chain availability, over the network, on demand | deliberately not in CI: a green build must not depend on Hugging Face being up |
@@ -105,9 +105,10 @@ them, run `./ci-local.sh`, read what it names.
 
 ## Known open edges (stated, not hidden)
 
-- The 27B lane waits for the mrope fix to reach an sm_121 build of the
-  official image; the task, the verification method, and the rollback are in
-  `dflash2/ATTRIBUTION.md`.
+- No image this repo can serve ships an sm_121 build of `sgl_kernel`: both the
+  official release and the locally built image this lane used until v1.14 carry
+  sm90 and sm100 only, and GB10 loads the sm100 cubin. It measures fine, it is
+  simply not a tuned path.
 - The 176B boot rewrites its 47.7 GiB N-gram table every start (~10 min);
   the cost, the reason, and the upstream shape of a fix are in the flash
   launcher's comments.

@@ -1,5 +1,55 @@
 # Changelog
 
+## v1.14.0 (2026-09-17): the 27B lane serves the official image, and the overlay is gone
+
+Both serving lanes now run an image this repo did not build. The 27B lane was
+the last holdout: since v1.2 it served the 2026-08-15 base with eight
+sha256-verified files copied on top, for two reasons that were finally checked
+instead of restated.
+
+- **The overlay carried nothing upstream lacks.** Diffed file by file against
+  v0.5.19: not one function of it is missing there, and upstream carries about
+  ten this box never had (the DFlash renorm kernels, `_accept_block`, the draft
+  cell sizing, `table_qk_norm_rope_`, the Nemotron-35 draft). The one function
+  that looked unique, `_maybe_autodisable_shared_experts_fusion`, is upstream as
+  `_qwen3_5_shared_experts_fusion_disable_reason`, resolved before any layer is
+  built and applied to all four entry classes. Five of the differences in
+  `fused_qk_rmsnorm_rope_gate.py` are em dashes in comments.
+- **The mrope fix is in the release.** sglang#34446 merged 2026-08-30, v0.5.19
+  was built 2026-09-04: checked inside the image, its
+  `fused_qk_rmsnorm_rope_gate.py` carries `mrope_axis_map`, so the failure mode
+  that kept this lane back (image tokens rotated as if they sat at their
+  temporal position on all three axes) is not there.
+- **The sm_121 objection was never a departure.** v0.5.19 reports `arch_list` up
+  to sm_120 and ships `sgl_kernel` for sm90 and sm100 only, which is true, and
+  the image this lane served before it does exactly the same, byte for byte
+  (15301320 and 14711496). GB10 loads the sm100 cubin either way. Neither image
+  has a tuned sm_121 path; this one is no worse.
+
+**Measured on the box, same flags, same probes, one after the other.** Greedy
+median 71.4 tok/s against 69.8, acceptance 4.29 against 4.09, `conc-check` 40/40
+serial and 160/160 at concurrency 8 on both (this is where sglang#36548 would
+show), needle retrieval exact at 300,108 prompt tokens on both. The release is
+behind on one number: 514 s against 493 s for that long prefill.
+
+- **The memory fraction moves from 0.70 to 0.76, and the number is the image's.**
+  At an identical 0.70 the official image sized a 770,118-token pool against
+  906,524, while leaving 29.89 GB of GPU memory unused against 19.38: it was
+  never short of memory, it just did not claim it. 0.76 hands the pool back
+  (902,398, inside the 906,524-910,203 this box spreads across boots on one
+  image) and still leaves a wider margin than the old pin did, 21.30 GB against
+  19.38. Worth knowing before raising it further: the old image already sat at
+  93.7 GB inside a container capped at 100 GB.
+- **`dflash2/` is deleted**, with its build step, its `OVERLAY_27B` switch and
+  its CI integrity gate. `flash-sglang/` stays: it is still that lane's
+  rollback. The 27B rollback is the previous image itself, still on the box as
+  `qwen38-dflash2:v1.2.3`, and `SERVE_IMAGE=qwen38-dflash2:v1.2.3 ./install.sh`
+  serves it again.
+- Gates updated with the change, not around it: the 1m template fraction, the
+  anti-drift pair, the run.sh and switch-model.sh pin contracts (19 and 17), the
+  uninstall inventory (which now knows both the new digest and the retired one),
+  and the cockpit recipe tests.
+
 ## v1.13.0 (2026-09-15): `lean`, a fourth reasoning-effort level, and it is the default
 
 Qwen3.8-27B defaults to `xhigh`, the most expensive of its three levels, and the
