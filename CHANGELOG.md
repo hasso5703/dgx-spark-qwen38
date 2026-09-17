@@ -40,6 +40,15 @@ behind on one number: 514 s against 493 s for that long prefill.
   image) and still leaves a wider margin than the old pin did, 21.30 GB against
   19.38. Worth knowing before raising it further: the old image already sat at
   93.7 GB inside a container capped at 100 GB.
+- Verified on the production unit after the switch: greedy median 72.0 tok/s,
+  `conc-check` 40/40 serial and 160/160 at concurrency 8, needle retrieval exact
+  at 300,108 **and 499,874** prompt tokens (512 s and 1,249 s), GSM8K 98.5% on
+  200 questions (`sglang.test.run_eval`, 5-shot, greedy). The pool comes up at
+  889,131 there, about 2% under the old image and at the low end of this box's
+  own spread, with 21.34 GB of GPU memory free against 19.38. The GSM8K figure
+  has no counterpart on the old image: it was measured after the switch, so it
+  stands as an absolute, not as a comparison. The A/B on correctness is
+  `conc-check`, which was perfect on both.
 - **`dflash2/` is deleted**, with its build step, its `OVERLAY_27B` switch and
   its CI integrity gate. `flash-sglang/` stays: it is still that lane's
   rollback. The 27B rollback is the previous image itself, still on the box as
