@@ -785,7 +785,15 @@ def collect_repo():
             "head": g("log", "-1", "--format=%h %s"),
             "branch": g("branch", "--show-current"),
             "tag": g("describe", "--tags", "--abbrev=0"),
-            "dirty": bool(g("status", "--porcelain")),
+            # Tracked changes and untracked files are two different facts, and
+            # only the first one means the served code diverges from the repo.
+            # --porcelain counts both, so a stray screenshot dropped in the
+            # checkout used to report the working tree as modified (seen
+            # 2026-09-17 with a downloaded .png).
+            "dirty": any(not l.startswith("??")
+                         for l in (g("status", "--porcelain") or "").splitlines() if l),
+            "untracked": sum(1 for l in (g("status", "--porcelain") or "").splitlines()
+                             if l.startswith("??")),
             "proxy": proxy}
 
 

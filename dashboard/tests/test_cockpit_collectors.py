@@ -168,6 +168,31 @@ class Parse(Base):
         self.assertEqual(out["guard"]["aborted"], 1)
         self.assertIn(out["state"], ("ok", "warn", "err", ""))
 
+    def test_an_untracked_file_is_not_a_modified_working_tree(self):
+        """A screenshot dropped in the checkout is not the served code drifting.
+
+        git status --porcelain prints both, and the cockpit used to call any
+        non-empty output "modified (uncommitted changes)", which is the sentence
+        a person reads to decide whether the box runs the repo's code. Seen on
+        2026-09-17 with a downloaded .png sitting in the working tree.
+        """
+        self.box({"git": '?? "telechargement (2).png"\n'})
+        out = self.cp.collect_repo()
+        self.assertIs(out["dirty"], False)
+        self.assertEqual(out["untracked"], 1)
+
+    def test_a_tracked_change_is_still_a_modified_working_tree(self):
+        self.box({"git": " M install.sh\n?? note.txt\n"})
+        out = self.cp.collect_repo()
+        self.assertIs(out["dirty"], True)
+        self.assertEqual(out["untracked"], 1)
+
+    def test_a_clean_tree_is_clean(self):
+        self.box({"git": ""})
+        out = self.cp.collect_repo()
+        self.assertIs(out["dirty"], False)
+        self.assertEqual(out["untracked"], 0)
+
     def test_every_collector_answers_with_a_dict_on_a_healthy_box(self):
         self.box({"docker ps --format": fixture("docker-ps.txt"),
                   "docker stats": fixture("docker-stats.txt"),

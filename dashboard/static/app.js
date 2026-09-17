@@ -504,7 +504,9 @@ function rRepo(d){
   setText('repotag', d.tag || 'n/a'); setText('repobranch', d.branch || 'n/a');
   const head = d.head || '';
   setShort('repohead', head.split(' ')[0] || 'n/a', head || 'n/a');
-  setText('repodirty', d.dirty ? 'modified (uncommitted changes)' : 'clean');
+  setText('repodirty', d.dirty ? 'modified (uncommitted changes)'
+    : d.untracked ? `clean (${d.untracked} untracked file${d.untracked > 1 ? 's' : ''})`
+    : 'clean');
   setText('proxyver', F.proxy && F.proxy.version ? F.proxy.version + (F.proxy.same_as_repo === false ? ' · deployed file differs from the repo copy' : ' · repo copy') : 'unknown');
 }
 function rConfig(d){
