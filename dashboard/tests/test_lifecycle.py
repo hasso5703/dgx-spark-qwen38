@@ -298,6 +298,12 @@ class FeedOutcomes(unittest.TestCase):
         "503 engine unreachable": "fail",
         "503 engine unreachable (upstream 502)": "fail",
         "502 upstream": "fail",
+        # v6.19, POST /v1/systemone: the answer was delivered; the request was
+        # refused with the field named (a client bug, not the box's); the engine
+        # answered a branch with something that is not a one-token distribution.
+        "ok systemone": "ok",
+        "422 systemone refused": "fail",
+        "502 systemone upstream": "fail",
     }
 
     @classmethod

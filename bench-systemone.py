@@ -1,0 +1,621 @@
+#!/usr/bin/env python3
+"""The instrument for POST /v1/systemone: the same typed questions, the same payloads,
+sent to this box and to TypeSafe's hosted Jev, and scored against ground truth and
+against each other. Stdlib only at run and report time, like every runtime file of
+this repo; `prepare` needs pyarrow once to turn the public parquet files into JSONL.
+
+    ./bench-systemone.py prepare --data bench-systemone-data
+    ./bench-systemone.py run --task boolq --target ours --limit 200
+    ./bench-systemone.py run --task boolq --target jev
+    ./bench-systemone.py report --task boolq --fit-temperature
+    ./bench-systemone.py fanout --target ours
+
+Tasks, each a public dataset with a pinned revision, and the exact payload shape the
+independent Jev evaluations used where one exists so the numbers stay comparable:
+
+  boolq      3,270 labeled BoolQ development passages (google/boolq, validation split,
+             revision 35b264d0): one Noul per passage. Protocol of ekzhang's openjev-sglang
+             BoolQ run, which also holds the real Jev's numbers on the same rows.
+  mmlu-pro   1,000 MMLU-Pro test questions (TIGER-Lab/MMLU-Pro, revision b189ec76),
+             random.Random(42).sample of the test split: one Choice over the options.
+             Same 1,000 rows and payload as ekzhang's run, where Jev scored 82.9%.
+  xnli-fr    500 French XNLI validation pairs (facebook/xnli, fr, seed 42): a Choice
+             between implication, neutre, contradiction, asked in French.
+  mmmlu-fr   500 French MMLU questions (openai/MMMLU, FR_FR, seed 42): a Choice A-D,
+             asked in French.
+  gdpr       the 13 questions of TypeSafe's "parallel questions" cookbook over the
+             pinned Wikipedia GDPR article: every question 5 times batched in one call
+             and 5 times one per call, to measure what batching costs and whether it
+             moves any answer (their claim: std dev 0.0, 12.2x cheaper, 10.0x faster).
+
+Targets: `ours` is the keepalive proxy on this box (QWEN38_SYSTEMONE_URL, default
+http://127.0.0.1:30001, key ~/.config/qwen38/api-key); `jev` is https://api.typesafe.ai
+with ~/.config/qwen38/typesafe-api-key. Both receive byte-identical request bodies with
+model "jev-latest": the proxy resolves that alias to the lane it serves.
+
+Every prediction is written as it arrives (JSONL, one line per item, resumable by id),
+so a run that dies keeps what it measured. The report refuses to score a target that
+is missing rows: a denominator that quietly shrank would be a number about nothing.
+"""
+import argparse
+import concurrent.futures
+import csv
+import json
+import math
+import os
+import random
+import statistics
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SEED = 42
+TARGETS = {
+    "ours": {"url": os.environ.get("QWEN38_SYSTEMONE_URL", "http://127.0.0.1:30001"),
+             "key": Path.home() / ".config/qwen38/api-key", "concurrency": 4},
+    "jev": {"url": "https://api.typesafe.ai",
+            "key": Path.home() / ".config/qwen38/typesafe-api-key", "concurrency": 4},
+}
+RETRY_STATUS = {429, 502, 503, 529}
+
+# ---- tasks: raw public files -> JSONL items {id, payload, gold} ----------------------
+
+BOOLQ_PROMPT = "Based on the passage, answer this yes/no question:\n{question}"
+MMLU_PRO_INSTRUCTIONS = "Choose the correct answer to the multiple-choice question in the state."
+XNLI_INSTRUCTIONS = ("La `premisse` etant tenue pour vraie, quel est le rapport logique de "
+                     "l'`hypothese` avec elle ?")
+XNLI_CRITERIA = {"implication": "l'hypothese decoule necessairement de la premisse",
+                 "neutre": "l'hypothese peut etre vraie ou fausse, la premisse ne permet pas de trancher",
+                 "contradiction": "l'hypothese ne peut pas etre vraie si la premisse est vraie"}
+XNLI_LABELS = ["implication", "neutre", "contradiction"]        # dataset labels 0, 1, 2
+MMMLU_INSTRUCTIONS = "Choisissez la bonne reponse a la question a choix multiple de l'etat."
+
+
+def _read_parquet(path):
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        sys.exit("prepare needs pyarrow for the parquet files: "
+                 "python3 -m venv .venv-test && .venv-test/bin/pip install pyarrow, then run prepare with it")
+    return pq.read_table(path).to_pylist()
+
+
+def prepare_boolq(raw, out):
+    rows = _read_parquet(raw / "boolq_validation.parquet")
+    items = []
+    for i, r in enumerate(rows):
+        items.append({"id": f"boolq-{i}",
+                      "payload": {"state": r["passage"],
+                                  "questions": {"answer": {"type": "noul",
+                                                           "instructions": BOOLQ_PROMPT.format(question=r["question"]),
+                                                           "criteria": {"true": "Yes", "false": "No"}}}},
+                      "gold": {"answer": bool(r["answer"])}})
+    return items
+
+
+def prepare_mmlu_pro(raw, out):
+    rows = _read_parquet(raw / "mmlu_pro_test.parquet")
+    picked = random.Random(SEED).sample(range(len(rows)), 1000)      # ekzhang's protocol, same seed
+    items = []
+    for i in picked:
+        r = rows[i]
+        options = list(r["options"])
+        items.append({"id": f"mmlupro-{r['question_id']}",
+                      "payload": {"state": r["question"],
+                                  "questions": {"answer": {"type": "choice", "instructions": MMLU_PRO_INSTRUCTIONS,
+                                                           "criteria": {chr(65 + k): text for k, text in enumerate(options)}}}},
+                      "gold": {"answer": r["answer"], "category": r["category"]}})
+    return items
+
+
+def prepare_xnli_fr(raw, out):
+    rows = _read_parquet(raw / "xnli_fr_validation.parquet")
+    picked = random.Random(SEED).sample(range(len(rows)), 500)
+    items = []
+    for i in picked:
+        r = rows[i]
+        items.append({"id": f"xnli-fr-{i}",
+                      "payload": {"state": {"premisse": r["premise"], "hypothese": r["hypothesis"]},
+                                  "questions": {"answer": {"type": "choice", "instructions": XNLI_INSTRUCTIONS,
+                                                           "criteria": dict(XNLI_CRITERIA)}}},
+                      "gold": {"answer": XNLI_LABELS[int(r["label"])]}})
+    return items
+
+
+def prepare_mmmlu_fr(raw, out):
+    with open(raw / "mmmlu_fr.csv", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    picked = random.Random(SEED).sample(range(len(rows)), 500)
+    items = []
+    for i in picked:
+        r = rows[i]
+        items.append({"id": f"mmmlu-fr-{i}",
+                      "payload": {"state": r["Question"],
+                                  "questions": {"answer": {"type": "choice", "instructions": MMMLU_INSTRUCTIONS,
+                                                           "criteria": {k: r[k] for k in "ABCD"}}}},
+                      "gold": {"answer": r["Answer"].strip(), "category": r["Subject"]}})
+    return items
+
+
+GDPR_REVISION = 1363040264
+GDPR_QUESTIONS = {
+    "breach_72h": {"type": "noul", "instructions": "Must a personal data breach be reported to the supervisory authority within 72 hours?"},
+    "applies_non_eu": {"type": "noul", "instructions": "Does the regulation apply to organisations established outside the EU that offer goods or services to people in the EU?"},
+    "dpo_all_orgs": {"type": "noul", "instructions": "Must every organisation appoint a Data Protection Officer, regardless of what data it processes?"},
+    "pre_ticked_consent": {"type": "noul", "instructions": "Can valid consent be obtained through pre-ticked boxes or inactivity?"},
+    "right_erasure": {"type": "noul", "instructions": "Does the regulation grant individuals a right to erasure of their personal data?"},
+    "data_portability": {"type": "noul", "instructions": "Does the regulation include a right to data portability?"},
+    "us_federal_law": {"type": "noul", "instructions": "Is the GDPR a United States federal law?"},
+    "criminal_penalties": {"type": "noul", "instructions": "Does the GDPR itself impose criminal penalties such as imprisonment?"},
+    "instrument_type": {"type": "choice", "instructions": "What kind of EU legal instrument is the GDPR?",
+                        "criteria": {"Regulation": "Directly binding law in all member states, no national implementation needed.",
+                                     "Directive": "Sets goals that member states implement through national law.",
+                                     "Treaty": "An international treaty between states.",
+                                     "Recommendation": "Non-binding guidance."}},
+    "max_fine": {"type": "choice", "instructions": "What is the maximum administrative fine for the most serious infringements?",
+                 "criteria": {"TwentyM_or_4pct": "Up to EUR 20 million or 4% of annual worldwide turnover, whichever is greater.",
+                              "TenM_or_2pct": "Up to EUR 10 million or 2% of annual worldwide turnover, whichever is greater.",
+                              "FixedCap": "A fixed amount not tied to turnover.",
+                              "NoFines": "The GDPR provides no administrative fines."}},
+    "individual_rights": {"type": "score", "instructions": "How strong are the rights the GDPR grants to individuals over their data?",
+                          "criteria": ["None: individuals get no rights over their data.",
+                                       "Weak: a right to be informed, but little control.",
+                                       "Moderate: access and correction rights, but limited means to act on them.",
+                                       "Strong: access, erasure, portability, and objection rights, with enforcement behind them."]},
+    "penalty_severity": {"type": "score", "instructions": "How severe are the penalties the GDPR provides for non-compliance?",
+                         "criteria": ["None: no penalties of any kind.",
+                                      "Symbolic: small fixed fines unlikely to change behavior.",
+                                      "Substantial: fines large enough to matter to most companies.",
+                                      "Severe: fines scaled to global revenue, material even to the largest companies."]},
+    "compliance_burden": {"type": "score", "instructions": "How heavy is the compliance burden the GDPR places on organisations?",
+                          "criteria": ["Negligible: no meaningful obligations.",
+                                       "Light: a few notices and disclosures.",
+                                       "Moderate: documented processes and some dedicated roles for larger processors.",
+                                       "Heavy: records, impact assessments, officers, and breach procedures for many organisations.",
+                                       "Extreme: obligations so demanding that ordinary organisations cannot fully comply."]},
+}
+# The cookbook's reference answers, read from the article: yes/no for the nouls, the
+# option for the choices. The scores have no single right level; they are reported as
+# the cookbook does, normalized to 0-1, and compared between targets only.
+GDPR_GOLD = {"breach_72h": True, "applies_non_eu": True, "dpo_all_orgs": False, "pre_ticked_consent": False,
+             "right_erasure": True, "data_portability": True, "us_federal_law": False, "criminal_penalties": False,
+             "instrument_type": "Regulation", "max_fine": "TwentyM_or_4pct"}
+
+
+def prepare_gdpr(raw, out):
+    cache = raw / f"gdpr-{GDPR_REVISION}.txt"
+    if not cache.exists():
+        url = ("https://en.wikipedia.org/w/api.php?action=query&format=json&prop=extracts&explaintext=1"
+               f"&revids={GDPR_REVISION}")
+        req = urllib.request.Request(url, headers={"User-Agent": "dgx-spark-qwen38 bench-systemone/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            pages = json.loads(r.read())["query"]["pages"]
+        cache.write_text(next(iter(pages.values()))["extract"], encoding="utf-8")
+    text = cache.read_text(encoding="utf-8")
+    document = {"source": f"https://en.wikipedia.org/?oldid={GDPR_REVISION}", "text": text}
+    items = []
+    for run in range(5):
+        items.append({"id": f"gdpr-batched-{run}", "mode": "batched", "run": run,
+                      "payload": {"state": {"article": document}, "questions": dict(GDPR_QUESTIONS)}, "gold": GDPR_GOLD})
+        for key, q in GDPR_QUESTIONS.items():
+            items.append({"id": f"gdpr-single-{key}-{run}", "mode": "single", "run": run, "question": key,
+                          "payload": {"state": {"article": document}, "questions": {key: q}}, "gold": GDPR_GOLD})
+    return items
+
+
+PREPARERS = {"boolq": prepare_boolq, "mmlu-pro": prepare_mmlu_pro, "xnli-fr": prepare_xnli_fr,
+             "mmmlu-fr": prepare_mmmlu_fr, "gdpr": prepare_gdpr}
+
+
+def cmd_prepare(args):
+    data = Path(args.data)
+    raw, tasks = data / "raw", data / "tasks"
+    tasks.mkdir(parents=True, exist_ok=True)
+    for name in (args.task.split(",") if args.task else PREPARERS):
+        items = PREPARERS[name](raw, tasks)
+        path = tasks / f"{name}.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            for it in items:
+                f.write(json.dumps(it, ensure_ascii=False) + "\n")
+        print(f"  {name}: {len(items)} items -> {path}")
+
+
+# ---- run: identical payloads to one or more targets, resumable JSONL ------------------
+
+def load_items(data, task, limit):
+    path = Path(data) / "tasks" / f"{task}.jsonl"
+    if not path.exists():
+        sys.exit(f"no {path}: run prepare first")
+    items = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return items[:limit] if limit else items
+
+
+def load_done(path):
+    done = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                if not row.get("error"):
+                    done[row["id"]] = row
+    return done
+
+
+def post_systemone(target, payload, model, timeout):
+    body = dict(payload, model=model)
+    key = Path(target["key"]).read_text().strip()
+    req = urllib.request.Request(target["url"].rstrip("/") + "/v1/systemone", data=json.dumps(body).encode(),
+                                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    delay = 1.0
+    for attempt in range(7):
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw = r.read()
+                return json.loads(raw.decode()), time.time() - t0, dict(r.headers), attempt
+        except urllib.error.HTTPError as e:
+            if e.code in RETRY_STATUS and attempt < 6:
+                retry_after = e.headers.get("Retry-After")
+                time.sleep(float(retry_after) if retry_after and retry_after.isdigit() else delay)
+                delay = min(delay * 2, 30)
+                continue
+            raise RuntimeError(f"HTTP {e.code}: {e.read()[:300].decode(errors='replace')}") from e
+        except (urllib.error.URLError, OSError) as e:
+            if attempt < 6:
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            raise RuntimeError(f"unreachable: {e}") from e
+
+
+def cmd_run(args):
+    items = load_items(args.data, args.task, args.limit)
+    out_dir = Path(args.data) / "runs" / args.task
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for spec in args.target.split(","):
+        # a bare name is a known target; name=url is an experiment proxy on this box
+        # (the worktree's proxy on another port with a lever switched on), local key
+        name, _, url = spec.partition("=")
+        target = dict(TARGETS[name]) if name in TARGETS else dict(TARGETS["ours"])
+        if url:
+            target["url"] = url
+        if not Path(target["key"]).exists():
+            sys.exit(f"{name}: no key file at {target['key']}")
+        path = out_dir / f"{name}.jsonl"
+        done = load_done(path)
+        todo = [it for it in items if it["id"] not in done]
+        print(f"{name}: {len(done)} done, {len(todo)} to send to {target['url']} (concurrency {args.concurrency or target['concurrency']})")
+        lock = threading.Lock()
+        errors = 0
+
+        def one(it):
+            nonlocal errors
+            row = {"id": it["id"], "target": name}
+            try:
+                resp, dt, headers, retries = post_systemone(target, it["payload"], args.model, args.timeout)
+                row.update(answers=resp.get("answers"), model=resp.get("model"), usage=resp.get("usage"),
+                           latency_s=round(dt, 4), retries=retries,
+                           label_mass=headers.get("x-systemone-label-mass"),
+                           cached_tokens=headers.get("x-systemone-cached-tokens"))
+            except Exception as e:                                     # recorded, never silent
+                row["error"] = str(e)[:400]
+            with lock:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                if row.get("error"):
+                    errors += 1
+            return row
+
+        t0 = time.time()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency or target["concurrency"]) as pool:
+            for k, _ in enumerate(pool.map(one, todo), 1):
+                if k % 100 == 0 or k == len(todo):
+                    print(f"  {name}: {k}/{len(todo)} in {time.time() - t0:.0f}s, {errors} errors", flush=True)
+        if errors:
+            print(f"  {name}: {errors} items failed; re-run to retry them (successful rows are kept)")
+
+
+# ---- report: metrics, calibration, agreement ------------------------------------------
+
+def ece(confidences, hits, bins=10):
+    """Expected calibration error, equal-width bins on [0, 1]."""
+    total = len(confidences)
+    if not total:
+        return float("nan")
+    err = 0.0
+    for b in range(bins):
+        lo, hi = b / bins, (b + 1) / bins
+        idx = [i for i, c in enumerate(confidences) if (lo <= c < hi) or (b == bins - 1 and c == 1.0)]
+        if idx:
+            conf = sum(confidences[i] for i in idx) / len(idx)
+            acc = sum(hits[i] for i in idx) / len(idx)
+            err += len(idx) / total * abs(conf - acc)
+    return err
+
+
+def reliability(confidences, hits, bins=10):
+    rows = []
+    for b in range(bins):
+        lo, hi = b / bins, (b + 1) / bins
+        idx = [i for i, c in enumerate(confidences) if (lo <= c < hi) or (b == bins - 1 and c == 1.0)]
+        if idx:
+            rows.append((lo, hi, len(idx), sum(confidences[i] for i in idx) / len(idx), sum(hits[i] for i in idx) / len(idx)))
+    return rows
+
+
+def bootstrap(values, fn, draws=2000, seed=SEED):
+    rng = random.Random(seed)
+    n = len(values)
+    stats = []
+    for _ in range(draws):
+        sample = [values[rng.randrange(n)] for _ in range(n)]
+        stats.append(fn(sample))
+    stats.sort()
+    return stats[int(0.025 * draws)], stats[int(0.975 * draws)]
+
+
+def percentile(xs, p):
+    xs = sorted(xs)
+    if not xs:
+        return float("nan")
+    k = (len(xs) - 1) * p
+    lo, hi = math.floor(k), math.ceil(k)
+    return xs[lo] + (xs[hi] - xs[lo]) * (k - lo)
+
+
+def score_rows(items, rows):
+    """Per-item records: predicted, correct, top probability, P(yes), distribution."""
+    recs = []
+    for it in items:
+        row = rows.get(it["id"])
+        if not row:
+            continue
+        ans = row["answers"]["answer"]
+        gold = it["gold"]["answer"]
+        if ans["type"] == "noul":
+            p = float(ans["noul"])
+            pred = p >= 0.5
+            recs.append({"id": it["id"], "hit": pred == gold, "top": max(p, 1 - p), "p_yes": p, "gold": gold,
+                         "dist": {"true": p, "false": 1 - p}, "pred": pred, "latency": row["latency_s"],
+                         "usage": row.get("usage") or {}, "mass": row.get("label_mass")})
+        else:
+            dist = ans["probabilities"]
+            pred = ans["choice"]
+            recs.append({"id": it["id"], "hit": pred == gold, "top": float(dist[pred]), "gold": gold, "dist": dist,
+                         "pred": pred, "confidence": ans.get("confidence"), "latency": row["latency_s"],
+                         "usage": row.get("usage") or {}, "mass": row.get("label_mass"),
+                         "category": it["gold"].get("category")})
+    return recs
+
+
+def tv_distance(a, b):
+    keys = set(a) | set(b)
+    return 0.5 * sum(abs(float(a.get(k, 0.0)) - float(b.get(k, 0.0))) for k in keys)
+
+
+def report_classification(task, items, runs):
+    lines = [f"# {task}: {len(items)} items", ""]
+    lines.append("| target | n | accuracy [95% CI] | ECE-10 | Brier | log loss | mean top p | over-confidence | latency p50 / p95 | input tokens |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    per_target = {}
+    for name, rows in runs.items():
+        recs = score_rows(items, rows)
+        if len(recs) != len(items):
+            lines.append(f"| {name} | {len(recs)} of {len(items)} | not scored: {len(items) - len(recs)} rows missing or failed |")
+            continue
+        per_target[name] = recs
+        hits = [1.0 if r["hit"] else 0.0 for r in recs]
+        tops = [r["top"] for r in recs]
+        acc = sum(hits) / len(hits)
+        lo, hi = bootstrap(list(zip(hits, tops)), lambda s: sum(h for h, _ in s) / len(s))
+        brier = sum((r["top"] - (1.0 if r["hit"] else 0.0)) ** 2 for r in recs) / len(recs)
+        # log loss of the probability the model gave to the GOLD answer
+        ll = 0.0
+        for r in recs:
+            if "p_yes" in r:
+                p_gold = r["p_yes"] if r["gold"] else 1 - r["p_yes"]
+            else:
+                p_gold = float(r["dist"].get(r["gold"], 0.0))
+            ll -= math.log(max(p_gold, 1e-15))
+        ll /= len(recs)
+        e = ece(tops, hits)
+        lat = [r["latency"] for r in recs]
+        toks = sum(int((r["usage"] or {}).get("input_tokens") or 0) for r in recs)
+        lines.append(f"| {name} | {len(recs)} | {acc:.4f} [{lo:.4f}, {hi:.4f}] | {e:.4f} | {brier:.4f} | {ll:.4f} | "
+                     f"{statistics.mean(tops):.4f} | {statistics.mean(tops) - acc:+.4f} | "
+                     f"{percentile(lat, 0.5):.3f}s / {percentile(lat, 0.95):.3f}s | {toks} |")
+    for name, recs in per_target.items():
+        lines += ["", f"## {name}: reliability (selected-answer probability, 10 equal-width bins)", "",
+                  "| bin | n | mean p | accuracy | gap |", "|---|---:|---:|---:|---:|"]
+        for lo, hi, n, conf, acc in reliability([r["top"] for r in recs], [1.0 if r["hit"] else 0.0 for r in recs]):
+            lines.append(f"| {lo:.1f}-{hi:.1f} | {n} | {conf:.3f} | {acc:.3f} | {acc - conf:+.3f} |")
+        masses = [float(r["mass"]) for r in recs if r.get("mass")]
+        if masses:
+            lines.append("")
+            lines.append(f"label mass (share of first-token probability on a label): median {statistics.median(masses):.4f}, "
+                         f"min {min(masses):.4f}, below 0.5 on {sum(1 for m in masses if m < 0.5)} items")
+        cats = {}
+        for r in recs:
+            if r.get("category"):
+                cats.setdefault(r["category"], []).append(1.0 if r["hit"] else 0.0)
+        if cats:
+            lines += ["", "| category | n | accuracy |", "|---|---:|---:|"]
+            for c in sorted(cats):
+                lines.append(f"| {c} | {len(cats[c])} | {sum(cats[c]) / len(cats[c]):.3f} |")
+    names = list(per_target)
+    if len(names) >= 2:
+        lines += ["", "## Agreement between targets", ""]
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                a, b = per_target[names[i]], per_target[names[j]]
+                ra = {r["id"]: r for r in a}
+                pairs = [(ra[r["id"]], r) for r in b if r["id"] in ra]
+                same = sum(1 for x, y in pairs if x["pred"] == y["pred"]) / len(pairs)
+                tv = statistics.mean(tv_distance(x["dist"], y["dist"]) for x, y in pairs)
+                both, only_a, only_b, neither = 0, 0, 0, 0
+                for x, y in pairs:
+                    both += x["hit"] and y["hit"]; only_a += x["hit"] and not y["hit"]
+                    only_b += y["hit"] and not x["hit"]; neither += not x["hit"] and not y["hit"]
+                diff = (sum(x["hit"] for x, _ in pairs) - sum(y["hit"] for _, y in pairs)) / len(pairs)
+                lo, hi = bootstrap([(float(x["hit"]), float(y["hit"])) for x, y in pairs],
+                                   lambda s: (sum(u for u, _ in s) - sum(v for _, v in s)) / len(s))
+                lines.append(f"- {names[i]} vs {names[j]}: same answer on {same:.1%} of {len(pairs)} items, "
+                             f"mean total-variation distance {tv:.4f}; both right {both}, only {names[i]} {only_a}, "
+                             f"only {names[j]} {only_b}, neither {neither}; accuracy difference "
+                             f"{names[i]} minus {names[j]} {diff:+.4f} [{lo:+.4f}, {hi:+.4f}] (paired bootstrap)")
+    return "\n".join(lines)
+
+
+def report_gdpr(items, runs):
+    lines = ["# gdpr: the parallel-questions protocol (13 questions, 5 repeats, batched vs one per call)", ""]
+    by_id = {it["id"]: it for it in items}
+    for name, rows in runs.items():
+        got = [r for r in rows.values() if r["id"] in by_id]
+        if len(got) != len(items):
+            lines.append(f"## {name}: {len(got)} of {len(items)} rows present, not scored")
+            continue
+        lines += [f"## {name}", "", "| question | type | batched mean (sd) | single mean (sd) | reference |", "|---|---|---:|---:|---|"]
+        tracked = {}
+        for r in got:
+            it = by_id[r["id"]]
+            for key, a in r["answers"].items():
+                if a["type"] == "noul":
+                    v = a["noul"]
+                elif a["type"] == "choice":
+                    v = max(a["probabilities"].values())
+                else:
+                    v = a["score"] / (len(a["legend"]) - 1)
+                tracked.setdefault((key, it["mode"]), []).append(v)
+        for key, q in GDPR_QUESTIONS.items():
+            b = tracked.get((key, "batched"), []); s = tracked.get((key, "single"), [])
+            f = lambda xs: f"{statistics.mean(xs):.3f} ({statistics.pstdev(xs):.3f})" if xs else "-"
+            lines.append(f"| {key} | {q['type']} | {f(b)} | {f(s)} | {GDPR_GOLD.get(key, '')} |")
+        lat_b = [r["latency_s"] for r in got if by_id[r["id"]]["mode"] == "batched"]
+        lat_s = [r["latency_s"] for r in got if by_id[r["id"]]["mode"] == "single"]
+        tok_b = [int((r.get("usage") or {}).get("input_tokens") or 0) for r in got if by_id[r["id"]]["mode"] == "batched"]
+        tok_s = [int((r.get("usage") or {}).get("input_tokens") or 0) for r in got if by_id[r["id"]]["mode"] == "single"]
+        n = len(GDPR_QUESTIONS)
+        singles_per_run = statistics.mean(lat_s) * n if lat_s else float("nan")
+        lines += ["", f"- one call with all {n}: mean {statistics.mean(lat_b):.2f}s, {statistics.mean(tok_b):.0f} input tokens",
+                  f"- {n} calls with one each: {singles_per_run:.2f}s and {statistics.mean(tok_s) * n:.0f} input tokens per full pass",
+                  f"- batching: {statistics.mean(tok_s) * n / max(statistics.mean(tok_b), 1):.1f}x fewer input tokens, "
+                  f"{singles_per_run / max(statistics.mean(lat_b), 1e-9):.1f}x faster than the singles run one after another", ""]
+        hits = 0
+        for r in got:
+            if by_id[r["id"]]["mode"] != "batched":
+                continue
+            for key, gold in GDPR_GOLD.items():
+                a = r["answers"][key]
+                hits += (a["noul"] >= 0.5) == gold if a["type"] == "noul" else a["choice"] == gold
+        lines.append(f"- reference answers (10 questions with one right answer, 5 batched runs): {hits} of {10 * 5} right")
+    return "\n".join(lines)
+
+
+def cmd_fanout(args):
+    """Latency and cache reuse against the number of questions and the size of the state:
+    one call per (state size, question count), repeated, on one target. The x-systemone-
+    cached-tokens header (when the engine reports it) says how much of each call's prefill
+    the radix cache served; the first call of a size is the cold one and is listed as such."""
+    raw = Path(args.data) / "raw" / f"gdpr-{GDPR_REVISION}.txt"
+    if not raw.exists():
+        sys.exit("fanout uses the cached GDPR article as filler text: run prepare --task gdpr first")
+    article = raw.read_text(encoding="utf-8")
+    target = TARGETS[args.target]
+    words = ["fines", "consent", "children", "portability", "erasure", "Brazil", "encryption", "cookies",
+             "processors", "courts", "Article 6", "the United States", "health data", "profiling", "72 hours",
+             "pseudonymisation", "the Data Protection Officer", "the one-stop shop", "adequacy decisions", "Schrems"]
+    print(f"target {args.target} ({target['url']}), repeats {args.repeats}")
+    print("| state chars | questions | run | latency | input tokens | cached tokens | label mass |")
+    print("|---:|---:|---:|---:|---:|---:|---:|")
+    for chars in [int(x) for x in args.state_chars.split(",")]:
+        state = article[:chars]
+        for n in [int(x) for x in args.questions.split(",")]:
+            qs = {f"q{i}": {"type": "noul", "instructions": f"Does the text mention {words[i % len(words)]}?"} for i in range(n)}
+            for run in range(args.repeats):
+                resp, dt, headers, _ = post_systemone(target, {"state": state, "questions": qs}, args.model, args.timeout)
+                print(f"| {chars} | {n} | {'cold' if run == 0 else run} | {dt:.3f}s | {resp['usage']['input_tokens']} | "
+                      f"{headers.get('x-systemone-cached-tokens', '-')} | {headers.get('x-systemone-label-mass', '-')} |", flush=True)
+
+
+def fit_temperature(recs):
+    """Split by id hash, fit one temperature on half A (least negative log likelihood of
+    the gold answer under p^(1/T) renormalized), report ECE and log loss on half B before
+    and after. Temperature scaling never changes the argmax, so accuracy is untouched."""
+    a = [r for r in recs if hash(r["id"]) % 2 == 0]
+    b = [r for r in recs if hash(r["id"]) % 2 == 1]
+
+    def p_gold(r, t):
+        dist = {k: float(v) for k, v in r["dist"].items()}
+        scaled = {k: (v ** (1.0 / t) if v > 0 else 0.0) for k, v in dist.items()}
+        z = sum(scaled.values()) or 1.0
+        gold = ("true" if r["gold"] else "false") if "p_yes" in r else r["gold"]
+        return scaled.get(gold, 0.0) / z, {k: v / z for k, v in scaled.items()}
+
+    def nll(rows, t):
+        return -sum(math.log(max(p_gold(r, t)[0], 1e-15)) for r in rows) / max(len(rows), 1)
+
+    grid = [x / 20 for x in range(6, 101)]                 # 0.30 .. 5.00
+    best = min(grid, key=lambda t: nll(a, t))
+    lines = [f"- temperature fitted on {len(a)} items (half A, by id hash): T = {best:.2f}; evaluated on the other {len(b)}"]
+    for label, t in (("T = 1.00 (raw readout)", 1.0), (f"T = {best:.2f}", best)):
+        tops, hits = [], []
+        for r in b:
+            _, dist = p_gold(r, t)
+            top_key = max(dist, key=dist.__getitem__)
+            tops.append(dist[top_key])
+            gold = ("true" if r["gold"] else "false") if "p_yes" in r else r["gold"]
+            hits.append(1.0 if top_key == gold else 0.0)
+        lines.append(f"- {label}: half B ECE-10 {ece(tops, hits):.4f}, log loss {nll(b, t):.4f}, "
+                     f"mean top p {statistics.mean(tops):.4f}, accuracy {statistics.mean(hits):.4f}")
+    return lines
+
+
+def cmd_report(args):
+    items = load_items(args.data, args.task, None)
+    run_dir = Path(args.data) / "runs" / args.task
+    runs = {p.stem: load_done(p) for p in sorted(run_dir.glob("*.jsonl"))} if run_dir.exists() else {}
+    if not runs:
+        sys.exit(f"no runs under {run_dir}")
+    text = report_gdpr(items, runs) if args.task == "gdpr" else report_classification(args.task, items, runs)
+    if args.fit_temperature and args.task != "gdpr":
+        for name, rows in runs.items():
+            recs = score_rows(items, rows)
+            if len(recs) == len(items):
+                text += f"\n\n## {name}: temperature scaling\n\n" + "\n".join(fit_temperature(recs))
+    out = Path(args.data) / "reports"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"{args.task}.md").write_text(text + "\n", encoding="utf-8")
+    print(text)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data", default=str(HERE / "bench-systemone-data"), help="data directory (raw/, tasks/, runs/, reports/)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("prepare"); p.add_argument("--task", default=None, help="comma-separated, default all")
+    p = sub.add_parser("run")
+    p.add_argument("--task", required=True, choices=sorted(PREPARERS))
+    p.add_argument("--target", default="ours", help="comma-separated: ours, jev, or name=http://host:port for an experiment proxy")
+    p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--concurrency", type=int, default=0)
+    p.add_argument("--model", default="jev-latest", help="sent to both targets; the proxy resolves the alias to its lane")
+    p.add_argument("--timeout", type=float, default=600.0)
+    p = sub.add_parser("report"); p.add_argument("--task", required=True, choices=sorted(PREPARERS))
+    p.add_argument("--fit-temperature", action="store_true", help="fit T on half the items, report the other half")
+    p = sub.add_parser("fanout")
+    p.add_argument("--target", default="ours", choices=sorted(TARGETS))
+    p.add_argument("--state-chars", default="2000,20000,80000")
+    p.add_argument("--questions", default="1,4,13,50")
+    p.add_argument("--repeats", type=int, default=3)
+    p.add_argument("--model", default="jev-latest")
+    p.add_argument("--timeout", type=float, default=600.0)
+    args = ap.parse_args()
+    {"prepare": cmd_prepare, "run": cmd_run, "report": cmd_report, "fanout": cmd_fanout}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    main()
