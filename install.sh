@@ -348,16 +348,6 @@ DRAFT2_TOKENS="${DRAFT2_TOKENS:-16}"
 # wider margin than the old pin did, 21.30 GB against 19.38. Worth knowing
 # before raising it further: the old image already sat at 93.7 GB inside a
 # container capped at 100 GB, so it was the tighter of the two.
-# The fraction is 0.76 since v1.14, and the number is the image's, not a taste.
-# The official image sizes its static budget more conservatively than the
-# locally built one this lane served before: at an identical 0.70 it came up
-# with a 770,118-token pool against 906,524, while leaving 29.89 GB of GPU
-# memory unused against 19.38. It was never short of memory, it just did not
-# claim it. 0.76 hands the pool back (902,398 measured, inside the boot-to-boot
-# spread this box shows on one image: 906,524 then 910,203) and still leaves a
-# wider margin than the old pin did, 21.30 GB against 19.38. Worth knowing
-# before raising it further: the old image already sat at 93.7 GB inside a
-# container capped at 100 GB, so it was the tighter of the two.
 CONTEXT_MODE="${CONTEXT_MODE:-}"
 case "$CONTEXT_MODE" in
   native|1m|"") ;;
