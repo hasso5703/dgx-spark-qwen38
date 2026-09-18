@@ -432,7 +432,8 @@ the installed unit or launcher (or the marker file) unless the env var or flag
 is passed explicitly.
 
 Env overrides (defaults are pinned to the versions validated 2026-09-11):
-  IMAGE=lmsysorg/sglang:latest       use the moving tag instead of the digest
+  IMAGE=lmsysorg/sglang:v0.5.19      the moving tag of the pinned digest, instead
+                                     of the digest itself
   MODEL_REV=main                     use the latest target revision
   DRAFT2_REV=main                    latest DFlash2 draft revision
   DRAFT2_REPO=z-lab/Qwen3.8-27B-DFlash2 DRAFT2_REV=50307d4c4cde6860d4eee73e2547cd786fe8e8a4 DRAFT2_QUANT=unquant DRAFT2_TOKENS=8
@@ -803,7 +804,7 @@ if [ "$LANE" = "flash" ]; then
   PULLED_IMAGE="$PULL_TARGET"
 else
   step "2/10 Pulling the SGLang image (~39 GB, one-time, resumable)"
-  docker pull "$IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:qwen38-27b ./install.sh"
+  docker pull "$IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:v0.5.19 ./install.sh, the moving tag of the same release"
   PULLED_IMAGE="$IMAGE"
 fi
 
@@ -967,19 +968,21 @@ else
   # 27B lane restores.
   #
   # One combination leaves a box that boots into a crash, and it is quiet about
-  # it: --no-service (or --no-start) writes no unit, so an installed 1m unit
-  # keeps asking for 1,010,000 from a config this restore just put back to
-  # 262,144, and the engine dies at load the next time systemd starts it. Seen
-  # here on 2026-09-18 while testing a native install against a 1m box's cache.
-  # Say so, name the two ways out, and do it before touching the configs.
-  if [ "$LANE" = "27b" ] && [ -r "$SGL_UNIT_PATH" ]; then
+  # it: --no-service returns at the end of step 7, so an installed 1m unit keeps
+  # asking for 1,010,000 from a config this restore just put back to 262,144,
+  # and the engine dies at load the next time systemd starts it. Seen here on
+  # 2026-09-18 while testing a native install against a 1m box's cache.
+  # ONLY --no-service. --no-start reaches step 8, renders the native template
+  # over that unit and enables it, so nothing is stranded there and warning
+  # about it would be a lie with two wrong remedies attached (caught in review
+  # the day this guard was written).
+  if [ "$LANE" = "27b" ] && [ "$NO_SERVICE" -eq 1 ] && [ -r "$SGL_UNIT_PATH" ]; then
     _INSTALLED_CTX="$(grep -oE -- '--context-length [0-9]+' "$SGL_UNIT_PATH" 2>/dev/null | awk '{print $2}' | head -1 || true)"
-    if [ -n "$_INSTALLED_CTX" ] && [ "$_INSTALLED_CTX" -gt 262144 ] \
-       && { [ "$NO_SERVICE" -eq 1 ] || [ "$NO_START" -eq 1 ]; }; then
+    if [ -n "$_INSTALLED_CTX" ] && [ "$_INSTALLED_CTX" -gt 262144 ]; then
       echo "WARNING: the installed unit serves --context-length $_INSTALLED_CTX, and this native"
-      echo "         install is about to restore the pre-YaRN configs it reads. This run writes no"
-      echo "         unit, so that unit would crash at load the next time it starts."
-      echo "         Either re-run without --no-service/--no-start (the unit is rewritten native),"
+      echo "         install is about to restore the pre-YaRN configs it reads. --no-service writes"
+      echo "         no unit, so that unit would crash at load the next time it starts."
+      echo "         Either re-run without --no-service (the unit is rewritten native),"
       echo "         or put the box back with: CONTEXT_MODE=1m ./install.sh"
     fi
   fi

@@ -85,7 +85,7 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 | Reduced draft vocabulary | `SPEC_TOKEN_MAP_SIZE=65536`, or `0` to serve without it | `65536` | flash only: hands the speculative draft the target's `lm_head` sliced to that many rows, which is 14 to 25% of decode and cannot change what the model may say |
 | Flash serving tier | `FLASH_TIER=context`, `concurrency`, `throughput` | `context` | flash only: 4 concurrent requests and a pool that takes a full 262K prompt, 8 requests at a third of the pool, or 24 without speculation |
 | Reasoning effort | `lean` (default), `xhigh`, `medium`, `low` | **`lean`** | the level this repo adds and defaults to: 74 words in the chat template that cost 0.71x the thinking tokens of `medium` on 364 public problems and 0.436x on 58 underspecified requests, with no measured quality cost. Qwen's three levels are left byte-identical. `LEAN_DEFAULT=0 ./install.sh` installs it without taking the default. Numbers, method and negative results in [LEAN.md](LEAN.md) |
-| Context mode (27B) | `CONTEXT_MODE=native` or `1m` | **`1m`** since v1.12.1 | 1,010,000 window via YaRN, mem-fraction 0.70, proxy required, limits fitted to the real pool at the end of the install (see the 1M section). The flash lane and `--no-service` are native either way, with no refusal; a re-run keeps whatever is already installed, both directions |
+| Context mode (27B) | `CONTEXT_MODE=native` or `1m` | **`1m`** since v1.12.1 | 1,010,000 window via YaRN, mem-fraction 0.76, proxy required, limits fitted to the real pool at the end of the install (see the 1M section). The flash lane and `--no-service` are native either way, with no refusal; a re-run keeps whatever is already installed, both directions |
 | systemd service | default, or `--no-service` | service | `--no-service`: foreground with `./run.sh`, no sudo, 27B native only |
 | Start now | default, or `--no-start` | starts | install everything, start later with `sudo systemctl start` |
 | opencode integration | default, or `--no-opencode` | on | on = ready config + `oc` launcher + default model following every switch; off = none of that, your own opencode config is never touched. `--with-opencode` turns it back on |
@@ -159,11 +159,16 @@ This repo's service is safe by construction:
 - `--mem-fraction-static 0.50` (plenty for 262K context at batch ≤ 4)
 - `Restart=always` + a clean `ExecStartPre docker rm -f` so even a power cut leaves nothing stale (`always` and not `on-failure`: a Triton compile crash measured on 2026-08-22 ended in `SystemExit: 0`, which `on-failure` never relaunches)
 
-The 1m mode deliberately runs **0.70** inside the same docker caps, with the autotuner
-disabled: field-tested continuously on the reference box (~17 GiB host headroom). **0.80 was
-measured crashing** under 3 concurrent requests (2 GiB free, Triton `CUDA operation not
-permitted`), and the 25-40 GB invisible-allocation bursts above all belong to native runs and
-the autotuner. Treat anything past 0.70 as livelock territory.
+The 1m mode deliberately runs **0.76** inside the same docker caps, with the autotuner
+disabled. It ran 0.70 until v1.14, and the number moved with the image, not with the appetite:
+the official release claims a smaller static budget for the same fraction, so 0.70 there cost
+15% of the pool (770,118 tokens against 906,524) while leaving 10 GB of GPU memory unclaimed.
+0.76 hands that back and still leaves a wider margin than the old pin did, 21.30 GB free after
+graph capture against 19.38. **0.80 was measured crashing** under 3 concurrent requests (2 GiB
+free, Triton `CUDA operation not permitted`), and the 25-40 GB invisible-allocation bursts above
+all belong to native runs and the autotuner. Treat anything past 0.80 as livelock territory, and
+do not carry 0.76 back onto the pre-v1.14 image: that one already sat at 93.7 GB inside a 100 GB
+cgroup at 0.70.
 
 **The SGLang cookbook pins 0.80 on DGX Spark, and that is not a contradiction.**
 Its GB10 cells ran 48 configurations at ISL 8192 / OSL 1024, **concurrency 1**,
@@ -223,12 +228,13 @@ daily since 2026-08-22:
   files by `patch-yarn.py` (target model AND DFlash2 draft, or the draft crashes at load;
   originals backed up next to them as `config.json.pre-yarn`), plus
   `--context-length 1010000` and `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`.
-- **`--mem-fraction-static 0.70`**: the KV pool is a boot lottery, and the two
-  measurement campaigns on this box do not agree. Five boots in the v1.3 era
-  reported **917K-1019K** tokens; three later ones, around 2026-08-30, reported
-  **863,398, 893,479 and 913,334** for the same checkpoint. The ranges do not
-  overlap, so treat **863K as the floor to plan against** until a fresh campaign
-  settles it. DFlash2 acceptance is unchanged either way, and a real 690K-token
+- **`--mem-fraction-static 0.76`** (0.70 before v1.14, see above): the KV pool is
+  a boot lottery, and the measurement campaigns on this box do not agree. Five
+  boots in the v1.3 era reported **917K-1019K** tokens; three around 2026-08-30
+  reported **863,398, 893,479 and 913,334** for the same checkpoint; four on the
+  official image at 0.76, on 2026-09-17 and 18, reported **902,398, 889,131,
+  889,722 and 887,797**. The ranges do not overlap, so treat **863K as the floor
+  to plan against** until a fresh campaign settles it. DFlash2 acceptance is unchanged either way, and a real 690K-token
   request has been served (cold prefill 40 min, then cached).
 - **The limits are fitted to your own boot, automatically.** The generated
   opencode limits below are static, and their 1m worst case (compaction at ~680K
@@ -715,7 +721,7 @@ question you had when you opened the page.
 | **Engines** | Which units exist, which one is served, what the probes and containers say | Act on any unit this repo installed |
 | **Requests** | What the engine and the proxy each did with the same traffic: live feed, zombie guard, pool and decode | Read a dead decode from both sides of the wire |
 | **Machine** | Unified memory, the GB10, the CPU, and whether the safety belts are holding | Watch the memory edge this hardware actually has |
-| **Models** | Every target as data: recipes, drift against what is running, registry of what is on disk, upstream watch, full inventory | Reclaim superseded images, never the current ones |
+| **Models** | Every target as data: recipes, drift against what is running, registry of what is on disk, upstream watch, full inventory | Read what is installed and what it costs in bytes; rescan (the panels are read-only, reclaiming is `./uninstall.sh --list`) |
 | **Logs** | Live logs, the last 30 events, recent jobs | Run a bench, the 4-canary quality battery, a diagnostics bundle |
 | **Setup** | The repo itself, opencode integration, serving-stack updates, the cockpit's own settings | Regenerate the API key, update the stack, change what the page binds to |
 
@@ -748,11 +754,14 @@ question you had when you opened the page.
 - **Jobs.** Bench runs, the 4-canary quality battery, diagnostics bundles and cache
   operations run as supervised one-at-a-time jobs with live output, instead of
   commands you type blind into a terminal.
-- **Housekeeping.** Inventory of everything the repo ever put on the box (with
-  one-click reclaim of superseded images, never the current ones), the opencode
-  integration state (limits per lane, default model, output cap), the patched
-  chat templates, the API key (masked, regenerable), and the repo itself
-  (version, upstream tag, changelog, update badge).
+- **Housekeeping.** Inventory of everything the repo ever put on the box and
+  what each item costs in bytes (read-only: the reclaim commands are printed by
+  `./uninstall.sh --list` and by the installer, never run from the page), the
+  opencode integration state (limits per lane, default model, output cap) with
+  the one action that writes there, fitting those limits to the pool the engine
+  actually booted with, the patched chat templates, the API key (masked,
+  regenerable), and the repo itself (version, upstream tag, changelog, update
+  badge).
 
 On a phone the chrome collapses to one identity row plus a swipeable section
 rail, controls are 44 px targets, and the Agent tab opens fullscreen (see "On a
@@ -969,9 +978,11 @@ installed it, and no longer writes `claude-code.env`: an existing copy keeps wor
 never be overwritten again (earlier versions regenerated it on every install, losing any
 customization), but it is unmaintained; the supported client config is `opencode.json`. v1.1 → v1.2 downloads the ~4 GB
 DFlash2 draft (up to v1.13 it also built a local serving image; v1.14 serves the official
-one instead). To go back to the locally built image of v1.13 and earlier:
-`SERVE_IMAGE=qwen38-dflash2:v1.2.3 ./install.sh`, as long as that image is still on the box
-(`docker images qwen38-dflash2`). To return to the DSpark config: `git checkout v1.1 && ./install.sh`.
+one instead). Going back to the locally built image of v1.13 and earlier means going back to v1.13:
+`SERVE_IMAGE=qwen38-dflash2:v1.2.3 ./install.sh` serves that tag if it is still on the box
+(`docker images qwen38-dflash2`), but this version deletes the files that build it, so
+`git checkout v1.13.0 && ./install.sh` is the path that works whether or not the image
+survived. Nothing measured on this hardware argues for going back. To return to the DSpark config: `git checkout v1.1 && ./install.sh`.
 Change history: [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits

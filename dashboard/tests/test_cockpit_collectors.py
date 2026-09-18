@@ -181,6 +181,33 @@ class Parse(Base):
         self.assertIs(out["dirty"], False)
         self.assertEqual(out["untracked"], 1)
 
+    def test_it_asks_git_once_so_two_answers_cannot_disagree(self):
+        """run() turns a timeout into "", so two calls can contradict each other.
+
+        With one call per fact, a timeout on the first and a success on the
+        second reported dirty=False with untracked=1: "clean (1 untracked
+        file)" over a modified install.sh, which is the exact sentence this
+        split was written to make trustworthy.
+        """
+        calls = []
+
+        def flaky(argv, *a, **kw):
+            calls.append(argv)
+            if "status" in argv:
+                # first status answers empty (the timeout shape), any later one
+                # answers with real content
+                return "" if len([c for c in calls if "status" in c]) == 1 \
+                    else " M install.sh\n?? shot.png\n"
+            return ""
+
+        self.cp.run = flaky
+        out = self.cp.collect_repo()
+        self.assertEqual(len([c for c in calls if "status" in c]), 1,
+                         "collect_repo must ask git status exactly once")
+        # and with a single answer the two facts always agree
+        self.assertIs(out["dirty"], False)
+        self.assertEqual(out["untracked"], 0)
+
     def test_a_tracked_change_is_still_a_modified_working_tree(self):
         self.box({"git": " M install.sh\n?? note.txt\n"})
         out = self.cp.collect_repo()

@@ -51,13 +51,20 @@ behind on one number: 514 s against 493 s for that long prefill.
   `conc-check`, which was perfect on both.
 - **`dflash2/` is deleted**, with its build step, its `OVERLAY_27B` switch and
   its CI integrity gate. `flash-sglang/` stays: it is still that lane's
-  rollback. The 27B rollback is the previous image itself, still on the box as
-  `qwen38-dflash2:v1.2.3`, and `SERVE_IMAGE=qwen38-dflash2:v1.2.3 ./install.sh`
-  serves it again.
+  rollback. The 27B rollback is `git checkout v1.13.0 && ./install.sh`, which
+  rebuilds the overlay from that tag. `SERVE_IMAGE=qwen38-dflash2:v1.2.3
+  ./install.sh` also serves it on a box that still holds the tag, but at HEAD
+  the files that build it are gone, so it is not a path that survives a
+  `docker rmi` or a fresh machine.
 - Gates updated with the change, not around it: the 1m template fraction, the
   anti-drift pair, the run.sh and switch-model.sh pin contracts (19 and 17), the
   uninstall inventory (which now knows both the new digest and the retired one),
-  and the cockpit recipe tests.
+  and the cockpit recipe tests. The socket-leak gate was briefly relaxed during
+  this work to stop it tripping on an engine that finished booting mid-suite,
+  and then restored: that flake only happens to `ci-local.sh` run ON a serving
+  box, the CI runner never holds those ports, and CONTRIBUTING and ARCHITECTURE
+  both state the invariant it was about to lose. The failure message names the
+  local cause instead.
 
 ## v1.13.0 (2026-09-15): `lean`, a fourth reasoning-effort level, and it is the default
 

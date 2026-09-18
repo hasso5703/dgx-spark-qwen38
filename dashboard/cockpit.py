@@ -781,6 +781,10 @@ def collect_repo():
         proxy["same_as_repo"] = hashlib.sha256(deployed).hexdigest() == hashlib.sha256(repo_copy).hexdigest()
     except OSError:
         pass
+    # ONE git status for both facts. run() swallows a timeout into "", so two
+    # calls can disagree on a loaded box and the panel would then call a
+    # modified tree clean, which is the sentence this split exists to make true.
+    status = (g("status", "--porcelain") or "").splitlines()
     return {"node_id": "local",
             "head": g("log", "-1", "--format=%h %s"),
             "branch": g("branch", "--show-current"),
@@ -790,10 +794,8 @@ def collect_repo():
             # --porcelain counts both, so a stray screenshot dropped in the
             # checkout used to report the working tree as modified (seen
             # 2026-09-17 with a downloaded .png).
-            "dirty": any(not l.startswith("??")
-                         for l in (g("status", "--porcelain") or "").splitlines() if l),
-            "untracked": sum(1 for l in (g("status", "--porcelain") or "").splitlines()
-                             if l.startswith("??")),
+            "dirty": any(not l.startswith("??") for l in status if l),
+            "untracked": sum(1 for l in status if l.startswith("??")),
             "proxy": proxy}
 
 

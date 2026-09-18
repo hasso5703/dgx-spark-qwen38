@@ -135,13 +135,7 @@ jobs:
           mkdir -p "$HOME/.config/qwen38"
           echo "not-the-real-key" > "$HOME/.config/qwen38/api-key"
           before="$(find "$witness" -type f -exec sha256sum {} + | sort)"
-          # A serving box opens and closes this repo's own ports while the suite
-          # runs (an engine finishing its boot mid-suite was enough, twice, on
-          # 2026-09-17 and 2026-09-18), and that is not a test leaking a socket.
-          # Those four are excluded by name on both sides; every other port is
-          # still compared, and an offline test has no business on these anyway.
-          ours='(:30000|:30001|:30090|:30091)$'
-          ports_before="$(ss -Htln 2>/dev/null | awk '{print $4}' | grep -Ev "$ours" | sort || true)"
+          ports_before="$(ss -Htln 2>/dev/null | awk '{print $4}' | sort || true)"
           (cd dashboard && python3 -m unittest \
              $(cd tests && ls test_*.py | sed 's/\.py$//' | sed 's/^/tests./' | tr '\n' ' ') \
              2>&1 | tail -3)
@@ -152,10 +146,14 @@ jobs:
             diff <(echo "$before") <(echo "$after") || true
             exit 1
           fi
-          ports_after="$(ss -Htln 2>/dev/null | awk '{print $4}' | grep -Ev "$ours" | sort || true)"
+          ports_after="$(ss -Htln 2>/dev/null | awk '{print $4}' | sort || true)"
           [ "$ports_before" = "$ports_after" ] || {
             echo "the offline suite left a listening socket behind:"
-            diff <(echo "$ports_before") <(echo "$ports_after") || true; exit 1; }
+            diff <(echo "$ports_before") <(echo "$ports_after") || true
+            echo "(on the CI runner this is the suite. Running ci-local.sh ON a serving box,"
+            echo " an engine or cockpit finishing its boot mid-suite shows up here too: check"
+            echo " whether the port that appeared is one of this repo's own before digging.)"
+            exit 1; }
           rm -rf "$witness"
           echo "  ok: HOME untouched, no socket left listening"
 
