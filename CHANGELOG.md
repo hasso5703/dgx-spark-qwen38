@@ -38,8 +38,11 @@ behind on one number: 514 s against 493 s for that long prefill.
   never short of memory, it just did not claim it. 0.76 hands the pool back
   (902,398, inside the 906,524-910,203 this box spreads across boots on one
   image) and still leaves a wider margin than the old pin did, 21.30 GB against
-  19.38. Worth knowing before raising it further: the old image already sat at
-  93.7 GB inside a container capped at 100 GB.
+  19.38. What bounds the fraction is the unified pool and not the container:
+  `--memory 100g` caps host RSS, the cgroup does not see CUDA unified
+  allocations, and at 0.76 under a 5,623-token generation the container held
+  7.15 GiB of its 100 GiB throughout (measured 2026-09-18, after an earlier
+  entry in this branch read a GPU-side figure as a cgroup one).
 - Verified on the production unit after the switch: greedy median 72.0 tok/s,
   `conc-check` 40/40 serial and 160/160 at concurrency 8, needle retrieval exact
   at 300,108 **and 499,874** prompt tokens (512 s and 1,249 s), GSM8K 98.5% on

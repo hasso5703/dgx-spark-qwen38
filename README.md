@@ -166,9 +166,11 @@ the official release claims a smaller static budget for the same fraction, so 0.
 0.76 hands that back and still leaves a wider margin than the old pin did, 21.30 GB free after
 graph capture against 19.38. **0.80 was measured crashing** under 3 concurrent requests (2 GiB
 free, Triton `CUDA operation not permitted`), and the 25-40 GB invisible-allocation bursts above
-all belong to native runs and the autotuner. Treat anything past 0.80 as livelock territory, and
-do not carry 0.76 back onto the pre-v1.14 image: that one already sat at 93.7 GB inside a 100 GB
-cgroup at 0.70.
+all belong to native runs and the autotuner. Treat anything past 0.80 as livelock territory. What
+bounds the fraction is the unified pool, not the container: `--memory 100g` caps host RSS and the
+cgroup does not see CUDA unified allocations, measured at 0.76 under a 5,623-token generation
+with the container holding 7.15 GiB of its 100 GiB throughout. The number to watch is the GPU-side
+headroom after graph capture (21.30 GiB at 0.76, against 19.38 at the old pin).
 
 **The SGLang cookbook pins 0.80 on DGX Spark, and that is not a contradiction.**
 Its GB10 cells ran 48 configurations at ISL 8192 / OSL 1024, **concurrency 1**,
