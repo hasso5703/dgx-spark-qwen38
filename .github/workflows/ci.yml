@@ -644,6 +644,9 @@ jobs:
             # min(20,000, its output cap), so the threshold is CTX - 20,000 exactly
             # (opencode 1.18.27, SessionCompaction), not a percentage.
             worst=$(( CTX - 20000 + OUT ))
+            # 771,139 is the FP8 pool on the retired image at 0.70. Re-measured
+            # 2026-09-18 on v0.5.19 at 0.76: 881,895, so this bound is now the
+            # stricter one and is kept deliberately.
             [ "$worst" -le 771139 ] \
               || { echo "$c: 1m worst case $worst exceeds the measured FP8 pool"; exit 1; }
           done

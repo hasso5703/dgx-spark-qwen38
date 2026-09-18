@@ -401,6 +401,15 @@ if [ -n "$RUNNING" ]; then
 else
   echo "Effective after:  sudo systemctl restart $TARGET_UNIT_NAME   (or next reboot)"
 fi
+# The limits written above are the ones this mode DESERVES, not the ones this
+# box can serve: the pool is only known once the engine has booted, and it moves
+# with the checkpoint and the image. install.sh fits them at install time; a
+# switch cannot, because the engine it just pointed at is not up yet. Say so,
+# or the operator learns it from a proxy 400 late in a session (or, on a box
+# with the cockpit, from its banner: this is the "Fit the limits to this
+# engine" button). Measured three times on 2026-09-18 while testing switches.
+echo "Then fit them:    python3 oc-fit-limits.py   (the limits above are this target's"
+echo "                  nominal pair; the pool is only known once the engine is up)"
 case "$CHOICE" in
   stock)      echo "Switch back:      ./switch-model.sh uncensored   (or fp8, flash)" ;;
   uncensored) echo "Switch back:      ./switch-model.sh stock   (or fp8, flash)" ;;

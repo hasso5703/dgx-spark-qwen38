@@ -190,10 +190,16 @@ case "$CHOICE" in
       1m)
         case "$CHOICE" in
           fp8|uncensored-fp8)
-            # FP8 weights cost about 92,000 tokens of KV pool (measured, same 1M
-            # unit: 863,398 on NVFP4, 771,139 on FP8), and the NVFP4 numbers do
-            # not transfer: 680,000 of compaction plus 200,000 of output is an
-            # 880,000 worst case against a 771,139 pool.
+            # FP8 weights cost KV pool (measured on the retired image at
+            # fraction 0.70, same 1M unit: 863,398 on NVFP4, 771,139 on FP8),
+            # and the NVFP4 numbers do not transfer: 680,000 of compaction plus
+            # 200,000 of output is an 880,000 worst case.
+            # Re-measured 2026-09-18 on the official v0.5.19 image at 0.76:
+            # 881,895 on FP8 against 887,797 on NVFP4, so the gap all but closed
+            # and this pair is now conservative rather than tight. Kept as is:
+            # these are the static numbers, oc-fit-limits.py rewrites them from
+            # the pool the boot actually got, and the CI gate that asserts them
+            # against 771,139 stays the stricter of the two bounds on purpose.
             CTX=480000; OUT=160000 ;;
           *)
             CTX=700000; OUT=200000 ;;
