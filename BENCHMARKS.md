@@ -402,7 +402,8 @@ which is worth stating because the cookbook's own comparison (174K against 93K
 with MTP) is what makes it look attractive: that advantage comes from its
 smaller fp8 draft, and the reduced draft vocabulary removes the disadvantage it
 was measured against. The 124 GiB checkpoint was then deleted for disk;
-`./switch-model.sh flash-nvda` downloads it again.
+`./switch-model.sh flash-nvda` downloads it again. It is back on this box since
+2026-09-18 and measured against `flash` probe for probe in the section below.
 
 Correctness and long context on the default target, `context` tier:
 
@@ -422,6 +423,88 @@ ceiling; the same prompt now costs 0.0-1.3 GiB, because the resident set of the
 N-gram table's mapping is trimmed instead of climbing towards 47.7 GiB. That is
 what makes a 200K prompt a measurement rather than a risk, and why the ceiling
 moved to 200,000.
+
+### RadixArk against NVIDIA, head to head (2026-09-18)
+
+Two NVFP4 exports of the same 176B checkpoint, `flash` (RadixArk) and
+`flash-nvda` (NVIDIA ModelOpt MIXED_PRECISION), measured against each other on
+one box: one lane, the same unit, only the target swapped, the first run after
+every boot thrown away, every probe taken on both within the same session.
+
+**What the files say, before a single token is generated.** The N-gram table is
+not a differentiator: all 129 `ngram_embedding` tensors match on dtype, shape,
+exact byte length and the sha256 of both the first and the last 64 MiB of every
+one of the 128 shards, `weight_scale` included. That samples about 16 GiB of the
+47.7 GiB table and finds no difference anywhere. What does differ is the expert
+quantization, in every `weight`, `weight_scale` and `input_scale` sampled: same
+dtypes, independent calibration. And the MTP head is a different object
+entirely: RadixArk ships two fused tensors (`mtp.layers.0.mlp.experts.down_proj`
+and `gate_up_proj`), NVIDIA ships 3,072 FP8 tensors with per block
+`weight_scale_inv`. 296,473 tensors are common to both; the 2 and the 3,072 that
+are not are exactly that head.
+
+**What they do.**
+
+| probe | `flash` (RadixArk) | `flash-nvda` (NVIDIA) |
+|---|---|---|
+| greedy median, `./bench.sh` | 46.3 tok/s | **46.9** |
+| agent loop, `./bench-agent.py` | 28.2 ms/tok | **27.7** |
+| KV pool, one figure per boot | **517,184 / 534,016 / 547,584** | 502,080 / 498,304 |
+| `conc-check.py`, serial and 4 concurrent | clean | clean |
+| needle at 120K and 200K prompt tokens | 2/2 exact | 2/2 exact |
+| GSM8K, 200 questions | 0.985 | 0.985 |
+| GSM8K, all 1,319 | 97.41% | **97.56%** |
+| MMLU, 500 questions | **90.8%** | 90.6% |
+| MMLU, STEM alone | 95.58% | 95.58% |
+| HumanEval, 164, pass@1 at temperature 0 | 95.73% (157/164) | **96.95%** (159/164) |
+| `tools-check.py`, reasoning off | 15/15 | 15/15 |
+| `tools-check.py`, reasoning on | **15/15** | 14/15 |
+| checkpoint on disk | 126 GB | **124 GB** |
+
+**Read the close ones as ties, because they are.** 500 MMLU questions carry a
+standard error near 1.3 points at this accuracy, 164 HumanEval problems near
+1.5, and 1,319 GSM8K questions near 0.44. The gaps measured are 0.2 points on
+MMLU (one question), 1.2 on HumanEval (two problems) and 0.15 on GSM8K (two
+questions). On MMLU's STEM split the two exports score identically to the digit
+on the same 113 questions. Nothing here separates them on quality.
+
+**One number is not a tie: the KV pool.** Three RadixArk boots measured 517,184,
+534,016 and 547,584 tokens; two NVIDIA boots measured 502,080 and 498,304. The
+ranges do not overlap, and the pool is what decides how much context and how
+many concurrent streams the box can hold. It is also the opposite of the reason
+this export is usually recommended: NVIDIA's fp8 MTP head is what the cookbook's
+174K against 93K comparison credits, and on this lane, which already removes the
+draft's disadvantage with `--speculative-token-map`, the smaller draft does not
+turn into a larger pool.
+
+**The tool probe is where a behaviour shows rather than a score.** Fifteen
+cases, run twice per target: reasoning off, which is what an agent client sends,
+and on. Three of the four
+runs are perfect, 12/12 calls emitted, 12/12 that the parser turned into
+`tool_calls`, 12/12 carrying the arguments the request named, 3/3 questions left
+alone. The fourth is NVIDIA with reasoning on, which answered the SQL case with
+no call at all and a markdown code block instead:
+
+````
+content: "```sql\nSELECT * FROM users WHERE name = 'O''Brien';\n```"
+````
+
+The SQL in it is right, escaped apostrophe included. A client still cannot run
+it: that is a message, and it gets shown to the user. One case out of fifteen on
+one run each, so it is something to watch rather than a verdict, but RadixArk
+called the tool there in both modes.
+
+A note on the probe itself, since it was new that day: its first pass against a
+real engine failed RadixArk on that same case for writing `'O''Brien'`, which is
+how SQL escapes an apostrophe, because the checker was demanding the bare form.
+The checker was fixed, gated, and both targets were then measured with the same
+code, RadixArk re-run from a fresh boot rather than re-scored on paper.
+
+So the lane keeps `flash` as its default. Not because the other one is worse,
+which nothing here shows, but because the only measurement outside the noise
+favours it, and a default should move on evidence rather than on a vendor name.
+`flash-nvda` is a first-class target on the same lane: `./switch-model.sh
+flash-nvda`, and since v1.14.1 it downloads with the same command as the rest.
 
 ### Surveyed and rejected: MTP steps 4 (2026-09-11)
 

@@ -10,7 +10,7 @@ One command installs a boot-persistent, hardened serving stack for the Qwen3.8 f
 | `uncensored-fp8` | Qwen3.8-27B abliterated FP8 | SGLang + DFlash2 | same serving path and same cost as `fp8` |
 | `flash` (default of its lane) | **Qwen3.8-Flash-Next 176B** hybrid MoE NVFP4 | SGLang + NEXTN | **47.9 tok/s on code, 47.1 on math, 29-31 on prose, 27.0 ms/tok on an agent loop, prefix caching, vision**, 262K on ONE box |
 | `flash-uncensored` | the **abliterated** build of that same tree | SGLang + NEXTN | 205 of 206 shards identical in size to stock, so the same flags: 45-46 on code, **0 refusals of 5** |
-| `flash-nvda` | the same 176B from NVIDIA's mixed-precision export | SGLang + NEXTN | ties the stock export inside the spread, measured here |
+| `flash-nvda` | the same 176B from NVIDIA's mixed-precision export | SGLang + NEXTN | same N-gram table byte for byte, its own expert calibration: ties `flash` on every quality probe, with a KV pool 6% smaller |
 
 The 27B path is the fastest configuration measured so far on GB10 (**SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels, drafting from a calibrated NVFP4 head 16 deep**): **65 tok/s greedy median on `./bench.sh` (code 64-66, reasoning 65-66, math peak 71)**, free prose 18-25 in any language, **135-148 tok/s aggregate at 8 concurrent streams, 258 at 32** (carried over from the v1.2 battery; the draft only helps concurrency, re-measure on your box with `./bench-matrix.sh`). Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
 
@@ -494,9 +494,26 @@ it resolves to `modelopt_mixed` on its own, and with **`--moe-runner-backend
 flashinfer_cutlass`** pinned, because the mixed-precision auto-default picks
 `flashinfer_trtllm` on GB10 and the NVFP4 MoE method rejects it at autotune.
 `./switch-model.sh flash-nvda` rewrites the model path, the revision and that
-flag pair together. It needs the mixed-precision loader of
+flag pair together. The two exports were measured against each other probe for
+probe on 2026-09-18 (BENCHMARKS.md, "RadixArk against NVIDIA, head to head"):
+their N-gram tables are the same bytes, their expert calibrations are not, and
+they tie on GSM8K, MMLU, HumanEval and tool calling inside the sampling noise.
+The lane keeps `flash` as its default on the one measurement that is outside
+that noise, a KV pool 6% larger over five boots. It needs the mixed-precision loader of
 [sglang#38121](https://github.com/sgl-project/sglang/pull/38121), which is in the
 image this repo pins.
+
+It is also the one target whose download needs an exception. Its N-gram table
+ships as a **single 53.7 GB file**, over the 50 GB ceiling the Hub's classic CDN
+enforces (`MAX_HTTP_DOWNLOAD_SIZE`), and this repo pins itself to that CDN
+because the Xet backend stalled at 0-8 MB/s during the release campaign where
+the CDN moved 89 MB/s. Until v1.14.1 the two facts met badly: this target could
+not be fetched at all. The CDN refused the file, the resume loop retried it four
+times, and the run stopped on a failure naming four causes that were all the
+wrong one, over a traceback that did name `hf_xet` (seen 2026-09-18, cache left
+holding 74 GB of the 124). Both downloaders now answer that one refusal by
+retrying the repo that hit it with Xet, then turning Xet back off, so this
+target installs with the same command as the other six.
 
 The uncensored target is huihui-ai's abliteration of Qwen3.8-27B re-quantized
 with the identical RadixArk modelopt NVFP4 recipe (verified: same
@@ -591,11 +608,12 @@ and the keepalive proxy stay put.
 - Speculation stays lossless with every target (DFlash2 drafts and MTP drafts
   are verified against the target model); only acceptance rates vary.
 
-## Three tools worth knowing about
+## Four tools worth knowing about
 
 ```bash
 ./bench-agent.py                  # the agent-loop shape: ms/tok on a growing conversation
 ./bench-agent.py --turns 6 --prefix-tokens 30000
+./tools-check.py                  # can an agent execute what this checkpoint emits? 15 cases
 ./build-token-map.py --help       # the reduced draft vocabulary (install.sh runs it for you)
 ./check-pins.sh                   # does every pinned revision and digest still resolve?
 ```
@@ -611,6 +629,19 @@ between the two shapes: MTP had the best decode on their box and the worst agent
 loop, worse than no speculation at all, because their scheduler drops a cacheable
 block per request when a drafter is configured. This lane does not pay that, and
 `bench-agent.py` is how you check yours.
+
+`tools-check.py` asks the question a speed number cannot: can a client execute
+what comes back? Fifteen cases through this repo's own serving surface (chat
+template, reasoning parser, `qwen3_coder` tool parser), scored in four buckets
+that fail for different reasons. **called** and **well formed** are not the same
+failure: a model that emits nothing is inert, while a model whose call the
+parser cannot turn into `tool_calls` looks to a client like a plain answer full
+of JSON, which it pastes back to the user. **arguments** checks the values the
+request names, including the places a re-export degrades first (an escaped
+newline, an apostrophe inside SQL, a date normalized to the schema's format, an
+enum spelled the schema's way). **restraint** is the other direction: three
+questions no tool answers, which a lane that over-triggers will call on anyway.
+Run it after any switch, and with `--min` in a script to fail a run on it.
 
 `check-pins.sh` is deliberately not in CI: a green build must not depend on
 Hugging Face being up. Run it before a release, or when an install fails on a

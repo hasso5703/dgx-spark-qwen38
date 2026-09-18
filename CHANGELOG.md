@@ -1,5 +1,90 @@
 # Changelog
 
+## v1.14.1 (2026-09-18): the two flash exports measured against each other, and the NVIDIA one downloads
+
+**RadixArk against NVIDIA, probe for probe on one box.** `flash` and
+`flash-nvda` are two NVFP4 exports of the same 176B checkpoint, and the second
+is the one people assume is better calibrated because of whose name is on it.
+Measured: one lane, the same unit, only the target swapped, first run after every
+boot thrown away. Greedy median 46.3 against 46.9 tok/s, agent loop 28.2 against
+27.7 ms/tok, GSM8K over all 1,319 questions 97.41% against 97.56%, MMLU 500
+90.8% against 90.6% (identical to the digit on the STEM split), HumanEval 164
+pass@1 95.73% against 96.95%, tool calling 15/15 and 15/15 against 15/15 and
+14/15, `conc-check` clean and needle exact at 120K and 200K on both. Every gap
+on quality is worth one or two questions, under the standard error of its own
+sample. The files say why: their N-gram tables are the same bytes (all 129
+tensors match on dtype, shape, exact length and the sha256 of the first and last
+64 MiB of every one of the 128 shards), while their expert quantizations are
+independently calibrated and their MTP heads are different objects (2 fused
+tensors against 3,072 FP8 block-scaled ones).
+
+One measurement is not a tie, and it is not the one the cookbook advertises: the
+KV pool. Three RadixArk boots gave 517,184, 534,016 and 547,584 tokens against
+502,080 and 498,304 on two NVIDIA boots, ranges that do not overlap. NVIDIA's
+smaller fp8 draft is exactly what its 174K against 93K comparison upstream is
+credited to, and on this lane, which already removes the draft's disadvantage
+with `--speculative-token-map`, it does not turn into a larger pool. So `flash`
+stays the lane default, on the only number outside the noise, and `flash-nvda`
+stays a first-class target that now downloads with the same command as the rest.
+Full method and numbers in BENCHMARKS.md, "RadixArk against NVIDIA, head to head".
+
+Two of those measurements needed the harness repaired before they meant
+anything. The image's `run_eval --eval-name mmlu` shells out to an `sgl-eval`
+binary it does not ship (sgl-project/sgl-eval, first on PyPI 2026-09-12), and
+its HumanEval path needs a `human_eval` package that is not there either, then
+dies in `os.fork` because the image's filelock refuses one. Both evals had been
+logging an empty score, which reads exactly like a model that scored nothing.
+
+
+**`flash-nvda` could not be fetched with this repo's own settings.** Both
+downloaders disable the Hub's Xet backend, for a measured reason: during the
+release campaign it moved 0-8 MB/s, sometimes zero bytes forever, while the
+classic CDN did 89 MB/s on the same box in the same second. The classic CDN in
+turn refuses any single file over `MAX_HTTP_DOWNLOAD_SIZE`, which is exactly
+50,000,000,000 bytes, and `nvidia/Qwen3.8-Flash-Next-NVFP4` ships its N-gram
+table as one 53.7 GB safetensors. The two rules met on 2026-09-18: the resume
+loop retried the refusal four times and the run died, over a traceback that did
+name `hf_xet`, under a failure message listing four causes that were all the
+wrong one, with 74 GB of the target's 124 left in cache.
+
+Both downloaders now turn Xet back on for the one repo the CDN just refused,
+then turn it off again, so every other file keeps the transport that measured
+89 MB/s. Six gates in `tests/test_install_xet_retry.py` run the real block out
+of both scripts against a stub Hub: they check that the retry happens, that it
+does not fire on unrelated failures, that Xet does not leak into the next repo
+of the same run, that an undownloadable repo still fails instead of looping, and
+that `install.sh` and `switch-model.sh` carry the same helper. Four of the six
+fail against the code without the fix.
+
+**One test file was deciding what another one measured.** `test_tools.py` points
+HOME at a throwaway directory because the scripts it imports read the serving key
+at module level. It did that at module level too, and unittest imports every
+module of a run before executing any of them, so the assignment reached files
+that run long before it. `test_install_sudo` replays install.sh for real, and
+install.sh sizes its disk preflight from whether the checkpoints are cached
+(10 GB when they are, 230 GB when they are not): under the borrowed HOME it saw
+an empty cache, died at step 1 for lack of space, and reported that as a failure
+of the step 8 refusal it never reached. It only showed in full-suite runs on a
+box that has the cache, which is how a real ordering bug gets called a flake.
+HOME is now borrowed for the import and given straight back, and
+`tests/test_suite_isolation.py` fails if any file in `tests/` moves it, at import
+or on the way out. Also: `bench-agent.py`, `conc-check.py`, `build-token-map.py`
+and `tools-check.py` were in neither CI python list, so four of this repo's tools
+were never linted or byte-compiled by a build. They are now.
+
+**`tools-check.py`: can an agent execute what a checkpoint emits?** Fifteen cases
+through this repo's serving surface, scored in four buckets that fail for
+different reasons and need different repairs: **called**, **well formed**,
+**arguments**, **restraint**. The split matters because a model that emits
+nothing is inert, while a model whose call the tool parser cannot turn into
+`tool_calls` looks to a client like a plain answer full of JSON, which it hands
+back to the user. The argument cases sit where a re-export degrades first: an
+escaped newline inside a JSON string, an apostrophe inside SQL, a date
+normalized to the schema's format, an enum spelled the schema's way, a nested
+object, an optional argument that must stay absent. Seven gates drive a fake
+engine through each of those failure shapes, including the happy path, so a
+probe that scored nothing could not pass them.
+
 ## v1.14.0 (2026-09-17): the 27B lane serves the official image, and the overlay is gone
 
 Both serving lanes now run an image this repo did not build. The 27B lane was
