@@ -723,7 +723,7 @@ sudo systemctl restart qwen38-dashboard
 
 ![The Agent tab: opencode running in the browser behind the cockpit login, started at boot with tool calls pre-approved](docs/img/cockpit-agent.png)
 
-*Agent: opencode's own web interface, framed behind this login. It starts at boot and its tool calls are already approved, so a laptop or a phone is enough to run a coding session on the box against your own model.*
+*Agent: opencode's own web interface, framed behind this login, mid-answer on a real session. It starts at boot and its tool calls are already approved, so a laptop or a phone is enough to run a coding session on the box. The model picker at the bottom names what is answering: the 27B served by this same machine, at the `lean` effort level.*
 
 ![The Requests tab: the keepalive proxy's request feed with client, path, body size, duration and outcome, next to the zombie guard panel](docs/img/cockpit-requests.png)
 
