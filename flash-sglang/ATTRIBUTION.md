@@ -178,8 +178,9 @@ exactly as upstream's own adopter keeps it.
 Everything in this directory is now in an official image, and the flash lane
 serves that image directly. `install.sh` builds nothing unless you ask for the
 old path with `OVERLAY_FLASH=1`, which is kept working and CI-checked as the
-rollback. The 27B lane had its own overlay until v1.14, when measurement retired it
-for the one fix that is not upstream in an image built for this hardware.
+rollback. The 27B lane had its own overlay until v1.14, when measurement retired it: the
+fix it was kept for (the mrope kernel, sglang#34446) turned out to be in the
+official release, checked inside the image rather than inferred from dates.
 
 What replaced what, all of it merged into SGLang's `qwen4-main-squashed` branch
 and shipped in `lmsysorg/sglang:dev-qwen38-next-local` (`4ccff141db`), the image

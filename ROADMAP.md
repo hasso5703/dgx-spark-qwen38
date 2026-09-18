@@ -13,8 +13,10 @@ keepalive proxy with its byte guards and the corruption tripwire, 1M and
 native context presets, four reasoning-effort levels with `lean` as the
 default, opencode out of the box, and the frozen benchmark battery (v1) that
 keeps every number in this repo comparable across years. **Both lanes now
-serve an official upstream image and this repo builds none**, which is the
-end of a two-year habit of carrying vendored engine files.
+serve an official upstream image and this repo builds none by default**, which
+is the end of a long habit of carrying vendored engine files. `OVERLAY_FLASH=1`
+still rebuilds the flash lane's old local image: it is that lane's rollback, it
+stays CI-checked, and it is the only build path left.
 
 ## Shipped this cycle: v1.13.0 and v1.14.0
 

@@ -2,12 +2,14 @@
 # Qwen3.8 serving stack on DGX Spark (GB10): 27B (SGLang+DFlash2) or Flash-Next
 # 176B (SGLang+NEXTN, PLE table mmap-served from NVMe). Systemd, hardened.
 # Idempotent: safe to re-run at any time (uses local caches when present).
-# Everything is PINNED to the versions validated on 2026-09-11; override with
-# env vars if you want to try newer builds (see --help). Since v1.8 the flash
-# lane serves an OFFICIAL SGLang image with nothing added, because the cookbook's
-# own image for this hardware ships everything this repo used to graft on
-# locally; the 27B lane still builds its overlay, for the one reason named at
-# IMAGE below (see flash-sglang/ATTRIBUTION.md).
+# Everything is PINNED to versions validated on this hardware (the 27B image on
+# 2026-09-17, everything else on 2026-09-11); override with env vars if you want
+# to try newer builds (see --help). Since v1.14 BOTH lanes serve an OFFICIAL
+# SGLang image with nothing added and this script builds nothing by default: the
+# flash lane crossed over in v1.8, the 27B lane followed once the two reasons it
+# had stayed behind were measured rather than restated (see the IMAGE pin below).
+# OVERLAY_FLASH=1 rebuilds the flash lane's old local image, the one rollback
+# this repo still carries (see flash-sglang/ATTRIBUTION.md).
 set -euo pipefail
 trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-running ./install.sh is safe: completed steps are skipped.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
@@ -880,8 +882,25 @@ PYEOF
 
 LANE_OVERLAY=0; [ "$LANE" = "flash" ] && LANE_OVERLAY="$OVERLAY_FLASH"
 if [ "$LANE_OVERLAY" != "1" ]; then
-  step "5/10 Serving image: the pinned official one, nothing to build"
-  echo "$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
+  # Say the image the unit will actually carry, not the pin it came from: those
+  # are the same thing on a default install and different the moment someone
+  # passes SERVE_IMAGE=, which is the one case where this line is the only
+  # on-screen confirmation that the override took.
+  LANE_SERVE_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_SERVE_IMAGE" || echo "$SERVE_IMAGE")"
+  LANE_PIN_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
+  if [ "$LANE_SERVE_IMAGE" = "$LANE_PIN_IMAGE" ]; then
+    step "5/10 Serving image: the pinned official one, nothing to build"
+    echo "$LANE_SERVE_IMAGE"
+  else
+    step "5/10 Serving image: an operator override, nothing to build"
+    echo "$LANE_SERVE_IMAGE   (SERVE_IMAGE=, instead of the pin $LANE_PIN_IMAGE)"
+    # Step 2 pulls the pin, never an override, and the overlay build that used to
+    # guarantee this tag existed is gone since v1.14. Without this check the
+    # install completes green, writes and enables the unit, and the engine then
+    # loops on an unpullable local tag for the full 20-minute health wait.
+    docker image inspect "$LANE_SERVE_IMAGE" >/dev/null 2>&1 \
+      || die "serving image not present: $LANE_SERVE_IMAGE. Nothing pulls an override, so build or pull it first, or drop SERVE_IMAGE= to serve the pin ($LANE_PIN_IMAGE)."
+  fi
   if [ "$LANE" = flash ]; then
     echo "OVERLAY_FLASH=1 ./install.sh rebuilds the local overlay image of v1.7 instead (the rollback)."
   fi
@@ -1013,9 +1032,16 @@ step "7/10 opencode provider config + oc launcher"
 # satisfy the serving window with margin in BOTH modes, including when
 # opencode's hidden 32000 output cap is lifted by the oc launcher below:
 #   native: 194048 + 64000 = 258048 <= 262144 - 4096
-#   1m:     700000 (compaction at 680000) + 200000 = 880000 <= worst measured
-#           KV pool at mem-fraction 0.76 (902398 measured 2026-09-17 on the
-#           official image; the same box spreads 906524-910203 across boots)
+#   1m:     700000 (compaction at 680000) + 200000 = 880000, against the four
+#           pools measured on the official image at 0.76 (2026-09-17 and 18:
+#           902,398 / 889,131 / 889,722 / 887,797). The margin over the worst of
+#           those is 7,797 tokens, under 1%, and this box has reported 863,398
+#           in an earlier campaign, where the pair does not fit at all. These
+#           static numbers are the starting point, not the contract: step 9
+#           runs oc-fit-limits.py against the pool the boot actually got and
+#           rewrites them (551,000 + 183,000 there). A box that skips that fit
+#           (--no-opencode, or the NOTE path when the engine is not up) keeps
+#           the static pair and can meet a proxy 400 late in a session.
 # Service installs point agent clients at the keepalive proxy (step 8): SGLang
 # buffers tool-call arguments at any context length and agent CLIs abort
 # silent streams. --no-service has no proxy: direct server port for ./run.sh.

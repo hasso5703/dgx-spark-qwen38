@@ -25,9 +25,11 @@ Measured on the reference box, 2026-09-03, both heads, DFlash2 x8 and
 
 So this repo's configuration does not reproduce the 111/304, on the same hardware
 and the same target that produced it. What differs is the rest of the recipe: this
-repo serves a pinned DFlash2 image and drafter revision with an fp8 KV cache, mem
-fraction 0.70 and a 8192 chunked prefill, where the cookbook cell is a plain 0.80 /
-2048 configuration. A negative result is not a proof of absence, so the probe ships
+repo serves a pinned image and drafter revision with an fp8 KV cache and a 8192
+chunked prefill, where the cookbook cell is a plain 0.80 / 2048 configuration.
+The 2026-09-03 run that produced the numbers above was on the locally built
+image at mem fraction 0.70; v1.14 moved this lane to the official v0.5.19 image
+at 0.76 and re-ran this probe on both, clean on both. A negative result is not a proof of absence, so the probe ships
 and the numbers stay reproducible.
 """
 import json, random, time, urllib.request, threading, queue, argparse

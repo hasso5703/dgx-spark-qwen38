@@ -598,7 +598,7 @@ With the same deterministic stack, the z-lab DFlash2 drafter (merged into SGLang
 2026-08-19) measured on this box, thinking on, quality canaries passing: **wins every
 single-stream cell of the battery** (prose FR 20.2 vs 14.0 stock, reasoning FR 43.5 vs 30.5,
 code DE 39.4 vs 25.4, math at parity) and lifts aggregate throughput to **135-148 tok/s at c8
-and 258 tok/s at c32** (max-running-requests 32), still climbing at c32. It ships as this repo's default in v1.2 via a locally built, sha256-pinned overlay image (see dflash2/ATTRIBUTION.md; credit MiaAI-Lab for the quantized lm_head fix and r0b0tlab for the K sweep: block 8 optimal, 9 collapses). The repo repins to the official image the day one ships DFLASH2. An FP8-target variant (zero quantization-quality questions) measured
+and 258 tok/s at c32** (max-running-requests 32), still climbing at c32. It shipped as this repo's default from v1.2 via a locally built, sha256-pinned overlay image (credit MiaAI-Lab for the quantized lm_head fix and r0b0tlab for the K sweep: block 8 optimal, 9 collapses). **v1.14 made good on the promise that followed it**: the lane serves the official `v0.5.19` release, the overlay is deleted, and the migration was measured rather than assumed (CHANGELOG v1.14.0: greedy median 71.4 against 69.8 tok/s, acceptance 4.29 against 4.09, conc-check clean on both, needle exact at 300,108 prompt tokens on both). An FP8-target variant (zero quantization-quality questions) measured
 108 tok/s c8 with the same drafter: above the old DSpark default, and the fallback if
 NVFP4-target quality evaluations ever demand it.
 
