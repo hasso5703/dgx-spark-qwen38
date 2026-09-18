@@ -975,6 +975,24 @@ else
   # Refuses with a re-download fix-it when a config is patched but its backup
   # is gone. Flash configs are never patched (1m is a 27B mode), so only the
   # 27B lane restores.
+  #
+  # One combination leaves a box that boots into a crash, and it is quiet about
+  # it: --no-service (or --no-start) writes no unit, so an installed 1m unit
+  # keeps asking for 1,010,000 from a config this restore just put back to
+  # 262,144, and the engine dies at load the next time systemd starts it. Seen
+  # here on 2026-09-18 while testing a native install against a 1m box's cache.
+  # Say so, name the two ways out, and do it before touching the configs.
+  if [ "$LANE" = "27b" ] && [ -r "$SGL_UNIT_PATH" ]; then
+    _INSTALLED_CTX="$(grep -oE -- '--context-length [0-9]+' "$SGL_UNIT_PATH" 2>/dev/null | awk '{print $2}' | head -1 || true)"
+    if [ -n "$_INSTALLED_CTX" ] && [ "$_INSTALLED_CTX" -gt 262144 ] \
+       && { [ "$NO_SERVICE" -eq 1 ] || [ "$NO_START" -eq 1 ]; }; then
+      echo "WARNING: the installed unit serves --context-length $_INSTALLED_CTX, and this native"
+      echo "         install is about to restore the pre-YaRN configs it reads. This run writes no"
+      echo "         unit, so that unit would crash at load the next time it starts."
+      echo "         Either re-run without --no-service/--no-start (the unit is rewritten native),"
+      echo "         or put the box back with: CONTEXT_MODE=1m ./install.sh"
+    fi
+  fi
   if [ "$LANE" = "27b" ]; then
     if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
       python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$MODEL_REPO" || die "YaRN restore failed on the kept model"

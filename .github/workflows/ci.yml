@@ -967,6 +967,9 @@ jobs:
       - name: needle.sh separates a lane refusal from a retrieval failure (fake engine)
         run: python3 tests/test_needle_refusal.py
 
+      - name: a native install says so before it strands an installed 1m unit
+        run: python3 tests/test_install_native_strands_1m_unit.py
+
       - name: uninstall inventory runs clean on a bare machine
         run: ./uninstall.sh --list
 
