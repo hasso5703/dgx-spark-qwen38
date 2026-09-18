@@ -721,6 +721,10 @@ sudo systemctl restart qwen38-dashboard
 
 *Models: the seven targets as data, derived from `install.sh` and the unit templates, each compared flag by flag against the invocation actually running. "2 DIFFER" is a recipe that would change something if you switched to it.*
 
+![The Agent tab: opencode running in the browser behind the cockpit login, started at boot with tool calls pre-approved](docs/img/cockpit-agent.png)
+
+*Agent: opencode's own web interface, framed behind this login. It starts at boot and its tool calls are already approved, so a laptop or a phone is enough to run a coding session on the box against your own model.*
+
 ![The Requests tab: the keepalive proxy's request feed with client, path, body size, duration and outcome, next to the zombie guard panel](docs/img/cockpit-requests.png)
 
 *Requests: both sides of the wire. The feed is what the proxy relayed; the guard is whether any client walked away from an answer the engine is still generating.*
