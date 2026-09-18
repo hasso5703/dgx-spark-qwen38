@@ -5,24 +5,32 @@ so that "on the roadmap" means a checkbox with a definition of done, not a
 mood. Statuses: shipped, in progress, planned, considered (considered items
 have a reason they are not yet planned, stated here or in an issue).
 
-## Shipped, current: v1.12.1
+## Shipped, current: v1.14.0
 
 Two lanes (27B NVFP4/FP8 with DFlash2 drafting; 176B flash-next with NEXTN
-and the PLE table on NVMe), five switchable targets, the cockpit, the
+and the PLE table on NVMe), seven switchable targets, the cockpit, the
 keepalive proxy with its byte guards and the corruption tripwire, 1M and
-native context presets, opencode out of the box, and the frozen benchmark
-battery (v1) that keeps every number in this repo comparable across years.
+native context presets, four reasoning-effort levels with `lean` as the
+default, opencode out of the box, and the frozen benchmark battery (v1) that
+keeps every number in this repo comparable across years. **Both lanes now
+serve an official upstream image and this repo builds none**, which is the
+end of a two-year habit of carrying vendored engine files.
 
-## Shipped this cycle: v1.12.1
+## Shipped this cycle: v1.13.0 and v1.14.0
 
-The 1M context window is what a plain 27B install serves, with the two paths
-that cannot serve it falling back silently and the opencode limits fitted to
-the pool the boot actually got. One command installs the whole box, cockpit
-included, and ends on its URL;
-neither entry point installs as root, after a `sudo bash` run on the reference
-box succeeded silently into `/root` and left every client holding a key the
-engine did not have. Plus the CI gate that discovered four tracked test files
-no step was running, and the suite that declared two tests and ran none.
+`lean`, a fourth reasoning-effort level measured on 7,008 runs and made the
+default: 0.71x the thinking tokens of `medium` with no detectable quality
+change, and 0.047x of the shipped `xhigh` on the underspecified requests that
+make this model spiral.
+
+Then the 27B lane moved to the official `v0.5.19` release and its eight-file
+overlay was deleted. Both reasons it had stayed behind were retired by
+measurement rather than by restating them: the overlay carried nothing
+upstream lacks (diffed function by function), and the sm_121 objection turned
+out not to depart the two images at all, since the one this lane served
+shipped the same sm90 and sm100 kernels, byte for byte. The memory fraction
+moved to 0.76 because the official image claims a smaller static budget for
+the same number.
 
 ## Shipped, v1.11
 
@@ -44,6 +52,19 @@ the cockpit drift panel says so, per lane, until it is.
   fresh install.
 
 ## Planned
+
+- **Beyond one box, in that order: more GB10 machines, then more hardware,
+  then more models.** What this repo is, today, is a production serving stack
+  for one specific machine, and every number in it says "reference box" for
+  that reason. The order matters because each step buys the next one: a
+  GB10 matrix with community rows proves the recipes survive other people's
+  OEMs and kernels; hardware beyond GB10 is only honest once the recipes are
+  parameterised by what the card can do, not by what this one does (the
+  sm_121 story in v1.14 is the shape of that work: an objection that turned
+  out to be about neither image); and a second model family earns its lane on
+  the frozen battery, not on a README claim. None of this is a rewrite, it is
+  the same discipline applied to a wider set of pins, and nothing ships as
+  "supported" before a measured row exists for it.
 
 - **A supported-GB10 matrix beyond the reference box**: every performance
   claim carries "reference box", and the box-report protocol plus

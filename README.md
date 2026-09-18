@@ -703,7 +703,23 @@ sudo systemctl edit qwen38-dashboard    # [Service] Environment=COCKPIT_BIND=0.0
 sudo systemctl restart qwen38-dashboard
 ```
 
-What it shows and does:
+### The eight tabs
+
+Every panel answers one question about this box, and the tab it sits in is the
+question you had when you opened the page.
+
+| Tab | What it answers | What you can do there |
+|---|---|---|
+| **Overview** | Is the box serving, and on what? KV pool held right now, serving lane, unified memory, the last events | Start, stop, restart, switch lane, flush the prefix cache, abort all, smoke probe |
+| **Agent** | opencode's own web interface, framed behind this login | Run a session on the box from a laptop or a phone, no terminal |
+| **Engines** | Which units exist, which one is served, what the probes and containers say | Act on any unit this repo installed |
+| **Requests** | What the engine and the proxy each did with the same traffic: live feed, zombie guard, pool and decode | Read a dead decode from both sides of the wire |
+| **Machine** | Unified memory, the GB10, the CPU, and whether the safety belts are holding | Watch the memory edge this hardware actually has |
+| **Models** | Every target as data: recipes, drift against what is running, registry of what is on disk, upstream watch, full inventory | Reclaim superseded images, never the current ones |
+| **Logs** | Live logs, the last 30 events, recent jobs | Run a bench, the 4-canary quality battery, a diagnostics bundle |
+| **Setup** | The repo itself, opencode integration, serving-stack updates, the cockpit's own settings | Regenerate the API key, update the stack, change what the page binds to |
+
+### What it does that a terminal does not
 
 - **Lane state that is not a lie.** A wedged SGLang still answers `/health`, so
   the cockpit runs a real generation canary and reports `ready`, `loading`,
@@ -716,8 +732,6 @@ What it shows and does:
 - **Actions, one at a time.** Unit start/stop/restart, lane switch (the same
   `switch-model.sh` you would run), cache flush, abort-all, smoke probe. Every
   action is audited to `~/.config/qwen38/cockpit-audit.log` with its exact argv.
-- **Registry.** Which pinned checkpoints are actually on disk, which are stray,
-  which are missing, and what each costs you in bytes.
 - **Recipes and drift.** Every target as data, derived from `install.sh` and the lane
   templates so a recipe cannot drift from what the installer renders, compared flag by
   flag against the invocation actually running on the box. Since v1.8.5 that comparison
@@ -740,11 +754,9 @@ What it shows and does:
   chat templates, the API key (masked, regenerable), and the repo itself
   (version, upstream tag, changelog, update badge).
 
-Eight tabs, each one a panel above: Overview, Agent, Engines, Requests,
-Machine, Models, Logs, Setup. On a phone the chrome collapses to one identity
-row plus a swipeable section rail, controls are 44 px targets, and the Agent
-tab opens fullscreen (see "On a phone" below): the whole box is operable from
-a hand.
+On a phone the chrome collapses to one identity row plus a swipeable section
+rail, controls are 44 px targets, and the Agent tab opens fullscreen (see "On a
+phone" below): the whole box is operable from a hand.
 
 **The privileged surface, stated plainly.** The unit actions need root, so the
 installer writes `/etc/sudoers.d/qwen38-cockpit`: an exact argv allowlist,

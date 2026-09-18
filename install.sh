@@ -301,6 +301,14 @@ TOKEN_MAP_NAME="token-map-${SPEC_TOKEN_MAP_SIZE}.pt"
 # 6 GB and a few minutes on every 27B install). The pin stays so the cockpit's
 # registry can still recognise a copy left on disk, and `git checkout v1.1 &&
 # ./install.sh` fetches it through that release's own installer.
+# RadixArk published a v2 of this draft on 2026-08-28 claiming +26% acceptance
+# over v1 (3.43 aggregate over 64,675 prompts on their own card), which would
+# put it level with DFlash2 on paper. Measured here on 2026-09-18, same box,
+# same unit, only the drafter swapped (b9a5dbdf, DSPARK, gamma auto-inferred):
+# greedy median 48.7 tok/s against DFlash2's 72.0, acceptance 3.49 against 4.29,
+# conc-check clean on both. It does leave a larger pool (953,442 against
+# 889,131) because its verify window is 8 rather than 16, and that does not come
+# close to paying for a third of the throughput. The lane stays on DFlash2.
 # shellcheck disable=SC2034  # read externally: dashboard/registry.py pairs DRAFT_REV
 # with this repo id to classify a leftover DSpark copy, and uninstall.sh lists it.
 DRAFT_REPO="RadixArk/Qwen3.8-27B-DSpark"
