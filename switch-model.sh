@@ -177,11 +177,40 @@ docker run --rm -i --network host --user "$(id -u):$(id -g)" \
   "$DL_IMAGE" - <<'PYEOF' || die "download failed (re-run to resume; HuggingFace throttles unauthenticated downloads, set HF_TOKEN=<your token> if it stalls)"
 import os
 import time
-from huggingface_hub import snapshot_download
+from huggingface_hub import constants, snapshot_download
+
+
+def download(repo, rev):
+    """snapshot_download, with the one exception to the Xet ban above.
+
+    The classic CDN refuses any single file over MAX_HTTP_DOWNLOAD_SIZE
+    (50,000,000,000 bytes) and says so in a ValueError naming hf_xet. One target
+    ships such a file: nvidia/Qwen3.8-Flash-Next-NVFP4 carries its n-gram table
+    as one 53.7 GB safetensors. Without this, that target cannot be fetched at
+    all: the resume loop retries the refusal four times and the run dies under a
+    message naming four causes that are all the wrong one, over a traceback that
+    does name hf_xet (seen 2026-09-18, 74 GB of the 124 left in cache). Xet is
+    turned back on only for the repo the CDN just refused, and turned off again
+    right after, so every other file keeps the transfer path that measured
+    89 MB/s against its 0-8.
+    """
+    try:
+        return snapshot_download(repo, revision=rev)
+    except Exception as e:
+        if "too large to be downloaded" not in str(e) or not constants.HF_HUB_DISABLE_XET:
+            raise
+        print("a file is over the classic CDN limit; retrying this repo with Xet", flush=True)
+        constants.HF_HUB_DISABLE_XET = False
+        try:
+            return snapshot_download(repo, revision=rev)
+        finally:
+            constants.HF_HUB_DISABLE_XET = True
+
+
 print("──", os.environ["MODEL_REPO"], "@", os.environ["MODEL_REV"], flush=True)
 for attempt in range(1, 6):  # a resumed attempt reuses every finished byte
     try:
-        path = snapshot_download(os.environ["MODEL_REPO"], revision=os.environ["MODEL_REV"])
+        path = download(os.environ["MODEL_REPO"], os.environ["MODEL_REV"])
         break
     except Exception as e:
         if attempt == 5:
