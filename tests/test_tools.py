@@ -14,6 +14,7 @@ the network.
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -26,23 +27,46 @@ REPO = HERE.parents[1]
 # These scripts read the serving API key at MODULE level (conc-check.py line 37
 # reads it into a constant; bench-agent resolves CONFIG at import), so importing
 # one on a machine without ~/.config/qwen38/api-key raises before a single test
-# runs. A throwaway HOME with a throwaway key, installed before any import, is
-# what makes this file behave the same on a GitHub runner, under ci-local.sh's
-# temporary HOME, and on the box.
+# runs. A throwaway HOME with a throwaway key is what makes this file behave the
+# same on a GitHub runner, under ci-local.sh's temporary HOME, and on the box.
 _HOME = Path(tempfile.mkdtemp(prefix="tools-home-"))
 (_HOME / ".config" / "qwen38").mkdir(parents=True)
 (_HOME / ".config" / "qwen38" / "api-key").write_text("test-key\n")
-os.environ["HOME"] = str(_HOME)
+
+
+def tearDownModule():
+    shutil.rmtree(_HOME, ignore_errors=True)
 
 
 def load(name, stub_env=None):
-    """Import a hyphenated top-level script as a module."""
-    for k, v in (stub_env or {}).items():
-        os.environ.setdefault(k, v)
-    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), REPO / name)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """Import a hyphenated top-level script as a module.
+
+    HOME points at the throwaway directory for the duration of the import and
+    is put back after, because the process is shared. This used to be one
+    assignment at module level, which is subtly worse than it looks: unittest
+    imports every module of a run before executing any of them, so that
+    assignment landed on files that run long before this one. test_install_sudo
+    replays install.sh for real, and install.sh sizes its disk preflight from
+    whether the checkpoints are cached (10 GB when they are, 230 GB when they
+    are not): under the borrowed HOME it saw an empty cache, died at step 1 for
+    lack of space, and reported that as a failure of the step 8 refusal it never
+    reached. Full-suite runs only, on a box that has the cache, which is the
+    kind of failure that gets called a flake and muted (2026-09-18).
+    """
+    real_home = os.environ.get("HOME")
+    os.environ["HOME"] = str(_HOME)
+    try:
+        for k, v in (stub_env or {}).items():
+            os.environ.setdefault(k, v)
+        spec = importlib.util.spec_from_file_location(name.replace("-", "_"), REPO / name)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        if real_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = real_home
 
 
 class ConstructionRank(unittest.TestCase):
