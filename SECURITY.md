@@ -9,7 +9,10 @@ a Docker engine behind a Python proxy, a cockpit web UI that reaches systemd
 through an exact-argv sudo allowlist, and an opt-in relay that puts opencode's
 web interface behind the cockpit login. There is no telemetry and no
 phone-home: every byte that leaves the box is a download the installer names
-(Hugging Face, the image registry) or a request you sent.
+(Hugging Face, the image registry) or a request you sent. That includes the typed
+decisions route (`POST /v1/systemone`, v6.19): it speaks the wire contract of a hosted
+service, and it is answered by the engine on this box and nothing else; the proxy
+calls no address but its upstream.
 
 ## Reporting
 

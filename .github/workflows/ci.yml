@@ -29,8 +29,8 @@ jobs:
       - name: Python correctness (ruff F,E9 + compile)
         run: |
           pip install 'ruff==0.5.0'
-          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py oc-point-default.py bench-agent.py conc-check.py build-token-map.py tools-check.py tests/*.py dashboard/*.py dashboard/tests/*.py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py bench-agent.py conc-check.py build-token-map.py tools-check.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
+          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py oc-point-default.py bench-agent.py conc-check.py build-token-map.py tools-check.py bench-systemone.py tests/*.py dashboard/*.py dashboard/tests/*.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py bench-agent.py conc-check.py build-token-map.py tools-check.py bench-systemone.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
 
       - name: Cockpit unit tests (every tests/test_*.py, discovered)
         run: |
@@ -78,6 +78,7 @@ jobs:
           rm -f .coverage*
           for f in tests/test_proxy_guard.py tests/test_proxy_abort.py \
                    tests/test_proxy_keepalive.py tests/test_proxy_client_keys.py \
+                   tests/test_proxy_systemone.py \
                    tests/test_tools.py tests/test_oc_fit_limits.py tests/test_oc_merge_limits.py; do
             "$PY" -m coverage run --branch --parallel-mode --source=. \
               --omit="dashboard/*,tests/*,.venv-test/*" "$f" >/dev/null 2>&1 || true
@@ -908,6 +909,9 @@ jobs:
 
       - name: keepalive proxy TLS surface
         run: python3 tests/test_proxy_tls.py
+
+      - name: keepalive proxy System One endpoint (offline, fake engine with scripted first-token distributions)
+        run: python3 tests/test_proxy_systemone.py
 
       - name: No test file in tests/ is left unrun
         run: |

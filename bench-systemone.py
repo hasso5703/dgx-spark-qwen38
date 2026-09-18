@@ -27,6 +27,10 @@ independent Jev evaluations used where one exists so the numbers stay comparable
              pinned Wikipedia GDPR article: every question 5 times batched in one call
              and 5 times one per call, to measure what batching costs and whether it
              moves any answer (their claim: std dev 0.0, 12.2x cheaper, 10.0x faster).
+  public     TypeSafe's 20 public evaluation cases (76 document nodes, 408 questions from
+             four business workflows) with Jev's saved answers, Opus's, Sol's and two
+             frontier references per question: agreement with each, accuracy against the
+             references where the two agree.
 
 Targets: `ours` is the keepalive proxy on this box (QWEN38_SYSTEMONE_URL, default
 http://127.0.0.1:30001, key ~/.config/qwen38/api-key); `jev` is https://api.typesafe.ai
@@ -50,6 +54,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -61,6 +66,10 @@ TARGETS = {
             "key": Path.home() / ".config/qwen38/typesafe-api-key", "concurrency": 4},
 }
 RETRY_STATUS = {429, 502, 503, 529}
+# The hosted API publishes probabilities rounded to two decimals, so a 0.00 on the gold
+# answer would be an infinite loss that says nothing about the model. Both targets are
+# clipped at half that resolution; Brier is the primary calibration number anyway.
+LOGLOSS_FLOOR = 0.005
 
 # ---- tasks: raw public files -> JSONL items {id, payload, gold} ----------------------
 
@@ -207,8 +216,37 @@ def prepare_gdpr(raw, out):
     return items
 
 
+PUBLIC_WORKFLOWS = ("agent_trace_observability", "customer_service", "invoice_processing", "security_incidents")
+
+
+def prepare_public(raw, out):
+    """TypeSafe's 20 public evaluation cases (evals.typesafe.ai, viewer data as downloaded
+    on 2026-09-16 by JoshuaSP/open-jev, sha256 in its manifest): 76 nodes, each one
+    document and the questions Jev was asked about it, with Jev's own saved answers
+    (model typesafe:v13), Opus's and Sol's, and two independent references (gpt-6-astra,
+    claude-fable-5-1) per question. Selected diagnostic cases, not a sample of the 711:
+    the numbers say how the systems compare on these, nothing about the full benchmark."""
+    src = raw / "typesafe-public-evals"
+    items = []
+    for wf in PUBLIC_WORKFLOWS:
+        data = json.loads((src / f"{wf}.json").read_text(encoding="utf-8"))
+        for case_id, case in data["cases"].items():
+            refs = case.get("reference_answers") or {}
+            saved = {m: {n["node"]: n for n in case["models"][m]["nodes"]} for m in case["models"]}
+            for node in case["models"]["typesafe"]["nodes"]:
+                if not node.get("ran") or not node.get("answers"):
+                    continue
+                questions = {qid: data["questions"][idx] for qid, idx in node["questions"].items()}
+                items.append({"id": f"{wf}/{case_id}/{node['node']}", "workflow": wf,
+                              "payload": {"state": data["documents"][node["doc"]], "questions": questions},
+                              "gold": {"references": refs.get(node["node"], {}),
+                                       "saved": {m: (saved[m].get(node["node"]) or {}).get("answers", {})
+                                                 for m in case["models"]}}})
+    return items
+
+
 PREPARERS = {"boolq": prepare_boolq, "mmlu-pro": prepare_mmlu_pro, "xnli-fr": prepare_xnli_fr,
-             "mmmlu-fr": prepare_mmmlu_fr, "gdpr": prepare_gdpr}
+             "mmmlu-fr": prepare_mmmlu_fr, "gdpr": prepare_gdpr, "public": prepare_public}
 
 
 def cmd_prepare(args):
@@ -399,7 +437,7 @@ def tv_distance(a, b):
 
 def report_classification(task, items, runs):
     lines = [f"# {task}: {len(items)} items", ""]
-    lines.append("| target | n | accuracy [95% CI] | ECE-10 | Brier | log loss | mean top p | over-confidence | latency p50 / p95 | input tokens |")
+    lines.append("| target | n | accuracy [95% CI] | ECE-10 | Brier | log loss (floor 0.005) | mean top p | over-confidence | latency p50 / p95 | input tokens |")
     lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     per_target = {}
     for name, rows in runs.items():
@@ -420,7 +458,7 @@ def report_classification(task, items, runs):
                 p_gold = r["p_yes"] if r["gold"] else 1 - r["p_yes"]
             else:
                 p_gold = float(r["dist"].get(r["gold"], 0.0))
-            ll -= math.log(max(p_gold, 1e-15))
+            ll -= math.log(max(p_gold, LOGLOSS_FLOOR))
         ll /= len(recs)
         e = ece(tops, hits)
         lat = [r["latency"] for r in recs]
@@ -532,7 +570,7 @@ def cmd_fanout(args):
     print("| state chars | questions | run | latency | input tokens | cached tokens | label mass |")
     print("|---:|---:|---:|---:|---:|---:|---:|")
     for chars in [int(x) for x in args.state_chars.split(",")]:
-        state = article[:chars]
+        state = article[args.offset:args.offset + chars]          # a fresh offset is a cold prefix
         for n in [int(x) for x in args.questions.split(",")]:
             qs = {f"q{i}": {"type": "noul", "instructions": f"Does the text mention {words[i % len(words)]}?"} for i in range(n)}
             for run in range(args.repeats):
@@ -542,11 +580,13 @@ def cmd_fanout(args):
 
 
 def fit_temperature(recs):
-    """Split by id hash, fit one temperature on half A (least negative log likelihood of
-    the gold answer under p^(1/T) renormalized), report ECE and log loss on half B before
-    and after. Temperature scaling never changes the argmax, so accuracy is untouched."""
-    a = [r for r in recs if hash(r["id"]) % 2 == 0]
-    b = [r for r in recs if hash(r["id"]) % 2 == 1]
+    """Split by a CRC of the id (Python's hash() changes per process, so it would split
+    differently on every run), fit one temperature on half A (least negative log
+    likelihood of the gold answer under p^(1/T) renormalized), report ECE and log loss
+    on half B before and after. Temperature scaling never changes the argmax, so
+    accuracy is untouched."""
+    a = [r for r in recs if zlib.crc32(r["id"].encode()) % 2 == 0]
+    b = [r for r in recs if zlib.crc32(r["id"].encode()) % 2 == 1]
 
     def p_gold(r, t):
         dist = {k: float(v) for k, v in r["dist"].items()}
@@ -556,11 +596,11 @@ def fit_temperature(recs):
         return scaled.get(gold, 0.0) / z, {k: v / z for k, v in scaled.items()}
 
     def nll(rows, t):
-        return -sum(math.log(max(p_gold(r, t)[0], 1e-15)) for r in rows) / max(len(rows), 1)
+        return -sum(math.log(max(p_gold(r, t)[0], LOGLOSS_FLOOR)) for r in rows) / max(len(rows), 1)
 
     grid = [x / 20 for x in range(6, 101)]                 # 0.30 .. 5.00
     best = min(grid, key=lambda t: nll(a, t))
-    lines = [f"- temperature fitted on {len(a)} items (half A, by id hash): T = {best:.2f}; evaluated on the other {len(b)}"]
+    lines = [f"- temperature fitted on {len(a)} items (half A, by CRC of the id): T = {best:.2f}; evaluated on the other {len(b)}"]
     for label, t in (("T = 1.00 (raw readout)", 1.0), (f"T = {best:.2f}", best)):
         tops, hits = [], []
         for r in b:
@@ -574,21 +614,114 @@ def fit_temperature(recs):
     return lines
 
 
+def _verdict(answer):
+    """One comparable value per answer: the choice, the modal level of a score, yes/no
+    for a noul at 0.5. Reference sets carry `value` in the same currency."""
+    t = answer.get("type")
+    if t == "noul":
+        return "true" if float(answer["noul"]) >= 0.5 else "false"
+    if t == "score":
+        probs = answer.get("probabilities") or {}
+        return max(probs, key=probs.__getitem__) if probs else str(int(round(float(answer["score"]))))
+    return answer.get("choice")
+
+
+def _reference(sets):
+    """The two independent references agree -> that value; they differ -> None (tied,
+    excluded from accuracy like the published replays do); none -> None."""
+    values = []
+    for st in sets or []:
+        v = st.get("value")
+        values.append(str(v).lower() if isinstance(v, bool) else str(v))
+    if len(values) >= 2 and len(set(values)) == 1:
+        return values[0]
+    return None
+
+
+def report_public(items, runs):
+    lines = [f"# public: TypeSafe's 20 public cases, {len(items)} nodes, "
+             f"{sum(len(it['payload']['questions']) for it in items)} questions", "",
+             "References are the two frontier models' answers where they agree (model-derived, not human "
+             "labels; questions where they disagree are excluded). Saved answers come from the viewer "
+             "data: Jev (typesafe:v13), Opus, Sol.", ""]
+    lines.append("| target | questions | vs reference (n) | = saved Jev | = Opus | = Sol | mean TV to saved Jev | latency p50 |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    # the saved models scored the same way, as rows of their own
+    rows_by_target = dict(runs)
+    for m in ("typesafe", "opus", "sol"):
+        rows_by_target[f"saved {m}"] = {it["id"]: {"answers": it["gold"]["saved"].get(m, {}), "latency_s": float("nan")}
+                                        for it in items if it["gold"]["saved"].get(m)}
+    per_wf = {}
+    for name, rows in rows_by_target.items():
+        n_q = ref_n = ref_hit = same_jev = same_opus = same_sol = 0
+        tvs, lats = [], []
+        for it in items:
+            row = rows.get(it["id"])
+            if not row or not row.get("answers"):
+                continue
+            lats.append(row.get("latency_s", float("nan")))
+            saved = it["gold"]["saved"]
+            for qid, ans in row["answers"].items():
+                if qid not in it["payload"]["questions"]:
+                    continue
+                n_q += 1
+                v = _verdict(ans)
+                ref = _reference((it["gold"]["references"].get(qid) or {}).get("sets"))
+                if ref is not None:
+                    ref_n += 1
+                    ref_hit += v == ref
+                    per_wf.setdefault((name, it["workflow"]), [0, 0])
+                    per_wf[(name, it["workflow"])][0] += v == ref
+                    per_wf[(name, it["workflow"])][1] += 1
+                for m, counter in (("typesafe", "jev"), ("opus", "opus"), ("sol", "sol")):
+                    sa = saved.get(m, {}).get(qid)
+                    if sa:
+                        same = v == _verdict(sa)
+                        if counter == "jev":
+                            same_jev += same
+                            if ans.get("type") != "noul" and sa.get("probabilities") and ans.get("probabilities"):
+                                tvs.append(tv_distance(ans["probabilities"], sa["probabilities"]))
+                            elif ans.get("type") == "noul" and "noul" in sa:
+                                tvs.append(abs(float(ans["noul"]) - float(sa["noul"])))
+                        elif counter == "opus":
+                            same_opus += same
+                        else:
+                            same_sol += same
+        if not n_q:
+            continue
+        lat = [x for x in lats if x == x]
+        lines.append(f"| {name} | {n_q} | {ref_hit / max(ref_n, 1):.3f} ({ref_n}) | {same_jev / n_q:.3f} | "
+                     f"{same_opus / n_q:.3f} | {same_sol / n_q:.3f} | {statistics.mean(tvs) if tvs else float('nan'):.4f} | "
+                     f"{percentile(lat, 0.5) if lat else float('nan'):.3f}s |")
+    lines += ["", "| target | workflow | vs reference | n |", "|---|---|---:|---:|"]
+    for (name, wf), (hit, n) in sorted(per_wf.items()):
+        lines.append(f"| {name} | {wf} | {hit / n:.3f} | {n} |")
+    return "\n".join(lines)
+
+
 def cmd_report(args):
-    items = load_items(args.data, args.task, None)
+    items = load_items(args.data, args.task, args.limit)
     run_dir = Path(args.data) / "runs" / args.task
     runs = {p.stem: load_done(p) for p in sorted(run_dir.glob("*.jsonl"))} if run_dir.exists() else {}
-    if not runs:
+    if not runs and args.task != "public":            # public scores the saved models even with no run
         sys.exit(f"no runs under {run_dir}")
-    text = report_gdpr(items, runs) if args.task == "gdpr" else report_classification(args.task, items, runs)
-    if args.fit_temperature and args.task != "gdpr":
+    if args.task == "gdpr":
+        text = report_gdpr(items, runs)
+    elif args.task == "public":
+        text = report_public(items, runs)
+    else:
+        text = report_classification(args.task, items, runs)
+    if args.fit_temperature and args.task not in ("gdpr", "public"):
         for name, rows in runs.items():
             recs = score_rows(items, rows)
             if len(recs) == len(items):
                 text += f"\n\n## {name}: temperature scaling\n\n" + "\n".join(fit_temperature(recs))
     out = Path(args.data) / "reports"
     out.mkdir(parents=True, exist_ok=True)
-    (out / f"{args.task}.md").write_text(text + "\n", encoding="utf-8")
+    name = f"{args.task}-first{args.limit}" if args.limit else args.task
+    if args.limit:
+        text = f"(first {args.limit} items of the task file only)\n\n" + text
+    (out / f"{name}.md").write_text(text + "\n", encoding="utf-8")
     print(text)
 
 
@@ -606,11 +739,13 @@ def main():
     p.add_argument("--timeout", type=float, default=600.0)
     p = sub.add_parser("report"); p.add_argument("--task", required=True, choices=sorted(PREPARERS))
     p.add_argument("--fit-temperature", action="store_true", help="fit T on half the items, report the other half")
+    p.add_argument("--limit", type=int, default=0, help="score the first N items only (a run made with the same --limit)")
     p = sub.add_parser("fanout")
     p.add_argument("--target", default="ours", choices=sorted(TARGETS))
     p.add_argument("--state-chars", default="2000,20000,80000")
     p.add_argument("--questions", default="1,4,13,50")
     p.add_argument("--repeats", type=int, default=3)
+    p.add_argument("--offset", type=int, default=0, help="start the filler text here, so the prefix is one no earlier call cached")
     p.add_argument("--model", default="jev-latest")
     p.add_argument("--timeout", type=float, default=600.0)
     args = ap.parse_args()

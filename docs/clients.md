@@ -139,3 +139,38 @@ qwen38-keepalive`), so per-client throughput and refusals become readable
 without a telemetry component. `/health` stays open for monitoring. A
 missing, empty or malformed keys file stops the unit at start: the wall is
 present or the unit is down, never silently absent.
+
+## Typed decisions: TypeSafe SDK and HTTP (v6.19)
+
+`POST /v1/systemone` speaks the wire contract of TypeSafe's Jev, served by the lane behind the
+proxy (README, "Typed decisions"). The official SDK works unchanged against this box:
+
+```bash
+pip install typesafe-sdk
+export TYPESAFE_BASE_URL=http://127.0.0.1:30001          # or the tailnet address, or https:// with the optional TLS
+export TYPESAFE_API_KEY=$(cat ~/.config/qwen38/api-key)  # the serving key; a client key from the identity map works too
+```
+
+```python
+from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
+
+with TypeSafeClient() as client:
+    r = client.system_one(
+        state={"document": "I was charged twice. Please fix this ASAP."},
+        questions={
+            "billing": Noul(instructions="Is this ticket about billing?"),
+            "tone": Choice(instructions="What is the customer's tone?", criteria={"calm": None, "frustrated": None, "angry": None}),
+            "urgency": Score(instructions="How urgent is this ticket?", criteria=["can wait", "this week", "today"]),
+        })
+print(r.nouls["billing"].noul, r.choices["tone"].choice, r.scores["urgency"].score, r.model)
+```
+
+Verified with `typesafe-sdk` 0.7.0 (`tests/test_proxy_systemone.py` runs the SDK round trip when
+the package is importable). The SDK's default timeout is 10 s; a very large state prefilled
+cold can take longer on this box, so pass `timeout=` for those. `model` may be any of Jev's
+aliases or the lane's own name; the response's `model` is what the lane served. The one SDK
+call that does not translate is `client.models.list()`: `GET /v1/models` keeps the OpenAI shape
+that opencode and `bench.sh` read. Errors: 422 with `error.message` and `error.param` for a
+request that will not evaluate, 503 with `Retry-After` while the engine restarts (the same
+message as the relay path), 502 when the engine answered a branch with no usable distribution.
+

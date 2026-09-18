@@ -66,6 +66,12 @@ class Engine(http.server.BaseHTTPRequestHandler):
     delay = 0.0
     cached_tokens = None
     model = "qwen3.8-test"
+    pool = 100000            # what /get_server_info reports as max_total_num_tokens
+    server_info_fail = False # when True, /get_server_info answers 503 (an engine still loading)
+    models_fail = False      # when True, /v1/models answers 503
+    garbage = None           # when set, every chat completion answers this raw body with status 200
+    thought = "the state says so"   # what a thinking request (no logprobs asked) answers with
+    thought_truncated = False       # when True the thinking answer ends by length, not at </think>
 
     def log_message(self, *a):
         pass
@@ -82,9 +88,15 @@ class Engine(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/v1/models":
-            self._send(200, {"object": "list", "data": [{"id": Engine.model, "object": "model"}]})
+            if Engine.models_fail:
+                self._send(503, {})
+            else:
+                self._send(200, {"object": "list", "data": [{"id": Engine.model, "object": "model"}]})
         elif self.path == "/get_server_info":
-            self._send(200, {"max_total_num_tokens": 100000})
+            if Engine.server_info_fail:
+                self._send(503, {})
+            else:
+                self._send(200, {"max_total_num_tokens": Engine.pool})
         elif self.path == "/health":
             self._send(200, {})
         else:
@@ -103,7 +115,21 @@ class Engine(http.server.BaseHTTPRequestHandler):
         t0 = time.time()
         if Engine.delay:
             time.sleep(Engine.delay)
-        user = body["messages"][-1]["content"]
+        if Engine.garbage is not None:
+            raw = Engine.garbage if isinstance(Engine.garbage, bytes) else json.dumps(Engine.garbage).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
+            return
+        if not body.get("logprobs"):                       # a thinking request: phase one of the lever
+            with Engine.lock:
+                Engine.seen.append({"t0": t0, "t1": time.time(), "body": body, "auth": self.headers.get("Authorization")})
+            self._send(200, {"id": "chatcmpl-think", "object": "chat.completion", "model": Engine.model,
+                             "choices": [{"index": 0, "message": {"role": "assistant", "content": "",
+                                                                  "reasoning_content": Engine.thought},
+                                          "finish_reason": "length" if Engine.thought_truncated else "stop"}],
+                             "usage": {"prompt_tokens": 40, "completion_tokens": 7, "total_tokens": 47}})
+            return
+        user = body["messages"][-1]["content"] if body["messages"][-1]["role"] == "user" else body["messages"][-2]["content"]
         if Engine.fail_status:
             self._send(Engine.fail_status, {"error": {"message": f"engine says {Engine.fail_status}",
                                                         "type": "invalid_request_error"}})
@@ -172,7 +198,14 @@ class SystemOne(unittest.TestCase):
         Engine.delay = 0.0
         Engine.cached_tokens = None
         Engine.model = "qwen3.8-test"
+        Engine.pool = 100000
+        Engine.server_info_fail = False
+        Engine.models_fail = False
+        Engine.garbage = None
+        Engine.thought = "the state says so"
+        Engine.thought_truncated = False
         self.mod._SERVED.update(name=None, ts=0.0)
+        self.mod.invalidate_pool()
 
     def post(self, obj, raw=None, headers=None):
         data = raw if raw is not None else json.dumps(obj).encode()
@@ -232,7 +265,7 @@ class SystemOne(unittest.TestCase):
         self.assertEqual(headers["x-systemone-label-mass"], "0.9500")
 
     def test_case_space_and_punctuation_variants_count_for_their_label(self):
-        Engine.default = {"A": 0.10, " a": 0.20, "a.": 0.10, " A:": 0.10, "B": 0.50}
+        Engine.default = {"A": 0.10, " a": 0.20, "a.": 0.05, "A)": 0.05, " A:": 0.10, "B": 0.50}
         status, _, out = self.post({"state": "s", "model": "m", "questions": {
             "q": {"type": "choice", "instructions": "i", "criteria": {"x": None, "y": None}}}})
         self.assertEqual(status, 200, out)
@@ -332,6 +365,9 @@ class SystemOne(unittest.TestCase):
             self.assertEqual(b["model"], "qwen3.8-test")
             self.assertEqual(b["messages"][0]["role"], "system")
             self.assertEqual(rec["auth"], "Bearer client-token")
+            # the invariant with a scheduler behind it: never the path that kills a mixed batch
+            self.assertNotIn("token_ids_logprob", json.dumps(b))
+            self.assertNotIn("return_logprob", json.dumps(b))
 
     def test_all_branches_share_the_state_prefix_byte_for_byte(self):
         self.post(self.quickstart())
@@ -383,7 +419,9 @@ class SystemOne(unittest.TestCase):
         self.assertEqual(out["answers"]["q"]["choice"], "facturation")
 
     # ---- the fan-out and the cache -------------------------------------------
-    def test_a_long_state_is_sent_alone_before_the_questions_fan_out(self):
+    def test_a_long_state_is_sent_alone_before_the_questions_fan_out_when_asked(self):
+        """Off by default (SYSTEMONE_WARM_CHARS=0, measured slower); this suite turns it on
+        with 400 so the path stays tested."""
         Engine.delay = 0.15
         state = "x" * 600                                   # over SYSTEMONE_WARM_CHARS=400
         qs = {f"q{i}": {"type": "noul", "instructions": f"question {i}"} for i in range(3)}
@@ -396,6 +434,7 @@ class SystemOne(unittest.TestCase):
         self.assertEqual(seen[0]["body"]["messages"][-1]["content"].count("question 0"), 1)
 
     def test_a_short_state_fans_out_at_once(self):
+        self.assertEqual(int(os.environ["SYSTEMONE_WARM_CHARS"]), 400, "this suite opts the warm-first send in")
         Engine.delay = 0.15
         qs = {f"q{i}": {"type": "noul", "instructions": f"question {i}"} for i in range(3)}
         status, _, out = self.post({"state": "short", "model": "m", "questions": qs})
@@ -491,6 +530,33 @@ class SystemOne(unittest.TestCase):
         self.assertEqual(out["answers"]["q"]["probabilities"]["opt0"], 0.5)
         self.assertEqual(out["answers"]["q"]["probabilities"][f"opt{labels.index('AB')}"], 0.5)
 
+    # ---- the oversize guard, on the longest branch ----------------------------
+    def test_a_large_state_that_fits_is_counted_by_the_engine_and_answered(self):
+        state = "word " * 60000                                # ~300 kB, past the 200 kB nomination line
+        status, _, out = self.post({"state": state, "model": "m", "questions": {"q": {"type": "noul", "instructions": "i"}}})
+        self.assertEqual(status, 200, str(out)[:200])
+        paths = [r["body"] for r in Engine.seen]
+        self.assertEqual(len(paths), 1, "one branch reached the engine after the count")
+
+    def test_a_state_over_the_pool_is_refused_by_the_engines_count_never_relayed(self):
+        Engine.pool = 50000                                    # usable 46,000 tokens; the state counts 60,000 words
+        state = "word " * 60000
+        status, _, out = self.post({"state": state, "model": "m", "questions": {"q": {"type": "noul", "instructions": "i"}}})
+        self.assertEqual(status, 422, str(out)[:200])
+        self.assertIn("too long for this lane", out["error"]["message"])
+        self.assertIn("counted by the engine", out["error"]["message"])
+        self.assertEqual(out["error"]["param"], "state")
+        self.assertEqual(Engine.seen, [], "an oversize state must never reach a chat completion")
+
+    def test_a_monster_state_waits_while_the_pool_is_unmeasured(self):
+        Engine.server_info_fail = True                         # the engine is loading: no pool to size against
+        state = "word " * 140000                               # est ~280k tokens by size, over any lane's ceiling
+        status, headers, out = self.post({"state": state, "model": "m", "questions": {"q": {"type": "noul", "instructions": "i"}}})
+        self.assertEqual(status, 503, str(out)[:200])
+        self.assertEqual(out["error"]["type"], "engine_warming")
+        self.assertEqual(headers.get("Retry-After"), "30")
+        self.assertEqual(Engine.seen, [])
+
     # ---- the engine's own failures -------------------------------------------
     def test_an_engine_401_is_relayed_as_401(self):
         Engine.fail_status = 401
@@ -567,6 +633,104 @@ class SystemOne(unittest.TestCase):
         r = [0.70 ** 2, 0.20 ** 2, 0.05 ** 2]; t = sum(r)
         self.assertAlmostEqual(cold["answers"]["q"]["probabilities"]["x"], r[0] / t, places=4)
         self.assertGreater(cold["answers"]["q"]["confidence"], hot["answers"]["q"]["confidence"])
+
+    def test_an_answer_prefix_starts_the_assistant_turn_and_continues_it(self):
+        old = self.mod.SYSTEMONE_ANSWER_PREFIX
+        self.mod.SYSTEMONE_ANSWER_PREFIX = "Answer:"
+        try:
+            status, _, out = self.post({"state": "s", "model": "m", "questions": {"q": {"type": "noul", "instructions": "i"}}})
+        finally:
+            self.mod.SYSTEMONE_ANSWER_PREFIX = old
+        self.assertEqual(status, 200, out)
+        b = Engine.seen[0]["body"]
+        self.assertEqual(b["messages"][-1], {"role": "assistant", "content": "Answer:"})
+        self.assertIs(b["continue_final_message"], True)
+        self.assertIs(b["add_generation_prompt"], False)
+        status, _, _ = self.post({"state": "s", "model": "m", "questions": {"q": {"type": "noul", "instructions": "i"}}})
+        self.assertEqual(status, 200)
+        self.assertNotIn("continue_final_message", Engine.seen[-1]["body"], "the default reads the first assistant token")
+
+    def test_the_option_cap_never_exceeds_the_label_list(self):
+        self.assertLessEqual(self.mod.SYSTEMONE_MAX_OPTIONS, len(self.mod.SYSTEMONE_LABELS))
+        self.assertGreaterEqual(self.mod.SYSTEMONE_MAX_OPTIONS, 2)
+
+    def test_an_engine_answer_without_choices_is_a_502_that_says_so(self):
+        Engine.garbage = {"id": "x", "object": "chat.completion"}
+        status, _, out = self.post(self.quickstart(model="m"))
+        self.assertEqual(status, 502, out)
+        self.assertIn("no choices[0].logprobs", out["error"]["message"])
+
+    def test_an_engine_answer_that_is_not_json_is_a_502_that_says_so(self):
+        Engine.garbage = b"<html>gateway</html>"
+        status, _, out = self.post(self.quickstart(model="m"))
+        self.assertEqual(status, 502, out)
+        self.assertIn("not JSON", out["error"]["message"])
+
+    def test_an_alias_passes_through_when_the_engine_cannot_name_its_model(self):
+        Engine.models_fail = True
+        status, _, out = self.post(self.quickstart())          # jev-latest
+        self.assertEqual(status, 200, out)
+        self.assertEqual({r["body"]["model"] for r in Engine.seen}, {"jev-latest"})
+        self.assertEqual(out["model"], "qwen3.8-test", "the response still names what the engine answered as")
+
+    def test_the_served_model_name_is_cached_between_calls(self):
+        self.post(self.quickstart())
+        self.assertEqual(self.mod._SERVED["name"], "qwen3.8-test")
+        Engine.models_fail = True                               # a second call must not need /v1/models
+        status, _, out = self.post(self.quickstart())
+        self.assertEqual(status, 200, out)
+        self.assertEqual({r["body"]["model"] for r in Engine.seen[-3:]}, {"qwen3.8-test"})
+
+    def test_a_thinking_budget_thinks_first_then_reads_the_label_after_the_closed_thought(self):
+        old = self.mod.SYSTEMONE_THINK_TOKENS
+        self.mod.SYSTEMONE_THINK_TOKENS = 512
+        try:
+            status, headers, out = self.post({"state": "s", "model": "m", "questions": {
+                "q": {"type": "choice", "instructions": "i", "criteria": {"x": None, "y": None, "z": None}}}})
+        finally:
+            self.mod.SYSTEMONE_THINK_TOKENS = old
+        self.assertEqual(status, 200, out)
+        self.assertEqual(len(Engine.seen), 2, "one thinking request, one readout")
+        think, read = Engine.seen[0]["body"], Engine.seen[1]["body"]
+        self.assertEqual(think["max_tokens"], 512)
+        self.assertEqual(think["stop"], ["</think>"])
+        self.assertEqual(think["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertNotIn("logprobs", think)
+        self.assertEqual(read["messages"][-1], {"role": "assistant", "content": "the state says so\n</think>\n\n"})
+        self.assertIs(read["continue_final_message"], True)
+        self.assertEqual(read["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertEqual(read["max_tokens"], 1)
+        self.assertIs(read["logprobs"], True)
+        self.assertEqual(read["messages"][:2], think["messages"][:2], "same prefix, so the cache holds the thought")
+        self.assertEqual(out["answers"]["q"]["choice"], "x")
+        self.assertEqual(out["usage"]["output_tokens"], 1 + 7, "the thought's tokens are counted as output")
+        self.assertEqual(headers["x-systemone-branches"], "1")
+
+    def test_a_truncated_thought_is_closed_and_read_all_the_same(self):
+        Engine.thought_truncated = True
+        Engine.thought = "half a thought"
+        old = self.mod.SYSTEMONE_THINK_TOKENS
+        self.mod.SYSTEMONE_THINK_TOKENS = 8
+        try:
+            status, _, out = self.post({"state": "s", "model": "m", "questions": {"q": {"type": "noul", "instructions": "i"}}})
+        finally:
+            self.mod.SYSTEMONE_THINK_TOKENS = old
+        self.assertEqual(status, 200, out)
+        self.assertEqual(Engine.seen[1]["body"]["messages"][-1]["content"], "half a thought\n</think>\n\n")
+
+    def test_the_thought_is_taken_from_content_when_the_engine_did_not_split_it(self):
+        thought = self.mod.systemone_thought
+        self.assertEqual(thought({"choices": [{"message": {"content": "<think>\nabc\n</think>\n\nA"}}], "usage": {}}), ("abc", 0, 0))
+        self.assertEqual(thought({"choices": [{"message": {"reasoning_content": " r ", "content": "A"}}],
+                                  "usage": {"prompt_tokens": 3, "completion_tokens": 9}}), ("r", 3, 9))
+        with self.assertRaises(self.mod.SystemOneUpstream):
+            thought({"choices": []})
+
+    def test_the_lever_is_off_by_default_and_never_thinks(self):
+        self.assertEqual(self.mod.SYSTEMONE_THINK_TOKENS, 0)
+        self.post(self.quickstart())
+        self.assertEqual(len(Engine.seen), 3)
+        self.assertTrue(all(b["body"].get("logprobs") for b in Engine.seen))
 
     # ---- pure pieces ---------------------------------------------------------
     def test_the_label_list_is_588_distinct_capital_labels_in_product_order(self):

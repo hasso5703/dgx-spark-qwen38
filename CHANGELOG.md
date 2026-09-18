@@ -1,5 +1,108 @@
 # Changelog
 
+## v1.15.0 (2026-09-19): typed decisions, a System One endpoint on the lane you run
+
+**TypeSafe launched Jev on 2026-09-15**, a hosted model that takes a state and typed
+questions (choice, score, yes/no) and returns probabilities instead of text, at
+$0.042 per million input tokens. Three days of launch coverage later, its founder had
+conceded on the launch thread that it is "exactly" a zero-shot classifier, the
+independent evaluations put it a notch under the frontier on accuracy (67.8% against
+Opus 5's 73.1% on their own workflows) and well ahead on cost and latency, and its one
+load-bearing claim, calibration, had no external evidence. What it does have is a
+clean contract, and a box that already runs a 27B or a 176B model can serve that
+contract itself: the keepalive proxy now answers **`POST /v1/systemone`** with Jev's
+wire format, from the lane behind it, with nothing sent anywhere.
+
+**How the readout works.** Every question becomes one chat completion of exactly one
+token. The options are named by single-token letters (the 26 capitals and 562 verified
+two-letter pairs; `tokenizer.json` blob `0997f410c57a1f4e`, byte-identical on both
+lanes, every label one id that survives the `\n\n` the chat template ends on), the
+engine returns `top_logprobs` for the answer slot, and the probability of each letter
+is the probability of its option, renormalized. Thinking is off through the template.
+Nothing is generated and nothing is parsed. The state is the byte-identical prefix of
+every branch, which is what the radix cache reuses; every branch goes out at once (a
+send of the first branch alone, meant to warm the cache, was measured slower on this
+engine and is off). Question ids never reach the model: Jev does not send them either,
+and a key like `refund_requested` would leak the asker's expectation.
+
+**Why `top_logprobs` on `/v1/chat/completions` and never `token_ids_logprob` on
+`/generate`.** The obvious path, the one `ekzhang/openjev-sglang` takes, asks the engine
+for the logprobs of specific token ids. On the served build (nightly `4ccff141d`,
+2026-09-07) `get_token_ids_logprobs_raw` appends a bare `[]` for a co-batched request
+that asked for nothing (`logprob_processor.py:144-146`) and `batch_result_processor.py`
+calls `.tolist()` on every entry (419-422, 950-952; the 27B lane's official 0.5.19
+carries the same two at 489-498 and 1044-1054): the first batch that mixes one
+scoring request with one ordinary chat request kills the scheduler (sglang#34719; the
+guard in #35052 is still open). The top-k arm slices a tensor for every request, an
+empty tensor at k=0 (`logprob_processor.py:102-105`), and survives the mix. A dedicated
+deployment can make every request ask for logprobs and dodge this; a shared lane mixes
+on every step, so this proxy takes the only path that is safe on it. Read in the
+container's own source, not reproduced on the production engine.
+
+**What is the hosted API's, to the digit, and how that was learned.** The docs say the
+confidence is a normalized entropy, and their two worked examples fit it. The live
+`jev-1.13.0` does not: 166 (probabilities, confidence) pairs collected on 2026-09-18
+with a real key say that a Choice's confidence is `(p_max * N - 1) / (N - 1)` (46 pairs
+within 0.018) and a Score's is `1 - N * MAD_mode / floor(N^2 / 4)` (120 pairs within
+0.030, the residual being the two-decimal rounding of the published probabilities).
+Those pages were written for `jev-1.12`; the proxy implements what the live model
+returns. Also read off the live model, and worth knowing before comparing: its
+probabilities are sample frequencies (ten identical calls moved one option by a
+standard deviation of 0.014 to 0.027, a score by 0.025, a noul by 0.005), it spends
+17 plus about 7 output tokens per option of a Choice inside (2,412 output tokens for
+255 options, latency flat at 0.6 s), and it accepted every shape the docs promise.
+This readout is a softmax and spends one token per question whatever the option count;
+it does not repeat to the digit on this engine, whose kernels depend on batch
+composition (LEAN.md): the figures are in BENCHMARKS.md.
+
+**The SDK works unchanged.** Jev's aliases resolve to the served model and the response
+names it; `typesafe-sdk` 0.7.0 round-trips against the proxy in the test suite. Choice
+takes Jev's 255 options (asked for 255 top_logprobs, the served build returned 255),
+Score keeps Jev's 2 to 10 levels, `GET /v1/models` keeps the OpenAI shape opencode and
+`bench.sh` read, so `models.list()` is the one SDK call that does not translate.
+
+**Four levers, off by default, decided by the benchmark.** `SYSTEMONE_PERMUTATIONS=2`
+asks every question in the given and the reversed option order and averages (a letter
+readout prefers some positions); `SYSTEMONE_TEMPERATURE` scales the label logits;
+`SYSTEMONE_MIN_LABEL_MASS` refuses a question whose first-token probability mostly
+missed the labels, which is what TypeSafe's CEO said a masked readout should do
+("if ever a model was assigning probability to an invalid token, the model is by
+definition confused. you'd be better off erroring"); `SYSTEMONE_THINK_TOKENS=N` lets
+the model think first, stopped at the end of the thought or at N tokens, then reads
+the label off the continued turn (two requests per branch, the second served from the
+cache up to the end of the thought), the one lever that trades System One's latency
+for accuracy where a single forward pass cannot settle the question. The share that
+landed on a label is always reported in `x-systemone-label-mass`.
+
+**Measured, same payloads to this box and to the hosted Jev** (`bench-systemone.py`,
+BENCHMARKS.md "Typed decisions"): on
+TypeSafe's own 20 public cases (408 questions, references from GPT-6 Astra and Claude Fable 5.1)
+the 27B lane with two option orders scores 93.5% against the hosted model's 93.2%; on BoolQ
+(3,270) 89.3% against 91.9% with a better calibration (ECE 1.2% against 2.4%); on MMLU-Pro
+(1,000, the same rows as ekzhang's run) 62.1% against 83.8%, the gap that a single forward pass
+of a 27B cannot close on calculation; in French 71.4% against 78.2% (XNLI) and 74.6% against
+87.4% (MMMLU). A single question answers in 0.2 s warm at any state size, 13 in about a second.
+The raw readout is over-confident by 3.5 to 16 points; the two-order lever removes it where
+position bias lives (BoolQ +2.6 points and ECE 4.7% to 1.2%, MMLU-Pro +4.0 points and 8.3% to
+4.2%) and a fitted temperature does the rest. The thinking budget (`SYSTEMONE_THINK_TOKENS=1024`) on the first 200
+MMLU-Pro rows: 80.0% against the hosted 84.0% on the same rows (the difference's interval
+holds zero) and 57.5% raw, at 8.8 s a question. The warm-first send the draft shipped with
+lost every cold and warm comparison (14.9 s against 5.4 s for 13 questions on a never-seen
+10,800-token state) and is off by default, `SYSTEMONE_WARM_CHARS=0`. Repeatability at
+concurrency 1: an uncertain yes/no moves by a standard deviation of up to 0.11 between
+identical calls, a settled one by under 0.01; this engine's kernels are not batch-invariant.
+Every number, protocol and trap is in BENCHMARKS.md, "Typed decisions".
+
+**What now holds the line.** `tests/test_proxy_systemone.py`: 50 tests against a fake
+engine with scripted first-token distributions (the Jev shape key by key and in the
+hosted key order, the readout over the right tokens and never the wrong ones, never a
+`token_ids_logprob` in any body, the 422s naming the field, the oversize guard on the
+longest branch, a dead engine as the relay path's 503 and never a size refusal, the
+label list re-checked against the local tokenizer, the four levers, the SDK round trip
+when it is importable); `dashboard/tests/test_lifecycle.py` holds three new members of the closed
+outcome vocabulary; every existing proxy suite is unchanged and green; `ruff F,E9`
+clean.
+
 ## v1.14.1 (2026-09-18): the two flash exports measured against each other, and the NVIDIA one downloads
 
 **RadixArk against NVIDIA, probe for probe on one box.** `flash` and

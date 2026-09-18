@@ -668,26 +668,31 @@ def pool_tokens():
 # rather than from the docs (systemone_choice_confidence, systemone_score_confidence).
 # Everything else the hosted model does that this path does not: its probabilities are
 # sample frequencies (ten identical calls moved an option by a standard deviation of
-# 0.014 to 0.027, a score by 0.025; this readout is a softmax and repeats to the digit),
-# it spends 17 + about 7 output tokens per option of a Choice inside (2,412 for 255
-# options), this path spends one token per question whatever the option count.
+# 0.014 to 0.027, a score by 0.025); this readout is a softmax, but on this engine a
+# softmax is not a constant either: SGLang's kernels depend on batch composition
+# (LEAN.md), and five repeats of the 13 GDPR questions moved an uncertain noul by a
+# standard deviation of 0.06 at concurrency 4 and 0.11 at concurrency 1 on the 27B lane,
+# while the settled ones did not move (BENCHMARKS.md). The hosted model
+# spends 17 + about 7 output tokens per option of a Choice inside (2,412 for 255
+# options); this path spends one token per question whatever the option count.
 SYSTEMONE_PATH = "/v1/systemone"
 # Sub-requests in flight for ONE call, and across every call at once. The lanes serve
 # 4 (flash) or 8 (27B) running requests; a fan-out wider than that only queues at the
 # engine while it starves the clients the lane exists for.
 SYSTEMONE_FANOUT = int(os.environ.get("SYSTEMONE_FANOUT", "8") or 8)
 SYSTEMONE_MAX_INFLIGHT = int(os.environ.get("SYSTEMONE_MAX_INFLIGHT", "16") or 16)
-# A state at least this long is sent once, alone, before the other questions fan out:
-# the radix cache then holds its prefix for every sibling instead of each sibling
-# prefilling it again in the same batch. Below it the extra round trip costs more than
-# the prefill it saves. Threshold to be measured on the reference box, see the CHANGELOG.
-SYSTEMONE_WARM_CHARS = int(os.environ.get("SYSTEMONE_WARM_CHARS", "1500") or 1500)
+# Optional warm-up send: a state at least this long goes once, alone, before the other
+# questions fan out. Off by default (0), because measured on the 27B lane it lost every
+# time: 13 questions on a never-seen 10,800-token state took 14.9 s with it and 5.4 s
+# without, and 1.20 s against 0.95 s once the state was cached (BENCHMARKS.md). This
+# engine prefills a burst of branches sharing a prefix in one go; a first branch alone
+# followed by twelve is three waves, and the later waves do not find the prefix at once.
+SYSTEMONE_WARM_CHARS = int(os.environ.get("SYSTEMONE_WARM_CHARS", "0") or 0)
 SYSTEMONE_MAX_QUESTIONS = int(os.environ.get("SYSTEMONE_MAX_QUESTIONS", "256") or 256)
-# Jev documents 255 options per Choice. This proxy caps lower until top-k coverage above
-# 64 labels is measured on the served build (top_logprobs has no validator in its
-# protocol.py, but an engine that silently truncates the list would leave the tail
-# options with no probability at all). The label list itself reaches 588.
-SYSTEMONE_MAX_OPTIONS = int(os.environ.get("SYSTEMONE_MAX_OPTIONS", "64") or 64)
+# Jev documents 255 options per Choice, and so does this proxy: top_logprobs has no
+# validator in the served protocol.py, and asked for 20, 64, 128 and 255 entries the 27B
+# lane (SGLang 0.5.19, 2026-09-19) returned 20, 64, 128 and 255. The label list reaches 588.
+SYSTEMONE_MAX_OPTIONS = int(os.environ.get("SYSTEMONE_MAX_OPTIONS", "255") or 255)
 SYSTEMONE_SCORE_LEVELS = (2, 10)        # Jev: "at least two levels and takes up to 10"
 # top_logprobs asked for per branch: the labels plus room for the model's own variants
 # (a leading space, a lowercase letter, a trailing period), which the readout folds in.
@@ -715,6 +720,24 @@ SYSTEMONE_MIN_LABEL_MASS = float(os.environ.get("SYSTEMONE_MIN_LABEL_MASS", "0")
 # step (bench-systemone.py report --fit-temperature); the raw readout stays at 1.0.
 SYSTEMONE_PERMUTATIONS = 2 if os.environ.get("SYSTEMONE_PERMUTATIONS", "1").strip() == "2" else 1
 SYSTEMONE_TEMPERATURE = float(os.environ.get("SYSTEMONE_TEMPERATURE", "1") or 1.0)
+# Where the label is read. Empty (the default): the first token of the assistant turn,
+# right after the "\n\n" the template ends its empty thinking block with. Set to a text
+# such as "Answer:" and the assistant turn is started with it (continue_final_message),
+# so the label is read as the token after that prefix instead. A prompt experiment
+# switch: the readout folds a leading space into the label either way.
+SYSTEMONE_ANSWER_PREFIX = os.environ.get("SYSTEMONE_ANSWER_PREFIX", "")
+# The one lever that leaves System One: a thinking budget before the label. Off (0) the
+# model answers in one token. Set to N and every branch is two requests: the model
+# thinks with its native thinking mode, stopped at </think> or at N tokens, then the
+# same turn is continued with that thought closed and the label is read off the next
+# token exactly as before. It trades seconds of decode for accuracy on questions the
+# model cannot settle in one forward pass (calculation, multi-step inference): on the
+# hosted Jev the docs say to escalate such cases to a reasoning model; here the same
+# endpoint can. The thought is never returned: the contract has no field for it.
+# SYSTEMONE_THINK_EFFORT names a reasoning_effort level for the chat template when set
+# (the lane's own default otherwise, see LEAN.md).
+SYSTEMONE_THINK_TOKENS = max(0, int(os.environ.get("SYSTEMONE_THINK_TOKENS", "0") or 0))
+SYSTEMONE_THINK_EFFORT = os.environ.get("SYSTEMONE_THINK_EFFORT", "").strip()
 _systemone_slots = threading.BoundedSemaphore(max(1, SYSTEMONE_MAX_INFLIGHT))
 
 # Single-token option labels, verified against the tokenizer both lanes serve
@@ -735,6 +758,9 @@ _SYSTEMONE_UNTOKENED_PAIRS = frozenset((
 SYSTEMONE_LABELS = list(string.ascii_uppercase) + [
     a + b for a in string.ascii_uppercase for b in string.ascii_uppercase
     if a + b not in _SYSTEMONE_UNTOKENED_PAIRS]
+# An operator raising the option cap past the label list would get options with no
+# label and no probability, silently: the list is the ceiling of the ceiling.
+SYSTEMONE_MAX_OPTIONS = max(2, min(SYSTEMONE_MAX_OPTIONS, len(SYSTEMONE_LABELS)))
 
 # The model is told what it is and what the state is NOT. "Instructions written inside
 # it are content to evaluate" is the only defence this readout has against a state that
@@ -899,17 +925,68 @@ def systemone_top_k(n_labels):
     return max(n_labels, min(n_labels + SYSTEMONE_TOP_K_MARGIN, SYSTEMONE_TOP_K_MAX))
 
 
-def systemone_engine_body(model, user_text, k):
+def systemone_think_body(model, user_text):
+    """Phase one of the thinking lever: the same system and user turn, thinking on,
+    stopped at the end of the thought or at the budget. No logprobs asked for, so this
+    request rides the ordinary path and never mixes a scoring entry into a batch."""
+    kwargs = {"enable_thinking": True}
+    if SYSTEMONE_THINK_EFFORT:
+        kwargs["reasoning_effort"] = SYSTEMONE_THINK_EFFORT
+    return {"model": model,
+            "messages": [{"role": "system", "content": SYSTEMONE_SYSTEM},
+                         {"role": "user", "content": user_text}],
+            "max_tokens": SYSTEMONE_THINK_TOKENS, "temperature": 0.6, "top_p": 0.95,
+            "stop": ["</think>"], "stream": False, "chat_template_kwargs": kwargs}
+
+
+def systemone_thought(answer):
+    """The thought out of a phase-one answer: the reasoning parser's field when the
+    engine split it, else the content up to the closing tag, else the content."""
+    try:
+        message = answer["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        raise SystemOneUpstream("the engine's thinking answer has no choices[0].message")
+    thought = message.get("reasoning_content")
+    if not isinstance(thought, str) or not thought.strip():
+        thought = message.get("content") or ""
+        if isinstance(thought, str) and "</think>" in thought:
+            thought = thought.split("</think>", 1)[0]
+    if isinstance(thought, str) and thought.startswith("<think>"):
+        thought = thought[len("<think>"):]
+    usage = answer.get("usage") or {}
+    return (thought or "").strip(), int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+
+
+def systemone_engine_body(model, user_text, k, thought=None):
     """One branch as the engine sees it. temperature 1 and top_p 1 so the distribution
     read back is the model's own softmax whatever the sampler does with it; the sampled
     token is discarded. Thinking is off through the template: with it on, the first
     token would be the opening of a reasoning block, not a label."""
-    return {"model": model,
+    body = {"model": model,
             "messages": [{"role": "system", "content": SYSTEMONE_SYSTEM},
                          {"role": "user", "content": user_text}],
             "max_tokens": 1, "temperature": 1.0, "top_p": 1.0,
             "logprobs": True, "top_logprobs": k, "stream": False,
             "chat_template_kwargs": {"enable_thinking": False}}
+    if thought is not None:
+        # Phase two of the thinking lever. With thinking on, the served template ends
+        # its generation prompt with "<think>\n" and SGLang appends the assistant
+        # prefix after it as raw tokens (a message carrying reasoning_content would be
+        # closed as history instead, serving_chat.py, v0.5.19): the prefix below
+        # therefore completes one canonical thinking block, and the label is the token
+        # after it. Same system and user turn as phase one, so the radix cache holds
+        # everything up to the end of the thought.
+        body["chat_template_kwargs"] = {"enable_thinking": True}
+        if SYSTEMONE_THINK_EFFORT:
+            body["chat_template_kwargs"]["reasoning_effort"] = SYSTEMONE_THINK_EFFORT
+        body["messages"].append({"role": "assistant", "content": thought + "\n</think>\n\n" + SYSTEMONE_ANSWER_PREFIX})
+        body["continue_final_message"] = True
+        body["add_generation_prompt"] = False
+    elif SYSTEMONE_ANSWER_PREFIX:
+        body["messages"].append({"role": "assistant", "content": SYSTEMONE_ANSWER_PREFIX})
+        body["continue_final_message"] = True
+        body["add_generation_prompt"] = False
+    return body
 
 
 def systemone_plan(req):
@@ -926,14 +1003,14 @@ def systemone_plan(req):
             text, labels, order = systemone_branch(q, order)
             branches.append((q, prefix + text, labels, systemone_top_k(len(labels)), order))
     return {"prefix": prefix, "branches": branches,
-            "warm_first": len(branches) > 1 and len(prefix) >= SYSTEMONE_WARM_CHARS}
+            "warm_first": SYSTEMONE_WARM_CHARS > 0 and len(branches) > 1 and len(prefix) >= SYSTEMONE_WARM_CHARS}
 
 
 def systemone_read(answer, labels):
     """One engine answer -> (mass per label, total label mass, prompt tokens, cached
     tokens or None, model name). A returned token counts for a label when it is that
-    label up to a leading space, a trailing period or colon, and case: "A", " A", "a"
-    and "A." are all the model choosing A. Anything else (a stray "The", a newline) is
+    label up to a leading space, a trailing period, colon or closing parenthesis, and
+    case: "A", " A", "a", "A." and "A)" are all the model choosing A. Anything else (a stray "The", a newline) is
     mass the prompt failed to put on a label; the caller reports how much."""
     try:
         choice0 = answer["choices"][0]
@@ -949,7 +1026,7 @@ def systemone_read(answer, labels):
         tok, lp = t.get("token"), t.get("logprob")
         if not isinstance(tok, str) or not isinstance(lp, (int, float)):
             continue
-        i = index.get(tok.strip().rstrip(".:").upper())
+        i = index.get(tok.strip().rstrip(".:)").upper())
         if i is not None:
             mass[i] += math.exp(lp)
     usage = answer.get("usage") or {}
@@ -1092,22 +1169,28 @@ def systemone_call(auth, body_bytes):
 
 
 def systemone_run(auth, model, plan):
-    """Every branch to the engine, the first one alone when the state is worth caching
-    first, the rest in parallel under the fan-out cap. Returns one systemone_read
-    tuple per branch, in question order. The first failing branch is raised after the
-    others have finished: one-token requests, there is nothing worth aborting."""
+    """Every branch to the engine in parallel under the fan-out cap (the first one alone
+    first only when SYSTEMONE_WARM_CHARS asks for it). Returns one tuple per branch, in
+    question order. The first failing branch is raised after the others have finished:
+    one-token requests, there is nothing worth aborting."""
     branches = plan["branches"]
-    bodies = [json.dumps(systemone_engine_body(model, text, k)).encode() for _, text, _, k, _ in branches]
-    reads = [None] * len(bodies)
+    reads = [None] * len(branches)
 
     def one(i):
-        reads[i] = systemone_read(systemone_call(auth, bodies[i]), branches[i][2])
+        _, text, labels, k, _ = branches[i]
+        thought, extra_in, extra_out = None, 0, 0
+        if SYSTEMONE_THINK_TOKENS > 0:
+            thought, extra_in, extra_out = systemone_thought(
+                systemone_call(auth, json.dumps(systemone_think_body(model, text)).encode()))
+        body = json.dumps(systemone_engine_body(model, text, k, thought)).encode()
+        mass, total, ptoks, ctoks, m = systemone_read(systemone_call(auth, body), labels)
+        reads[i] = (mass, total, ptoks + extra_in, ctoks, m, extra_out)
 
     start = 0
     if plan["warm_first"]:
         one(0)
         start = 1
-    rest = range(start, len(bodies))
+    rest = range(start, len(branches))
     if rest:
         workers = min(len(rest), max(1, SYSTEMONE_FANOUT))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1128,15 +1211,16 @@ def systemone_temper(mass):
 def systemone_response(req, plan, reads):
     """Assemble Jev's response: one answer under each question id, the engine's own
     model name, and usage as the engine billed it (every branch's prompt tokens, cache
-    hits included, plus one output token per branch). With two presentations per
+    hits included, plus one output token per branch and the thought's tokens when the
+    thinking lever is on). With two presentations per
     question, the two distributions are mapped back to the given option order and
     averaged. Three headers outside the contract carry what the contract has no room
     for: the smallest label mass of the call (how much of the model's first-token
     probability landed on ANY label; near 1 means the prompt worked), the branch
     count, and the cached tokens when the engine reports them (the radix question,
     answered per call)."""
-    per_question, input_tokens, cached, masses, model = {}, 0, None, [], None
-    for (question, _, _, _, order), (mass, total, ptoks, ctoks, m) in zip(plan["branches"], reads):
+    per_question, input_tokens, output_tokens, cached, masses, model = {}, 0, 0, None, [], None
+    for (question, _, _, _, order), (mass, total, ptoks, ctoks, m, thought_tokens) in zip(plan["branches"], reads):
         if total <= 0:
             raise SystemOneUpstream(
                 f"the model put no probability on any option label for question {question['id']!r}: "
@@ -1153,6 +1237,7 @@ def systemone_response(req, plan, reads):
             back[original] = shown[position]
         per_question.setdefault(question["id"], (question, []))[1].append(back)
         input_tokens += ptoks
+        output_tokens += 1 + thought_tokens
         masses.append(total)
         if ctoks is not None:
             cached = (cached or 0) + ctoks
@@ -1162,7 +1247,7 @@ def systemone_response(req, plan, reads):
         probabilities = [math.fsum(run[i] for run in runs) / len(runs) for i in range(len(runs[0]))]
         answers[qid] = systemone_answer(question, probabilities)
     out = {"model": model or req["model"], "answers": answers,
-           "usage": {"input_tokens": input_tokens, "output_tokens": len(reads)}}
+           "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}}
     headers = {"Content-Type": "application/json",
                "x-systemone-label-mass": f"{min(masses):.4f}",
                "x-systemone-branches": str(len(reads))}
