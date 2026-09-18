@@ -711,6 +711,20 @@ sudo systemctl edit qwen38-dashboard    # [Service] Environment=COCKPIT_BIND=0.0
 sudo systemctl restart qwen38-dashboard
 ```
 
+### What it looks like
+
+![The cockpit's Overview tab: KV pool held, the serving lane with its model, revision, context window and image, unified memory with the driver-refusal counter, and the event stream](docs/img/cockpit-overview.png)
+
+*Overview: what is served, on what pool, with how much memory left. The events on the right are the engine's own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
+
+![The Models tab: every target as a table with its engine image, checkpoint, drafter, serving flags, what is on this box, and the drift against what is installed](docs/img/cockpit-models.png)
+
+*Models: the seven targets as data, derived from `install.sh` and the unit templates, each compared flag by flag against the invocation actually running. "2 DIFFER" is a recipe that would change something if you switched to it.*
+
+![The Requests tab: the keepalive proxy's request feed with client, path, body size, duration and outcome, next to the zombie guard panel](docs/img/cockpit-requests.png)
+
+*Requests: both sides of the wire. The feed is what the proxy relayed; the guard is whether any client walked away from an answer the engine is still generating.*
+
 ### The eight tabs
 
 Every panel answers one question about this box, and the tab it sits in is the
