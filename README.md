@@ -41,8 +41,9 @@ The README is the entry point. Everything longer lives next to it, one subject p
 | Trust model and private reporting | [SECURITY.md](SECURITY.md) |
 | To contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Mirroring the pinned image and checkpoints for an air-gapped install | [MIRROR.md](MIRROR.md) |
-| Everything the repo can do, A to Z, and where it lands in the UI | [dashboard/CAPABILITIES.md](dashboard/CAPABILITIES.md) |
+| Every capability mapped to a panel or an action, audited at v1.5 | [dashboard/CAPABILITIES.md](dashboard/CAPABILITIES.md) |
 | The cockpit's design foundations | [dashboard/DESIGN.md](dashboard/DESIGN.md) |
+| The cockpit as it stood at its v1.6 review, kept as history | [dashboard/REVIEW.md](dashboard/REVIEW.md) |
 | Provenance and licenses of the retired flash overlay | [flash-sglang/ATTRIBUTION.md](flash-sglang/ATTRIBUTION.md) |
 | Reproducing the MMLU and HumanEval numbers, and the two image quirks in the way | [evals/README.md](evals/README.md) |
 | Running a GGUF model on this box instead | [extras/gguf/README.md](extras/gguf/README.md) |
