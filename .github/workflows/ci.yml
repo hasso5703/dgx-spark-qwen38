@@ -29,8 +29,8 @@ jobs:
       - name: Python correctness (ruff F,E9 + compile)
         run: |
           pip install 'ruff==0.5.0'
-          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py oc-point-default.py bench-agent.py conc-check.py build-token-map.py tools-check.py tests/*.py dashboard/*.py dashboard/tests/*.py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py bench-agent.py conc-check.py build-token-map.py tools-check.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
+          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py oc-point-default.py bench-agent.py conc-check.py build-token-map.py tools-check.py evals/*.py tests/*.py dashboard/*.py dashboard/tests/*.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py bench-agent.py conc-check.py build-token-map.py tools-check.py evals/mmlu.py evals/humaneval.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
 
       - name: Cockpit unit tests (every tests/test_*.py, discovered)
         run: |
@@ -970,6 +970,9 @@ jobs:
 
       - name: tools-check.py tells its four failures apart (fake engine)
         run: python3 tests/test_tools_check.py
+
+      - name: the eval drivers keep the contracts that make them work (stub sglang)
+        run: python3 tests/test_eval_drivers.py
 
       - name: a native install says so before it strands an installed 1m unit
         run: python3 tests/test_install_native_strands_1m_unit.py

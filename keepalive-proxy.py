@@ -122,8 +122,8 @@ CLIENT_IO_S   = float(os.environ.get("CLIENT_IO_S", "900"))   # write blocked to
 # clear 400, bodies whose most optimistic token estimate still exceeds it.
 CHARS_PER_TOKEN_MIN = float(os.environ.get("CHARS_PER_TOKEN_MIN", "2.5"))
 # Usable share of the pool for one prompt: the rest is room for the answer and the
-# scheduler's own buffers (README: with a 178,560-token pool a single prompt tops out
-# near 165K, that is 92 percent).
+# scheduler's own buffers. The 92 percent comes from the flash lane as it was in v1.5:
+# with a 178,560-token pool a single prompt topped out near 165K (CHANGELOG v1.5.x).
 OVERSIZE_MARGIN_FRAC = float(os.environ.get("OVERSIZE_MARGIN_FRAC", "0.08"))
 # Absolute ceiling for one prompt, in tokens (0 = none). The KV pool is not the only limit:
 # on the flash lane the prefill of a long prompt grows the engine's footprint by ~0.27 GiB

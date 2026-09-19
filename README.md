@@ -1,22 +1,51 @@
-# Qwen3.8 on DGX Spark (GB10): 27B at 65 tok/s, Flash-Next 176B on one box
+# Qwen3.8 on DGX Spark (GB10): 27B at 71 tok/s, Flash-Next 176B on one box
 
 One command installs a boot-persistent, hardened serving stack for the Qwen3.8 family on a single DGX Spark, with **seven switchable targets** and **zero quality loss** on each (NVFP4 is the quantization floor, Qwen's own FP8 is available above it; every speculative path is lossless by construction). Since v1.8 the flash lane serves an **official SGLang image** for this hardware with nothing added, serves **4 concurrent requests** where it used to serve one, and got **14 to 25% of its decode back from one flag** (`--speculative-token-map`, see below):
 
 | target | model | engine | headline (measured here) |
 |---|---|---|---|
-| `stock` (default) | Qwen3.8-27B NVFP4 | SGLang + DFlash2 | **65 tok/s** greedy median, 148+ aggregate at 8 streams, optional 1M context |
+| `stock` (default) | Qwen3.8-27B NVFP4 | SGLang + DFlash2 | **71.4 tok/s** greedy median, 135-148 aggregate at 8 streams, optional 1M context |
 | `uncensored` | Qwen3.8-27B abliterated NVFP4 | SGLang + DFlash2 | same speed and serving path as stock |
 | `fp8` | Qwen3.8-27B FP8, Qwen's own release | SGLang + DFlash2 | the quantization reference: 108 tok/s aggregate at 8 streams, ~92K less KV pool |
 | `uncensored-fp8` | Qwen3.8-27B abliterated FP8 | SGLang + DFlash2 | same serving path and same cost as `fp8` |
 | `flash` (default of its lane) | **Qwen3.8-Flash-Next 176B** hybrid MoE NVFP4 | SGLang + NEXTN | **47.9 tok/s on code, 47.1 on math, 29-31 on prose, 27.0 ms/tok on an agent loop, prefix caching, vision**, 262K on ONE box |
 | `flash-uncensored` | the **abliterated** build of that same tree | SGLang + NEXTN | 205 of 206 shards identical in size to stock, so the same flags: 45-46 on code, **0 refusals of 5** |
-| `flash-nvda` | the same 176B from NVIDIA's mixed-precision export | SGLang + NEXTN | same N-gram table byte for byte, its own expert calibration: ties `flash` on every quality probe, with a KV pool 6% smaller |
+| `flash-nvda` | the same 176B from NVIDIA's mixed-precision export | SGLang + NEXTN | same N-gram table byte for byte, its own expert calibration: ties `flash` on every quality probe, with a KV pool about 9% smaller |
 
-The 27B path is the fastest configuration measured so far on GB10 (**SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels, drafting from a calibrated NVFP4 head 16 deep**): **65 tok/s greedy median on `./bench.sh` (code 64-66, reasoning 65-66, math peak 71)**, free prose 18-25 in any language, **135-148 tok/s aggregate at 8 concurrent streams, 258 at 32** (carried over from the v1.2 battery; the draft only helps concurrency, re-measure on your box with `./bench-matrix.sh`). Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
+The 27B path is the fastest configuration measured so far on GB10 (**SGLang + NVFP4 + DFlash2 speculative decoding with deterministic kernels, drafting from a calibrated NVFP4 head 16 deep**): **71.4 tok/s greedy median on `./bench.sh`**, measured 2026-09-17 when this lane moved to the official release image, against 69.8 on the image it replaced and 65.3 on the v1.9 campaign before it (per probe then: code 64.2-65.3, reasoning 65.3-66.2, math 56.6-71.3, prose 23.0-24.7). Free prose is the slow case on any drafter. **135-148 tok/s aggregate at 8 concurrent streams, 258 at 32** (carried over from the v1.2 battery; the draft only helps concurrency, re-measure on your box with `./bench-matrix.sh`). Reproducible to the decimal across boots: see BENCHMARKS.md, "The boot lottery".
 
 The flash path serves a model that does not otherwise fit: the 176B checkpoint's 47.7 GiB FP8 N-gram table is **served from a sparse file on NVMe**, read row by row by the gather kernel through GB10's host page tables, leaving the unified pool to the compute weights and a real KV cache. Until v1.7 that was a vendored patch of this repo's own; since v1.8 it is upstream (`--ple-offload-backend file`, [sglang#37068](https://github.com/sgl-project/sglang/pull/37068)) and the overlay is retired, along with the vendored sm_121 QSA kernel and the workaround for the GB10 MTP collapse. **Prefix caching works** (27k tokens re-served in 2.5 s against 12.0 s cold), decode is **47.9 tok/s on code and 47.1 on math** single stream (29-31 on prose), prefill ~2,250 tok/s cold, and image input stays available. Since v1.8 it also takes **`--speculative-token-map`**, which hands the speculative draft the target's `lm_head` sliced to 65,536 rows instead of all 248,320: that removes 2.6 GiB from every engine step on a lane that is memory-bandwidth bound, and it is worth 14 to 25% of decode without changing what the model can say, because the target still verifies every drafted token over the whole vocabulary.
 
 Whatever the target, you get the same surface: an **OpenAI-compatible API** on port 30000 (both lanes also speak the Anthropic protocol), a keepalive proxy for agent CLIs on 30001, and **[opencode](https://opencode.ai) works out of the box** (the installer writes a ready-to-use provider config; the chat template ships pre-patched for agentic clients). The stack is built to grow: more targets, engines and drafters will slot into the same switch surface.
+
+## Where everything is
+
+The README is the entry point. Everything longer lives next to it, one subject per file.
+
+| If you want | Read |
+|---|---|
+| Every number this repo publishes, how it was measured, and the failed experiments | [BENCHMARKS.md](BENCHMARKS.md) |
+| The 1M context mode: what it serves, what it costs, how limits are fitted to your boot | [docs/context-1m.md](docs/context-1m.md) |
+| The flash lane in full: how a 176B fits, the three tiers, what each one measured | [docs/flash-lane.md](docs/flash-lane.md) |
+| The cockpit, tab by tab, including the Agent tab and how it behaves on a phone | [docs/cockpit.md](docs/cockpit.md) |
+| Day-to-day commands, the opt-in extras, upgrading from an earlier version | [docs/operations.md](docs/operations.md) |
+| What the installer writes for opencode, and how to opt out | [docs/opencode.md](docs/opencode.md) |
+| Clients: Claude Code, VS Code Copilot, Open WebUI, Cursor, TLS, per-client identity | [docs/clients.md](docs/clients.md) |
+| Why `--mem-fraction-static` decides whether this box stays alive | [docs/gb10-memory.md](docs/gb10-memory.md) |
+| Where each lane stands against upstream SGLang, re-checked in the images | [docs/upstream.md](docs/upstream.md) |
+| The `lean` reasoning level: method, numbers, negative results | [LEAN.md](LEAN.md) |
+| What changed in every release, with the measurement behind each change | [CHANGELOG.md](CHANGELOG.md) |
+| The layout, the state files, the invariants CI holds | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| How this repo is tested, and what the tests found in code already in production | [TESTING.md](TESTING.md) |
+| Where this is going | [ROADMAP.md](ROADMAP.md) |
+| Trust model and private reporting | [SECURITY.md](SECURITY.md) |
+| To contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Mirroring the pinned image and checkpoints for an air-gapped install | [MIRROR.md](MIRROR.md) |
+| Everything the repo can do, A to Z, and where it lands in the UI | [dashboard/CAPABILITIES.md](dashboard/CAPABILITIES.md) |
+| The cockpit's design foundations | [dashboard/DESIGN.md](dashboard/DESIGN.md) |
+| Provenance and licenses of the retired flash overlay | [flash-sglang/ATTRIBUTION.md](flash-sglang/ATTRIBUTION.md) |
+| Reproducing the MMLU and HumanEval numbers, and the two image quirks in the way | [evals/README.md](evals/README.md) |
+| Running a GGUF model on this box instead | [extras/gguf/README.md](extras/gguf/README.md) |
 
 ## The whole stack at a glance
 
@@ -34,7 +63,7 @@ Whatever the target, you get the same surface: an **OpenAI-compatible API** on p
                          +-----------------------------+
 ```
 
-The engine answers `/health` even when it is wedged, so the cockpit runs a real generation canary and reports `ready`, `loading`, `wedged` or `stopped` from that. Everything privileged the cockpit can do (unit start/stop/restart, lane switch, flush, abort) goes through an exact-argv sudoers allowlist and is audited. The Agent tab frames opencode's own web interface behind the cockpit login, so sessions on the box run from a laptop or a phone with no terminal. Full tour in "The cockpit" below. Since v1.12 it is **installed by the one-liner like everything else**: when the installer finishes it prints the URL, and that page is where this box is meant to be driven from. `--no-cockpit` opts out, and the choice sticks.
+The engine answers `/health` even when it is wedged, so the cockpit runs a real generation canary and reports `ready`, `loading`, `wedged` or `stopped` from that. Everything privileged the cockpit can do (unit start/stop/restart, lane switch, flush, abort) goes through an exact-argv sudoers allowlist and is audited. The Agent tab frames opencode's own web interface behind the cockpit login, so sessions on the box run from a laptop or a phone with no terminal. Full tour: [docs/cockpit.md](docs/cockpit.md). Since v1.12 it is **installed by the one-liner like everything else**: when the installer finishes it prints the URL, and that page is where this box is meant to be driven from. `--no-cockpit` opts out, and the choice sticks.
 
 ## Quickstart
 
@@ -67,13 +96,15 @@ cd dgx-spark-qwen38
 
 First boot takes **~7-9 minutes** for a 27B target (CUDA graph capture + kernel compilation, cached afterwards; later boots ~5-7 min) and **~12-15 minutes** for a flash target, every boot: the server writes the whole 47.7 GiB N-gram table into its file each time (measured here: 12 min 21 s to `/health` on a fresh table). Then:
 
-- **opencode**: ready config at `~/.config/qwen38/opencode.json`, see "opencode integration" below
+- **opencode**: ready config at `~/.config/qwen38/opencode.json`, see [opencode integration](docs/opencode.md)
 - **Any OpenAI client**: `http://<host>:30000/v1/chat/completions`, model `qwen3.8-27b` (flash: `qwen3.8-flash-next`), Bearer key from `~/.config/qwen38/api-key`
 - **Anthropic protocol**: `http://<host>:30000/v1/messages` (`Authorization: Bearer` only, not `x-api-key`)
 - **Don't want a systemd service?** `./install.sh --no-service && ./run.sh`: same config, foreground, no sudo, Ctrl+C and it's gone (27B targets; flash is service-only in this release).
 - Everything is **pinned twice** (base image digest + checkpoint revisions at download, and the same `--revision` passed to the server itself, so an upstream push to a checkpoint repo can never change what you serve; plus sha256-verified overlay files for the flash lane's rollback image, `flash-sglang/ATTRIBUTION.md`). It still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
-- Since 2026-08-21, this same combination (DFLASH2, draft depth 16 since v1.9) is the **official recipe in the [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**, and since v1.14 this repo serves the official release image (`lmsysorg/sglang:v0.5.19`) on that lane, with no overlay built on top. It held out until 2026-09-17 over the mrope fix ([sglang#34446](https://github.com/sgl-project/sglang/pull/34446), the fused Qwen3.5 RoPE kernel discarding mrope height and width), which merged 2026-08-30 and is in the release; checked in the image rather than assumed. Both lanes now serve an official image.
-  **Where each lane stands against upstream, re-checked on 2026-09-17 against the GitHub API and inside the images rather than against dates:** the 27B lane is no longer behind anything, it serves the official `v0.5.19` release since v1.14 (the migration cost a full bench, concurrency and long-context cycle on this box; the numbers are in the CHANGELOG). The flash lane is now the one with something to gain, and the reason the earlier note gave for it is obsolete: the file-backed PLE table ([sglang#37068](https://github.com/sgl-project/sglang/pull/37068)) reached `main` on 2026-09-13 through [#39126](https://github.com/sgl-project/sglang/pull/39126), which upstreamed the whole DGX Spark stack this lane runs on (the NVIDIA mixed-precision loader, the PDL router fix, the TP prefetch correction) with `--ple-offload-backend` and `--ple-offload-dir` as documented flags. The image this lane serves (`4ccff141d`, the head of `qwen4-main-squashed`) is still what the cookbook points DGX Spark at, but it predates four fixes that landed in main since: three correctness fixes in the QSA sparse-attention kernels this lane provably uses ([#38855](https://github.com/sgl-project/sglang/pull/38855), [#38851](https://github.com/sgl-project/sglang/pull/38851), [#38346](https://github.com/sgl-project/sglang/pull/38346)) and one scheduling change that moves the QSA top-k computation onto the alternate stream *after* the QKV preparation instead of before it ([#39474](https://github.com/sgl-project/sglang/pull/39474): its title says it stops "endlessly creating streams", but the four lines it changes relocate a `with torch.cuda.stream()` block over an alt_stream the model already holds, so it is an overlap change, not a leak fix). `v0.5.19` carries none of them, so that migration needs a nightly. Measured here on 2026-09-17 against `nightly-cu134-20260917-a1b4ec0`, same flags, same probes, one lane after the other: it boots and serves (so [#39841](https://github.com/sgl-project/sglang/issues/39841), which reports `--ple-offload-embedding` as unreachable when the table exceeds device VRAM, does not reach the `file` backend this lane uses), greedy median 47.3 against 45.6 tok/s, `conc-check` 40/40 serial and 80/80 at concurrency 4 on both, needle exact at 120,196 and 199,920 prompt tokens on both, KV pool 548,608 against 570,816 with 2 GB more GPU memory left unclaimed, which is the same fraction story as the 27B lane. **The lane is not moved**: the three QSA fixes are the reason to move and none of these probes can show them, the cookbook still points this hardware at the image in use, and a nightly carries no stability promise. The measurement is done, so the day those fixes reach a release or the cookbook's tag, the switch is a one-line change.
+- Since 2026-08-21 this same combination (DFLASH2, draft depth 16 since v1.9) is the **official recipe in the
+  [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**, and since v1.14 both lanes
+  serve an image this repo did not build. Where each lane stands against upstream, re-checked inside the images
+  rather than against dates, and re-measured before every conclusion: **[docs/upstream.md](docs/upstream.md)**.
 
 ### Your choices, and how they combine
 
@@ -92,8 +123,8 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 | Ports | `PORT=`, `PROXY_PORT=` | 30000, 30001 | agent clients use the proxy port |
 | Storage | `HF_CACHE=`, `PLE_DIR=` | `~/.cache/huggingface`, `~/flashnext-ple` | checkpoints, and the 48 GB flash PLE backing file |
 | Clone location | `DIR=` (one-liner only) | `~/dgx-spark-qwen38` | must be a clone of this repo on `main` |
-| Cockpit dashboard | default, or `--no-cockpit` | installed and enabled; bound to the tailnet address when the box has one, else loopback | installed by `install.sh` since v1.12, and its URL is the last thing the installer prints. `DASH_PORT=`/`DASH_BIND=` on `dashboard/install-dashboard.sh` change port and bind; a re-run keeps them. Installs a sudoers allowlist, see "The cockpit" |
-| Agent tab (opencode in the cockpit) | default when opencode is on your PATH, or `--no-cockpit` | installed with the cockpit; relay on the tailnet address | skipped with a note when opencode is missing, which costs one tab and never the install; `dashboard/install-agent.sh` with `AGENT_PORT=`, `AGENT_BIND=`, `OPENCODE_PORT=` to retune. opencode itself stays on loopback, see "The Agent tab" |
+| Cockpit dashboard | default, or `--no-cockpit` | installed and enabled; bound to the tailnet address when the box has one, else loopback | installed by `install.sh` since v1.12, and its URL is the last thing the installer prints. `DASH_PORT=`/`DASH_BIND=` on `dashboard/install-dashboard.sh` change port and bind; a re-run keeps them. Installs a sudoers allowlist, see [the cockpit tour](docs/cockpit.md) |
+| Agent tab (opencode in the cockpit) | default when opencode is on your PATH, or `--no-cockpit` | installed with the cockpit; relay on the tailnet address | skipped with a note when opencode is missing, which costs one tab and never the install; `dashboard/install-agent.sh` with `AGENT_PORT=`, `AGENT_BIND=`, `OPENCODE_PORT=` to retune. opencode itself stays on loopback, see [the Agent tab](docs/cockpit.md) |
 
 Combinations that make sense:
 
@@ -114,12 +145,11 @@ CONTEXT_MODE=native ./install.sh                         # the 262144 window on 
 
 Re-running the installer (upgrades included) remembers what you chose: the installed model, the context mode, the port, the HF cache, and the opencode on/off choice. Pass the variable or flag again only to change something. `./uninstall.sh --list` shows everything the repo put on the box before removing anything.
 
-## What speed to expect
+## What speed and quality to expect
 
-Speculative decoding accepts *predictable* tokens, so speed depends on **what the model generates**, not on one magic number:
+Speculative decoding accepts *predictable* tokens, so speed depends on **what the model generates**, not on one magic number.
 
-Two instruments, both in the box, both reproducible. The headline **65 tok/s greedy median** is `./bench.sh` (streaming decode rate net of TTFT, the repo's historical headline instrument: v1.0-v1.1 measured ~36-40 on it, v1.2 measured 41-57 per probe, v1.9 measures 64-71 per probe with the calibrated draft). The table below is the harsher one: the frozen battery `./bench-matrix.sh` (two-call wall-clock delta, comparable across engines and boxes):
-
+Two instruments, both in the box, both reproducible. The headline **71.4 tok/s greedy median** is `./bench.sh` (streaming decode rate net of TTFT, the repo's historical headline instrument: v1.0-v1.1 measured ~36-40 on it, v1.2 measured 41-57 per probe, v1.9 measured 64-71 per probe with the calibrated draft, and the v1.14 move to the official release image measured 71.4 against 69.8 on the image it replaced). The table below is the harsher one: the frozen battery `./bench-matrix.sh` (two-call wall-clock delta, comparable across engines and boxes):
 | What you generate (thinking on, battery v1) | v1.9 (NVFP4 draft D16, this repo) | v1.2 (DFlash2, this repo) | v1.1 (DSpark) | Stable-MTP engines |
 |---|---|---|---|---|
 | Agentic coding (code, diffs, tool calls) | **40 / 34** | 32-40 | 28-36 | 24-28 |
@@ -131,7 +161,7 @@ Two instruments, both in the box, both reproducible. The headline **65 tok/s gre
 
 v1.9 wins every row of the frozen battery against v1.2 except eval-style math (one skipped sample on the v1.9 run; `./bench.sh` math peak 57-71) and holds prose, historically the weak spot of block drafters. Every number above is deterministic across boots (`--disable-flashinfer-autotune`, see BENCHMARKS.md "The boot lottery") and was re-verified after a full machine reboot, with output-quality canaries passing. This machine serves its own opencode sessions daily on this config (stretched to the 1M preset from the field report below): if something breaks, it breaks here first.
 
-**Quality, measured (not claimed).** Same box, v1.2.1, thinking on:
+**Quality, measured (not claimed).** The 27B lane, same box, v1.2.1, thinking on:
 
 | Quality check | Result |
 |---|---|
@@ -141,315 +171,73 @@ v1.9 wins every row of the frozen battery against v1.2 except eval-style math (o
 | Independent users on this config | **92-94/100** tool-calling ([forum thread](https://forums.developer.nvidia.com/t/380257)) |
 | Losslessness | token-identity study vs the pure model in BENCHMARKS.md ("The losslessness study") |
 
+And the flash lane (`flash`, the RadixArk export), measured on this box on 2026-09-18 at the
+`context` tier, every eval run against the serving surface this repo installs:
+
+| Quality check | Result |
+|---|---|
+| GSM8K, all 1,319 questions | **97.41%** |
+| MMLU, 500 questions | **90.8%** (STEM 95.6, other 94.2, social sciences 89.2, humanities 86.1) |
+| HumanEval, 164 problems, pass@1 at temperature 0 | **95.73%** (157/164) |
+| Tool calling, `./tools-check.py`, 15 cases | **15/15** with reasoning off, **15/15** with reasoning on |
+| Needle retrieval at 120K and 200K prompt tokens | **2/2 exact** |
+| `conc-check.py`, serial and 4 concurrent | **40/40 and 80/80 exact**, no false or cross-contaminated answer |
+
+The same battery ran against `flash-nvda`, NVIDIA's export of the same model, and the two tie
+inside the sampling noise on every one of them. Their N-gram tables are the same bytes; the
+difference that does hold up is the KV pool, in RadixArk's favour. Method and full table:
+BENCHMARKS.md, "RadixArk against NVIDIA, head to head".
 
 Full study (methodology, engine-vs-engine matrix, an independent reproduction, the physics of the GB10 ceiling, and a frozen benchmark battery you can run against **any** engine, `./bench-matrix.sh`): in **[BENCHMARKS.md](BENCHMARKS.md)**.
 
-**Client integration** (endpoints, Claude Code, VS Code Copilot, Open WebUI, Cursor, optional TLS and per-client identity): in **[docs/clients.md](docs/clients.md)**.
-**Trust model and private reporting**: in **[SECURITY.md](SECURITY.md)**. **The layout, the state files, the invariants CI holds**: in **[ARCHITECTURE.md](ARCHITECTURE.md)**. **Where this is going**: in **[ROADMAP.md](ROADMAP.md)**. **To contribute**: start with **[CONTRIBUTING.md](CONTRIBUTING.md)**.
-
-How the repo is tested, and what the tests found in code that was already in production: in **[TESTING.md](TESTING.md)**. Measured branch coverage with a floor per module, property-based checks over generated inputs, a fuzzed and state-machine-simulated proxy, and a mutation score, because a suite written alongside its own code has to be asked whether it would notice the code being wrong (`lifecycle.py`: 74.8% of injected faults caught before that question was asked, 90.8% after).
+How the repo is tested, and what the tests found in code that was already in production: in **[TESTING.md](TESTING.md)**. Measured branch coverage with a floor per module, property-based checks over generated inputs, a fuzzed and state-machine-simulated proxy, and a mutation score, because a suite written alongside its own code has to be asked whether it would notice the code being wrong (`lifecycle.py`: 74.8% of injected faults caught before that question was asked, 90.8% after). Everything else this repo documents is in the index at the top.
 
 ## ⚠️ The GB10 unified-memory trap (read this before changing anything)
 
-SGLang's memory accounting **does not see 25-40 GB** of transient allocations on GB10 unified memory (the flashinfer fp8 autotuner and CUDA graph capture allocate outside the tracked pool). Running `--mem-fraction-static` above **0.50**, or running SGLang natively (outside Docker), can drive host available memory to **zero**: on a machine where SSH often rides on the same memory, that means a hard freeze only a power cycle fixes. We learned this the hard way.
+SGLang's memory accounting **does not see 25-40 GB** of transient allocations on GB10 unified
+memory: the flashinfer fp8 autotuner and CUDA graph capture allocate outside the tracked pool.
+Push `--mem-fraction-static` too high, or run SGLang natively outside Docker, and host available
+memory can reach zero. On a machine where SSH rides on that same memory, that is a freeze only a
+power cycle fixes. This repo learned it the hard way.
 
-This repo's service is safe by construction:
+What it does about it, with the measurement behind every number, is in
+**[docs/gb10-memory.md](docs/gb10-memory.md)**. The operative rules:
 
-- Docker hard caps: `--memory 100g --memory-swap 100g` (a runaway kills the container, never the host; note the cgroup does *not* see CUDA unified allocations, so the real guard is the fraction)
-- `--mem-fraction-static 0.50` (plenty for 262K context at batch ≤ 4)
-- `Restart=always` + a clean `ExecStartPre docker rm -f` so even a power cut leaves nothing stale (`always` and not `on-failure`: a Triton compile crash measured on 2026-08-22 ended in `SystemExit: 0`, which `on-failure` never relaunches)
-
-The 1m mode deliberately runs **0.76** inside the same docker caps, with the autotuner
-disabled. It ran 0.70 until v1.14, and the number moved with the image, not with the appetite:
-the official release claims a smaller static budget for the same fraction, so 0.70 there cost
-15% of the pool (770,118 tokens against 906,524) while leaving 10 GB of GPU memory unclaimed.
-0.76 hands that back and still leaves a wider margin than the old pin did, 21.30 GB free after
-graph capture against 19.38. **0.80 was measured crashing** under 3 concurrent requests (2 GiB
-free, Triton `CUDA operation not permitted`), and the 25-40 GB invisible-allocation bursts above
-all belong to native runs and the autotuner. Treat anything past 0.80 as livelock territory. What
-bounds the fraction is the unified pool, not the container: `--memory 100g` caps host RSS and the
-cgroup does not see CUDA unified allocations, measured at 0.76 under a 5,623-token generation
-with the container holding 7.15 GiB of its 100 GiB throughout. The number to watch is the GPU-side
-headroom after graph capture (21.30 GiB at 0.76, against 19.38 at the old pin).
-
-**The SGLang cookbook pins 0.80 on DGX Spark, and that is not a contradiction.**
-Its GB10 cells ran 48 configurations at ISL 8192 / OSL 1024, **concurrency 1**,
-boot-and-serve only, and 0.80 served every cell on every attempt; it rejects 0.85
-because 0.85 of 128 GB leaves about 8 GB for the OS, exactly DGX OS earlyoom's
-SIGTERM threshold, and 15 of 48 cells were killed there (exit -15, no traceback,
-visible in `journalctl -u earlyoom`). This repo's 0.80 failure was measured under
-**three concurrent requests** on a box that also runs the operator's tools. One
-number is a single-stream boot-and-serve bound, the other is a multi-client
-operating point, and this repo optimises for the second. If you serve one stream
-on a dedicated box, the cookbook's 0.80 is the better-evidenced pin.
-
-## opencode integration
-
-The installer writes a complete, ready-to-use [opencode](https://opencode.ai) config at `~/.config/qwen38/opencode.json` (the API key is referenced via `{file:...}`, no secret inside). It contains one provider per installed engine (`qwen38` for the 27B pair, `flashnext` for flash), each with `low` / `medium` / `xhigh` reasoning-effort variants (no variant = the template's own default, xhigh), and its default model follows the installed target (`./switch-model.sh` re-points it on every switch):
-
-```bash
-# no opencode config yet? use it as-is:
-mkdir -p ~/.config/opencode && cp ~/.config/qwen38/opencode.json ~/.config/opencode/opencode.json
-# already have one? merge the "qwen38" (and/or "flashnext") provider block into it
-opencode
-```
-
-Do not want any of it? `./install.sh --no-opencode` (one-liner: `| bash -s -- --no-opencode`) installs the API only: no generated config, no `oc` launcher, and `switch-model.sh` never touches your opencode default model. The choice is remembered by later runs (marker `~/.config/qwen38/opencode.off`); `./install.sh --with-opencode` turns it back on. Your own `~/.config/opencode/opencode.json` is never rewritten in either mode: the installer only merges the served lane's limits into it when the integration is on.
-
-What the shipped config gets right for you:
-
-1. **The hidden 32K output cap**: opencode sends `max_tokens = min(limit.output, OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX or 32000)`. Without that env var, a long thinking phase hits 32000 tokens, the turn ends silently (`finish_reason: length`, no text, no tool call) and you have to re-prompt. The installer ships an **`oc` launcher** (`~/.local/bin/oc`, skipped if an unrelated `oc` binary exists) that exports the right value and execs `opencode --yolo`: launch with `oc` instead of `opencode` and the cap sits above every output limit this repo declares, on every target and in either context mode. It is deliberately a ceiling rather than the installed target's own number, because `limit.output` is what follows a model switch: a ceiling copied from the installed target survives the switch and cuts the next lane's turn in the same silence (`./oc-limits.sh --max-out` is where both installers read it). Note that `--yolo` auto-approves every tool action (how the reference box runs); remove it from the launcher file if you prefer per-action prompts.
-2. **Limits that can never 400**: the server rejects any request where `input + max_tokens` exceeds the window (no clamping), so the config ships `context/input 194048, output 64000` in native mode (258048 worst case, a 4096 margin under 262144, whether the 32K cap is lifted or not) and `700000/200000` in 1m mode (worst case 880000, under the worst measured KV pool).
-3. **Reasoning-effort variants**: the generated config declares `medium` and `low` variants (ctrl+t in the TUI); the default is the model's `xhigh`. This works because the patched template accepts and maps effort tiers (`max`/`high` → `xhigh`, `minimal` → `low`, [contributed by helge](https://forums.developer.nvidia.com/t/380257/10)); any client sending an unmapped tier would get a 500 on the stock template.
-4. **Mid-conversation system messages**: some agent clients inject system messages after turn 1; the stock template raises `System message must be at the beginning`. Patched to render them as `<system-reminder>` blocks.
-5. **Vision declared**: `attachment` + `modalities` are set, so image attachments and on-disk image reads work end to end (the model is natively multimodal).
-
-On service installs the generated config points at the **keepalive proxy port** (`PORT+1`), not the server directly, and that is deliberate: SGLang buffers tool-call arguments while they stream (127 s of measured silence on one 400-line file write, at native context), and opencode drops a stream after roughly 140-180 s without a real chunk. The proxy (`qwen38-keepalive.service`, vendored `keepalive-proxy.py`) fills those silences with protocol-correct keepalives, at SSE event boundaries only, and makes sure a client that gives up does not leave a generation running (v6.14: it names every request with `x-override-rid` so it can abort one that has not produced anything yet, aborts before closing the socket, and drains the answer where the engine offers no rid to abort with). With `./install.sh --no-service` there is no proxy: the config then points at the server directly, and huge single-file writes may abort. One more caveat, measured: SGLang's `--api-key` only accepts `Authorization: Bearer`, **not** `x-api-key`.
+- the installed units pin the fraction for you: **0.76** in 1m mode (the default since v1.12.1,
+  autotuner disabled), **0.50** in native mode and under `./run.sh`
+- **0.80 was measured crashing** under 3 concurrent requests. Treat anything past it as livelock
+  territory, and note that the cookbook's 0.80 for DGX Spark is a single-stream boot-and-serve
+  bound rather than a multi-client operating point
+- the Docker cap (`--memory 100g`) bounds host RSS only: the cgroup does not see CUDA unified
+  allocations, so the fraction is the real guard
+- the number to watch is GPU-side headroom after graph capture: 21.30 GiB at 0.76 against 19.38
+  at the 0.70 pin that preceded it
 
 ## The 1M context mode
 
-Since v1.12.1 this is what a plain 27B install serves. It was opt-in behind an
-env var until then, which meant the window this whole stack is built around was
-off for anybody who had not read this section.
+Since v1.12.1 a plain 27B install serves a **1,010,000-token window** (YaRN static scaling, the
+fraction above, the keepalive proxy required, and the opencode limits fitted to the pool your own
+boot actually got). `CONTEXT_MODE=native ./install.sh` serves the 262,144 window instead, and a
+re-run keeps whatever is already installed, both directions. What it costs, the boot lottery on
+the pool, the proxy guards it makes load-bearing, the 535,361-token field session, and how to go
+back: **[docs/context-1m.md](docs/context-1m.md)**.
 
-```bash
-curl -fsSL .../get.sh | bash        # 1M, and combines freely with MODEL_CHOICE=uncensored
-CONTEXT_MODE=native ./install.sh    # the 262144 window instead
-```
+## The flash lane: Qwen3.8-Flash-Next 176B on one Spark
 
-The flash lane and `--no-service` cannot serve it and stay native with no
-refusal, because a default must never reject something the operator did not
-type. A re-run keeps the mode already installed, in both directions: an update
-does not patch YaRN into the configs of a box that chose native.
+Qwen's official validation environment for this model is a dual GB300 node and the public Spark
+recipes run it on two boxes. This lane runs it on **one**, at the model's full 262K window and
+full NVFP4 quality, because the 47.7 GiB FP8 N-gram table leaves memory entirely: it lives in a
+sparse file on the local NVMe and the gather kernel reads its rows through GB10's host page
+tables. Three serving tiers trade concurrency against context, and `FLASH_TIER=` picks one.
+Everything measured, per tier, plus the three flash targets: **[docs/flash-lane.md](docs/flash-lane.md)**.
 
-This is, as one converging command, the exact preset that serves the reference box
-daily since 2026-08-22:
+## opencode integration
 
-- **1,010,000-token window** via YaRN static scaling (factor 4.0,
-  `original_max_position_embeddings: 262144`) patched into **both** cached `config.json`
-  files by `patch-yarn.py` (target model AND DFlash2 draft, or the draft crashes at load;
-  originals backed up next to them as `config.json.pre-yarn`), plus
-  `--context-length 1010000` and `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`.
-- **`--mem-fraction-static 0.76`** (0.70 before v1.14, see above): the KV pool is
-  a boot lottery, and the measurement campaigns on this box do not agree. Five
-  boots in the v1.3 era reported **917K-1019K** tokens; three around 2026-08-30
-  reported **863,398, 893,479 and 913,334** for the same checkpoint; four on the
-  official image at 0.76, on 2026-09-17 and 18, reported **902,398, 889,131,
-  889,722 and 887,797**. The ranges do not overlap, so treat **863K as the floor
-  to plan against** until a fresh campaign settles it. DFlash2 acceptance is unchanged either way, and a real 690K-token
-  request has been served (cold prefill 40 min, then cached).
-- **The limits are fitted to your own boot, automatically.** The generated
-  opencode limits below are static, and their 1m worst case (compaction at ~680K
-  plus 200K of output) sits **above the 863,398 floor**: on an unlucky boot a long
-  session can meet a proxy refusal mid-conversation, which is the field case that
-  produced this tool. Since v1.12.1, `install.sh` runs `oc-fit-limits.py` itself at
-  the end of every 1m install, once the engine is up: it reads the pool your boot
-  actually got and rewrites the limits to fit it, up or down. Run it by hand (or
-  press the cockpit's button) after any later reboot you want re-fitted. The FP8 targets ship lower static limits already, because their pool is
-  about 92,000 tokens smaller.
-- **The keepalive proxy becomes load-bearing.** Every service install ships it (see
-  "opencode integration"), but at 1M it is not optional: a cold 690K-token prefill can
-  keep the wire silent for tens of minutes. The proxy injects the official Anthropic
-  `ping` event on `/v1/messages` and an authentic empty chunk on the OpenAI dialect,
-  every 10 s, only at SSE event boundaries (a keepalive inside an event corrupts the
-  JSON, measured); it closes the upstream the moment the client disconnects, and
-  reports an explicit SSE error after 3600 s of true upstream silence (above the worst
-  legitimate prefill). **Agent clients must use the proxy port**; the direct server
-  port stays for curl and benches.
-- **`HF_HUB_OFFLINE=1`** in the unit, so no Hub metadata check can re-resolve a
-  checkpoint and silently undo the YaRN-patched configs (see "Operations" below).
-- **`Restart=always`**: a crash that exits 0 (a Triton compile crash measured 2026-08-22
-  ended in `SystemExit: 0`) still gets relaunched; `on-failure` would not.
-- **A corruption tripwire** (proxy v6.11). When a decode path loses its state on this
-  hardware it does not stop: it emits runs of token id 0, which is `!` in the Qwen
-  tokenizer, and the client reads a wall of exclamation marks as if it were an answer
-  (sglang [#36537](https://github.com/sgl-project/sglang/issues/36537),
-  [#36558](https://github.com/sgl-project/sglang/issues/36558),
-  [#36806](https://github.com/sgl-project/sglang/pull/36806),
-  [#36845](https://github.com/sgl-project/sglang/pull/36845)). The proxy counts those
-  characters across the stream and, past `CORRUPTION_RUN` of them in a row (128 by
-  default, `0` disables), aborts the generation upstream and sends an explicit
-  `corrupted_output` error instead. It reads only the delta text it already relays,
-  never tool-call arguments, so a model writing `!!!` in prose is untouched.
-- **No zombie generations** (proxy v6.14). A client that gives up leaves the engine
-  decoding unless the abort reaches it in time, and it cannot: `abort_request()` returns
-  early once the rid has left `rid_to_state`, which the disconnect itself empties
-  ([sglang#35255](https://github.com/sgl-project/sglang/pull/35255), merged upstream
-  2026-09-04 and in neither image this repo serves). Measured here on 2026-09-09: 6,582
-  `state was deleted in TokenizerManager` lines in one day, one request decoding 6 min for
-  nobody. The proxy now names every request itself (`x-override-rid`, which the engine
-  honours because the units pass `SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1`), so a request
-  abandoned during prefill still has a name, and it aborts **before** closing the socket
-  rather than in a thread racing it. Where no rid can exist, on `/v1/messages` (the
-  Anthropic route mints its own `msg_<uuid>` and applies no header overrides), the answer
-  is drained to its end instead of being orphaned. Same request through both proxies: 223
-  flood lines and a held slot before, 0 after.
-- **A tool-schema guard** (proxy v6.13). The engine validates every tool's parameters
-  with `jsonschema`, whose `regex` format check compiles `pattern` with Python's `re`.
-  JSON Schema says `pattern` is ECMA-262, which has Unicode property escapes (`\p{Cc}`)
-  that `re` rejects outright, so a single such tool makes the engine answer `400` to
-  **every** request of the session (measured 2026-09-09 against Claude Code 2.1.266 and
-  its `Artifact` tool). The proxy removes only the patterns Python cannot compile, only
-  inside tool parameter schemas, and forwards every other body untouched and unparsed.
-- The generated opencode config switches to `context/input 700000, output 200000`
-  (compaction fires at 680000; worst case 880000, under the worst measured pool).
-
-Quality past the native 262144 window is not formally evaluated here: treat it as an
-experimental preset. Proof it holds up operationally, one continuous **opencode** session
-(reasoning effort `xhigh`, output cap lifted) built a playable 3D zombie FPS from a single
-prompt by YouTuber Bijan Bowen:
-
-- **535,361 tokens** of context reached in one session, twice the native window, zero compaction
-- **~360K tokens generated**, 239 agent steps, 274 tool calls, no retry, no manual rescue
-- Result, single HTML file: **https://subway-fps.vercel.app**
-
-Back to native: `CONTEXT_MODE=native ./install.sh` (removes the proxy service and
-restores the pre-YaRN `config.json.pre-yarn` originals over the patched
-target and draft configs; a native server crashes at load on a patched config,
-so `run.sh` refuses a patched cache early instead of ten minutes into the
-boot, and the installer refuses with a re-download fix-it when a backup is
-gone).
-
-## The flash target: Qwen3.8-Flash-Next 176B on one Spark
-
-> **v1.7 and earlier users: upgrade.** v1.8 replaces this repo's vendored
-> overlay with the official image the SGLang cookbook points DGX Spark at, which
-> fixes at the root the failure the v1.6 proxy could only detect (every running
-> MTP request collapsing to a wall of `!` at the same instant,
-> [sglang#36811](https://github.com/sgl-project/sglang/pull/36811)), and serves
-> **4 concurrent requests instead of 1** at the same single-stream speed. Re-run
-> the one-liner (or `git pull && ./install.sh`).
-
-Qwen's official validation environment for this model is a dual GB300 node; the
-public Spark recipes run it on **two** boxes (TP2). This target runs it on
-**one**, with the model's full 262K window and full NVFP4 quality, because the
-47.7 GiB FP8 N-gram (PLE) table leaves memory entirely: it lives in a sparse
-file on the local NVMe and the gather kernel reads its rows through GB10's host
-page tables, which works because this part reports
-`cudaDevAttrPageableMemoryAccessUsesHostPageTables`.
-
-Until v1.7 that was a patch this repo vendored and built into a local image.
-Since v1.8 it is upstream and the image is official:
-
-- **`--ple-offload-embedding --ple-offload-backend file --ple-offload-dir /ple`**
-  ([sglang#37068](https://github.com/sgl-project/sglang/pull/37068)), which adds
-  two things the vendored patch never had: a `posix_fadvise(WILLNEED)` prefetcher
-  for prefill-sized gathers, and a **resident-set trimmer**. That trimmer is the
-  headline of this release for anyone who ran v1.6: a row fault maps in a whole
-  page-cache folio, so the mapping's resident set climbed towards the full
-  47.7 GiB while a token read a few KB of it, and on unified memory that is the
-  same pool SGLang sizes the KV cache from. It is the mechanism behind the boot
-  lottery v1.6.2 pinned `--max-total-tokens` against, and behind the ~9 GiB of
-  host headroom a 120K prompt used to cost. Capped by
-  `SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB` (default 8; `PLE_RSS_BUDGET_GB=` at
-  install). Seen at first boot here: `PLE table: trimmed resident set 10.6 ->
-  0.2 GiB (budget 8.0 GiB)`.
-- **QSA decode on sm_121** runs the merged kernel of
-  [#36845](https://github.com/sgl-project/sglang/pull/36845) from inside the
-  official image, so the two attention-backend flags this lane used to need are
-  gone and the engine resolves the route itself.
-- The table is **rewritten on every boot**, so the launcher deletes the previous
-  `ple_table_*.bin` first: upstream measures a cold populated file rewriting at
-  ~17 MB/s (~55 min) against GB/s on a fresh sparse one. One warm rewrite here
-  ran at +27% of a fresh boot rather than 5x, which is the page cache, not a
-  contradiction. It also retires the poisoned-table guard of v1.5 to v1.7: a
-  table written from scratch cannot be half-written from a previous boot.
-
-### Three tiers, because concurrency and context trade one for one
-
-Each mamba state slot costs **0.206 GiB** of the same pool the KV cache comes
-out of (measured here), and the hybrid GDN/QSA model reserves **5 slots per
-running request** with `extra_buffer`, 4 with `extra_buffer_lazy`. The scheduler
-silently caps `--max-running-requests` to what the mamba pool admits while
-`/get_server_info` still reports what you asked for, so every tier pins
-`--max-mamba-cache-size` to requests x slots.
-
-| `FLASH_TIER=` | requests | KV pool | measured here |
-|---|---|---|---|
-| **`context`** (default) | 4 | **279,872 to 463,488 tokens** across boots, and every one of them above the 262,144-token window, so a full-context prompt always fits | **47.9 / 47.1 / 30.9 tok/s** single stream (code, math, prose FR), **71.6 tok/s aggregate at 4 streams** (17.9-18.7 each) |
-| `concurrency` | 8 | **468,480 tokens** measured 2026-09-12 with replayssm-spec (was 129,792 before it), so a full 262K prompt fits at 8 requests too | **43.7 / 44.2 / 29.5 tok/s** single stream (code, reasoning, prose FR, warmed, uncensored), **90.4 tok/s aggregate at 4 streams**, needle 8/8 exact to 140K at 13.5 GiB floor |
-| `throughput` | 24, no speculation | ~286K tokens (upstream) | upstream: 83 tok/s of output at 24, 15.9 single |
-
-Both speculative tiers are the cookbook's own verified single-Spark cells, which
-score **GSM8K 97.1-97.3% on the full 1,319-question set** upstream. `context` stays
-this repo's default after measuring 8 requests too: the 8-request pool came out
-larger than the 4-request pool used to (replayssm-spec frees the draft depth
-out of the state budget), but the per-session limits that make long agent
-sessions work (175K/64K) are sized for one or two streams, and concurrent-load
-memory is not measured yet. Same cell, concurrency pinned lower, longer sessions.
-
-The pool is still sized from what the host has free at the instant SGLang
-profiles, so it is a range rather than a number: boots of the identical launcher
-have measured 279,872, 454,016, 458,816 and 463,488 tokens at the `context`
-tier. What v1.8
-removed is the *creeping* half of that variance (the table's resident set), not
-the boot-time half, which is why the launcher still waits for a busy box to go
-quiet before it starts. At this tier both ends of the range are above the
-262,144-token window, which is the property that matters.
-
-Measured on the reference box at the `context` tier, image
-`dev-qwen38-next-local` (`4ccff141db`):
-
-| axis | measured |
-|---|---|
-| **prefix caching, 27K re-serve** | **12.0 s cold, 2.5 s cached (x4.8)**, 27,008 of 27,026 tokens from the cache |
-| decode, single stream | **47.9 on code, 47.1 on math, 30.9 on prose FR, 29.3 on prose EN** (median of three repeats after a discarded warm-up; 38.8 / 36.7 / 26.5 on the v1.6 overlay) |
-| decode, 4 streams | **71.6 tok/s aggregate**, 17.9-18.7 per stream |
-| **agent loop** (`./bench-agent.py`, 8 turns on an 8K prefix, work pinned at 130 tokens) | **27.0 ms/tok** median, TTFT flat at 0.31-0.34 s, **-1 ms of TTFT per 1,000 added prompt tokens**: the prefix cache is being reused, with speculation on |
-| **long-context retrieval** | **3/3 exact at ~120K** and **1/1 exact at 200,058 tokens** (`./needle.sh --mem`, fresh passphrase each), no run of token id 0 anywhere |
-| quality canaries | 4/4 (merge, logic, French, primes) |
-| prefill, cold | ~2,250 tok/s at 27K, ~1,960 tok/s at 200K |
-| vision (image input) | works, including combined with large prompts |
-| context window | 262,144 native, no YaRN |
-| **context that fits** | **one prompt tops out at 250,000 tokens**, enforced by the proxy (`PROMPT_CEILING_TOKENS`), and by its share of the KV pool on the smaller tiers. This was 128K in v1.5.6 to v1.7 and 200K in v1.8 to v1.10, because on the v1.5 engine the prefill of a long prompt grew the footprint by ~0.27 GiB per 1k tokens past ~90k. v1.8's engine trims that, and v1.10.2 measured how far rather than assuming: **195,784 tokens cost 1.16 GiB of host headroom, 225,051 cost 1.57 GiB, 249,500 cost 1.52 GiB** (MemAvailable sampled throughout, floor 6.9 GiB), with **needle 3/3 exact** at 200,058 / 230,231 / 249,838. So memory is no longer what caps this lane; the engine's own `max_req_input_len` (262,138) is, and 250,000 leaves 12,138 tokens of slack under it. Prompts above the ceiling get a clear 400 (`context_too_long`, `code: context_length_exceeded`) |
-| memory | fraction 0.85 + docker cap 110g (the cap does not see CUDA unified allocations). Host MemAvailable: **16.6-16.9 GiB idle** at the `context` tier whatever the pool came out at, so a larger pool inside the same static fraction costs the host nothing; 19.8 GiB at `concurrency`; 14.7-15.0 GiB through a 120K prompt, 12.6 GiB through a 200K one |
-| boot to `/health` | 12 min 21 s with a fresh table, 14 min 54 s when it rewrote a populated one |
-
-**Why the flash lane keeps a bf16 KV cache.** The 27B FP8 target asks for
-`--kv-cache-dtype fp8_e4m3` and gains about half its pool for free, so the same
-trick looks tempting here, and it works: an fp8 KV cache on the QSA path
-([blazux, 2026-08-30](https://github.com/blazux/qwen3.8-Flash-DGX), by
-@Nanetnounou) measures **x1.9 KV pool and 1M context on one box**. It also costs
-**9 % of decode, 30 % of prefill, and quality**: their `b3_itinerary` check drops
-to **2/6 against 6/6 in bf16**, and they keep bf16 as their own production
-setting. The difference from the 27B case is calibration: the NVFP4 and FP8 27B
-checkpoints carry KV scales the engine applies, while nothing calibrates the QSA
-path's cache. A bigger pool is not worth a measured quality drop.
-Two independent parties have since measured the same thing: blazux score fp8 KV as a
-"measurable quality cost" on their 17-scenario agentic tournament and keep bf16 in
-production, and the poster who announced MiaAI Lab's 1M recipe on the NVIDIA forum came
-back the same evening reporting the fp8-KV build "significantly more degraded" in real
-use with coding agents. **A 1M window on one GB10 is reachable today and an fp8 KV cache
-is what buys it**, so this lane serves 262,144 with a bf16 cache and the 1M mode this
-repo ships is the 27B one, where the checkpoints carry their own calibrated KV scales.
-The full survey, including the one idea from those stacks worth taking (blazux's `hybrid`
-side layers: +20% decode and +8% pool at an identical tournament score) is in
-BENCHMARKS.md, "What the other one-Spark stacks measured about QUALITY".
-
-The NEXTN speculative head is the model's own next-token module (its 31
-tensors ship in the checkpoint in BF16, hence `unquant` for the draft): drafts
-are verified by the target, so output quality is exactly the target's.
-
-**One thing still wedges this lane: a prompt larger than the KV pool, sent
-straight to the engine port.** It is queued and never admitted, which stalls
-every request after it (`/abort_request` answers `not found in rid_to_state`:
-[sglang#36333](https://github.com/sgl-project/sglang/issues/36333), open
-upstream). Only a restart clears it, and at 15 minutes that is worth avoiding:
-**use the proxy port**, which refuses such a prompt with a 400. The `context`
-tier makes this much harder to hit, since its pool (279,872) is larger than the
-window it serves (262,144).
-
-Two older failure modes are worth knowing about. The scheduler could hang under
-pool pressure with a second giant request admitted at 98% usage (same family as
-[sglang#30314](https://github.com/sgl-project/sglang/issues/30314)); the
-frontend keeps answering `/health` while nothing is served, so a health probe is
-not enough, which is why the cockpit runs a real generation probe and flushes
-the prefix cache when the engine idles with a mostly-held pool. And with chunked
-prefill, new requests can starve while one request decodes a long answer
-([sglang#35537](https://github.com/sgl-project/sglang/issues/35537)); a single
-agent client never notices, concurrent clients see bursty latency.
-`/flush_cache` is refused with a 400 while anything is in flight, by design:
-flush when the lane is idle.
+The installer writes a ready-to-use provider config, an `oc` launcher that lifts opencode's hidden
+32K output cap, limits that cannot 400, reasoning-effort variants, and a chat template patched for
+agentic clients. `./install.sh --no-opencode` installs the API and nothing else, and the choice
+sticks. What each piece is for, and why the config points at the proxy port rather than the
+engine: **[docs/opencode.md](docs/opencode.md)**.
 
 ## The seven targets, and switching between them
 
@@ -499,7 +287,11 @@ probe on 2026-09-18 (BENCHMARKS.md, "RadixArk against NVIDIA, head to head"):
 their N-gram tables are the same bytes, their expert calibrations are not, and
 they tie on GSM8K, MMLU, HumanEval and tool calling inside the sampling noise.
 The lane keeps `flash` as its default on the one measurement that is outside
-that noise, a KV pool 6% larger over five boots. It needs the mixed-precision loader of
+that noise, and it is the one the sentence above would not predict: a KV pool
+9.6% larger on the means of eleven boots that day, non-overlapping ranges. The
+174K against 93K that upstream credits to the fp8 draft was measured on a lane
+without `--speculative-token-map`; this one has it, and it removes the very
+disadvantage that comparison rewards. It needs the mixed-precision loader of
 [sglang#38121](https://github.com/sgl-project/sglang/pull/38121), which is in the
 image this repo pins.
 
@@ -574,7 +366,7 @@ Two honest gaps on the FP8 pair, both being closed: it does not yet carry a full
 `./bench-matrix.sh` run the way the other three targets do (the 108 tok/s figure
 is a single aggregate probe), and **the memory ceiling of FP8 combined with
 `CONTEXT_MODE=1m` is not measured**. The "27B lane measured flat at 100K, 200K
-and 300K" result quoted elsewhere in this README was measured on NVFP4, and FP8
+and 300K" result (BENCHMARKS.md, "Host memory vs prompt length on the flash lane") was measured on NVFP4, and FP8
 puts about 10 GB more in residence. Until that curve exists, run the FP8 pair at
 native context, or watch host `MemAvailable` if you run it at 1M.
 
@@ -663,49 +455,17 @@ journalctl -u qwen38-keepalive -f       # one line per proxied request (bytes, f
 ./bench-matrix.sh                       # per-workload profile, works on any engine
 ./uninstall.sh --list                   # inventory: everything any version of this repo left here, with sizes
 ./uninstall.sh                          # removes services + config; prints reclaim commands for data it found
-```
 
-**Killing an abandoned generation.** If a client dies mid-generation the server keeps
-decoding for nothing (symptom: power draw and GPU busy with no active session). Behind
-the keepalive proxy this heals itself: the proxy aborts the upstream the moment the
-client disconnects. For direct connections (`./run.sh`, curl, custom clients), abort
-everything in flight with:
-
-```bash
-curl -X POST -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)" \
-  -H 'Content-Type: application/json' -d '{"abort_all": true}' http://127.0.0.1:30000/abort_request
-```
-
-The server keeps running; use it only when you know the in-flight work is abandoned,
-because it aborts EVERY request currently decoding, yours included.
-
-`HF_HUB_OFFLINE=1` is fine **once every pinned checkpoint is cached**: the 1m unit sets it on
-purpose (it protects the YaRN-patched configs from any Hub re-resolution) and the reference
-box serves that way across reboots; the LongCat metadata probe
-(`srt/utils/hf_transformers/config.py`) reads from the cache, verified in the pinned image.
-Do **not** set it on a first install or over an incomplete cache: the probe's harmless online
-miss then becomes a hard `LocalEntryNotFoundError` at startup
-([reported by helge](https://forums.developer.nvidia.com/t/380257/10)). With the pinned
-revisions cached, that metadata probe is the only network call.
-
-Notes: the server's own `watchdog_timeout=300` is a *hang* detector (kills a genuinely stuck forward so systemd restarts it); it does not limit generation length. Two concurrent generations share the memory bus (~half speed each): the GB10 is a batch-1-per-moment machine.
-
-**Idle power**: without `--sleep-on-idle`, SGLang's scheduler busy-spins a full CPU core while doing nothing (reported as +10-12 W at the wall by [alef204 and emX0r](https://forums.developer.nvidia.com/t/380257/56), diagnosed in [MiaAI-Lab issue #4](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark/issues/4)). Every serving lane ships the flag, and a CI gate requires it: the 27B units and `run.sh` since v1.2.6, the flash launcher since v1.8.5, where the lane was measured holding a core at 101 % for 12 h 21 min of idle because the launcher had been written without it. A/B on the reference box: scheduler CPU 101 % -> 1.7 % at idle, module power 12.1 -> 10.5 W, and wake-up TTFT unchanged (0.234-0.240 s before, 0.234-0.239 s after, measured after 60 s and 300 s of idle), throughput in family (41.5 tok/s code, 52.8 math).
-
-**Metrics**: every serving lane passes `--enable-metrics`, so Prometheus scrapes
-`http://<box>:<engine-port>/metrics` (request rates, KV usage, acceptance
-lengths under speculative decoding, queue depth). The endpoint is unauthenticated
-on the engine port, the same trust model that port's whole surface already
-assumes (trusted network: loopback, tailnet; see SECURITY.md), and it arrives at
-your next `./install.sh` re-run and engine start.
+Killing an abandoned generation, reading a dead decode from both sides of the wire, the opt-in
+extras, and what an upgrade from an earlier version actually does:
+**[docs/operations.md](docs/operations.md)**.
 
 ## The cockpit (installed by default)
 
-A local dashboard for this stack: what is served right now, whether it is
-healthy for real, and the handful of actions you would otherwise type by hand.
-Single-file stdlib backend, no pip and no venv. Since v1.12 `install.sh`
-installs it as step 10/10, once the engine has answered a real generation, and
-prints its URL as the last thing it says. You do not run anything else:
+A local dashboard for this stack: what is served right now, whether it is healthy for real, and
+the handful of actions you would otherwise type by hand. Single-file stdlib backend, no pip and no
+venv. Since v1.12 `install.sh` installs it as step 10/10, once the engine has answered a real
+generation, and prints its URL as the last thing it says:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
@@ -713,54 +473,14 @@ curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get
 # the login is the API key from ~/.config/qwen38/api-key
 ```
 
-On a first install it binds the box's **tailnet address** when there is one, so
-the page opens from your laptop or your phone over a private network, and
-`127.0.0.1` otherwise. A re-run never changes that: `install-dashboard.sh`
-converges on the installed unit, so an upgrade cannot flip a reachable cockpit
-back to loopback. Install it alone, or change the bind, with the same script:
-
-```bash
-dashboard/install-dashboard.sh          # DASH_PORT=30090 by default
-```
-
-To open a loopback-bound cockpit from another machine, set `DASH_BIND` and
-re-run it:
-
-```bash
-DASH_BIND=0.0.0.0 dashboard/install-dashboard.sh        # every interface
-DASH_BIND=$(tailscale ip -4) dashboard/install-dashboard.sh   # that interface only
-```
-
-Then browse `http://<the box's tailnet or LAN address>:30090`. The login is the
-same API key, over plain HTTP: the session cookie is `HttpOnly` and
-`SameSite=Strict` and every mutating POST carries a CSRF token, but there is no
-TLS, so this belongs on a tailnet or a LAN you trust and never on the open
-internet. On an already installed cockpit, change it in place:
-
-```bash
-sudo systemctl edit qwen38-dashboard    # [Service] Environment=COCKPIT_BIND=0.0.0.0
-sudo systemctl restart qwen38-dashboard
-```
-
-### What it looks like
+On a first install it binds the box's **tailnet address** when there is one, so the page opens
+from a laptop or a phone over a private network, and `127.0.0.1` otherwise. A re-run never changes
+that. The login is the same API key over plain HTTP, so this belongs on a tailnet or a LAN you
+trust and never on the open internet.
 
 ![The cockpit's Overview tab: KV pool held, the serving lane with its model, revision, context window and image, unified memory with the driver-refusal counter, and the event stream](docs/img/cockpit-overview.png)
 
 *Overview: what is served, on what pool, with how much memory left. The events on the right are the engine's own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
-
-![The Models tab: every target as a table with its engine image, checkpoint, drafter, serving flags, what is on this box, and the drift against what is installed](docs/img/cockpit-models.png)
-
-*Models: the seven targets as data, derived from `install.sh` and the unit templates, each compared flag by flag against the invocation actually running. "2 DIFFER" is a recipe that would change something if you switched to it.*
-
-![The Agent tab: opencode running in the browser behind the cockpit login, started at boot with tool calls pre-approved](docs/img/cockpit-agent.png)
-
-*Agent: opencode's own web interface, framed behind this login, mid-answer on a real session. It starts at boot and its tool calls are already approved, so a laptop or a phone is enough to run a coding session on the box. The model picker at the bottom names what is answering: the 27B served by this same machine, at the `lean` effort level.*
-
-![The Requests tab: the keepalive proxy's request feed with client, path, body size, duration and outcome, next to the zombie guard panel](docs/img/cockpit-requests.png)
-
-*Requests: both sides of the wire. The feed is what the proxy relayed; the guard is whether any client walked away from an answer the engine is still generating.*
-
-### The eight tabs
 
 Every panel answers one question about this box, and the tab it sits in is the
 question you had when you opened the page.
@@ -776,265 +496,9 @@ question you had when you opened the page.
 | **Logs** | Live logs, the last 30 events, recent jobs | Run a bench, the 4-canary quality battery, a diagnostics bundle |
 | **Setup** | The repo itself, opencode integration, serving-stack updates, the cockpit's own settings | Regenerate the API key, update the stack, change what the page binds to |
 
-### What it does that a terminal does not
-
-- **Lane state that is not a lie.** A wedged SGLang still answers `/health`, so
-  the cockpit runs a real generation canary and reports `ready`, `loading`,
-  `wedged` or `stopped` from that, with the served checkpoint named from the
-  unit rather than guessed.
-- **Belts.** A host `MemAvailable` floor that aborts generations before the box
-  reaches the memory edge, and a counter of the kernel's `NVRM` allocation
-  refusals, which is how the memory-edge behaviour in the flash section was
-  found in the first place.
-- **Actions, one at a time.** Unit start/stop/restart, lane switch (the same
-  `switch-model.sh` you would run), cache flush, abort-all, smoke probe. Every
-  action is audited to `~/.config/qwen38/cockpit-audit.log` with its exact argv.
-- **Recipes and drift.** Every target as data, derived from `install.sh` and the lane
-  templates so a recipe cannot drift from what the installer renders, compared flag by
-  flag against the invocation actually running on the box. Since v1.8.5 that comparison
-  covers value-less flags too (`switch.--sleep-on-idle: recipe true, installed false` is
-  what the panel said the morning the flash lane was caught spinning a core).
-- **Zombie guard.** A client that gives up leaves the engine decoding unless something
-  stops it, so the Requests tab reads both sides of the wire: the engine's own flood
-  lines grouped by request, worst first, with the span between a request's first and
-  last line, which is the dead decode; what the proxy did about it over the same window
-  (aborted, drained, the longest drain, aborts the engine never answered); the version
-  of the **running** proxy from its startup banner; and whether the engine accepts the
-  proxy's request id at all, because without that an abandoned answer can only be
-  drained. See the v1.8.4 and v1.8.5 changelog entries.
-- **Jobs.** Bench runs, the 4-canary quality battery, diagnostics bundles and cache
-  operations run as supervised one-at-a-time jobs with live output, instead of
-  commands you type blind into a terminal.
-- **Housekeeping.** Inventory of everything the repo ever put on the box and
-  what each item costs in bytes (read-only: the reclaim commands are printed by
-  `./uninstall.sh --list` and by the installer, never run from the page), the
-  opencode integration state (limits per lane, default model, output cap) with
-  the one action that writes there, fitting those limits to the pool the engine
-  actually booted with, the patched chat templates, the API key (masked,
-  regenerable), and the repo itself (version, upstream tag, changelog, update
-  badge).
-
-On a phone the chrome collapses to one identity row plus a swipeable section
-rail, controls are 44 px targets, and the Agent tab opens fullscreen (see "On a
-phone" below): the whole box is operable from a hand.
-
-**The privileged surface, stated plainly.** The unit actions need root, so the
-installer writes `/etc/sudoers.d/qwen38-cockpit`: an exact argv allowlist,
-nothing wildcarded except the rendered unit path, validated with `visudo -c`
-from a temp file before it lands so a bad render can never brick sudo. It covers
-start/stop/restart and enable/disable of this repo's units, `daemon-reload`, the
-writes `switch-model.sh` performs, one read-only forensics wrapper and kernel
-journal reads. `./uninstall.sh` removes it along with the unit and the wrapper.
-If that surface is more than you want, do not install the cockpit: nothing else
-in this repo depends on it.
-
-**Self-restart is off by default** (`COCKPIT_AUTOHEAL=0` in the unit). This repo
-spends a whole section on how a GB10 box freezes, so an engine that restarts
-itself is not something an install should decide for you. Arm it once you know
-what a wedge looks like on your box:
-
-```bash
-sudo systemctl edit qwen38-dashboard    # [Service] Environment=COCKPIT_AUTOHEAL=1
-                                        # and Environment=COCKPIT_AUTOHEAL_GRACE=600
-                                        # to keep a wedge up for forensics first
-```
-
-Remove it with `./uninstall.sh` (which takes the whole stack) or on its own:
-
-```bash
-sudo systemctl disable --now qwen38-dashboard
-sudo rm -f /etc/systemd/system/qwen38-dashboard.service \
-           /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler
-sudo systemctl daemon-reload
-```
-
-### On a phone
-
-The cockpit is built for a hand as well as for a desk, and the layout is checked
-rather than assumed: `dashboard/tests/mobile-check.mjs` drives a headless
-Chromium through four real iPhone geometries (SE, 15, 15 Pro Max, and 15 in
-landscape) on all eight tabs and asserts what a phone actually gets.
-
-Below 980 px the top bar keeps one identity row and gives the actions a row of
-their own that scrolls sideways, the section rail becomes one swipeable row of
-pills with the current section scrolled into view, and the cards stack. Controls
-are at least 44x44 CSS px, and every form control is 16 px or larger, because
-iOS Safari zooms the whole page when a smaller one takes focus and never zooms
-back. The heights use `dvh`, not `vh`: on iOS the browser's own chrome counts
-inside `100vh`, so a full-height panel written that way overflows by exactly the
-toolbar.
-
-The Agent tab opens **fullscreen on a phone**, because there the tab is the
-frame: opencode gets the whole screen and the corner chip brings the cockpit
-back. That choice is remembered per device, so exiting once makes the embedded
-frame the default from then on. It never opens fullscreen when the panel cannot
-load (a relay bound to another address, a stopped server): covering the
-explanation with a blank frame would leave nothing to act on.
-
-Run it against the address the phone uses, so the Agent tab is exercised the way
-it behaves in a hand:
-
-```bash
-node dashboard/tests/mobile-check.mjs http://<the box's tailnet address>:30090
-```
-
-### The Agent tab: opencode in the browser, behind the cockpit login
-
-Since v1.7.0 the cockpit can hold opencode's own web interface, so a session on the
-box runs from the laptop without a terminal: sessions, the project picker, file
-diffs, the terminal panel, the same config, plugins, skills and MCP servers as the
-`oc` command. Since v1.12 `install.sh` installs it with the cockpit whenever
-opencode 1.18 or newer is on your PATH; when it is not, the installer says so
-and skips that one tab rather than failing an install that is otherwise up. Run
-it by hand after installing opencode, or to retune it:
-
-```bash
-dashboard/install-agent.sh
-```
-
-Two pieces land, and the shape is the security model:
-
-- **`opencode-web.service`** runs `opencode serve` as you on `127.0.0.1:4096`
-  (`OPENCODE_PORT=`), with Basic credentials generated once into
-  `~/.config/qwen38/opencode-web.env` (mode 0600). Nothing else ever reaches it,
-  and the password never leaves the box. The unit carries your PATH and the same
-  output-token cap as the `oc` launcher, so long thinking is not cut at 32,000.
-- **The relay** inside the cockpit process listens on ONE address, the tailnet
-  address by default (`AGENT_BIND=`, port `AGENT_PORT=30091`), never on the LAN.
-  It answers a request only with a valid cockpit session cookie, refuses any
-  foreign `Origin`, strips the cookie before forwarding, adds the credentials,
-  and streams everything back: plain answers, the event stream, the WebSocket of
-  the terminal panel. Its responses carry `frame-ancestors` naming the cockpit,
-  so no other page can frame the interface.
-
-The browser therefore sees one host for the cockpit and the relay (cookies ignore
-ports): the Agent tab frames the interface with no second login and no Basic-auth
-prompt, which Chrome would block inside a cross-origin frame anyway. That is also
-the one rule: open the cockpit through the address the relay binds. With the
-cockpit on `0.0.0.0` or on the tailnet address, that is
-`http://<tailnet address>:30090/#agent`; the tab says so when you arrive by
-another name. A cockpit bound to `127.0.0.1` gets a loopback relay, usable on the
-box itself.
-
-What the tab shows: the state of the server and the relay, the served opencode
-version and, after `opencode upgrade`, that a newer binary is installed with a
-**Restart server** button (systemd restart, through the same exact-argv sudoers
-allowlist as the other units, three more lines). **Fullscreen** makes the
-interface cover the whole browser window; the corner button or Escape brings the
-cockpit back, and a reload on the tab comes back the way it was left. Prefer it
-to opening more browser tabs: every tab of the interface holds one permanent
-event stream, browsers allow six connections per origin, and a sixth tab freezes
-them all (the interface handles any number of sessions in one tab). **Open in a
-tab** still exists for a second screen. The Logs tab reads the server's journal.
-
-Permissions are opencode's own. Its defaults (opencode 1.18) allow most tool
-calls and ask before a tool touches a path outside the session's project and
-when the same call repeats three times; the interface shows those prompts. For
-the autonomy of the `oc` launcher's `--yolo` (a flag `opencode serve` rejects),
-install with `AGENT_AUTO=1`: the unit then carries `OPENCODE_PERMISSION` set to
-allow everything, which opencode honours (verified: the served config reads
-`{"*": "allow"}`), explicit `deny` rules of your config still apply, and your
-`opencode.json` is not touched. The tab says which mode the running server
-applies. Re-runs remember the choice; `AGENT_AUTO=0` turns it back off.
-
-```bash
-AGENT_AUTO=1 dashboard/install-agent.sh
-```
-
-Variables: `OPENCODE_PORT` (4096), `AGENT_PORT` (30091), `AGENT_BIND` (an address,
-or `tailscale`), `AGENT_AUTO` (0 or 1), `AGENT_OUTPUT_TOKEN_MAX` (the output
-ceiling; by default `./oc-limits.sh --max-out`, the largest limit any target asks for), `AGENT_PATH` (the PATH the service gets; yours by
-default). Re-running
-`dashboard/install-dashboard.sh` alone keeps the relay settings, the bind and the
-port it finds in the installed unit. Remove with:
-
-```bash
-sudo systemctl disable --now opencode-web.service
-sudo rm -f /etc/systemd/system/opencode-web.service
-DASH_AGENT_PORT=0 dashboard/install-dashboard.sh       # the cockpit without the relay
-```
-
-## Extras (opt-in)
-
-Three field-tested pieces from the reference box, deliberately not part of the default
-install because they touch things beyond the serving stack:
-
-**`extras/opencode/auto-continue.js`**: an opencode plugin that automatically resumes a
-session interrupted by a transient technical error (tool-call delta without id, timeout,
-network reset) or left stuck right after a context compaction, so a one-off incident no
-longer freezes an overnight run. It never resumes after a deliberate abort, a permission
-prompt, or an auth/quota problem, and stops after 25 relaunches without progress. Install:
-
-```bash
-mkdir -p ~/.config/opencode/plugins && cp extras/opencode/auto-continue.js ~/.config/opencode/plugins/
-```
-
-Plugins load when opencode starts (a running session never picks it up). Log at
-`~/.config/qwen38/auto-continue.log`; tune with `AC_THROTTLE_MS`, `AC_IDLE_DELAY_MS`,
-`AC_MAX_CONSECUTIVE`, `AC_LOG`.
-
-**`extras/gguf/`**: a note, not a lane. What llama.cpp measured on this box against the
-SGLang path (25.6 tok/s on code against 32-40, prose 17.7-18.2 against 17-22, prefill
-about a third), the four traps that make a GGUF benchmark on GB10 lie to you, and what
-evidence would make a GGUF target worth adding. Written for
-[issue #12](https://github.com/hasso5703/dgx-spark-qwen38/issues/12).
-
-**`extras/cake-ingress/`**: ingress anti-bufferbloat. While a model download saturates
-your link, the queue builds up inside the ISP box and everything else drowns (measured on
-the reference box: 1 ms ping became a 4797 ms average and the tunnel in front of the API
-answered 502). The fix shapes RECEIVED traffic just under your real link capacity with
-CAKE, so the queue forms on the Spark where it is scheduled fairly; SSH and the API stay
-at a few milliseconds while the download still runs at ~97 % speed. You must pass your
-own measured downlink (never the NIC speed; the interface is auto-detected):
-
-```bash
-BANDWIDTH=950Mbit  extras/cake-ingress/setup.sh    # 1 Gb/s link (the reference box)
-BANDWIDTH=475Mbit  extras/cake-ingress/setup.sh    # 500 Mb/s link
-BANDWIDTH=2350Mbit extras/cake-ingress/setup.sh    # 2.5 Gb/s link
-extras/cake-ingress/setup.sh --uninstall           # back to stock networking
-```
-
-Boot-persistent (`cake-ingress.service`). Verify with a `ping 1.1.1.1` kept running
-during a big download. The full bandwidth sweep and the reasoning are in the script's
-header; setting BANDWIDTH too high is the one mistake that silently does nothing.
-
-## Upgrading from an earlier version
-
-```bash
-cd dgx-spark-qwen38 && git pull && ./install.sh
-```
-
-Your choices survive the upgrade: the API key, the patched template, your own systemd drop-ins
-under `/etc/systemd/system/qwen38-sglang.service.d/`, the opencode on/off choice (v1.5.9), and (since v1.3) the installed target
-model, port and HF cache location, which are read from the installed unit (v1.4: units; a box
-serving the flash target keeps it, exactly like a 27B choice). The unit itself is
-rewritten on the repo's current flags (the previous one is backed up to
-`~/.config/qwen38/<unit>.bak-preupdate`) and the service restarts on the new
-config. v1.3 -> v1.4 changes nothing by itself for a 27B box: the flash stack is only
-downloaded and installed when you ask for it (`MODEL_CHOICE=flash`), and the regenerated
-`opencode.json` gains an `xhigh` reasoning-effort variant. v1.4 -> v1.5 moves the flash
-lane from vLLM to SGLang (working prefix caching; the upgrade keeps your port, cache and
-model choices and regenerates the launch script on the new engine; the first boot writes
-the 48 GB PLE backing file). **v1.7 -> v1.8 moves the flash lane onto the official image
-and off this repo's overlay**: the upgrade pulls one 15 GB image, builds nothing, deletes
-the previous N-gram table file so the next boot writes a fresh one (~12 min), and serves 4
-concurrent requests instead of 1. It also raises that lane's one-prompt ceiling from 128,000
-to 200,000 tokens and its opencode limits with it, so an agent client will start sending
-longer conversations: that is measured, not assumed (needle 3/3 at 120K and 1/1 at 200K, host
-memory floor 12.6 GiB). Rollback is `OVERLAY_FLASH=1 ./install.sh`, which rebuilds the v1.7
-image; the v1.7 image is kept on the box for exactly that. **27B boxes were untouched by
-v1.8**, on purpose at the time; v1.14 moved that lane to the official image too, after
-measuring both reasons it had stayed behind. Upgrading from v1.2.x also removes the deprecated Claude Code warmup drop-in if you had
-installed it, and no longer writes `claude-code.env`: an existing copy keeps working and will
-never be overwritten again (earlier versions regenerated it on every install, losing any
-customization), but it is unmaintained; the supported client config is `opencode.json`. v1.1 → v1.2 downloads the ~4 GB
-DFlash2 draft (up to v1.13 it also built a local serving image; v1.14 serves the official
-one instead). Going back to the locally built image of v1.13 and earlier means going back to v1.13:
-`SERVE_IMAGE=qwen38-dflash2:v1.2.3 ./install.sh` serves that tag if it is still on the box
-(`docker images qwen38-dflash2`), but this version deletes the files that build it, so
-`git checkout v1.13.0 && ./install.sh` is the path that works whether or not the image
-survived. Nothing measured on this hardware argues for going back. To return to the DSpark config: `git checkout v1.1 && ./install.sh`.
-Change history: [CHANGELOG.md](CHANGELOG.md).
+The three other screenshots, what each panel does that a terminal does not, how it behaves on a
+phone, and the Agent tab that runs opencode in the browser behind this same login:
+**[docs/cockpit.md](docs/cockpit.md)**.
 
 ## Credits
 

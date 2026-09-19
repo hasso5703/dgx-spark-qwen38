@@ -333,6 +333,29 @@ on code that was already in production:
 | CI gates | 28 | **38** |
 | defects found and fixed by the new tests | | **21 crash paths, 1 dead branch, 3 wrong outputs** |
 
+## Where it stands, 2026-09-19
+
+The table above is the snapshot of the campaign that built this suite. Nine days
+later, counted mechanically and the same way on both commits (`tests/test_*.py`
+plus `dashboard/tests/test_*.py`, `def test_` inside them, and `- name:` steps in
+the CI workflow; the 2026-09-10 column is measured on commit `5cf4c98`, which is
+why its test-function count differs from the row above it, counted differently):
+
+| | 2026-09-10 | 2026-09-19 |
+|---|---|---|
+| test files | 20 | **34** |
+| `def test_` functions in them | 442 | **587** |
+| CI steps | 38 | **55** |
+
+What arrived since: the installer's Xet retry (6 gates), `tools-check.py` and its
+fake engine (11), the suite-isolation pair that fails when a test file moves HOME
+for the files that run after it (2), the cockpit's fit verdict (4), and the gate
+that a native install warns before it strands an installed 1m unit (6). Each was
+verified the way this file requires, by breaking what it guards: the Xet retry
+fails 4 of its 6 against the code without the fix, the fit verdict fails 40 grid
+cases against the pair the banner used to print, and the isolation gate names
+`test_tools` when the module-level assignment comes back.
+
 ## Who tests the gates
 
 A gate that cannot fail is decoration, so each one was verified by breaking the
