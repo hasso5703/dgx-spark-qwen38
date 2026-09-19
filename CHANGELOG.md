@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.14.2 (2026-09-19): a warning that argued with its own numbers
+
+The keepalive proxy's one-prompt ceiling follows the lane: 250,000 tokens on
+flash, none on the 27B (`switch-model.sh`, the v1.5.6 contract). A sequence that
+switches the target to flash and then starts the 27B leaves those two halves
+disagreeing, with the flash ceiling on the proxy and the 27B serving, so
+opencode's fitted 548,000 context can no longer be relayed and a session would
+break mid-conversation. The cockpit caught exactly that, which is what it is for.
+
+Then it printed the wrong pair. The banner showed `730,000 asked, 827,968
+servable`, which is the worst case against the pool, under a headline saying the
+ask was too large: two numbers that say it fits, under a sentence saying it does
+not. A warning that argues with itself reads as a bug in the cockpit, which is
+how a real misconfiguration survives someone looking straight at it.
+
+The verdict is now one function, `fit_verdict`, that returns the pair it judged
+on, and the banner prints that pair: `548,000 asked against 250,000 on
+qwen3.8-27b`. Four gates in `dashboard/tests/test_cockpit_collectors.py`, the
+last of them the invariant the screenshot broke, over a grid of contexts,
+outputs, pools and ceilings: when the verdict is not ok, asked is greater than
+limit. The previous behaviour fails 40 of those cases.
+
 ## v1.14.1 (2026-09-18): the two flash exports measured against each other, and the NVIDIA one downloads
 
 **RadixArk against NVIDIA, probe for probe on one box.** `flash` and
