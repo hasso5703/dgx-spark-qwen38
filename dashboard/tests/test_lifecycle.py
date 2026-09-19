@@ -304,6 +304,7 @@ class FeedOutcomes(unittest.TestCase):
         "ok systemone": "ok",
         "422 systemone refused": "fail",
         "502 systemone upstream": "fail",
+        "529 systemone overloaded": "fail",   # admission: the caller past SYSTEMONE_MAX_CALLS got no answer
     }
 
     @classmethod

@@ -732,7 +732,47 @@ class SystemOne(unittest.TestCase):
         self.assertEqual(len(Engine.seen), 3)
         self.assertTrue(all(b["body"].get("logprobs") for b in Engine.seen))
 
-    # ---- pure pieces ---------------------------------------------------------
+    # ---- admission and the identity wall ---------------------------------------
+    def test_a_call_past_the_admission_cap_is_a_529_with_retry_after_and_never_reaches_the_engine(self):
+        sem = self.mod._systemone_calls
+        held = []
+        while sem.acquire(blocking=False):                    # take every slot
+            held.append(1)
+        try:
+            status, headers, out = self.post(self.quickstart())
+        finally:
+            for _ in held:
+                sem.release()
+        self.assertEqual(status, 529, out)
+        self.assertEqual(headers.get("Retry-After"), "2")
+        self.assertEqual(out["error"]["type"], "overloaded")
+        self.assertIn("SYSTEMONE_MAX_CALLS", out["error"]["message"])
+        self.assertEqual(Engine.seen, [])
+        status, _, _ = self.post(self.quickstart())          # every slot given back: served again
+        self.assertEqual(status, 200)
+
+    def test_the_slot_is_returned_after_a_refusal_too(self):
+        for _ in range(self.mod.SYSTEMONE_MAX_CALLS + 3):
+            status, _, _ = self.post({"state": "s", "model": "m", "questions": {}})   # 422 each time
+            self.assertEqual(status, 422)
+        status, _, _ = self.post(self.quickstart())
+        self.assertEqual(status, 200, "a refused call must not keep its admission slot")
+
+    def test_the_identity_wall_guards_the_route_and_admits_with_the_engine_key(self):
+        old_keys, old_up = self.mod.CLIENT_KEYS, self.mod.UPSTREAM_API_KEY
+        self.mod.CLIENT_KEYS = {"alice-token": "alice"}
+        self.mod.UPSTREAM_API_KEY = "engine-key"
+        try:
+            status, _, out = self.post(self.quickstart(), headers={"Authorization": "Bearer nobody"})
+            self.assertEqual(status, 401, out)
+            self.assertEqual(Engine.seen, [], "an unknown client must never reach the engine")
+            status, _, out = self.post(self.quickstart(), headers={"Authorization": "Bearer alice-token"})
+            self.assertEqual(status, 200, out)
+            self.assertEqual({r["auth"] for r in Engine.seen}, {"Bearer engine-key"},
+                             "a named client is admitted upstream with the engine's own key")
+        finally:
+            self.mod.CLIENT_KEYS, self.mod.UPSTREAM_API_KEY = old_keys, old_up
+
     def test_the_label_list_is_588_distinct_capital_labels_in_product_order(self):
         labels = self.mod.SYSTEMONE_LABELS
         self.assertEqual(len(labels), 588)
@@ -800,6 +840,10 @@ class SystemOne(unittest.TestCase):
         self.assertTrue(0.0 <= response.scores["urgency"].score <= 2.0)
         self.assertEqual(response.model, "qwen3.8-test")
         self.assertEqual(response.usage.output_tokens, 3)
+        # the one SDK call that does not translate: /v1/models keeps the OpenAI shape
+        with TypeSafeClient(api_key="client-token", base_url=self.base) as client:
+            with self.assertRaises(Exception):
+                client.models.list()
 
 
 if __name__ == "__main__":

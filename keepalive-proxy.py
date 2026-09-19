@@ -739,6 +739,13 @@ SYSTEMONE_ANSWER_PREFIX = os.environ.get("SYSTEMONE_ANSWER_PREFIX", "")
 SYSTEMONE_THINK_TOKENS = max(0, int(os.environ.get("SYSTEMONE_THINK_TOKENS", "0") or 0))
 SYSTEMONE_THINK_EFFORT = os.environ.get("SYSTEMONE_THINK_EFFORT", "").strip()
 _systemone_slots = threading.BoundedSemaphore(max(1, SYSTEMONE_MAX_INFLIGHT))
+# Admission: at most this many /v1/systemone calls in progress at once. The one past the
+# cap is answered 529 with Retry-After at the door, the status the hosted API uses for
+# "overloaded" and the one its SDK retries with backoff, instead of a thread per caller
+# queueing on the engine until nobody gets an answer in time. Measured under 32 clients
+# on the 27B lane (BENCHMARKS.md, "Under load").
+SYSTEMONE_MAX_CALLS = int(os.environ.get("SYSTEMONE_MAX_CALLS", "32") or 32)
+_systemone_calls = threading.BoundedSemaphore(max(1, SYSTEMONE_MAX_CALLS))
 
 # Single-token option labels, verified against the tokenizer both lanes serve
 # (tokenizer.json blob 0997f410c57a1f4e..., byte-identical for the RadixArk 27B and
@@ -1856,6 +1863,20 @@ class H(BaseHTTPRequestHandler):
         engine is the same 503 the relay path gives. Design and receipts in the
         "System One endpoint" section."""
         json_hdr = {"Content-Type": "application/json"}
+        if not _systemone_calls.acquire(blocking=False):
+            log(f"{self._peer} systemone OVERLOADED: {SYSTEMONE_MAX_CALLS} calls already in progress")
+            self._plain(529, {**json_hdr, "Retry-After": "2"},
+                        json.dumps({"error": {"type": "overloaded",
+                                              "message": f"keepalive-proxy: {SYSTEMONE_MAX_CALLS} typed-decision calls are "
+                                                         f"already in progress on this box (SYSTEMONE_MAX_CALLS); retry "
+                                                         f"after the Retry-After delay"}}).encode())
+            self._done("529 systemone overloaded"); return
+        try:
+            self._systemone_inner(body, json_hdr)
+        finally:
+            _systemone_calls.release()
+
+    def _systemone_inner(self, body, json_hdr):
         try:
             req = systemone_parse(body)
             plan = systemone_plan(req)
