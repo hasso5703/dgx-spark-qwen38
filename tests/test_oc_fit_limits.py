@@ -68,6 +68,60 @@ def main() -> None:
     assert m.fit(900_000, ceiling=m.ceiling_from_env(
         "Environment=UPSTREAM=http://x PROMPT_CEILING_TOKENS=0"))[0] == free_ctx
 
+    # 5. --restart-agent. opencode-web reads opencode.json only at startup, and both
+    #    callers used to leave it on the old limits: install.sh restarted it BEFORE the
+    #    fit, the cockpit's button never did, and the page's check (which reads the
+    #    files) said the limits fitted. The restart goes through the exact sudoers line,
+    #    only when the server runs, and only when a limit actually changed.
+    import subprocess as sp
+    import tempfile
+    from pathlib import Path as P
+    for active in (True, False):
+        with tempfile.TemporaryDirectory() as d:
+            log = P(d) / "calls"
+            (P(d) / "systemctl").write_text(
+                f'#!/bin/sh\necho "systemctl $*" >> {log}\n[ "$1" = is-active ] && exit {0 if active else 3}\nexit 0\n')
+            (P(d) / "sudo").write_text(f'#!/bin/sh\necho "sudo $*" >> {log}\nexit 0\n')
+            for f in ("systemctl", "sudo"):
+                (P(d) / f).chmod(0o755)
+            old = os.environ["PATH"]
+            os.environ["PATH"] = f"{d}:{old}"
+            try:
+                said = m.restart_agent()
+            finally:
+                os.environ["PATH"] = old
+            calls = log.read_text().splitlines() if log.exists() else []
+            restarted = "sudo -n /usr/bin/systemctl restart opencode-web.service" in calls
+            assert restarted == active, (active, calls, said)
+    sudoers = P(REPO_DIR, "dashboard", "sudoers-cockpit.template").read_text()
+    assert "NOPASSWD: /usr/bin/systemctl restart opencode-web.service" in sudoers
+    install = P(REPO_DIR, "install.sh").read_text()
+    assert 'oc-fit-limits.py" --engine "http://127.0.0.1:$PORT" --restart-agent' in install, \
+        "install.sh fits without restarting the agent"
+    cockpit = P(REPO_DIR, "dashboard", "cockpit.py").read_text()
+    assert 'oc-fit-limits.py"), "--restart-agent"]' in cockpit, "the cockpit's button fits without restarting it"
+
+    # 6. Nothing changed, nothing restarted: a fit that finds the limits already right
+    #    must not cut a reply the Agent tab is writing.
+    real_run, restarts = m.subprocess.run, []
+    m.engine_info = lambda base: {"max_total_num_tokens": 914_573, "served_model_name": "qwen3.8-27b",
+                                  "model_path": "x"}
+    m.restart_agent = lambda: restarts.append(1) or "restarted"
+    for merge_said, want in (("qwen38/qwen3.8-27b limits already 567000/189000: unchanged", 0),
+                             ("qwen38/qwen3.8-27b limits: 700000/200000 -> 567000/189000", 1)):
+        restarts.clear()
+
+        def fake(argv, **kw):
+            text = merge_said if "oc-merge-limits.py" in " ".join(map(str, argv)) else ""
+            return sp.CompletedProcess(argv, 0, stdout=text, stderr="")
+        m.subprocess.run = fake
+        with tempfile.TemporaryDirectory() as d:
+            m.CONFIG_DIR = P(d)
+            (P(d) / "opencode.json").write_text("{}")
+            assert m.main(["--restart-agent"]) == 0
+        assert len(restarts) == min(want, 1), (merge_said, restarts)
+    m.subprocess.run = real_run
+
     print("test_oc_fit_limits: OK")
 
 

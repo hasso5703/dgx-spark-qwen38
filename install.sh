@@ -1317,8 +1317,9 @@ python3 "$REPO_DIR/oc-point-default.py" "$CONFIG_DIR/opencode.json" "$LANE" "$MO
 if [ -f "$OC_USER_CFG" ]; then
   python3 "$REPO_DIR/oc-point-default.py" "$OC_USER_CFG" "$LANE" "$MODEL_CHOICE" "$OC_WINDOW" || true
 fi
-# Every opencode.json this install touches has been written by now, so the server
-# that reads them can be restarted. It parses opencode.json ONCE at startup and
+# Every opencode.json this install touches has been written by now, except the limits
+# a 1m install fits to the pool once the engine is up (step 9, which restarts it again),
+# so the server that reads them can be restarted. It parses opencode.json ONCE at startup and
 # never again (measured 2026-09-13: the file said 225,000 while the running
 # server still answered 175,000 on /config), so without this the Agent tab keeps
 # compacting against the previous install's window. Last, not mid-write: a
@@ -1669,7 +1670,9 @@ except Exception as e:
     # 1m is what a plain install serves.
     if [ "$CONTEXT_MODE" = "1m" ] && [ "$OPENCODE" -eq 1 ]; then
       echo "fitting the opencode limits to the KV pool this boot actually got:"
-      python3 "$REPO_DIR/oc-fit-limits.py" --engine "http://127.0.0.1:$PORT" \
+      # --restart-agent: opencode-web was restarted above, before this fit rewrote its
+      # config, and it reads that config only at startup.
+      python3 "$REPO_DIR/oc-fit-limits.py" --engine "http://127.0.0.1:$PORT" --restart-agent \
         || echo "  NOTE: could not fit them; run python3 oc-fit-limits.py yourself, or the cockpit's button"
     fi
 

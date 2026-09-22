@@ -1331,11 +1331,12 @@ ACTIONS = {
         "argv": None,
         "timeout": 10,
     },
-    # make opencode ask for no more than the served engine can hold
+    # make opencode ask for no more than the served engine can hold, and make the Agent
+    # tab's server run those limits: it reads its config only at startup
     "fit_opencode": {
         "danger": "low",
         "params": {},
-        "argv": lambda p: ["python3", str(REPO_DIR / "oc-fit-limits.py")],
+        "argv": lambda p: ["python3", str(REPO_DIR / "oc-fit-limits.py"), "--restart-agent"],
         "timeout": 60,
     },
     # diagnostics bundle for issue reports (logs, state, versions; key masked)

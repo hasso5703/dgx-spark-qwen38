@@ -1300,7 +1300,7 @@ function askAction(name, params, argv, warns){
                    abort_all: () => 'Every running or queued generation ends now; the clients see their stream end.',
                    smoke: () => 'One real 200-token generation through the proxy, the way a client uses it (up to a few minutes while a boot finishes).',
                    diag_bundle: () => 'Collects logs, state and versions into a tarball in your home; the API key is masked everywhere.',
-                   fit_opencode: () => 'Reads the KV pool of the engine that is serving right now and rewrites only opencode\u2019s context and output limits so a conversation can never outgrow it. Your other opencode settings, providers and the default model are untouched, and a dated backup is written first. Restart opencode to pick the new limits up.'};
+                   fit_opencode: () => 'Reads the KV pool of the engine that is serving right now and rewrites only opencode\u2019s context and output limits so a conversation can never outgrow it. Your other opencode settings, providers and the default model are untouched, and a dated backup is written first. When the limits change and the Agent tab\u2019s opencode server is running, it is restarted so it reads them (it reads its config only at startup): a reply it is writing at that moment is cut short.'};
   $('mtitle').textContent = 'Confirm: ' + (TITLES[name] ? TITLES[name](params) : name);
   $('mwhat').textContent = (EXPLAIN[name] ? EXPLAIN[name](params) : '') + (F.config.dry_run ? '\nDry run: nothing will really be executed.' : '');
   const w = $('mwarn'); w.hidden = !(warns && warns.length); w.textContent = (warns || []).map(x => '⚠ ' + x).join('\n');

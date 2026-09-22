@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.18.1 (2026-09-22): the Agent tab runs the limits that were fitted
+
+**opencode-web reads its config once, at startup, and both paths that fit its limits to
+the KV pool left it on the old ones.** `./install.sh` restarted it at step 8, then fitted
+the limits at step 9 once the engine was up, and never restarted it again; the cockpit's
+**Fit the limits to this engine** rewrote the files and restarted nothing. The page's
+check reads the files, so its warning went away while the Agent tab kept asking for more
+than the pool holds, which is the failure the fit exists to prevent. On the reference
+box: files at 567,000 / 189,000, the warning gone, and the running server's own `/config`
+still answering 700,000 / 700,000 / 200,000.
+
+`oc-fit-limits.py --restart-agent` restarts opencode-web when a limit actually changed
+and the server is running, through the sudoers line the cockpit already holds for it.
+A fit that finds the limits already right restarts nothing, so it never cuts a reply for
+no reason. `install.sh` and the cockpit's button both pass it, and the button's
+confirmation says what the restart costs.
+
+**Measured on the update itself:** a plain `./install.sh` from this commit on the
+reference box got a 906,439-token pool, fitted 562,000 / 187,000 (worst case 749,000),
+restarted opencode-web, and the running server's `/config` then read 562,000 / 562,000 /
+187,000.
+
 ## v1.18.0 (2026-09-22): Qwen-Image 2.1, a third lane
 
 **Text to image, image editing with up to ten references, and the native RGBA this model

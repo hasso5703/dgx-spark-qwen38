@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fit the opencode limits to the engine that is actually serving.
 
-Usage: oc-fit-limits.py [--dry-run] [--engine http://127.0.0.1:30000]
+Usage: oc-fit-limits.py [--dry-run] [--restart-agent] [--engine http://127.0.0.1:30000]
 
 opencode's `limit.context` is what it grows a conversation up to before it
 compacts, and `limit.output` is what it asks the engine to generate. Both are
@@ -66,6 +66,27 @@ _MARGIN_FLOOR = max(0, WORST_STEP - COMPACTION_RESERVE)
 CEILING_MARGIN = int(os.environ.get("OC_CEILING_MARGIN") or
                      -(-_MARGIN_FLOOR // 5000) * 5000)
 LANE_MODEL = {"qwen3.8-27b": "qwen38", "qwen3.8-flash-next": "flashnext"}
+AGENT_UNIT = "opencode-web.service"
+
+
+def restart_agent() -> str:
+    """Make the Agent tab's opencode server run the limits just written.
+
+    It parses opencode.json once, at startup, and never again (measured 2026-09-13:
+    the file said 225,000 while the running server still answered 175,000), so limits
+    written under it change nothing until it restarts. install.sh restarted it before
+    this tool ran and the cockpit's button never did: both left the Agent tab on the
+    limits this tool exists to replace, while the page's check, which reads the files,
+    said they fitted. Only a running server is restarted, through the one sudoers line
+    the cockpit already holds for it."""
+    if subprocess.run(["systemctl", "is-active", "--quiet", AGENT_UNIT]).returncode != 0:
+        return f"{AGENT_UNIT} is not running: it reads the new limits when it starts"
+    r = subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "restart", AGENT_UNIT],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        return f"{AGENT_UNIT} restarted: the Agent tab now runs the new limits"
+    return (f"NOTE: could not restart {AGENT_UNIT} ({(r.stderr or '').strip()[:120]}); "
+            f"restart it by hand, or the Agent tab keeps the old limits")
 
 
 def engine_info(base: str) -> dict:
@@ -108,6 +129,7 @@ def ceiling_from_env(text: str) -> int:
 
 def main(argv: list[str]) -> int:
     dry = "--dry-run" in argv
+    restart = "--restart-agent" in argv
     base = "http://127.0.0.1:30000"
     if "--engine" in argv:
         base = argv[argv.index("--engine") + 1]
@@ -146,17 +168,25 @@ def main(argv: list[str]) -> int:
     if dry:
         print("dry run: nothing written")
         return 0
-    rc = 0
+    rc, changed = 0, False
     for target in (CONFIG_DIR / "opencode.json", Path.home() / ".config/opencode/opencode.json"):
         if not target.exists():
             continue
         out = subprocess.run([sys.executable, str(REPO_DIR / "oc-merge-limits.py"), str(target),
                               provider, served, str(context), str(output)],
                              capture_output=True, text=True)
-        print(f"  {target}: {(out.stdout or out.stderr).strip().splitlines()[-1] if (out.stdout or out.stderr).strip() else 'no output'}")
+        said = (out.stdout or out.stderr).strip()
+        print(f"  {target}: {said.splitlines()[-1] if said else 'no output'}")
         if out.returncode not in (0, 3):
             rc = out.returncode
-    if rc == 0:
+        elif out.returncode == 0 and "unchanged" not in said:
+            changed = True
+    if rc == 0 and not changed:
+        print("opencode already asks for no more than this engine can serve: nothing to restart")
+    elif rc == 0 and restart:
+        print("opencode now asks for no more than this engine can serve")
+        print(restart_agent())
+    elif rc == 0:
         print("opencode now asks for no more than this engine can serve; "
               "restart opencode to pick the new limits up")
     return rc
