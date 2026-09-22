@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.21). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.22). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -28,6 +28,12 @@ Five roles, nothing else:
    yes/no probabilities from the model it already runs, with nothing generated and
    nothing parsed. The "System One endpoint" section below carries the design and
    its receipts.
+
+v6.22: an engine that is gone because the box switched to its image lane says so. The
+text engine is stopped on purpose by that switch and nothing brings it back until someone
+switches back, so "stopped, restarting or still loading (about 9 minutes)" sent clients
+to wait for an engine that was not coming. The error path, and only it, asks systemd
+whether qwen38-image.service is active (at most every 5 s) and names the way back.
 
 v6.21: PROXY_BIND chooses the interface this proxy answers on, and it answered on every
 one of them before. Seven days of journal on the reference box: 8,288 requests, all from
@@ -141,12 +147,40 @@ before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
 / max 1307 ms through the proxy vs a steady 118 ms direct. read1() returns as
 soon as bytes are available, so the stream stays token by token.
 """
-import base64, concurrent.futures, http.client, json, math, os, queue, re, select, socket, ssl, string, sys, threading, time, urllib.parse, urllib.request, urllib.error, uuid
+import base64, concurrent.futures, http.client, json, math, os, queue, re, select, socket, ssl, string, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class EngineUnreachable(Exception):
     """The engine did not answer /tokenize: stopped, crashed, restarting or still loading."""
+
+
+# The image lane holds the GPU instead of a text engine once the box is switched to it,
+# and a text engine does not come back from that by itself. Asked only on the error path,
+# where the answer changes what the client is told, and at most every 5 s.
+IMAGE_UNIT = "qwen38-image.service"
+_IMAGE_SEEN = {"ts": -1e9, "active": False}
+
+
+def image_lane_serving():
+    now = time.monotonic()
+    if now - _IMAGE_SEEN["ts"] > 5:
+        try:
+            _IMAGE_SEEN["active"] = subprocess.run(["systemctl", "is-active", "--quiet", IMAGE_UNIT],
+                                                   timeout=2).returncode == 0
+        except Exception:
+            _IMAGE_SEEN["active"] = False
+        _IMAGE_SEEN["ts"] = now
+    return _IMAGE_SEEN["active"]
+
+
+def engine_gone_reason():
+    """What an unanswering engine means on this box, and what brings it back."""
+    if image_lane_serving():
+        return ("This box is serving images right now (qwen38-image.service), and a text engine "
+                "does not come back by itself: switch back to a text lane from the cockpit's "
+                "switcher, or run ./switch-model.sh with a text target")
+    return "It is stopped, restarting or still loading (a restart takes minutes, about 9 on a DGX Spark)"
 
 # The interface this proxy listens on. It answered on every one of them until v6.21, and
 # on the reference box seven days of journal showed 8,288 requests, every last one from
@@ -2027,10 +2061,9 @@ class H(BaseHTTPRequestHandler):
         503 with Retry-After, never a size refusal (30/08: a restarting engine made the size
         fallback call a 68k-token request "~409k tokens")."""
         log(f"engine unreachable: {exc}")
-        msg = (f"keepalive-proxy: the engine behind {UPSTREAM} is not answering ({exc}). It is stopped, "
-               f"restarting or still loading (a restart takes minutes, about 9 on a DGX Spark); this "
-               f"request was NOT refused for its size. Retry it unchanged once GET {UPSTREAM}/health "
-               f"answers 200.")
+        msg = (f"keepalive-proxy: the engine behind {UPSTREAM} is not answering ({exc}). "
+               f"{engine_gone_reason()}; this request was NOT refused for its size. Retry it "
+               f"unchanged once GET {UPSTREAM}/health answers 200.")
         body = json.dumps({"type": "error", "error": {"type": "engine_unavailable", "message": msg}}).encode()
         try: self._plain(503, {"Content-Type": "application/json", "Retry-After": "30"}, body)
         except Exception: pass
@@ -2626,8 +2659,7 @@ class H(BaseHTTPRequestHandler):
             self._plain(503, {**json_hdr, "Retry-After": "30"},
                         json.dumps({"detail": {"error_type": "engine_unavailable", "message":
                                                f"keepalive-proxy: the engine behind {UPSTREAM} is not answering "
-                                               f"({_so_logsafe(e)}). It is stopped, restarting or still loading (a "
-                                               f"restart takes minutes, about 9 on a DGX Spark); this request was "
+                                               f"({_so_logsafe(e)}). {engine_gone_reason()}; this request was "
                                                f"NOT refused for its size. Retry it unchanged once GET "
                                                f"{UPSTREAM}/health answers 200."}}).encode())
             self._done("503 engine unreachable"); return
@@ -2709,7 +2741,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.21 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.22 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     if CLIENT_KEYS:
         log(f"client keys on: {len(CLIENT_KEYS)} identities ({CLIENT_KEYS_FILE})")
         if UPSTREAM_API_KEY:

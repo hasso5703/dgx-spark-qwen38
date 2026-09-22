@@ -474,6 +474,8 @@ LAST_PROGRESS: dict = {"ts": None}
 UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
 IMAGE_READY_ENTER: dict = {}   # image lane: the activation (enter timestamp) it served in
 IMAGE_INVOCATION: dict = {}    # image lane: its current systemd invocation, whose journal is its own
+BOOT_SEEN: dict = {}           # text lanes: (activation, last boot parse that had evidence)
+BOOT_HEAD_READ: dict = {}      # text lanes: the activation whose first minutes were read once
 POOL_GUARD = os.environ.get("COCKPIT_POOL_GUARD", "1") == "1"
 POOL_GUARD_THRESHOLD = float(os.environ.get("COCKPIT_POOL_GUARD_THRESHOLD", "0.6"))
 LAST_USAGE: dict = {"value": 0.0, "mamba": 0.0, "ts": 0.0}   # pool usage from the engine's own log lines
@@ -988,6 +990,33 @@ def collect_lifecycle():
             tail = run(["docker", "logs", "--tail", "300", cont],
                        timeout=6, merge_err=True).splitlines()
             boot = lc.parse_boot_log(tail)
+            # Within one activation a boot does not go back to "no evidence". These are the
+            # last 300 lines, and some boots flood them: inductor compile errors during the
+            # graph capture (450 lines in six minutes on the reference box, 22/09) pushed
+            # every milestone out of the window, the parse read stage None, which derives
+            # "starting", and the bar went back from capturing graphs to the beginning.
+            activation = d.get("ActiveEnterTimestampMonotonic", "0")
+            seen = BOOT_SEEN.get(unit)
+            if (boot["stage"] is None and activation != "0" and not (seen and seen[0] == activation)
+                    and BOOT_HEAD_READ.get(unit) != activation):
+                # Nothing proved yet in this activation, which is all a cockpit started in the
+                # middle of such a boot, or after it, can see. The container is created at each
+                # start, so its first 15 minutes are this boot's own, and every milestone up to
+                # "fired up" is in them: read them once. Without it a serving engine that later
+                # lost health read "starting" (stage None) instead of "degraded".
+                BOOT_HEAD_READ[unit] = activation
+                try:
+                    start = time.time() - (monotonic_now() - int(activation) / 1e6)
+                    head = run(["docker", "logs", "--since", f"{start - 5:.0f}",
+                                "--until", f"{start + 900:.0f}", cont],
+                               timeout=10, merge_err=True).splitlines()
+                    boot = lc.parse_boot_log(head)
+                except ValueError:
+                    pass
+            if boot["stage"] is not None:
+                BOOT_SEEN[unit] = (activation, boot)
+            elif seen and seen[0] == activation and activation != "0":
+                boot = seen[1]
         # Hysteresis: a 2 s health probe times out under a heavy prefill.
         # Leaving ready needs 3 consecutive misses AND no fresh progress line;
         # a single 200 restores it at once.

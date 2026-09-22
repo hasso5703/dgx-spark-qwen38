@@ -381,3 +381,82 @@ class FitVerdict(Base):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TheBootBarNeverGoesBack(Base):
+    """Some boots flood the log the lifecycle reads the last 300 lines of: inductor compile
+    errors during the graph capture, 450 lines in six minutes on the reference box on
+    22/09. Every milestone left the window, the parse read stage None, and the lane went
+    from "capturing graphs" back to "starting". Within one activation the stage stays
+    the last one the log proved; a new activation starts from what its own log says."""
+    MILESTONES = "\n".join([
+        "[2026-09-22 19:51:23] Load weight begin. avail mem=113.93 GB",
+        "[2026-09-22 19:53:22] Load weight end. elapsed=118.38 s, type=Qwen3_5ForConditionalGeneration",
+        "[2026-09-22 19:53:22] Load weight begin. avail mem=92.04 GB",
+        "[2026-09-22 19:53:32] Load weight end. elapsed=9.44 s, type=DFlash2DraftModel",
+        "[2026-09-22 19:53:38] KV Cache is allocated. dtype: torch.float8_e4m3fn, #tokens: 914573",
+        "[2026-09-22 19:53:41] Capture target verify CUDA graph begin. backend=full",
+    ]) + "\n"
+    FLOOD = "  torch._dynamo.utils.warn_once(msg)\n" * 300
+    U = "qwen38-sglang.service"
+
+    def setUp(self):
+        self.cp.BOOT_SEEN.clear()
+        with self.cp.STATE_LOCK:
+            self.cp.STATE["engine_fast"] = {"data": {"healthy": False}}
+
+    def tick(self, logs, enter):
+        self.box({
+            f"systemctl show {self.U}": f"ActiveState=active\nSubState=running\n"
+                                        f"ActiveEnterTimestampMonotonic={enter}\n",
+            "docker ps -q -f name=^qwen38-sglang$": "c0ffee\n",
+            "docker logs --tail 300 qwen38-sglang": logs,
+        })
+        out = self.cp.collect_lifecycle()
+        return (out.get("data", out))["engines"][self.U]["state"]
+
+    def test_a_flood_inside_one_boot_keeps_the_stage_it_had_reached(self):
+        self.assertEqual(self.tick(self.MILESTONES, enter="1000"), "capturing-graphs")
+        self.assertEqual(self.tick(self.FLOOD, enter="1000"), "capturing-graphs")
+        self.assertEqual(self.tick(self.FLOOD, enter="1000"), "capturing-graphs")
+
+    def test_a_new_activation_does_not_inherit_the_last_ones_stage(self):
+        self.assertEqual(self.tick(self.MILESTONES, enter="1000"), "capturing-graphs")
+        self.assertEqual(self.tick(self.FLOOD, enter="2000"), "starting")
+
+    def test_evidence_always_wins_over_what_was_seen(self):
+        self.assertEqual(self.tick(self.MILESTONES, enter="1000"), "capturing-graphs")
+        fired = self.MILESTONES + "[2026-09-22 19:58:40] The server is fired up and ready to roll!\n"
+        self.assertEqual(self.tick(fired, enter="1000"), "warming-up")
+
+    def test_a_cockpit_started_in_the_middle_of_the_flood_reads_the_start_once(self):
+        self.cp.BOOT_HEAD_READ.clear()
+        reads = []
+        for _ in range(3):
+            fake = self.box({
+                f"systemctl show {self.U}": "ActiveState=active\nSubState=running\n"
+                                            "ActiveEnterTimestampMonotonic=1000\n",
+                "docker ps -q -f name=^qwen38-sglang$": "c0ffee\n",
+                "docker logs --tail 300 qwen38-sglang": self.FLOOD,
+                "docker logs --since": self.MILESTONES})
+            out = self.cp.collect_lifecycle()
+            self.assertEqual(out.get("data", out)["engines"][self.U]["state"], "capturing-graphs")
+            reads.append(sum(1 for c in fake.calls if c[:3] == ["docker", "logs", "--since"] and "--until" in c))
+        self.assertEqual(reads, [1, 0, 0], "the start of the boot is read once per activation")
+
+    def test_a_serving_engine_that_lost_health_is_degraded_not_starting(self):
+        """Its tail is decode lines by then. Before the head read, a cockpit that had not
+        watched this boot parsed stage None there, and a serving engine read "starting"."""
+        self.cp.BOOT_HEAD_READ.clear()
+        fired = self.MILESTONES + "[2026-09-22 19:58:40] The server is fired up and ready to roll!\n"
+        decode = "[2026-09-22 20:40:00] Decode batch, #running-req: 1, #token: 5000, gen throughput (token/s): 70.1\n" * 300
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"] = {self.U: "ready"}
+        self.cp.UNHEALTHY_TICKS[self.U] = 5            # past the hysteresis: it really lost health
+        self.box({f"systemctl show {self.U}": "ActiveState=active\nSubState=running\n"
+                                              "ActiveEnterTimestampMonotonic=1000\n",
+                  "docker ps -q -f name=^qwen38-sglang$": "c0ffee\n",
+                  "docker logs --tail 300 qwen38-sglang": decode,
+                  "docker logs --since": fired})
+        out = self.cp.collect_lifecycle()
+        self.assertEqual(out.get("data", out)["engines"][self.U]["state"], "degraded")

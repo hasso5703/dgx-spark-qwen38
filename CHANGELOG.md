@@ -1,5 +1,54 @@
 # Changelog
 
+## v1.18.0 (unreleased): Qwen-Image 2.1, a third lane
+
+**Text to image, image editing with up to ten references, and the native RGBA this model
+is built for, on the same box.** `./install.sh --with-image` installs it, and so does the
+one-liner (`curl -fsSL .../get.sh | bash -s -- --with-image`). It is opt-in because it
+costs 38 GB (31 checkpoint, 7 runtime) and about 25 minutes; once installed, a plain
+re-run keeps and updates it. The runtime is SGLang Diffusion from a pinned source commit,
+because Qwen-Image 2.1 is in no SGLang release and the cookbook verifies no docker image
+for it, over the released wheel that carries the prebuilt aarch64 kernels.
+
+**A lane like the other two.** Picked in the cockpit's switcher, switched to with
+**Switch**, started and stopped by the same lane button, and `./switch-model.sh image`
+from a terminal. The cockpit's rule holds for all three alike: no engine starts while
+another is busy (`409 blocked`, with the one to stop), and the unit's `Conflicts=` is a
+second belt for a `systemctl start` typed at a terminal. A plain `./install.sh` on a box
+switched to images updates the text lane without taking the image lane off the boot.
+
+**Measured on a Spark:** 1024x1024 at 40 steps in 38.2 s (the cookbook publishes 35.36),
+2048x2048 in 190.9 s at 44.7 GB, ready 60 to 72 s after a start, 0.05 CPU cores at rest.
+Same seed, same bytes.
+
+**What the cockpit refuses before the engine answers a bare 500:** a width or height that
+is not a multiple of 32, a request without an output format (the API falls back to JPEG
+and this model returns RGBA), and a second image while one is generating (two at once
+held 90.5 GB of 121.6 and wedged the engine while `/health` kept answering 200). The
+Image tab exposes every parameter at the model's own defaults, with **Reset settings**,
+sample prompts, each stage of a request as the engine names it, and a time estimate
+within 6.5 % of nine measured requests.
+
+**The lane is loopback, and that is not an omission.** The diffusion runtime has no
+`--api-key` and no `--sleep-on-idle` (its `--help` lists both, from the LLM parser), so
+the cockpit is the authenticated door in front of it.
+
+**One local change to the pinned source.** The diffusion scheduler's loop never waits,
+so an idle lane held one CPU core at 100% for as long as it served: 1.047 cores measured.
+`image-sglang/scheduler-idle-poll.patch` waits on the request socket the way the LLM
+scheduler's own `IdleSleeper` does: 0.045 cores, identical pixels at a fixed seed, no
+latency cost. CI checks that it still applies to the pin.
+
+**Found on the way, for every lane.** The keepalive proxy (v6.22) tells a text client
+that finds no engine because the box is serving images so, and how to switch back,
+instead of "restarting, about 9 minutes". A text boot that floods its log (inductor
+compile errors during the graph capture, 850 lines against a 300-line window) no longer
+sends the boot bar back to "starting", and a serving engine that loses health reads
+"degraded" even to a cockpit that did not watch it boot.
+
+120 tests hold it, and eleven of the fixes were checked by undoing each one and watching
+its test or its CI step fail. Licence of the model: Qwen Research, **not for commercial use**.
+
 ## v1.17.0 (2026-09-22): the engine answers on localhost only, and that is the default
 
 **A changed default, and the reason it could change at all.** The engine listened on

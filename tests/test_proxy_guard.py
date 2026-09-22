@@ -363,6 +363,62 @@ class ProxyInFrontOfLoadingEngine(unittest.TestCase):
         self.assertEqual(json.loads(raw)["error"]["type"], "engine_unavailable")
 
 
+class ProxyOnABoxSwitchedToImages(unittest.TestCase):
+    """v6.22: with the image lane serving, the text engine is stopped on purpose and does not
+    come back by itself. "Stopped, restarting or still loading (about 9 minutes)" sent a
+    client to wait for it; the answer now names the image lane and the way back. systemd is
+    asked through PATH, so a fake systemctl stands in for it here, in both directions."""
+
+    def spawn(self, image_active):
+        import socket, subprocess, sys, tempfile, time
+        fake = Path(tempfile.mkdtemp(prefix="fake-systemctl-"))
+        (fake / "systemctl").write_text(
+            "#!/bin/sh\n"
+            f'[ "$*" = "is-active --quiet qwen38-image.service" ] && exit {0 if image_active else 3}\n'
+            "exit 3\n")
+        (fake / "systemctl").chmod(0o755)
+        with socket.socket() as sk:                     # a port nothing listens on: the engine is gone
+            sk.bind(("127.0.0.1", 0)); dead = sk.getsockname()[1]
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{dead}", PATH=f"{fake}:{os.environ.get('PATH', '')}")
+        proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(port)],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (proc.terminate(), proc.wait(timeout=5)))
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close(); break
+            except OSError:
+                time.sleep(0.05)
+        return port
+
+    def ask(self, port):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
+                                     data=json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def test_the_image_lane_is_named_with_the_way_back(self):
+        status, raw = self.ask(self.spawn(image_active=True))
+        self.assertEqual(status, 503)
+        err = json.loads(raw)["error"]
+        self.assertEqual(err["type"], "engine_unavailable")
+        self.assertIn("serving images right now", err["message"])
+        self.assertIn("switch back to a text lane", err["message"])
+        self.assertNotIn("about 9 on a DGX Spark", err["message"])
+
+    def test_without_it_the_answer_is_the_one_it_always_was(self):
+        status, raw = self.ask(self.spawn(image_active=False))
+        self.assertEqual(status, 503)
+        msg = json.loads(raw)["error"]["message"]
+        self.assertIn("stopped, restarting or still loading", msg)
+        self.assertNotIn("serving images", msg)
+
+
 class SmallPoolEngine(http.server.BaseHTTPRequestHandler):
     """A healthy engine with a tiny pool: it answers /get_server_info and counts
     with /tokenize, so the guard has everything it needs to refuse on size."""
