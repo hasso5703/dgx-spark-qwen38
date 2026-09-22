@@ -121,7 +121,7 @@ And the root modules, which had no floor at all until 2026-09-10:
 
 | module | floor | why it is where it is |
 |---|---|---|
-| `keepalive-proxy.py` | 74% | the production serving path; the rest is socket teardown |
+| `keepalive-proxy.py` | 82% | the production serving path; the rest is socket teardown |
 | `patch-yarn.py` | 90% | it rewrites the config the engine reads |
 | `oc-fit-limits.py` | 37% | the arithmetic is property-tested, the CLI plumbing is not |
 | `build-token-map.py` | 35% | the ranking is tested; loading a real tokenizer is not offline work |
@@ -203,6 +203,48 @@ classes in `test_lifecycle.py`, each test naming the mutant it kills. Second run
 and `pool <= 0` is unreachable past the `not pool` in front of it. One survivor
 was removed by deleting code instead of adding a test: an `if` whose body was
 `pass` decided nothing, so four mutants in it were undetectable by construction.
+
+**The System One block (2026-09-19).** The typed-decisions endpoint is one block of
+`keepalive-proxy.py`, so it was walked on its own: the repo's operators, the block's
+own suite, and only the mutants that land between the block's first line and its
+handler's last. **271 mutation points, 224 killed, 82.7%**, re-measured on 2026-09-21
+against the suite as it stands. The survivors that mattered were read one by one
+and turned into tests that name them: the cap that serves its own value and refuses
+one past it, the ten score levels against eleven, the refusal that echoes what failed
+but never a state over 512 bytes, the served name asked again once its cache is old,
+six decimals on a probability, the weakest question of a call in the label-mass
+header, the floor that serves at its own value, and the two default options of a Noul
+in order. Two families of survivor are worth naming because they are not equivalent
+mutants and a test does kill them: every `int(os.environ.get(X, "8") or 8)` line
+(a fresh interpreter is asked for its constants, so a default that moves is caught)
+and the `or` in those same lines (an empty environment variable, which is what
+`Environment=SYSTEMONE_FANOUT=` in a systemd drop-in gives you, must fall back to the
+default instead of stopping the proxy at boot).
+
+The 2026-09-21 run found one survivor that was neither equivalent nor already named: the
+`or` fallback of `SYSTEMONE_RETRY_TOP_K`, and of the two relay ceilings added the same
+day. Those three are now in the list the empty-variable test walks, and adding them found
+a real defect immediately: `TOP_LOGPROBS_CEILING=` (an empty variable, which is what a
+systemd drop-in writes) fell back to 0, and 0 is what turns the refusal off. The guard
+against a one-request engine kill was one empty drop-in line away from being absent. That
+is the whole argument for the mutation gate in one line: the test that caught it was
+written to catch a mutant, not a bug, and it caught the bug on its first run.
+
+**A live matrix, because a fake engine cannot serve a model** (`systemone-check.py`).
+Every shape of the contract sent to the real lane and graded against the contract, every
+refusal compared with what `api.typesafe.ai` answers to the same bytes, every lever on its
+own proxy, the door under twelve simultaneous callers, and typed decisions mixed with
+ordinary chat, plain and streamed, on the same engine. **44 of 44 on 2026-09-21.** Its own
+first run failed five checks and all five were the checker being wrong, each settled by
+asking the hosted API rather than by reading this repo's code: a Score returns the expected
+level index, not a fraction (the hosted model answers 8.45 on a ten-level scale), and three
+refusals this tool expected as 422 are 400 there, one of them with the same message to the
+character. The expectations in that file now carry where they came from.
+
+Two tests in that suite skip rather than lie when what they check is absent: the round
+trip through TypeSafe's own SDK (installed in CI since 2026-09-19, so it runs there
+too) and the label list re-derived from the served model's `tokenizer.json`, which is a
+box-side check because a runner has no model.
 
 The tool had two bugs of its own, both worth recording because they are the
 failure modes of every home-made mutation runner.

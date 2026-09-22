@@ -170,7 +170,26 @@ the package is importable). The SDK's default timeout is 10 s; a very large stat
 cold can take longer on this box, so pass `timeout=` for those. `model` may be any of Jev's
 aliases or the lane's own name; the response's `model` is what the lane served. The one SDK
 call that does not translate is `client.models.list()`: `GET /v1/models` keeps the OpenAI shape
-that opencode and `bench.sh` read. Errors: 422 with `error.message` and `error.param` for a
-request that will not evaluate, 503 with `Retry-After` while the engine restarts (the same
-message as the relay path), 502 when the engine answered a branch with no usable distribution.
+that opencode and `bench.sh` read. `model` takes Jev's three
+aliases (`jev-latest`, `jev-preview`, `jev-1.13.0`) or the lane's own name, and any other name
+is refused the way the hosted API refuses it.
+
+Errors are the hosted API's, checked case by case against it (BENCHMARKS.md, "The same bad
+request, the same refusal"): **422** with a `detail` list whose entries name the path that
+failed, for a request that violates the schema; **400** with a `detail` that is a message or an
+object, for a request that parses and cannot be served (an unknown model, a Noul with neither
+instructions nor criteria, more than 255 options, a state longer than this lane's prompt
+ceiling); **529** with `Retry-After` when `SYSTEMONE_MAX_CALLS` calls are already in progress,
+which the SDK retries on its own; **503** with `Retry-After` while the engine restarts, in the
+relay path's shape; **502** when the engine answered a branch with no usable distribution. The
+SDK reads the message out of every one of those shapes.
+
+Two behaviours worth knowing before you point a crowd at it. **Admission**: eight typed
+decisions run at once and eight engine requests behind them, so the ninth caller gets 529
+with `Retry-After` and the SDK sleeps it and sends the same call again; both numbers are
+env vars (`SYSTEMONE_MAX_CALLS`, `SYSTEMONE_MAX_INFLIGHT`) and both came from a load curve
+(BENCHMARKS.md, "Under load"). **A call you abandon stops**: the SDK's default timeout is
+10 s, a cold fan-out on a large state takes longer, and when your socket closes the proxy
+stops the fan-out and tells the engine to drop the branches it still holds. Pass a bigger
+`timeout=` rather than relying on a retry to be cheaper than the first attempt.
 

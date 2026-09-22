@@ -206,6 +206,46 @@ What the shipped config gets right for you:
 
 On service installs the generated config points at the **keepalive proxy port** (`PORT+1`), not the server directly, and that is deliberate: SGLang buffers tool-call arguments while they stream (127 s of measured silence on one 400-line file write, at native context), and opencode drops a stream after roughly 140-180 s without a real chunk. The proxy (`qwen38-keepalive.service`, vendored `keepalive-proxy.py`) fills those silences with protocol-correct keepalives, at SSE event boundaries only, and makes sure a client that gives up does not leave a generation running (v6.14: it names every request with `x-override-rid` so it can abort one that has not produced anything yet, aborts before closing the socket, and drains the answer where the engine offers no rid to abort with). With `./install.sh --no-service` there is no proxy: the config then points at the server directly, and huge single-file writes may abort. One more caveat, measured: SGLang's `--api-key` only accepts `Authorization: Bearer`, **not** `x-api-key`.
 
+**The proxy also refuses the requests that take the engine down instead of being
+refused by it.** One is a prompt past the KV pool ([sglang#36333](https://github.com/sgl-project/sglang/issues/36333)),
+which is why sending a monster straight to `:30000` wedges the scheduler and sending it
+through `:30001` gets a clean 400. Since v6.20 the other is an oversized logprob request:
+OpenAI documents `top_logprobs` as "an integer between 0 and 20" and SGLang declares it
+`Optional[int]` with no bound at all, so the number travels unexamined to
+`logprobs.topk(max_k)` and, the moment it passes the vocabulary, raises `selected index k
+out of range` **inside the scheduler**. One request from one client ends the engine for
+everybody, and this box needs about nine minutes to boot again
+([sglang#40076](https://github.com/sgl-project/sglang/issues/40076), open since
+2026-09-18; the field is still unbounded in the served `v0.5.19`, checked in the image).
+The proxy refuses anything above `TOP_LOGPROBS_CEILING` (1,024) on the three routes that
+carry the number under three different names: `top_logprobs` on `/v1/chat/completions`,
+`logprobs` on `/v1/completions`, and `top_logprobs_num` on `/generate`, the last one
+element by element when a batch sends a list. It refuses rather than quietly lowering the
+number, because a narrowed top-k answers a different question than the one that was
+asked. The ceiling is not the vocabulary, which the engine publishes nowhere: no vocabulary
+in use is smaller than 32k, OpenAI's own maximum is 20, and the System One readout asks 261
+with its shipped caps (594 with the widest an operator can set), so nothing above 1,024 can
+be a client asking for logprobs. `TOP_LOGPROBS_CEILING=0` turns the refusal off for an
+operator who knows their build is patched; on this one it is not, so leave it alone.
+
+Three more fields of that family were catalogued upstream in July with reproductions
+([sglang#31597](https://github.com/sgl-project/sglang/issues/31597)) and are still
+unbounded, because **both PRs that bounded them were closed without being merged**, which
+is also why the logprob one had to be reported again in September. All three are reachable
+from an ordinary chat request, and the proxy refuses them too: a `stop_token_ids` entry
+past the vocabulary indexes a `scatter_add_` out of bounds whenever `min_new_tokens > 0`,
+which on CUDA is a device-side assert that takes every in-flight request with it; an
+`input_ids` entry does the same to the embedding (`_validate_input_ids_in_vocab` exists in
+the image and has zero callers); and `n` becomes `parallel_sample_num` with no bound at
+all, expanding a list before anything is scheduled, so it is a memory exhaustion rather
+than a crash. `n` is held at `MAX_PARALLEL_SAMPLES` (128, which is OpenAI's own maximum).
+The two id fields need the vocabulary, and since the engine publishes it nowhere the proxy
+asks for it the only way it is offered: `logit_bias` is the one field SGLang does validate,
+and it is refused with "logit_bias must has keys in [0, 248319]". One probe an hour, built
+to be refused, so it never reaches the scheduler; it matched this checkpoint's own
+`config.json` to the digit. **A negative id is refused whatever happens, and when the probe
+cannot run the rest of the guard stands down rather than refuse traffic it cannot judge.**
+
 ## Typed decisions: a System One endpoint (proxy v6.19)
 
 Since v1.15 the keepalive proxy answers **`POST /v1/systemone`** with the wire contract of
@@ -216,8 +256,8 @@ run**. Every question becomes one chat completion of exactly one token, the opti
 by single-token letters, and `top_logprobs` hands back the probability of each letter. Nothing
 is generated, nothing is parsed, and the state is the shared prefix the radix cache reuses from
 one question to the next: ask twenty questions about one document in one call and the document
-is prefilled once, then served from the cache (measured below: one question on an 80,000-character
-state answers in 0.2 s once cached).
+is prefilled once, then served from the cache (measured below: one question on a 53,770-character
+state, 10,799 tokens, answers in 0.2 s once cached).
 
 ```bash
 curl -s http://127.0.0.1:30001/v1/systemone \
@@ -241,8 +281,9 @@ serves and the response names it:
 export TYPESAFE_BASE_URL=http://127.0.0.1:30001 TYPESAFE_API_KEY=$(cat ~/.config/qwen38/api-key)
 ```
 
-**What is the hosted API's, to the digit.** The request and response shapes, the 422 that
-names the field, the two confidence statistics: they were read off the live `jev-1.13.0` on
+**What is the hosted API's, to the digit.** The request and response shapes, the refusals
+(both of them: 422 with a `detail` list naming the path that failed, 400 for a request that
+parses and cannot be served), the limits, the two confidence statistics: they were read off the live `jev-1.13.0` on
 2026-09-18 rather than off its docs, because the docs' normalized entropy reproduces their two
 worked examples and not one live answer (those pages were written for `jev-1.12`). A Choice's
 confidence is `(p_max * N - 1) / (N - 1)`, the top probability normalized between uniform and
@@ -258,8 +299,8 @@ either: SGLang's kernels depend on batch composition (see `LEAN.md`), and five r
 to 0.06 on the 27B lane (the measurements below have the concurrency 1 figure). The hosted model spends
 17 plus about 7 output tokens per option of a Choice inside (2,412 for 255 options); this path
 spends one token per question whatever the option count, and takes Jev's 255 options per
-Choice (asked for 255 `top_logprobs`, this build returned 255). Score keeps Jev's 2 to 10
-levels, `GET /v1/models` keeps the OpenAI shape this box's other clients depend on (the SDK's
+Choice (asked for 255 `top_logprobs`, this build returned 255, and 261 for 261). Score takes
+one to ten levels, which is what the live API answers rather than what its docs describe, `GET /v1/models` keeps the OpenAI shape this box's other clients depend on (the SDK's
 `models.list()` is the one call that does not translate), and three headers outside the
 contract report what it has no room for: `x-systemone-label-mass` (how much of the model's
 first-token probability landed on any label; near 1 means the prompt worked),
@@ -286,12 +327,14 @@ are in [BENCHMARKS.md](BENCHMARKS.md#typed-decisions-v115-the-system-one-endpoin
 | MMLU-Pro, 1,000 MCQ, up to 10 options (Choice) | 83.8% [81.4, 86.2] | 58.1% [55.1, 61.1] | 62.1% [58.9, 65.0] | +25.7 pts [+22.5, +29.1] | 7.2% / 8.3% / 5.6% (T 1.25) | 0.62 s / 0.54 s |
 | XNLI-fr, 500 entailment pairs, French (Choice, 3) | 78.2% [74.4, 81.6] | 71.2% [67.2, 75.0] | 71.4% [67.4, 75.2] | +7.0 pts [+3.8, +10.4] | 12.2% / 16.1% / 4.5% (T 2.05) | 0.62 s / 0.45 s |
 | MMMLU-fr, 500 MCQ A to D, French (Choice) | 87.4% [84.6, 90.2] | 73.0% [69.2, 76.8] | 74.6% [70.4, 78.4] | +14.4 pts [+10.8, +18.2] | 3.7% / 9.8% / 7.1% (T 1.40) | 0.62 s / 0.43 s |
-| TypeSafe's 20 public cases, 408 questions, four business workflows, against the frontier references | 93.2% (309 scorable) | 91.3% | **93.5%** | | | 0.64 s per node / 6.7 s per node (about 9 questions each) |
+| TypeSafe's 20 public cases, 408 questions, four business workflows, against the frontier references | 93.2% (309 scorable) | 90.6% and 90.9% (the same run twice) | **92.9%** | | | 0.64 s per node / 7.5 s per node (about 9 questions each) |
 | GDPR, the cookbook's 13 questions over a 54k-character article, 5 repeats | 50 of 50 reference answers | 50 of 50 | | | | 1.04 s per 13-question call / 5.5 s |
 
 Read it plainly. On the **judgment work the hosted model is sold for**, TypeSafe's own public cases, the
-27B lane with two option orders is at parity (93.5% against 93.2%, same references, same questions,
-and it agrees with the hosted answers on 87.7% of them). On **yes/no over a passage** it is 2.6 points
+27B lane with two option orders is within a point of the hosted model (92.9% against 93.2%, same
+references, same questions, and it agrees with the hosted answers on 89.2% of them). A point is not
+a result on its own here: the raw readout run twice, an hour apart, gave 90.6% and 90.9%, so the
+noise floor of this comparison is about three tenths of a point and the gap sits inside it. On **yes/no over a passage** it is 2.6 points
 behind with the lever and better calibrated than the hosted model (ECE 1.2% against 2.4%). On
 **knowledge and calculation MCQ** it is far behind: 25.7 points on MMLU-Pro, 14.4 in French, and the
 per-category table in BENCHMARKS.md says where (biology 0.90 against 0.98, math 0.49 against 0.88):
@@ -331,6 +374,37 @@ closes the gap on questions a single forward pass cannot settle (the measurement
 the number). The thought is never returned, the contract has no field for it. Set them on the
 service with a drop-in (`sudo systemctl edit qwen38-keepalive.service`, an `[Service]` block of
 `Environment=` lines), the way `install.sh` sets the prompt ceiling.
+
+**Open it to a crowd and the door holds.** `SYSTEMONE_MAX_CALLS` (8) typed-decision calls
+run at once and `SYSTEMONE_MAX_INFLIGHT` (8) engine requests behind them; the next caller is
+answered **529 with `Retry-After`**, the status the hosted API uses for overload and the one its
+SDK retries with backoff. Both numbers came from a curve, 32 clients in a closed loop against
+the 27B lane at four settings (BENCHMARKS.md, "Under load"): the engine is the bottleneck either
+way, near one answer a second at every setting, so the door does not cost throughput, it decides
+who waits where. Wide open, the median one-question call took 28.3 s and an ordinary streamed
+completion on the same lane went from 4.6 s to 57.0 s. At eight, the same call came back in
+3.8 s and nothing failed. A caller alone still gets the whole fan-out.
+
+**The state is fenced, and a caller that leaves takes its work with it.** The state is
+third-party text by design (a ticket, a document, a tool result), so it is wrapped in a
+token drawn at start-up that a caller cannot close from inside: a state carrying its own
+"QUESTION / OPTIONS / Reply with the label" block used to produce a branch with two of
+each, the attacker's first. On eighteen injected states, six of them written that way,
+this endpoint followed the injected instruction zero times and the hosted Jev once. And
+because the SDK gives up after 10 s by default while a cold fan-out can take longer, every
+branch carries a request id this proxy imposes: when the caller's socket closes, the
+fan-out stops, the engine is told to drop the branches it still holds, and the admission
+slot comes back at once.
+
+**A bad request reads the same as it does on the hosted API.** Fifty malformed and edge
+requests were sent to both, the same bytes: fifty times the same status, the same envelope and,
+where the answer is a list of paths, the same path. That includes the places where the hosted
+API is more permissive than a reader of its docs expects, and refusing them here would have
+broken a client that only changed its base URL: a Choice with a single option is answered, a
+Score with one level too, an unknown key inside a Noul's criteria is ignored, `""` is an option
+name. It also includes the places where it says no and this endpoint used to say yes, the loud
+one being an unknown model name: `jev-9` is a 400 there and is a 400 here now, instead of being
+quietly answered by the local lane.
 
 What it is not: a reasoning step by default (the model answers in one token, with thinking off,
 unless `SYSTEMONE_THINK_TOKENS` is set), a vision input (text only, like Jev), or a judgment the
@@ -786,6 +860,7 @@ systemctl status qwen38-flash           # Flash-Next server state (target flash)
 systemctl status qwen38-keepalive       # keepalive proxy state
 systemctl status qwen38-dashboard       # cockpit state, if you installed it
 python3 conc-check.py                   # does this lane still answer correctly at concurrency 8
+python3 systemone-check.py              # /v1/systemone: every shape, every refusal, mixed with ordinary chat
 sudo systemctl restart qwen38-sglang    # 27B: ~5-7 min boot; the radix (prefix) cache starts empty
 sudo systemctl restart qwen38-flash     # flash: ~10 min boot (weight load + PLE prewarm)
 journalctl -u qwen38-sglang -f          # server logs (qwen38-flash for the flash target)
