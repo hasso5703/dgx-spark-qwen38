@@ -473,6 +473,7 @@ LAST_HEAL: dict = {"ts": 0.0}
 LAST_PROGRESS: dict = {"ts": None}
 UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
 IMAGE_READY_ENTER: dict = {}   # image lane: the activation (enter timestamp) it served in
+IMAGE_INVOCATION: dict = {}    # image lane: its current systemd invocation, whose journal is its own
 POOL_GUARD = os.environ.get("COCKPIT_POOL_GUARD", "1") == "1"
 POOL_GUARD_THRESHOLD = float(os.environ.get("COCKPIT_POOL_GUARD_THRESHOLD", "0.6"))
 LAST_USAGE: dict = {"value": 0.0, "mamba": 0.0, "ts": 0.0}   # pool usage from the engine's own log lines
@@ -960,7 +961,8 @@ def collect_lifecycle():
     states = {}
     for unit in lc.ENGINE_UNITS + ("qwen38-keepalive.service",):
         raw = run(["systemctl", "show", unit, "-p",
-                   "ActiveState,SubState,ActiveEnterTimestampMonotonic,StateChangeTimestampMonotonic"])
+                   "ActiveState,SubState,ActiveEnterTimestampMonotonic,StateChangeTimestampMonotonic,"
+                   "InvocationID"])
         d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
         active = d.get("ActiveState", "?")
         if unit not in lc.ENGINE_UNITS:
@@ -974,7 +976,8 @@ def collect_lifecycle():
         if is_image:
             st, boot, running = image_engine_state(
                 unit, active=active, sub=d.get("SubState", "?"), prev_state=prev.get(unit),
-                enter_key=d.get("ActiveEnterTimestampMonotonic", "0"))
+                enter_key=d.get("ActiveEnterTimestampMonotonic", "0"),
+                invocation=d.get("InvocationID", ""))
         else:
             cont = UNIT2CONT[unit]
             running = bool(run(["docker", "ps", "-q", "-f",
@@ -1599,16 +1602,20 @@ def image_base() -> str:
 IMAGE_JOURNAL_LINES = 300
 
 
-def _image_journal() -> list:
-    """The unit's own log since its last start. This is the only place the engine says
-    which component it is loading, or which denoising step it is on."""
-    raw = run(["journalctl", "-u", IMAGE_UNIT, "-n", str(IMAGE_JOURNAL_LINES),
-               "--no-pager", "-o", "cat"], timeout=8.0)
-    lines = raw.splitlines()
-    for i in range(len(lines) - 1, -1, -1):
-        if "Starting server" in lines[i]:
-            return lines[i:]
-    return lines
+def _image_journal(invocation: str) -> list:
+    """This run's log, and only this run's: the lines of the unit's current systemd
+    invocation. This is the only place the engine says which component it is loading, or
+    which stage a request is at.
+
+    Not "the unit's journal since the last Starting server line": a new process takes
+    about 8 s to print that line, and until it does the last one in the journal is the
+    previous run's, which had reached "fired up". Measured on the reference box: a lane
+    started at 21:33:18 read "warming up, ready" until 21:33:26."""
+    if not invocation:
+        return []
+    raw = run(["journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}",
+               "-n", str(IMAGE_JOURNAL_LINES), "--no-pager", "-o", "cat"], timeout=8.0)
+    return raw.splitlines()
 
 
 def image_progress(serving: bool = True) -> dict:
@@ -1617,7 +1624,7 @@ def image_progress(serving: bool = True) -> dict:
     journal is how two parts of a page end up disagreeing. Returns {} when nothing runs."""
     if not serving:
         return {}
-    lines = _image_journal()
+    lines = _image_journal(IMAGE_INVOCATION.get(IMAGE_UNIT, ""))
     if not lines:
         return {}
     # Serving: a request is in flight until the line that ends one. The three stages are
@@ -1647,7 +1654,7 @@ def image_progress(serving: bool = True) -> dict:
 
 
 def image_engine_state(unit: str, *, active: str, sub: str, prev_state: str | None,
-                       enter_key: str) -> tuple:
+                       enter_key: str, invocation: str = "") -> tuple:
     """(state, boot, running) for the image lane, from its own facts: the unit, its own
     /health, and its journal while it boots. None of the text lanes' belts apply to it
     (pool guard, generation canary, autoheal): they all talk to ENGINE_BASE.
@@ -1662,6 +1669,7 @@ def image_engine_state(unit: str, *, active: str, sub: str, prev_state: str | No
     restart inside one 2 s tick is a new life at once, not three ticks of stale "ready"."""
     running = active in ("active", "activating")
     healthy = running and image_healthy()
+    IMAGE_INVOCATION[unit] = invocation
     UNHEALTHY_TICKS[unit] = 0 if healthy else UNHEALTHY_TICKS.get(unit, 0) + 1
     served_here = IMAGE_READY_ENTER.get(unit) == enter_key and enter_key != "0"
     boot = {"stage": None, "fired_up": False, "done": []}
@@ -1670,7 +1678,7 @@ def image_engine_state(unit: str, *, active: str, sub: str, prev_state: str | No
             boot = {"stage": "warming-up", "fired_up": True, "done": list(lc.IMAGE_STAGES)}
             healthy = UNHEALTHY_TICKS[unit] < 3
         else:
-            boot = lc.parse_image_boot_log(_image_journal())
+            boot = lc.parse_image_boot_log(_image_journal(invocation))
     st = lc.derive_state(unit_active=active, unit_sub=sub, container_running=running,
                          healthy=healthy, boot=boot)
     if st["state"] == "degraded" and prev_state not in ("ready", "degraded"):
@@ -1754,7 +1762,8 @@ IMAGE_ALLOWED = {"prompt", "width", "height", "num_inference_steps", "n", "outpu
 
 
 def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
-    """One image request, forwarded with the serving key this process holds."""
+    """One image request, forwarded to the lane on loopback. This process is the gate:
+    the route checked the session before the body was read."""
     fields = {k: v for k, v in payload.items() if k in IMAGE_ALLOWED and v is not None}
     if not str(fields.get("prompt", "")).strip():
         return 400, {"error": "a prompt is required"}
@@ -1780,7 +1789,6 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
             fields["size"] = f"{w}x{h}"
     # No Authorization header: the diffusion runtime has no --api-key, so the lane cannot
     # check one and the unit binds loopback instead. The gate is this process's own session.
-    key: dict = {}
     if not IMAGE_LOCK.acquire(blocking=False):
         return 409, {"error": "this lane serves one image at a time, and something is "
                               "already generating on it. Two at once held 90 GB of this "
@@ -1794,11 +1802,11 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
                 return 400, {"error": why}
             body, ctype = _multipart(fields, refs)
             req = urllib.request.Request(image_base() + "/v1/images/edits", body,
-                                         {**key, "Content-Type": ctype})
+                                         {"Content-Type": ctype})
         else:
             req = urllib.request.Request(image_base() + "/v1/images/generations",
                                          json.dumps(fields).encode(),
-                                         {**key, "Content-Type": "application/json"})
+                                         {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=IMAGE_TIMEOUT) as r:
             return 200, {"image": json.loads(r.read().decode()),
                          "seconds": round(time.time() - t0, 2)}

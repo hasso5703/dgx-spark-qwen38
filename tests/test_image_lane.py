@@ -214,6 +214,118 @@ class TheInstaller(unittest.TestCase):
         self.assertIn("\\x89PNG", text)
         self.assertIn("(512, 512)", text)
 
+    def test_the_smoke_test_measures_what_the_lane_costs_at_rest(self):
+        """1.047 cores at rest is how the idle-loop defect showed itself. Every install
+        now reads that number off the unit's own cgroup and says it."""
+        text = INSTALLER.read_text()
+        smoke = text[text.index('step "6/6'):]
+        self.assertIn("systemctl show -p ControlGroup --value", smoke)
+        self.assertIn("usage_usec", smoke)
+        self.assertIn("at rest:", smoke)
+
+
+PATCH = REPO / "image-sglang" / "scheduler-idle-poll.patch"
+PATCHED = "python/sglang/multimodal_gen/runtime/managers/scheduler.py"
+# The hunk's context as it stands at the pin, three lines either side of the insertion.
+CONTEXT_AT_PIN = (
+    "                        self._poller.poll(timeout=remaining_ms)\n"
+    "                    elif remaining_ms > 0:\n"
+    "                        time.sleep(remaining_ms / 1000.0)\n"
+    "                continue\n"
+    "\n"
+    "            if self.metrics is not None:\n"
+)
+
+
+class TheIdleLoopFix(unittest.TestCase):
+    """The diffusion scheduler's loop never waits: recv_reqs() does not block and nothing
+    else in the loop sleeps, so an idle lane held one CPU core at 100% (1.047 cores
+    measured, against 0.029 for the 27B lane and 0.045 with this patch). Whether the
+    patch still applies to the pin is a CI step that fetches the real file; these hold
+    what it does and how the installer carries it."""
+
+    def test_it_only_adds_a_wait_on_the_request_socket_when_nothing_is_queued(self):
+        diff = PATCH.read_text()
+        self.assertEqual(re.findall(r"^\+\+\+ b/(.+)$", diff, re.M), [PATCHED])
+        removed = [ln for ln in diff.splitlines() if ln.startswith("-") and not ln.startswith("---")]
+        self.assertEqual(removed, [], "the patch changes upstream lines instead of adding one branch")
+        added = [ln[1:].strip() for ln in diff.splitlines()
+                 if ln.startswith("+") and not ln.startswith("+++")]
+        code = [ln for ln in added if not ln.startswith("#")]
+        self.assertEqual(code, ["elif not self.waiting_queue and self.receiver is not None:",
+                                "self._poller.poll(timeout=1000)"])
+
+    def _block(self):
+        """The installer's own lines for the patch, run as they are written."""
+        t = INSTALLER.read_text()
+        end = 'serving as upstream wrote it."\nfi\n'
+        return t[t.index('IDLE_PATCH="$HERE/image-sglang/'):t.index(end) + len(end)]
+
+    def _git(self, repo, *args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
+                              text=True, env={"PATH": "/usr/bin:/bin", "HOME": str(repo),
+                                              "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                                              "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
+
+    def _repo(self, text):
+        d = pathlib.Path(tempfile.mkdtemp(prefix="img-src-"))
+        self._git(d, "init", "-q")
+        (d / PATCHED).parent.mkdir(parents=True)
+        (d / PATCHED).write_text(text)
+        self._git(d, "add", "-A")
+        self._git(d, "commit", "-qm", "pin")
+        self._git(d, "remote", "add", "origin", str(d))
+        return d
+
+    def _install(self, src, pin):
+        script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
+                  f'HERE="{REPO}"; SRC="{src}"; PIN="{pin}"\n' + self._block())
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        return r.returncode, r.stdout + r.stderr
+
+    def test_applied_once_then_recognised(self):
+        src = self._repo(CONTEXT_AT_PIN)
+        pin = self._git(src, "rev-parse", "HEAD")
+        rc, out = self._install(src, pin)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("idle-loop fix applied", out)
+        self.assertIn("self._poller.poll(timeout=1000)", (src / PATCHED).read_text())
+        rc, out = self._install(src, pin)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("idle-loop fix already applied", out)
+        self.assertEqual((src / PATCHED).read_text().count("self._poller.poll(timeout=1000)"), 1)
+
+    def test_a_new_pin_checks_out_over_a_patched_tree(self):
+        """The patch is a local edit, and git refuses to check out over a local edit of a
+        file the new commit changes. Without taking it off first, the next pin bump would
+        die at the checkout on every box that ever installed the lane."""
+        src = self._repo(CONTEXT_AT_PIN)
+        old = self._git(src, "rev-parse", "HEAD")
+        self._install(src, old)                                  # a box patched at the old pin
+        self._git(src, "stash", "-q")
+        (src / PATCHED).write_text(CONTEXT_AT_PIN + "# a later upstream commit\n")
+        self._git(src, "commit", "-qam", "new pin")
+        new = self._git(src, "rev-parse", "HEAD")
+        self._git(src, "checkout", "-q", old)
+        self._git(src, "stash", "pop", "-q")                     # back to: old pin, patched
+        rc, out = self._install(src, new)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._git(src, "rev-parse", "HEAD"), new)
+        self.assertIn("idle-loop fix applied", out)
+
+    def test_a_pin_it_no_longer_fits_is_a_note_not_a_failure(self):
+        src = self._repo(CONTEXT_AT_PIN.replace("remaining_ms / 1000.0", "remaining_ms / 1e3"))
+        rc, out = self._install(src, self._git(src, "rev-parse", "HEAD"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("NOTE: the idle-loop fix does not apply", out)
+
+    def test_it_goes_in_before_the_runtime_is_checked(self):
+        text = INSTALLER.read_text()
+        self.assertLess(text.index('git -C "$SRC" checkout --quiet "$PIN"'),
+                        text.index('git -C "$SRC" apply "$IDLE_PATCH"'))
+        self.assertLess(text.index('git -C "$SRC" apply "$IDLE_PATCH"'),
+                        text.index("the runtime does not know Qwen-Image 2.1"))
+
 
 class TheOneLinerReachesIt(unittest.TestCase):
     """The lane has to be installable the way everything else on this box is: one

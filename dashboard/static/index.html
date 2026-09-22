@@ -1073,7 +1073,7 @@
         <h3>The lane <span class="right"><span class="chip" id="imgchip">checking...</span></span></h3>
         <p class="note" id="imgnote" style="margin:0 0 10px">A 7B DiT with 32 single-stream layers, its own Qwen3-VL encoder and a VAE that
           decodes RGBA. One checkpoint does generation, editing and transparency; up to ten reference images per call. It holds 31 GB of weights
-          and peaks at 34.8 GB while it works, which is why it and the text lane take turns rather than share.</p>
+          and peaks at 34.8 GB at 1024&times;1024 (44.7 GB at 2048&times;2048), which is why it and the text lane take turns rather than share.</p>
         <dl class="kv">
           <dt>Serving</dt><dd class="num" id="imgmodel">Qwen/Qwen-Image-2.1</dd>
           <dt>Endpoints</dt><dd class="num">POST /v1/images/generations · /v1/images/edits</dd>

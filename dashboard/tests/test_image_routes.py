@@ -326,7 +326,7 @@ class TheImageLaneStateHoldsWhileItServes(Base):
 
     def state(self, healthy, enter="100", prev="ready"):
         self.ck.image_healthy = lambda: healthy
-        self.ck._image_journal = lambda: ["[x] INFO: GET /health 200 OK"] * 300
+        self.ck._image_journal = lambda invocation: ["[x] INFO: GET /health 200 OK"] * 300
         st, boot, running = self.ck.image_engine_state(self.U, active="active", sub="running",
                                                        prev_state=prev, enter_key=enter)
         return st["state"]
@@ -355,13 +355,63 @@ class TheImageLaneStateHoldsWhileItServes(Base):
 
     def test_a_lane_that_never_served_is_read_from_its_boot_log(self):
         self.ck.image_healthy = lambda: False
-        self.ck._image_journal = lambda: ["[09-22 17:20:37] Starting server...",
-                                          "[09-22 17:20:44] Loading pipeline modules...",
-                                          "... Loading transformer from /x"]
+        self.ck._image_journal = lambda invocation: ["[09-22 17:20:37] Starting server...",
+                                                    "[09-22 17:20:44] Loading pipeline modules...",
+                                                    "... Loading transformer from /x"]
         st, boot, _ = self.ck.image_engine_state(self.U, active="active", sub="running",
                                                  prev_state="starting", enter_key="300")
         self.assertEqual(st["state"], "loading-weights")
         self.assertIn("DiT", boot["detail"])
+
+
+class TheJournalIsThisRunsOnly(Base):
+    """A new process takes about 8 s to print its first line, and until it does the last
+    "Starting server" in the unit's journal is the previous run's, which had reached
+    "fired up". Measured on the reference box: a lane started at 21:33:18 read "warming
+    up, ready" until 21:33:26. So the journal is read by systemd invocation."""
+    U = "qwen38-image.service"
+    OLD_RUN = "\n".join(["[09-22 21:19:44] Starting server...",
+                         "[09-22 21:20:52] The server is fired up and ready to roll!"])
+
+    def setUp(self):
+        super().setUp()
+        self.ck.UNHEALTHY_TICKS.pop(self.U, None)
+        self.ck.IMAGE_READY_ENTER.pop(self.U, None)
+        self.argvs = []
+
+        def fake_run(argv, **kw):
+            self.argvs.append(argv)
+            if argv[0] != "journalctl":
+                return ""
+            # the unit's journal holds the previous run; the new invocation has no line yet
+            return "" if "_SYSTEMD_INVOCATION_ID=new-run" in argv else self.OLD_RUN
+
+        self.ck.run = fake_run
+        self.ck.image_healthy = lambda: False
+
+    def test_a_run_that_has_printed_nothing_yet_is_starting_not_warming_up(self):
+        st, boot, _ = self.ck.image_engine_state(self.U, active="active", sub="running",
+                                                 prev_state="stopped", enter_key="500",
+                                                 invocation="new-run")
+        self.assertEqual(st["state"], "starting")
+        self.assertFalse(boot["fired_up"])
+
+    def test_the_journal_is_asked_for_the_invocation_not_the_unit(self):
+        self.ck._image_journal("abc123")
+        asked = [a for a in self.argvs if a[0] == "journalctl"]
+        self.assertEqual(len(asked), 1)
+        self.assertIn("_SYSTEMD_INVOCATION_ID=abc123", asked[0])
+        self.assertNotIn("-u", asked[0])
+
+    def test_no_invocation_reads_nothing(self):
+        self.assertEqual(self.ck._image_journal(""), [])
+        self.assertEqual([a for a in self.argvs if a[0] == "journalctl"], [])
+
+    def test_a_request_in_flight_is_read_from_the_run_the_lifecycle_saw(self):
+        self.ck.IMAGE_INVOCATION[self.U] = "new-run"
+        self.ck.image_progress(serving=True)
+        asked = [a for a in self.argvs if a[0] == "journalctl"]
+        self.assertIn("_SYSTEMD_INVOCATION_ID=new-run", asked[-1])
 
 
 class TheTextBeltsAreForTextEngines(Base):

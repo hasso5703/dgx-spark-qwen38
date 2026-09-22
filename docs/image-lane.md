@@ -33,7 +33,7 @@ Back to text is the same three moves the other way. From a terminal the switch i
 `./switch-model.sh image` (or `stock`), and it prints the two commands that follow.
 
 **Never two engines at once.** 31 GB of weights do not fit beside a serving LLM, and a
-request peaks at 34.8 GB on top of that. The cockpit refuses to start any engine while
+request takes the lane to 34.8 GB at 1024x1024 (44.7 GB at 2048x2048). The cockpit refuses to start any engine while
 another one is busy, and says which one to stop, for all three lanes alike: starting the
 image lane while the 27B serves comes back `409 blocked`, and so does starting the 27B
 while the image lane loads. That gate used to pick "the other engine" with `[0]`, which
@@ -68,6 +68,35 @@ pulls a `transformers` that breaks the encoder this model needs.
 > The model card asks for `transformers>=5.17`. That applies to the diffusers pipeline,
 > not to this one: SGLang has its own native encoder, and the cookbook says to keep its
 > installed dependencies. The lane runs 5.12.1 and is right to.
+
+### The one change to the pinned source: an idle lane no longer holds a CPU core
+
+The diffusion scheduler's loop never waits. `recv_reqs()` reads its socket with
+`zmq.NOBLOCK`, and when the queue is empty the loop goes straight round again, so a lane
+with nothing to do spins one core for as long as it serves. The text lanes avoid the same
+thing with `--sleep-on-idle`; this runtime has no such flag (see below), and upstream
+`main` has the same loop as the pin.
+
+`image-sglang/scheduler-idle-poll.patch` adds one branch: with nothing queued, wait on the
+request socket for up to a second, which is exactly what the LLM scheduler's own
+`IdleSleeper` does behind `--sleep-on-idle`. `poll()` returns the moment a request lands,
+so it costs no latency. Measured on the reference box, from the unit's cgroup:
+
+| at rest, over 30 s | CPU |
+|---|---:|
+| without the patch (twice) | 1.047 / 1.046 cores, one thread at 101.5 % |
+| with it (three times) | 0.045 / 0.046 / 0.046 cores |
+| for comparison, the 27B lane with `--sleep-on-idle` | 0.029 cores |
+
+The same fixed-seed request (768x768, 20 steps, seed 42, CPU generator) gave the same PNG,
+byte for byte, with and without it: 10.2 to 10.7 s either way.
+
+`install-image.sh` applies it after the checkout and recognises it on a re-run; it takes it
+off before checking out a new pin, since git refuses to check out over a local edit of a
+file the new commit changes. If a future pin changes that loop, the patch is skipped with a
+note and the smoke test prints what the lane costs at rest, so nothing is hidden either way;
+CI fetches the scheduler at the pin and fails when the patch no longer applies, which is
+the signal to drop it (upstream fixed it) or refresh it.
 
 ## What it serves
 
@@ -118,6 +147,7 @@ figure from the cookbook. Peak memory is what the server reports for itself.
 | 768x768, 40 steps | 22.6 s | 31.9 GB |
 | **1024x1024, 40 steps (the defaults)** | **38.2 s** | 34.8 GB |
 | 1664x928, 40 steps | 60.4 s | 34.8 GB |
+| 2048x2048, 40 steps (the model card's own size) | 190.9 s | 44.7 GB |
 | 1024x1024 at 8 / 20 / 60 steps | 8.4 / 19.8 / 57.3 s | 31.9 GB |
 | transparent 1024x1024 | 39.8 s | 34.8 GB |
 | edit, one reference, 40 steps | 44.6 s | 34.8 GB |
@@ -125,9 +155,11 @@ figure from the cookbook. Peak memory is what the server reports for itself.
 | two images in one call, 8 steps | 16.8 s | 31.9 GB |
 
 The cookbook publishes 35.36 s for this machine at 1024x1024/40; 38.2 s here. Cost is
-very nearly linear in pixels and in steps: a step at 1024x1024 is 1.03 s, on top of 2.9 s
-of encode and VAE decode that a smaller image does not avoid. Startup is about 77 s from
-a warm page cache.
+linear in steps, and a little worse than linear in pixels: four times the 1024x1024
+time would be 153 s at 2048x2048, and it takes 190.9 s. The cockpit's estimate is
+`1 + steps x 0.97 x (pixels / 1024^2)^1.14` seconds, within 6.5 % of all nine measured
+requests. Startup is 60 to 72 s from a warm page cache. At rest the lane costs about
+0.05 CPU cores (see the idle-loop fix above).
 
 Same seed, twice: byte-identical. 8 steps is visibly unfinished and not worth the 8.4 s.
 

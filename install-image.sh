@@ -125,13 +125,35 @@ fi
 if [ ! -d "$SRC/.git" ]; then
   git clone --quiet https://github.com/sgl-project/sglang "$SRC" || die "could not clone SGLang."
 fi
+# The one local change to the pinned source, and it is not about images: the diffusion
+# scheduler's loop never waits. recv_reqs() polls its socket without blocking and nothing
+# else in the loop sleeps, so a lane with nothing to do held one CPU core at 100% for as
+# long as it served (measured on the reference box: 1.047 cores, one thread at 101.5 %,
+# against 0.029 for the 27B lane, which parks itself with --sleep-on-idle; the diffusion
+# runtime has no such flag). The patch waits on the request socket for up to a second, the
+# way the LLM scheduler's own IdleSleeper does, and wakes the moment a request lands. The
+# same seed gives the same pixels, byte for byte, with and without it.
+IDLE_PATCH="$HERE/image-sglang/scheduler-idle-poll.patch"
 CURRENT="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
 if [ "$CURRENT" != "$PIN" ]; then
+  # it is the only local edit in this tree: take it off, or the checkout trips on it
+  git -C "$SRC" apply --reverse "$IDLE_PATCH" >/dev/null 2>&1 || true
   git -C "$SRC" fetch --quiet origin "$PIN" 2>/dev/null || git -C "$SRC" fetch --quiet origin
-  git -C "$SRC" checkout --quiet "$PIN" || die "commit $PIN not found in the SGLang repository."
+  git -C "$SRC" checkout --quiet "$PIN" \
+    || die "could not check out $PIN: not in the SGLang repository, or local edits in $SRC block it (git -C $SRC status says which)."
   echo "source checked out at ${PIN:0:12}"
 else
   echo "source already at ${PIN:0:12}"
+fi
+if git -C "$SRC" apply --reverse --check "$IDLE_PATCH" >/dev/null 2>&1; then
+  echo "idle-loop fix already applied"
+elif git -C "$SRC" apply --check "$IDLE_PATCH" >/dev/null 2>&1; then
+  git -C "$SRC" apply "$IDLE_PATCH" || die "the idle-loop fix passed its check and then failed to apply to $SRC."
+  echo "idle-loop fix applied: an idle lane no longer holds a CPU core (effective at its next start)"
+else
+  # A newer pin may have changed that loop, or fixed it upstream. The lane works either
+  # way; the smoke test below measures what it costs at rest and says so.
+  echo "NOTE: the idle-loop fix does not apply to ${PIN:0:12}; serving as upstream wrote it."
 fi
 # --no-deps: the wheel above already resolved them, and letting the source tree resolve
 # again pulls a transformers that breaks the encoder this model needs.
@@ -198,7 +220,7 @@ echo "  a terminal : ./switch-model.sh image, then the two commands it prints"
 
 if [ "$SMOKE" -eq 0 ]; then step "Done (smoke test skipped)"; exit 0; fi
 
-step "6/6 Proving it serves (starts the lane, generates one image, stops it)"
+step "6/6 Proving it serves (one image, then the box goes back to the lane it was serving)"
 WAS_LLM=""
 for u in qwen38-sglang.service qwen38-flash.service; do
   systemctl is-active --quiet "$u" 2>/dev/null && WAS_LLM="$u"
@@ -227,7 +249,7 @@ for i in $(seq 1 90); do
   sleep 10
 done
 [ "$READY" -eq 1 ] || { sudo journalctl -u "$UNIT" -n 40 --no-pager; die "the lane did not answer /health within 15 min. The journal above says why."; }
-echo "up after ~$((i*10)) s; generating a 512x512 image"
+echo "up after ~$(( (i - 1) * 10 )) s; generating a 512x512 image"   # the first probe comes before any wait
 OUT="$(mktemp)"
 CODE=$(curl -sS -o "$OUT" -w '%{http_code}' -m 300 "http://$IMAGE_BIND:$PORT/v1/images/generations" \
   -H 'Content-Type: application/json' \
@@ -242,6 +264,19 @@ w, h = struct.unpack(">II", raw[16:24])
 assert (w, h) == (512, 512), f"got {w}x{h}"
 print(f"   {w}x{h} {'RGBA' if raw[25] == 6 else raw[25]}, {len(raw)/1e6:.1f} MB")
 PY
+# What the lane costs with nothing to do, from its own cgroup: the CPU time systemd
+# accounts to it over 10 s, after 5 s for the request's tail to finish. About 0 with the
+# idle-loop fix above, about 1 core without it. A note, not a failure: it serves either way.
+CG="/sys/fs/cgroup$(systemctl show -p ControlGroup --value "$UNIT" 2>/dev/null)"
+if [ -r "$CG/cpu.stat" ]; then
+  sleep 5
+  U0=$(awk '/^usage_usec/{print $2}' "$CG/cpu.stat"); sleep 10
+  U1=$(awk '/^usage_usec/{print $2}' "$CG/cpu.stat")
+  IDLE_CORES=$(awk -v a="$U0" -v b="$U1" 'BEGIN{printf "%.2f", (b-a)/1e7}')
+  echo "   at rest: $IDLE_CORES CPU cores"
+  awk -v c="$IDLE_CORES" 'BEGIN{exit !(c > 0.5)}' \
+    && echo "NOTE: the lane holds a CPU core while idle; the idle-loop fix is not in effect (see step 3)."
+fi
 # the trap stops the lane and brings the text lane back, whichever way this ends
 
 step "Done: the image lane is installed and proved it serves on $IMAGE_BIND:$PORT"

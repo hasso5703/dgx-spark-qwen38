@@ -1301,6 +1301,21 @@ jobs:
           print(f"cockpit unit actions: all {len(cockpit.SERVING_UNITS) * len(cockpit.UNIT_VERBS)} covered")
           PY
 
+      - name: The image lane's one SGLang patch applies to its pinned commit
+        # install-image.sh only notes a patch that no longer applies (the lane serves
+        # either way), so a pin moved without the patch would ship a lane that holds a
+        # CPU core at rest. This fetches the one file at the pin and checks the hunk.
+        run: |
+          pin=$(grep -oE 'SGLANG_DIFFUSION_PIN:-[0-9a-f]{40}' install-image.sh | cut -d- -f2)
+          patch="$PWD/image-sglang/scheduler-idle-poll.patch"
+          f=python/sglang/multimodal_gen/runtime/managers/scheduler.py
+          test "$(grep -c '^+++ ' "$patch")" = 1 || { echo "the patch touches more than one file"; exit 1; }
+          grep -q "^+++ b/$f\$" "$patch" || { echo "the patch is not against $f"; exit 1; }
+          d=$(mktemp -d); mkdir -p "$d/$(dirname "$f")"
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/sgl-project/sglang/$pin/$f" -o "$d/$f"
+          (cd "$d" && git init -q && git apply --check "$patch")
+          echo "applies to ${pin:0:12}"
+
       - name: House typography (no em/en dashes in tracked files)
         run: |
           if git ls-files -z | xargs -0 grep -nP '[\x{2014}\x{2013}\x{2212}]' 2>/dev/null; then

@@ -251,9 +251,10 @@ table and every trap on the way: **[docs/systemone.md](docs/systemone.md)**.
 
 ## Images: Qwen-Image 2.1 on the same box (opt-in)
 
-`./install.sh --with-image` adds a second lane: text to image, image editing with up to ten
-references, and the native RGBA this model is built for. It is opt-in because it costs 38 GB
-(31 checkpoint, 7 runtime) and about 25 minutes, and once installed a plain re-run keeps it.
+`./install.sh --with-image` adds an image lane beside the two text ones: text to image, image
+editing with up to ten references, and the native RGBA this model is built for. It is opt-in
+because it costs 38 GB (31 checkpoint, 7 runtime) and about 25 minutes, and once installed a
+plain re-run keeps it.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --with-image
@@ -573,7 +574,8 @@ question you had when you opened the page.
 | **Machine** | Unified memory, the GB10, the CPU, and whether the safety belts are holding | Watch the memory edge this hardware actually has |
 | **Models** | Every target as data: recipes, drift against what is running, registry of what is on disk, upstream watch, full inventory | Read what is installed and what it costs in bytes; rescan (the panels are read-only, reclaiming is `./uninstall.sh --list`) |
 | **System One** | The typed-decisions endpoint, from a browser: is it served, and what does it answer? | Ask the lane with prefilled examples, copy the matching curl, read the probabilities |
-| **Image**, **Video** | Nothing yet, and they say so | |
+| **Image** | Qwen-Image 2.1, when it is the serving lane: generation, editing with up to ten references, native RGBA | Generate and edit at the model's defaults (**Reset settings**), start from the sample prompts, follow each stage of a request, copy the matching curl |
+| **Video** | Nothing yet, and it says so | |
 | **Logs** | Live logs, the last 30 events, recent jobs | Run a bench, the 4-canary quality battery, a diagnostics bundle |
 | **Setup** | The repo itself, opencode integration, serving-stack updates, the cockpit's own settings | Regenerate the API key, update the stack, change what the page binds to |
 

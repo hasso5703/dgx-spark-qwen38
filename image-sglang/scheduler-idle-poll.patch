@@ -1,0 +1,15 @@
+diff --git a/python/sglang/multimodal_gen/runtime/managers/scheduler.py b/python/sglang/multimodal_gen/runtime/managers/scheduler.py
+index bfca31a..92671c4 100644
+--- a/python/sglang/multimodal_gen/runtime/managers/scheduler.py
++++ b/python/sglang/multimodal_gen/runtime/managers/scheduler.py
+@@ -1301,6 +1301,10 @@ class Scheduler(SchedulerWarmupMixin, SchedulerPostTrainingMixin, SchedulerDisag
+                         self._poller.poll(timeout=remaining_ms)
+                     elif remaining_ms > 0:
+                         time.sleep(remaining_ms / 1000.0)
++                elif not self.waiting_queue and self.receiver is not None:
++                    # recv_reqs() never blocks, so an idle loop would spin a core;
++                    # wait on the socket as the LLM scheduler's IdleSleeper does.
++                    self._poller.poll(timeout=1000)
+                 continue
+ 
+             if self.metrics is not None:
