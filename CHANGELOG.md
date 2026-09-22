@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.15.2 (2026-09-22): the version a running box prints, and a gate so it cannot drift again
+
+v1.15.1 fixed one of the three places this proxy states its own version and shipped
+before anyone read the other two. The deployed file said v6.20 in its history block, the
+cockpit reported v6.20 from it, and the process printed `v6.20`... no: it printed
+**v6.19**, from a hardcoded line 2,700 lines away, and the module docstring said v6.19
+too. So a box showed one version in its journal and another in its cockpit, which is
+worse than the single wrong number v1.15.1 set out to fix.
+
+All three now say v6.20, and a test holds them together: the docstring, the startup
+banner and the newest history entry must agree, and the history must stay newest-first
+because the cockpit reads its first entry. Verified the way every gate in this repo
+should be: by putting the old value back and watching the test fail.
+
 ## v1.15.1 (2026-09-22): the proxy's version header says what the documents say
 
 v1.15.0 shipped `ARCHITECTURE.md` and `docs/clients.md` announcing the new refusals

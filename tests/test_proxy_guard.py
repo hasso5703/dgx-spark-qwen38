@@ -856,6 +856,42 @@ class HardeningUnits(unittest.TestCase):
         self.assertFalse(self.m.warmup_hold(200000, None))
 
 
+class TheProxyAgreesWithItselfAboutItsVersion(unittest.TestCase):
+    """Three places in this file say which version the proxy IS, and a running box shows
+    two of them: the startup line in its journal, and the history block the cockpit reads
+    to report the deployed version. v1.15.0 shipped documents announcing v6.20 with a
+    header that still said v6.19, and v1.15.1 fixed the header and left the startup line
+    behind, so a box printed one version while the cockpit displayed another. A version
+    is a fact about the file; three copies of a fact need a gate."""
+
+    def setUp(self):
+        self.src = (HERE.parents[1] / "keepalive-proxy.py").read_text()
+
+    def versions(self):
+        import re
+        doc = re.search(r"in front of SGLang \(v(\d+\.\d+)\)", self.src)
+        banner = re.search(r"log\(f\"v(\d+\.\d+) on :", self.src)
+        history = re.search(r"\nv(\d+\.\d+):", self.src)
+        for name, m in (("docstring", doc), ("startup banner", banner), ("history", history)):
+            self.assertTrue(m, f"the {name} no longer states a version")
+        return doc.group(1), banner.group(1), history.group(1)
+
+    def test_the_docstring_the_banner_and_the_history_say_the_same_version(self):
+        doc, banner, history = self.versions()
+        self.assertEqual(doc, banner, "the docstring and the startup line disagree")
+        self.assertEqual(banner, history, "the startup line and the history block disagree")
+
+    def test_the_history_block_the_cockpit_reads_is_the_newest_entry(self):
+        """The cockpit takes the FIRST `\nvX.Y:` of the file, so the history has to be
+        newest-first or a box reports a version it is not running."""
+        import re
+        found = [tuple(int(p) for p in v.split(".")) for v in re.findall(r"\nv(\d+\.\d+):", self.src)]
+        self.assertGreater(len(found), 5, "the version history went missing")
+        self.assertEqual(found, sorted(found, reverse=True), "the history is not newest-first")
+        _doc, _banner, history = self.versions()
+        self.assertEqual(tuple(int(p) for p in history.split(".")), found[0])
+
+
 class PathsHttpClientCannotSend(unittest.TestCase):
     """A path this proxy decodes and then hands to http.client, which encodes it as
     ASCII. Anything outside printable ASCII raises UnicodeEncodeError, a ValueError that
