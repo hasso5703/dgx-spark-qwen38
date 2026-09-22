@@ -333,5 +333,51 @@ class RunItself(Base):
                       self.real_run(["python3", "-c", script], merge_err=True))
 
 
+class FitVerdict(Base):
+    """When the banner fires, the two numbers under it must be the two that failed.
+
+    Seen on the box 2026-09-19: the proxy was carrying the flash lane's 250,000
+    token ceiling while the 27B lane served, so opencode's 548,000 context could
+    not be relayed. True warning, right headline, and then it printed "730,000
+    asked, 827,968 servable", which is the worst case against the pool: a pair
+    that says the ask FITS. A warning whose own numbers contradict it gets read
+    as a bug in the cockpit, which is how a real misconfiguration survives a
+    person looking straight at it.
+    """
+
+    def test_the_ceiling_case_shows_the_context_against_the_ceiling(self):
+        """The box's own numbers that day."""
+        v = self.cp.fit_verdict(ctx=548_000, outp=182_000, usable=827_968, prompt_cap=250_000)
+        self.assertFalse(v["ok"])
+        self.assertIn("proxy", v["why"])
+        self.assertEqual((v["asked"], v["limit"]), (548_000, 250_000))
+
+    def test_the_pool_case_shows_the_worst_case_against_the_pool(self):
+        """No ceiling in force, so the prompt passes and the pair is the other one."""
+        v = self.cp.fit_verdict(ctx=700_000, outp=200_000, usable=827_968, prompt_cap=827_968)
+        self.assertFalse(v["ok"])
+        self.assertIn("pool", v["why"])
+        self.assertEqual((v["asked"], v["limit"]), (900_000, 827_968))
+
+    def test_limits_that_fit_report_ok(self):
+        v = self.cp.fit_verdict(ctx=558_000, outp=186_000, usable=827_968, prompt_cap=827_968)
+        self.assertTrue(v["ok"])
+        self.assertEqual(v["why"], "")
+
+    def test_a_warning_never_shows_an_ask_below_its_limit(self):
+        """The invariant the screenshot broke, over the whole grid."""
+        for ctx in (1, 100_000, 250_000, 548_000, 700_000, 900_000):
+            for outp in (0, 32_000, 186_000, 200_000):
+                for usable in (250_000, 827_968, 900_000):
+                    for cap in (200_000, 250_000, usable):
+                        v = self.cp.fit_verdict(ctx=ctx, outp=outp, usable=usable,
+                                                prompt_cap=min(cap, usable))
+                        with self.subTest(ctx=ctx, outp=outp, usable=usable, cap=cap):
+                            if v["ok"]:
+                                self.assertLessEqual(v["asked"], v["limit"])
+                            else:
+                                self.assertGreater(v["asked"], v["limit"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

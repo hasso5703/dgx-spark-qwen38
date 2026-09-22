@@ -614,6 +614,29 @@ def collect_guard():
 
 
 @guard
+def fit_verdict(ctx: int, outp: int, usable: int, prompt_cap: int) -> dict:
+    """Do these declared limits fit, and if not, which pair failed?
+
+    Two independent constraints: the prompt alone must pass the proxy, which
+    also applies the lane's absolute ceiling, and prompt plus answer must fit
+    the pool. The flash lane fails only the first, the FP8 lane only the second.
+
+    `asked` and `limit` are the pair that failed, because that is the pair the
+    banner shows. Showing the worst case against the pool while the reason was
+    the proxy's ceiling printed "730,000 asked, 827,968 servable" under a
+    headline saying the ask was too large: two numbers that say the opposite of
+    the sentence above them, which is how a true warning reads as a false alarm
+    (seen on the box 2026-09-19).
+    """
+    if ctx > prompt_cap:
+        return {"ok": False, "why": "the prompt alone exceeds what the proxy relays",
+                "asked": ctx, "limit": prompt_cap}
+    if ctx + outp > usable:
+        return {"ok": False, "why": "prompt plus answer exceeds the pool",
+                "asked": ctx + outp, "limit": usable}
+    return {"ok": True, "why": "", "asked": ctx + outp, "limit": usable}
+
+
 def collect_opencode():
     """What the installer and the switch act on: the --no-opencode marker, the config
     opencode really reads (default model, per-lane limits), the launcher and its cap."""
@@ -671,11 +694,9 @@ def collect_opencode():
             # the pool. The flash lane fails only the first, the FP8 lane only the second.
             ceiling = ((STATE.get("engine_info") or {}).get("data") or {}).get("prompt_ceiling_tokens") or 0
             prompt_cap = min(usable, ceiling) if ceiling else usable
-            why = ("the prompt alone exceeds what the proxy relays" if ctx > prompt_cap
-                   else "prompt plus answer exceeds the pool" if ctx + outp > usable else "")
+            verdict = fit_verdict(ctx, outp, usable, prompt_cap)
             out["fit"] = {"pool": pool, "worst": ctx + outp, "usable": usable, "served": served,
-                          "prompt_cap": prompt_cap, "ok": not why, "why": why,
-                          "context": ctx, "output": outp}
+                          "prompt_cap": prompt_cap, "context": ctx, "output": outp, **verdict}
     return out
 
 

@@ -229,6 +229,75 @@ and the three abliterated builds (`sha256 0997f410c57a1f4e…`), and so is the c
 template that ends the generation prompt on the `\n\n` the readout depends on
 (`c3cf9e34abf4f9e3…`, the same file in all eight). A switch to any target keeps the
 readout exactly as measured.
+## v1.14.2 (2026-09-19): the docs reorganised, and the numbers in them checked against the record
+
+The README had grown to 1,045 lines and was the only door to all of it. It is 509
+now, and it is an entry point: what this is, the seven targets with their measured
+headline, how to install it, what speed and quality to expect, the targets and the
+switch, the tools, the cockpit in short, and an index table naming every other file
+and what it answers. Seven sections moved out whole, each to its own file under
+`docs/`, each leaving a summary and a link behind: the 1M context mode, the flash
+lane, the cockpit tour, operations and upgrades, the opencode integration, the GB10
+memory trap in full, and where each lane stands against upstream.
+
+Nothing was dropped. The split was checked line by line against the file it came
+from: of 1,045 lines, the only ones that do not appear verbatim in the new README or
+in one of those files are the ten that were rewritten on purpose, and the rewrites
+are the point:
+
+- the headline said **65 tok/s** for the 27B lane, which was the v1.9 figure. v1.14.0
+  measured **71.4** on the release image this lane has served since 2026-09-17, in
+  the same campaign that measured 69.8 on the image it replaced. The title, the
+  target table and the speed section now say 71.4 and name the campaign for each
+  number they carry.
+- the memory section read as though the installed fraction were 0.50, which is the
+  native-mode and `./run.sh` value. The 1m mode has been the default since v1.12.1
+  and runs 0.76. Both are stated, each with its mode.
+- two citations pointed at text that was not there: the README claimed a flat-memory
+  result was "quoted elsewhere in this README" when it lives in BENCHMARKS.md, and
+  `keepalive-proxy.py` justified its 92% usable share by quoting a README line about
+  a 178,560-token pool that no longer exists anywhere. Both now name where the number
+  actually is. Neither was caused by this release; both survived because nothing
+  checks a quoted section title.
+- the flash lane's quality is now in the README as measured rather than as adjectives:
+  GSM8K 97.41% over all 1,319 questions, MMLU 500 at 90.8%, HumanEval 164 pass@1 at
+  95.73%, tool calling 15/15 with reasoning off and on, needle 2/2 at 120K and 200K.
+
+**`evals/`**, because two of those numbers could not be reproduced from this repo.
+The drivers for MMLU and HumanEval now ship with the README that explains why they
+exist: the image's `run_eval --eval-name mmlu` shells out to an `sgl-eval` binary it
+does not ship, and its HumanEval path needs a package that is not there and then dies
+in `os.fork` against the image's filelock. Six gates hold what makes them work, with
+a stub sglang and no network: the score line a caller greps, the dataset MMLU is
+measured against, `spawn` rather than fork, and one sample per task instead of the
+harness default of five, which at temperature 0 is the same answer five times.
+
+ARCHITECTURE.md gains the two directories it did not describe (`docs/`, `evals/`) and
+`tools-check.py` in its table of instruments. TESTING.md gains a 2026-09-19 column
+counted mechanically on both commits: 34 test files against 20, 587 test functions
+against 442, 55 CI steps against 38. The flash lane's doc records the one boot in
+thirteen that died at CUDA graph capture on 2026-09-18, because a failure that costs
+twelve minutes and explains nothing belongs written down even when it happened once.
+
+**A warning that argued with its own numbers.** The keepalive proxy's one-prompt ceiling follows the lane: 250,000 tokens on
+flash, none on the 27B (`switch-model.sh`, the v1.5.6 contract). A sequence that
+switches the target to flash and then starts the 27B leaves those two halves
+disagreeing, with the flash ceiling on the proxy and the 27B serving, so
+opencode's fitted 548,000 context can no longer be relayed and a session would
+break mid-conversation. The cockpit caught exactly that, which is what it is for.
+
+Then it printed the wrong pair. The banner showed `730,000 asked, 827,968
+servable`, which is the worst case against the pool, under a headline saying the
+ask was too large: two numbers that say it fits, under a sentence saying it does
+not. A warning that argues with itself reads as a bug in the cockpit, which is
+how a real misconfiguration survives someone looking straight at it.
+
+The verdict is now one function, `fit_verdict`, that returns the pair it judged
+on, and the banner prints that pair: `548,000 asked against 250,000 on
+qwen3.8-27b`. Four gates in `dashboard/tests/test_cockpit_collectors.py`, the
+last of them the invariant the screenshot broke, over a grid of contexts,
+outputs, pools and ceilings: when the verdict is not ok, asked is greater than
+limit. The previous behaviour fails 40 of those cases.
 
 ## v1.14.1 (2026-09-18): the two flash exports measured against each other, and the NVIDIA one downloads
 
@@ -249,8 +318,9 @@ independently calibrated and their MTP heads are different objects (2 fused
 tensors against 3,072 FP8 block-scaled ones).
 
 One measurement is not a tie, and it is not the one the cookbook advertises: the
-KV pool. Three RadixArk boots gave 517,184, 534,016 and 547,584 tokens against
-502,080 and 498,304 on two NVIDIA boots, ranges that do not overlap. NVIDIA's
+KV pool. Six RadixArk boots that day gave 517,184 to 566,016 tokens against 482,560
+to 510,592 on five NVIDIA ones, ranges that do not overlap (6,592 tokens apart at
+their closest, 9.6% apart on the means). NVIDIA's
 smaller fp8 draft is exactly what its 174K against 93K comparison upstream is
 credited to, and on this lane, which already removes the draft's disadvantage
 with `--speculative-token-map`, it does not turn into a larger pool. So `flash`

@@ -449,8 +449,8 @@ are not are exactly that head.
 |---|---|---|
 | greedy median, `./bench.sh` | 46.3 tok/s | **46.9** |
 | agent loop, `./bench-agent.py` | 28.2 ms/tok | **27.7** |
-| KV pool, one figure per boot | **517,184 / 534,016 / 547,584** | 502,080 / 498,304 |
-| `conc-check.py`, serial and 4 concurrent | clean | clean |
+| KV pool, one figure per boot (six boots against five) | **517,184 / 534,016 / 547,584 / 547,584 / 565,824 / 566,016** | 482,560 / 498,304 / 499,456 / 502,080 / 510,592 |
+| `conc-check.py`, serial and 4 concurrent | **40/40 and 80/80 exact**, no false or cross-contaminated answer | **40/40 and 80/80 exact**, same |
 | needle at 120K and 200K prompt tokens | 2/2 exact | 2/2 exact |
 | GSM8K, 200 questions | 0.985 | 0.985 |
 | GSM8K, all 1,319 | 97.41% | **97.56%** |
@@ -468,10 +468,12 @@ MMLU (one question), 1.2 on HumanEval (two problems) and 0.15 on GSM8K (two
 questions). On MMLU's STEM split the two exports score identically to the digit
 on the same 113 questions. Nothing here separates them on quality.
 
-**One number is not a tie: the KV pool.** Three RadixArk boots measured 517,184,
-534,016 and 547,584 tokens; two NVIDIA boots measured 502,080 and 498,304. The
-ranges do not overlap, and the pool is what decides how much context and how
-many concurrent streams the box can hold. It is also the opposite of the reason
+**One number is not a tie: the KV pool.** Eleven boots of the same unit that day,
+six on RadixArk and five on NVIDIA, each figure read from the engine's own startup
+line: 517,184 to 566,016 against 482,560 to 510,592. The ranges do not overlap, by
+6,592 tokens at their closest, and the means are 546,368 against 498,598, which is
+9.6% apart. The pool is what decides how much context and how many concurrent
+streams the box can hold. It is also the opposite of the reason
 this export is usually recommended: NVIDIA's fp8 MTP head is what the cookbook's
 174K against 93K comparison credits, and on this lane, which already removes the
 draft's disadvantage with `--speculative-token-map`, the smaller draft does not
@@ -499,6 +501,22 @@ real engine failed RadixArk on that same case for writing `'O''Brien'`, which is
 how SQL escapes an apostrophe, because the checker was demanding the bare form.
 The checker was fixed, gated, and both targets were then measured with the same
 code, RadixArk re-run from a fresh boot rather than re-scored on paper.
+
+**How the evals were run**, because the obvious invocations do not work. In the image
+this lane serves, `python3 -m sglang.test.run_eval --eval-name mmlu` no longer measures
+anything itself: it shells out to an external `sgl-eval` binary (sgl-project/sgl-eval,
+first published on PyPI 2026-09-12) that the image does not ship, and dies with a
+`FileNotFoundError` before it reaches the server. Its HumanEval path imports a
+`human_eval` package that is not there either, and once that is mounted from the official
+tree it dies inside `os.fork`, because the image's filelock (3.32.5) installs an audit
+hook that refuses one. Both failures logged an empty score, which reads exactly like a
+model that scored nothing. So MMLU here drives the `MMLUEval` class still vendored in the
+image, against the same `openaipublic` dataset the old path used, and HumanEval runs the
+official openai/human-eval tree (pinned at `6d43fb98`) with the multiprocessing start
+method set to `spawn`, one sample per task instead of the harness default of five (at
+temperature 0 those five are the same answer five times). GSM8K needed none of this: its
+path in the image still runs in process. Both drivers are ~50 lines and live outside the
+repo; the two quirks above are what they exist for.
 
 So the lane keeps `flash` as its default. Not because the other one is worse,
 which nothing here shows, but because the only measurement outside the noise

@@ -334,7 +334,7 @@ and without probing the real engine.
 ### What a phone was getting
 `tests/mobile-check.mjs` (new) emulates four iPhone geometries (SE 375x667,
 15 393x852, 15 Pro Max 430x932, 15 landscape 852x393) with device metrics, touch
-and the device pixel ratio, walks all eight tabs and measures: document
+and the device pixel ratio, walks every tab and measures: document
 overflow, every element wider than the viewport that is not inside a scroller of
 its own, form controls under 16 px, touch targets under 44x44, and the Agent
 frame's box. First run: **64 of 132**. There was no horizontal overflow anywhere,

@@ -1079,7 +1079,7 @@ function banners(state, errors){
     add('warn', 'Memory floor fired.', `Host memory fell under ${F.memFloor.gib} GiB with requests running: every generation was aborted ${fmtDur(Date.now() / 1000 - F.memFloor.last_abort)} ago to keep the box out of a livelock.`);
   const ocf = F.ocfit;
   if (ocf && !ocf.ok) add('warn', 'opencode asks for more than this engine can hold.',
-    `${ocf.why} (${fmtN(ocf.worst)} asked, ${fmtN(ocf.usable)} servable on ${ocf.served}): the session would break mid-conversation when the proxy refuses the prompt. Setup tab, "Fit the limits to this engine".`);
+    `${ocf.why} (${fmtN(ocf.asked)} asked against ${fmtN(ocf.limit)} on ${ocf.served}): the session would break mid-conversation when the proxy refuses the prompt. Setup tab, "Fit the limits to this engine".`);
   ((F.life || {}).orphans || []).forEach(o => add('warn',
     `${LANE_NAME[o.unit] || o.unit} is running outside systemd.`,
     `The container ${o.container} is serving${o.image ? ` from ${o.image}` : ''}, but its unit is stopped, so the buttons here cannot manage it and a reboot will not bring it back. Stop it from a terminal (docker rm -f ${o.container}) and start the unit instead.`));

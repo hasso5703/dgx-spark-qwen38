@@ -15,6 +15,46 @@ port (`:30000`) speaks the same APIs without that protection; the proxy is
 the door this repo leaves unlocked-for-your-clients, the engine is the door
 it assumes you walk through on a trusted network.
 
+**The proxy also refuses the requests that take the engine down instead of being
+refused by it.** One is a prompt past the KV pool ([sglang#36333](https://github.com/sgl-project/sglang/issues/36333)),
+which is why sending a monster straight to `:30000` wedges the scheduler and sending it
+through `:30001` gets a clean 400. Since v6.20 the other is an oversized logprob request:
+OpenAI documents `top_logprobs` as "an integer between 0 and 20" and SGLang declares it
+`Optional[int]` with no bound at all, so the number travels unexamined to
+`logprobs.topk(max_k)` and, the moment it passes the vocabulary, raises `selected index k
+out of range` **inside the scheduler**. One request from one client ends the engine for
+everybody, and this box needs about nine minutes to boot again
+([sglang#40076](https://github.com/sgl-project/sglang/issues/40076), open since
+2026-09-18; the field is still unbounded in the served `v0.5.19`, checked in the image).
+The proxy refuses anything above `TOP_LOGPROBS_CEILING` (1,024) on the three routes that
+carry the number under three different names: `top_logprobs` on `/v1/chat/completions`,
+`logprobs` on `/v1/completions`, and `top_logprobs_num` on `/generate`, the last one
+element by element when a batch sends a list. It refuses rather than quietly lowering the
+number, because a narrowed top-k answers a different question than the one that was
+asked. The ceiling is not the vocabulary, which the engine publishes nowhere: no vocabulary
+in use is smaller than 32k, OpenAI's own maximum is 20, and the System One readout asks 261
+with its shipped caps (594 with the widest an operator can set), so nothing above 1,024 can
+be a client asking for logprobs. `TOP_LOGPROBS_CEILING=0` turns the refusal off for an
+operator who knows their build is patched; on this one it is not, so leave it alone.
+
+Three more fields of that family were catalogued upstream in July with reproductions
+([sglang#31597](https://github.com/sgl-project/sglang/issues/31597)) and are still
+unbounded, because **both PRs that bounded them were closed without being merged**, which
+is also why the logprob one had to be reported again in September. All three are reachable
+from an ordinary chat request, and the proxy refuses them too: a `stop_token_ids` entry
+past the vocabulary indexes a `scatter_add_` out of bounds whenever `min_new_tokens > 0`,
+which on CUDA is a device-side assert that takes every in-flight request with it; an
+`input_ids` entry does the same to the embedding (`_validate_input_ids_in_vocab` exists in
+the image and has zero callers); and `n` becomes `parallel_sample_num` with no bound at
+all, expanding a list before anything is scheduled, so it is a memory exhaustion rather
+than a crash. `n` is held at `MAX_PARALLEL_SAMPLES` (128, which is OpenAI's own maximum).
+The two id fields need the vocabulary, and since the engine publishes it nowhere the proxy
+asks for it the only way it is offered: `logit_bias` is the one field SGLang does validate,
+and it is refused with "logit_bias must has keys in [0, 248319]". One probe an hour, built
+to be refused, so it never reaches the scheduler; it matched this checkpoint's own
+`config.json` to the digit. **A negative id is refused whatever happens, and when the probe
+cannot run the rest of the guard stands down rather than refuse traffic it cannot judge.**
+
 | | path | dialect |
 |---|---|---|
 | chat | `POST /v1/chat/completions` | OpenAI |
