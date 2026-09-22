@@ -403,6 +403,34 @@
                    border-radius:0 0 0 7px; font-size:13px; padding:1px 4px}
   .img .ref .n{position:absolute; bottom:0; left:0; font:600 9.5px var(--mono); padding:1px 4px;
                background:color-mix(in srgb, var(--card) 80%, transparent); color:var(--mut)}
+  /* the wait, drawn: loading 31 GB takes about a minute and a 1024px image 38 s. A
+     disabled button says neither what is happening nor how far in it is, so both are read
+     off the engine's own log. The phase name is exact; the bar is real per-step progress
+     once denoising starts. */
+  .img .prog{margin-top:10px}
+  .img .prog .lab{display:flex; justify-content:space-between; gap:10px; align-items:baseline;
+                  font:400 12px/1.5 var(--mono); color:var(--mut); margin-bottom:5px}
+  .img .prog .lab b{color:var(--txt); font-weight:600}
+  .img .prog .tr{height:7px; border-radius:5px; overflow:hidden; border:1px solid var(--line);
+                 background:color-mix(in srgb, var(--line) 45%, transparent)}
+  .img .prog .fl{display:block; height:100%; min-width:2px; border-radius:4px;
+                 background:linear-gradient(90deg, color-mix(in srgb, var(--acc) 65%, var(--card)), var(--acc));
+                 transition:width .5s ease-out}
+  /* indeterminate: a band that slides, because a full track that later snaps to 2% reads
+     as progress running backwards, and a number nobody measured reads as a measurement */
+  .img .prog.indet .tr{position:relative; overflow:hidden}
+  .img .prog.indet .fl{position:absolute; inset:0 auto 0 0; width:38% !important;
+                       transition:none; animation:imgslide 1.5s ease-in-out infinite}
+  @keyframes imgslide{0%{left:-38%} 100%{left:100%}}
+  @keyframes imgpulse{0%,100%{opacity:.45} 50%{opacity:1}}
+  @media (prefers-reduced-motion:reduce){
+    .img .prog.indet .fl{animation:imgpulse 1.8s ease-in-out infinite; left:0; width:100% !important}
+    .img .frame{animation:none}
+  }
+  .img .frame{border:1px dashed var(--line); border-radius:var(--r-ctl); display:grid;
+              place-items:center; color:var(--mut); font:400 12px var(--mono); text-align:center;
+              background:color-mix(in srgb, var(--card2) 40%, transparent); padding:14px;
+              animation:imgpulse 2s ease-in-out infinite}
   @media (max-width:900px){ .img .shots.multi{grid-template-columns:1fr} }
 
   /* ── modal ── */
@@ -1037,6 +1065,10 @@
           <dt>Licence</dt><dd>Qwen Research License: research and evaluation, <b>not commercial use</b></dd>
         </dl>
         <div id="imgctl" class="meta" style="margin-top:12px"></div>
+          <div class="prog" id="imgbootprog" hidden>
+            <div class="lab"><span id="imgbootlab"></span><span class="num" id="imgbootpct"></span></div>
+            <div class="tr"><span class="fl" id="imgbootbar" style="width:0%"></span></div>
+          </div>
       </section>
 
       <div class="s1grid">
@@ -1128,6 +1160,10 @@
           <div id="imgout"><p class="note" style="margin:0">Pick an example or write your own, then generate.
             The preview sits on a checkerboard because this model returns RGBA for everything it makes,
             and a transparent cutout on a white card is indistinguishable from an opaque one.</p></div>
+          <div class="prog" id="imgrunprog" hidden>
+            <div class="lab"><span id="imgrunlab"></span><span class="num" id="imgrunpct"></span></div>
+            <div class="tr"><span class="fl" id="imgrunbar" style="width:0%"></span></div>
+          </div>
           <div class="meta" id="imgmeta"></div>
         </section>
 

@@ -28,6 +28,13 @@ Nothing has to be remembered, and nothing can be bypassed by typing `systemctl s
 The image unit is **not enabled at boot**: a box that reboots comes back the way its
 owner left it.
 
+The Image tab has the buttons, through the same confirmation modal, job strip and
+sudoers allowlist as every other unit on this box. The modal says what `Conflicts=` is
+about to do before it does it, and the tab keeps asking while the 31 GB load, because
+the unit reads `active` and `/health` answers 503 for that whole minute and a bit.
+
+From a terminal, if you prefer one:
+
 ```bash
 sudo systemctl start qwen38-image.service     # images, text lane stops
 sudo systemctl start qwen38-sglang.service    # text, image lane stops
@@ -111,6 +118,36 @@ of encode and VAE decode that a smaller image does not avoid. Startup is about 7
 a warm page cache.
 
 Same seed, twice: byte-identical. 8 steps is visibly unfinished and not worth the 8.4 s.
+
+## One image at a time, and what happens if you ignore that
+
+The diffusion scheduler has no admission cap. `batching_max_size` is about batching and
+is already 1, so overlapping requests do not queue politely: each gets its own working
+set. Measured here on 2026-09-22:
+
+| | held by the process | free on the box |
+|---|---:|---:|
+| after boot, idle | 31.2 GB | 80 GB |
+| eight generations, one after another | **31.2 GB, flat** | 80 GB |
+| two generations at once | **90.5 GB** | 20 GB |
+
+The second row is the important one: this lane does **not** leak. Eight sequential
+1024x1024 generations held exactly the same memory as the first, and the engine reported
+the same 34.0 GB peak for every one of them.
+
+The third row is what bites. On a box whose 121.6 GB is shared between the CPU and the
+GPU, two concurrent requests is most of it, and the engine that reached that state stopped
+answering entirely: a direct curl to its port timed out, no request appeared in its log,
+and `systemctl restart` was the only way back. Two browser tabs are enough to do it.
+
+So the cockpit serializes. A second request while one is running comes back **HTTP 409 in
+under a millisecond** with the reason, rather than queueing and holding one of the
+browser's six connections to that origin. The Image tab also turns its own button off when
+the lane is busy with somebody else's request, which it can see because the engine names
+its current stage in its log.
+
+Nothing enforces this below the cockpit. A script that posts twice to port 30020 will
+still do what the numbers above describe.
 
 ## Three refusals worth knowing before a client hits them
 

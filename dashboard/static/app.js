@@ -40,7 +40,9 @@ const STATE_BADGE = {failed: 'failed', degraded: 'degraded', wedged: 'wedged', s
 const TRANSITIONAL = new Set(['starting', 'loading-weights', 'loading-draft', 'allocating-kv', 'capturing-graphs', 'warming-up']);
 const STAGE_LABEL = {'init': 'init', 'loading-weights': 'weights', 'loading-draft': 'draft', 'allocating-kv': 'KV', 'capturing-graphs': 'graphs', 'warming-up': 'warmup'};
 const ALL_STAGES = Object.keys(STAGE_LABEL);
-const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B'};
+const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B',
+                  'qwen38-image.service': 'the image lane'};
+const IMAGE_UNIT = 'qwen38-image.service';
 const AGENT_UNIT = 'opencode-web.service';
 // Both lanes have several targets sharing one unit, so the lane name alone ("27B",
 // "flash") does not say which checkpoint is loaded. Every control that names a lane
@@ -1187,10 +1189,18 @@ function askAction(name, params, argv, warns){
   const TITLES = {unit: p => `${p.verb} ${laneLabel(p.unit)}`,
                   switch: p => `switch the target model to ${TARGET_NAME[p.target] || p.target}`,
                   flush_cache: () => 'flush the engine cache', abort_all: () => 'abort every in-flight generation', smoke: () => 'run a smoke generation through the proxy', diag_bundle: () => 'write a diagnostics bundle'};
+  const IMAGE_EXPLAIN = {
+    start: 'systemd starts the image lane and, through the unit\u2019s own Conflicts=, stops whichever text lane '
+         + 'is serving: 31 GB of image weights do not fit beside a serving LLM. It answers in about 70 seconds. '
+         + 'Starting a text lane again later stops this one the same way.',
+    stop: 'systemd stops the image lane. It does NOT bring a text lane back by itself: start the one you want.',
+    restart: 'systemd restarts the image lane; it reloads 31 GB and answers again in about 70 seconds.'};
   const AGENT_EXPLAIN = {stop: 'systemd stops opencode serve: the Agent tab goes dark until the server is started again.',
                          start: 'systemd starts opencode serve on loopback; the Agent tab is back within seconds.',
                          restart: 'systemd restarts opencode serve, which picks up an upgraded binary; the Agent tab reconnects by itself within seconds.'};
-  const EXPLAIN = {unit: p => p.unit === AGENT_UNIT ? AGENT_EXPLAIN[p.verb] || '' : p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : 'systemd starts the unit; the engine loads its weights and is ready in about 9 minutes (watch the boot bar).',
+  const EXPLAIN = {unit: p => p.unit === AGENT_UNIT ? AGENT_EXPLAIN[p.verb] || ''
+                     : p.unit === IMAGE_UNIT ? IMAGE_EXPLAIN[p.verb] || ''
+                     : p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : 'systemd starts the unit; the engine loads its weights and is ready in about 9 minutes (watch the boot bar).',
                    switch: p => (TARGET_NOTE[p.target] ? TARGET_NOTE[p.target] + '\n\n' : '')
                      + 'switch-model.sh rewrites the unit for the chosen target, updates the boot enablement, the proxy ceiling and the opencode default model. It never restarts anything: stop and start the engines afterwards.',
                    flush_cache: () => 'Empties the radix cache. Harmless; refused by the engine if requests are running.',
@@ -1685,7 +1695,10 @@ const IMG_EXAMPLES = {
     prompt: 'Combine the subjects from Picture 1 and Picture 2 into one coherent scene, preserving their appearance.'},
 };
 let imgRefs = [];          // [{name, dataUrl, w, h}], in the order the model labels them
-let imgLast = null;        // the last answer, kept so the download button has something
+// Declared here rather than beside imgLane(), because imgSync() reads `available` and
+// runs long before the first status poll comes back.
+const IMG_STATE = {port: 30020, host: '127.0.0.1', available: false, busy: false};
+let imgInflight = null;    // when this page's own request started, or null
 
 const imgVal = id => ($(id) ? $(id).value.trim() : '');
 function imgSize(){
@@ -1761,26 +1774,29 @@ function imgPayload(){
   return p;
 }
 
+// No Authorization header: this lane has no --api-key to check one against. And the host
+// is the lane's own bind, read back from the installed unit, not the address this browser
+// happens to be on: a cockpit opened over Tailscale would otherwise print a URL that
+// cannot work, because the lane listens on loopback.
+const shq = s => "'" + String(s).replace(/'/g, `'\\''`) + "'";   // survives an apostrophe in a prompt
 function imgCurl(){
   const editing = $('imgmode-edit').getAttribute('aria-pressed') === 'true';
   const p = imgPayload();
-  const host = location.hostname || '127.0.0.1';
-  const base = `http://${host}:${IMG_STATE.port || 30020}/v1/images`;
+  const base = `http://${IMG_STATE.host || '127.0.0.1'}:${IMG_STATE.port || 30020}/v1/images`;
+  const where = IMG_STATE.host && IMG_STATE.host !== '127.0.0.1' ? ''
+    : '# run this ON the box: the image lane listens on loopback and has no API key\n';
   let text;
   if (!editing){
-    text = `curl -sS ${base}/generations \\\n`
-         + `  -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)" \\\n`
+    text = where + `curl -sS ${base}/generations \\\n`
          + `  -H 'Content-Type: application/json' \\\n`
-         + `  -d '${JSON.stringify(p, null, 2)}'`;
+         + `  -d ${shq(JSON.stringify(p, null, 2))}`;
   } else {
     const fields = Object.entries(p).filter(([k]) => k !== 'width' && k !== 'height')
-      .map(([k, v]) => `  --form-string '${k}=${v}'`);
-    fields.unshift(`  --form-string 'size=${p.width}x${p.height}'`);
+      .map(([k, v]) => `  --form-string ${shq(k + '=' + v)}`);
+    fields.unshift(`  --form-string ${shq('size=' + p.width + 'x' + p.height)}`);
     const refs = (imgRefs.length ? imgRefs : [{name: 'input.png'}])
       .map(r => `  -F "image[]=@${r.name};type=image/png"`);
-    text = `curl -sS ${base}/edits \\\n`
-         + `  -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)" \\\n`
-         + [...fields, ...refs].join(' \\\n');
+    text = where + `curl -sS ${base}/edits \\\n` + [...fields, ...refs].join(' \\\n');
   }
   setText('imgcurl', text);
 }
@@ -1797,7 +1813,10 @@ function imgSync(){
   $('imgrun').textContent = editing ? 'Edit' : 'Generate';
   const problem = imgProblem();
   note('imgwarn', problem);
-  $('imgrun').disabled = !!problem || !imgVal('imgprompt');
+  // IMG_STATE.available belongs in here too: without it, typing one character in the
+  // prompt re-enabled the button on a lane that is not serving, and so did the finally
+  // of a failed run.
+  $('imgrun').disabled = !IMG_STATE.available || IMG_STATE.busy || !!problem || !imgVal('imgprompt');
   imgCost(); imgCurl();
 }
 
@@ -1841,6 +1860,10 @@ function imgAddFiles(files){
     fr.onload = () => {
       const im = new Image();
       im.onload = () => {
+        // The count is re-read HERE, not before the callbacks: picking a second batch
+        // while the first is still decoding made two calls compute room from the same
+        // length and queue twelve references for a model that takes ten.
+        if (imgRefs.length >= 10){ toast('Ten references is the maximum.', 'warn'); return; }
         const scale = Math.min(1, IMG_REF_MAX / Math.max(im.width, im.height));
         const c = document.createElement('canvas');
         c.width = Math.round(im.width * scale); c.height = Math.round(im.height * scale);
@@ -1869,19 +1892,21 @@ function imgDrawRefs(){
   imgSync();
 }
 
-function imgDraw(out){
+function imgDraw(out, fmt){
+  // The format is the one this answer was REQUESTED with, captured by the caller. Read
+  // off the select at click time instead, changing it without regenerating saved PNG
+  // bytes under a .webp name.
   const box = $('imgout'); clear(box);
   const imgs = (out.data || []);
   const shots = el('div', 'shots' + (imgs.length > 1 ? ' multi' : ''));
   imgs.forEach((d, i) => {
     const w = el('div', 'shot');
     const im = el('img');
-    im.src = 'data:image/' + ($('imgfmt').value === 'webp' ? 'webp' : 'png') + ';base64,' + d.b64_json;
+    im.src = 'data:image/' + (fmt === 'webp' ? 'webp' : 'png') + ';base64,' + d.b64_json;
     im.alt = 'generated image ' + (i + 1);
     w.append(im); shots.append(w);
   });
   box.append(shots);
-  imgLast = out;
   const meta = $('imgmeta'); clear(meta);
   const bytes = imgs.reduce((a, d) => a + (d.b64_json || '').length * 0.75, 0);
   [['images', imgs.length], ['size', (bytes / 1e6).toFixed(1) + ' MB'],
@@ -1892,7 +1917,7 @@ function imgDraw(out){
   dl.addEventListener('click', () => imgs.forEach((d, i) => {
     const a = document.createElement('a');
     a.href = 'data:application/octet-stream;base64,' + d.b64_json;
-    a.download = `qwen-image-${Date.now()}${imgs.length > 1 ? '-' + i : ''}.${$('imgfmt').value}`;
+    a.download = `qwen-image-${Date.now()}${imgs.length > 1 ? '-' + i : ''}.${fmt}`;
     a.click();
   }));
   meta.append(dl);
@@ -1908,7 +1933,19 @@ function imgDraw(out){
   }
 }
 
-const IMG_STATE = {port: 30020, available: false};
+// The frame is the shape of the answer: a 16:9 wait should not look like a square one,
+// and an empty panel for 38 seconds looks like nothing is happening.
+function imgFrame(n){
+  const {w, h} = imgSize();
+  const box = $('imgout'); clear(box);
+  const wrap = el('div', 'shots' + (n > 1 ? ' multi' : ''));
+  for (let i = 0; i < Math.min(n, 2); i++){
+    const f = el('div', 'frame', n > 1 ? `image ${i + 1} of ${n}` : `${w} x ${h}`);
+    f.style.aspectRatio = `${w} / ${h}`;
+    wrap.append(f);
+  }
+  box.append(wrap);
+}
 
 async function imgRun(){
   const problem = imgProblem();
@@ -1919,6 +1956,13 @@ async function imgRun(){
   setText('imgstatus', editing ? 'editing...' : 'generating...');
   setChip('imgtime', est ? '~' + fmtDur(est) : '');
   const t0 = Date.now();
+  imgInflight = t0;
+  imgFrame(Number($('imgn').value) || 1);
+  clear($('imgmeta'));
+  imgStageAt = {stage: '', at: 0};
+  imgBar(IMG_RUN_BAR, {label: 'sending the request'}, '', null);
+  // One poll drives the bar off the engine's log; the chip keeps the wall clock.
+  imgWatch(true, 1500);
   const tick = setInterval(() => setChip('imgtime', fmtDur((Date.now() - t0) / 1000)
     + (est ? ' of ~' + fmtDur(est) : '')), 1000);
   try{
@@ -1933,18 +1977,85 @@ async function imgRun(){
     const out = await r.json();
     if (!r.ok){
       const why = out.error || (out.refused ? JSON.stringify(out.refused).slice(0, 300) : 'HTTP ' + r.status);
+      if (r.status === 409){ toast(why, 'warn', 7000); setChip('imgtime', 'lane busy', 'warn'); return; }
       clear($('imgout')); $('imgout').append(el('p', 'note', 'Refused with HTTP ' + r.status + ': ' + why));
       setChip('imgtime', r.status + ' refused', 'err');
       return;
     }
-    imgDraw(out.image || out);
+    imgDraw(out.image || out, body.output_format);
     setChip('imgtime', (out.seconds != null ? out.seconds.toFixed(1) + ' s' : 'done'), 'ok');
   } catch (e){
     toast('The cockpit could not reach the image lane: ' + e.message, 'err');
     setChip('imgtime', 'failed', 'err');
   } finally {
-    clearInterval(tick); btn.disabled = false; setText('imgstatus', ''); imgSync();
+    clearInterval(tick); imgInflight = null;
+    $('imgrunprog').hidden = true;
+    imgWatch(false);
+    btn.disabled = false; setText('imgstatus', ''); imgSync();
+    imgLane();                     // the lane may have gone away under the request
   }
+}
+
+// The lane is started and stopped from here, through the same modal, job strip and
+// sudoers allowlist as every other unit. A tab that tells you to open a terminal is not
+// a cockpit, which is the whole point of this page.
+function imgUnitButton(verb, label, warns){
+  const b = el('button', 'btn mini' + (verb === 'start' ? '' : ' low'), label);
+  b.addEventListener('click', () => askAction('unit', {verb, unit: IMAGE_UNIT},
+    ['sudo', '-n', '/usr/bin/systemctl', verb, IMAGE_UNIT], warns));
+  return b;
+}
+
+let imgPoll = null;
+function imgWatch(on, ms = 2500){
+  // A request in flight is its own reason to keep asking: the lane answering /health is
+  // not the same as this page having nothing left to draw.
+  if (!on && imgInflight){ on = true; ms = 1500; }
+  // While it loads its 31 GB the unit reads `active` and /health answers 503, and while a
+  // request runs nothing comes back until it is done, so the only honest progress signal
+  // is asking again.
+  if (on && imgPoll && imgPoll.ms === ms) return;
+  if (imgPoll){ clearInterval(imgPoll.id); imgPoll = null; }
+  if (on) imgPoll = {id: setInterval(imgLane, ms), ms};
+}
+
+// One drawer for both bars: the phase name on the left, the number on the right.
+// The NAME is the engine's own and exact. The number beside a request is this page's
+// clock against the measured cost, and says "about" because the engine gives no live
+// per-step signal: tqdm writes with carriage returns, journald only breaks on newlines,
+// /metrics is not served and /stats is empty.
+function imgBar(ids, prog, right, pct){
+  const box = $(ids.box);
+  if (!prog || !prog.label){ box.hidden = true; return; }
+  box.hidden = false;
+  box.classList.toggle('indet', pct == null);
+  const lab = $(ids.lab); clear(lab);
+  lab.append(el('b', '', prog.label));
+  setText(ids.pct, right || '');
+  // An indeterminate bar owns the whole track and slides inside it; a determinate one
+  // is a width. Going from a full track to 2% would read as progress running backwards.
+  $(ids.bar).style.width = pct == null ? '100%' : Math.max(2, Math.min(100, pct)) + '%';
+}
+const IMG_BOOT_BAR = {box: 'imgbootprog', lab: 'imgbootlab', pct: 'imgbootpct', bar: 'imgbootbar'};
+const IMG_RUN_BAR = {box: 'imgrunprog', lab: 'imgrunlab', pct: 'imgrunpct', bar: 'imgrunbar'};
+
+// When the engine entered the stage it is in now. The page times the bar from here
+// rather than from when the request was sent, so a long prompt encode does not eat the
+// denoise's budget.
+let imgStageAt = {stage: '', at: 0};
+function imgDrawRunBar(p){
+  if (!p || !p.label) return imgBar(IMG_RUN_BAR, {label: 'waiting for the lane'}, '', null);
+  if (p.stage !== imgStageAt.stage) imgStageAt = {stage: p.stage, at: Date.now()};
+  const secs = (Date.now() - imgStageAt.at) / 1000;
+  if (p.stage !== 'denoising')
+    return imgBar(IMG_RUN_BAR, p, fmtDur(secs), null);   // seconds, no honest fraction
+  // Denoising is nearly all of the cost and is linear in steps, measured on this box.
+  const steps = Number($('imgsteps').value) || 40;
+  const budget = Math.max(1, imgEstimate() - 3);
+  const frac = Math.min(secs / budget, 0.99);
+  imgBar(IMG_RUN_BAR, {label: `denoising, ${steps} steps`},
+         `about ${Math.round(frac * 100)}%, ~${fmtDur(Math.max(0, budget - secs))} left`,
+         frac * 100);
 }
 
 async function imgLane(){
@@ -1953,6 +2064,7 @@ async function imgLane(){
     if (r.status === 401) return;
     const d = await r.json();
     IMG_STATE.port = d.port || 30020;
+    IMG_STATE.host = d.host || '127.0.0.1';
     IMG_STATE.available = !!d.available;
     setText('imgmodel', d.model || 'Qwen/Qwen-Image-2.1');
     const ctl = $('imgctl'); clear(ctl);
@@ -1960,15 +2072,40 @@ async function imgLane(){
       setChip('imgchip', 'not installed', 'warn');
       ctl.append(el('span', 'chip', 'install it with:  ./install.sh --with-image'));
       ctl.append(el('span', 'chip', '38 GB, about 25 min, one command'));
+      imgWatch(false);
     } else if (d.available){
       setChip('imgchip', 'serving on :' + IMG_STATE.port, 'ok');
-      ctl.append(el('span', 'chip', d.llm_lane ? 'the text lane is stopped while this serves' : 'this lane has the box'));
+      ctl.append(imgUnitButton('stop', 'Stop the image lane'));
+      ctl.append(el('span', 'chip', d.llm_lane
+        ? 'the text lane is stopped while this serves' : 'this lane has the box'));
+      imgWatch(false);
+    } else if (d.state === 'loading weights' || d.state === 'starting'){
+      setChip('imgchip', 'starting', 'warn');
+      ctl.append(el('span', 'chip', 'about a minute; the button turns on by itself'));
+      ctl.append(imgUnitButton('stop', 'Stop'));
+      imgWatch(true, 2000);
     } else {
       setChip('imgchip', d.state || 'stopped', d.state === 'failed' ? 'err' : '');
-      ctl.append(el('span', 'chip', 'start it from the Engines tab, or:  sudo systemctl start qwen38-image.service'));
-      if (d.llm_lane) ctl.append(el('span', 'chip', 'starting it stops ' + d.llm_lane));
+      ctl.append(imgUnitButton('start', 'Start the image lane',
+        d.llm_lane ? ['Starting this STOPS ' + d.llm_lane + ': 31 GB of image weights do not fit '
+                      + 'beside a serving LLM. Bringing the text lane back afterwards is another '
+                      + '9 minutes of boot.'] : []));
+      if (d.llm_lane) ctl.append(el('span', 'chip', 'serving now: ' + d.llm_lane));
+      if (d.state === 'failed') ctl.append(el('span', 'chip', 'read why in the Logs tab'));
+      imgWatch(false);
     }
-    $('imgrun').disabled = !d.available || !!imgProblem() || !imgVal('imgprompt');
+    const p = d.progress || {};
+    imgBar(IMG_BOOT_BAR, p.kind === 'boot' ? p : null, (p.pct || 0) + '%', p.pct);
+    if (imgInflight) imgDrawRunBar(p.kind === 'boot' ? null : p);
+    // Someone else generating counts: this lane serves one at a time, and a second
+    // request does not queue politely, it holds another 60 GB of a 122 GB box.
+    const busyElsewhere = !imgInflight && p.kind === 'stage';
+    IMG_STATE.busy = busyElsewhere;
+    if (busyElsewhere){
+      setChip('imgchip', 'busy: ' + p.label, 'warn');
+      imgWatch(true, 2000);
+    }
+    $('imgrun').disabled = !d.available || busyElsewhere || !!imgProblem() || !imgVal('imgprompt');
   } catch (e){ setChip('imgchip', 'unknown', 'warn'); }
 }
 
@@ -2007,10 +2144,15 @@ function imgInit(){
           output_format: 'png', response_format: 'b64_json', generator_device: 'cpu', seed: 42})});
       const out = await r.json();
       if (!r.ok) return toast('Could not make a sample: ' + (out.error || r.status), 'err');
-      const b64 = ((out.image || out).data || [])[0].b64_json;
-      imgRefs.push({name: 'sample-teapot.png', dataUrl: 'data:image/png;base64,' + b64, w: 1024, h: 1024});
+      const first = ((out.image || out).data || [])[0];
+      if (!first || !first.b64_json)
+        return toast('The lane answered 200 with no image in it.', 'err');
+      imgRefs.push({name: 'sample-teapot.png', dataUrl: 'data:image/png;base64,' + first.b64_json,
+                    w: 1024, h: 1024});
       imgDrawRefs();
       toast('Sample added as Picture ' + imgRefs.length + '. Try the "Local edit" example on it.', 'ok');
+    } catch (e){
+      toast('Could not make a sample: ' + e.message, 'err');
     } finally { setText('imgstatus', ''); $('imgprompt').value = saved.prompt; imgSync(); }
   });
   $('imgrun').addEventListener('click', imgRun);

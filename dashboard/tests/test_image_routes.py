@@ -83,6 +83,10 @@ class Base(unittest.TestCase):
         cls.tmp = Path(tempfile.mkdtemp(prefix="cockpit-image-"))
         (cls.tmp / "api-key").write_text("test-key-not-a-real-one\n")
         cls.ck = load_cockpit(cls.tmp)
+        # Kept in a dict, not as a class attribute: a plain function assigned to a class
+        # becomes a bound method and would be handed self. Two tests below call the real
+        # one to check it reads the installed unit.
+        cls.saved = {"image_base": cls.ck.image_base}
         cls.ck.image_base = lambda: "http://127.0.0.1:30020"
 
     @classmethod
@@ -251,14 +255,84 @@ class WhatTheTabIsTold(Base):
         self.assertEqual(out["state"], "loading weights")
 
 
+class OneAtATime(Base):
+    """The diffusion scheduler has no admission cap. Measured on the reference box on
+    2026-09-22: one generation holds 31.2 GB and stays there across eight of them, two at
+    once held 90.5 GB of its 121.6, and the engine then stopped answering and had to be
+    restarted. Two browser tabs are enough to do that, so the refusal lives here rather
+    than in the page."""
+
+    PNG = "data:image/png;base64,iVBORw0KGgo="
+
+    def test_a_second_request_is_refused_while_one_is_running(self):
+        import threading
+        started, release = threading.Event(), threading.Event()
+        second = {}
+
+        def slow(req, timeout=None):
+            started.set()
+            release.wait(10)
+            raise self.ck.urllib.error.HTTPError(req.full_url, 500, "x", {}, None)
+
+        self.ck.urllib.request.urlopen = slow
+        first = threading.Thread(target=lambda: self.call({"prompt": "x"}))
+        first.start()
+        self.assertTrue(started.wait(5), "the first request never reached the engine")
+        second["code"], second["out"] = self.call({"prompt": "y"})
+        release.set(); first.join(10)
+        self.assertEqual(second["code"], 409)
+        self.assertIn("one image at a time", second["out"]["error"])
+
+    def test_the_lock_is_given_back_when_a_request_fails(self):
+        """A lane that refuses forever after one error is worse than one that overlaps."""
+        def boom(req, timeout=None):
+            raise ConnectionRefusedError("nothing listening")
+
+        self.ck.urllib.request.urlopen = boom
+        self.assertEqual(self.call({"prompt": "x"})[0], 502)
+        self.assertEqual(self.call({"prompt": "x"})[0], 502)   # not 409
+        self.assertFalse(self.ck.IMAGE_LOCK.locked())
+
+    def test_the_lock_is_given_back_when_a_request_is_refused_by_shape(self):
+        self.assertEqual(self.call({"prompt": "x", "width": 1000})[0], 400)
+        self.assertFalse(self.ck.IMAGE_LOCK.locked())
+
+
+class TheBindIsReadNotAssumed(Base):
+    """install-image.sh takes IMAGE_BIND. A cockpit that probes 127.0.0.1 regardless
+    reads "loading weights" forever on a lane that is serving fine."""
+
+    def test_the_host_comes_from_the_installed_unit(self):
+        unit = self.tmp / "qwen38-image.service"
+        unit.write_text("[Service]\nExecStart=/x/sglang serve --model-path Q/M \\\n"
+                        "  --host 100.114.54.60 --port 31234\n")
+        self.ck.IMAGE_UNIT_PATH = unit
+        self.assertEqual(self.saved["image_base"](), "http://100.114.54.60:31234")
+        self.assertEqual(self.ck.image_status()["host"], "100.114.54.60")
+
+    def test_a_missing_unit_falls_back_to_loopback(self):
+        self.ck.IMAGE_UNIT_PATH = Path("/nonexistent/qwen38-image.service")
+        self.assertEqual(self.saved["image_base"](), "http://127.0.0.1:30020")
+
+
 class TheCapOnTheseTwoRoutes(Base):
     def test_ten_references_do_not_fit_in_the_ordinary_post_cap(self):
         self.assertGreater(self.ck.IMAGE_MAX_POST, 10 * 1024 * 1024)
 
     def test_the_raised_cap_applies_to_the_image_routes_and_nothing_else(self):
         text = (DASH / "cockpit.py").read_text()
-        self.assertIn('cap = IMAGE_MAX_POST if path in ("/api/image/edit", '
-                      '"/api/image/generate") else 65536', text)
+        self.assertIn('cap = IMAGE_MAX_POST if raised else 65536', text)
+        self.assertIn('raised = path in ("/api/image/edit", "/api/image/generate")', text)
+
+    def test_the_raised_cap_authenticates_before_it_buffers(self):
+        """Otherwise an unauthenticated client makes this process hold 40 MB in a thread
+        just by declaring a Content-Length, which the 64 KiB cap used to bound."""
+        text = (DASH / "cockpit.py").read_text()
+        i = text.index("raised = path in (")
+        body = text[i:i + 1200]
+        self.assertIn("if raised and not self.authed():", body)
+        self.assertLess(body.index("if raised and not self.authed():"),
+                        body.index("raw = self.rfile.read(length)"))
 
 
 class WhenTheLaneIsNotThere(Base):

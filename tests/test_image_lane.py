@@ -159,6 +159,43 @@ class TheInstaller(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("unknown option", out)
 
+    def test_the_text_lane_comes_back_however_the_smoke_test_ends(self):
+        """The smoke test stops the serving LLM lane. Every failure below that point used
+        to exit through die(), leaving the box serving nothing with the image unit holding
+        31 GB, until somebody noticed. Putting it back belongs in a trap, not on the
+        happy path."""
+        text = INSTALLER.read_text()
+        self.assertIn("trap restore_text_lane EXIT", text)
+        body = text[text.index("restore_text_lane() {"):text.index("trap restore_text_lane EXIT")]
+        self.assertIn('systemctl stop "$UNIT"', body)
+        self.assertIn('systemctl start "$WAS_LLM"', body)
+        # and nothing may restart it on the happy path instead
+        after = text[text.index("trap restore_text_lane EXIT"):]
+        self.assertNotIn('if [ -n "$WAS_LLM" ]; then sudo systemctl start', after)
+
+    def test_a_routine_rerun_does_not_stop_the_engine_to_redo_the_smoke_test(self):
+        """An upgrade of a box that happens to have the lane must not cost it minutes of
+        unserved traffic. The smoke test runs on the install that asked for the lane."""
+        text = (REPO / "install.sh").read_text()
+        self.assertIn('[ "$WITH_IMAGE" -eq 0 ] && IMAGE_ARGS=(--no-smoke)', text)
+
+    def test_flags_that_would_silently_do_nothing_are_refused_at_parse_time(self):
+        """--no-start and --no-service both return before the image step, so the flag
+        would be accepted and quietly ignored at the end of a long install."""
+        for flag in ("--no-start", "--no-service"):
+            e = {"PATH": "/usr/local/bin:/usr/bin:/bin",
+                 "HOME": tempfile.mkdtemp(prefix="img-home-"), "MODEL_CHOICE": "stock"}
+            r = subprocess.run([str(REPO / "install.sh"), "--with-image", flag],
+                               capture_output=True, text=True, env=e, cwd=str(REPO), timeout=60)
+            self.assertNotEqual(r.returncode, 0, flag)
+            self.assertIn("--with-image needs the full install", r.stdout + r.stderr, flag)
+
+    def test_uninstall_reads_the_lane_directory_from_the_unit(self):
+        """install-image.sh takes IMAGE_LANE_DIR. A lane installed elsewhere would be
+        reported clean and left on disk."""
+        text = (REPO / "uninstall.sh").read_text()
+        self.assertIn("^WorkingDirectory=", text)
+
     def test_the_smoke_test_proves_a_picture_not_a_status_code(self):
         """An HTTP 200 from this lane can carry an image of the wrong size, or no image.
         The install ends by reading the PNG header it got back."""
@@ -208,6 +245,42 @@ class TheOneLinerReachesIt(unittest.TestCase):
         self.assertIn("38 GB", self.text)
 
 
+class TheLaneIsDrivableFromThePage(unittest.TestCase):
+    """A cockpit whose Image tab tells you to open a terminal is not a cockpit. Starting
+    and stopping the lane goes through the same modal, job strip and sudoers allowlist as
+    every other unit on this box."""
+
+    def test_the_unit_is_one_the_action_layer_accepts(self):
+        self.assertIn('"qwen38-image.service"', COCKPIT.read_text())
+        text = COCKPIT.read_text()
+        block = text[text.index("SERVING_UNITS = {"):text.index("UNIT_VERBS = {")]
+        self.assertIn("qwen38-image.service", block)
+
+    def test_every_verb_it_offers_is_in_the_sudoers_allowlist(self):
+        """The action layer runs sudo -n: a verb the allowlist does not carry fails with
+        a password prompt nobody can answer."""
+        sudoers = (REPO / "dashboard" / "sudoers-cockpit.template").read_text()
+        for verb in ("start", "stop", "restart"):
+            self.assertIn(f"/usr/bin/systemctl {verb} qwen38-image.service", sudoers, verb)
+
+    def test_the_page_has_the_buttons_rather_than_naming_another_tab(self):
+        js = APP_JS.read_text()
+        self.assertIn("function imgUnitButton(", js)
+        self.assertIn("askAction('unit', {verb, unit: IMAGE_UNIT}", js)
+        self.assertNotIn("start it from the Engines tab", js)
+
+    def test_the_confirmation_says_the_text_lane_will_stop(self):
+        """Conflicts= is silent at the point of clicking. The modal is where it gets said."""
+        js = APP_JS.read_text()
+        self.assertIn("IMAGE_EXPLAIN", js)
+        self.assertIn("Starting this STOPS ", js)
+
+    def test_the_page_keeps_asking_while_the_weights_load(self):
+        """The unit reads active and /health answers 503 for about 70 s, so the only
+        honest progress signal is asking again."""
+        self.assertIn("function imgWatch(", APP_JS.read_text())
+
+
 class TheTabTellsTheTruth(unittest.TestCase):
     """The tab's defaults and its size list are facts about the model, so they are gated
     like facts: a drift here is a page that promises what the engine refuses."""
@@ -242,6 +315,33 @@ class TheTabTellsTheTruth(unittest.TestCase):
                 2 / 3: "2:3", 16 / 9: "16:9", 9 / 16: "9:16"}
         for ratio, name in want.items():
             self.assertTrue(any(abs(w / h - ratio) < 0.05 for w, h in sizes), name)
+
+    def test_the_generate_button_stays_off_when_the_lane_cannot_take_it(self):
+        """imgSync runs on every keystroke, so every reason the button should be off has
+        to be in that one expression. Without the availability term, typing a character
+        re-enabled it on a stopped lane; without the busy term it offers a request the
+        cockpit will refuse with 409, because this lane takes one at a time."""
+        js = APP_JS.read_text()
+        sync = js[js.index("function imgSync(){"):js.index("function imgReset(){")]
+        line = [ln for ln in sync.splitlines() if "$('imgrun').disabled" in ln]
+        self.assertEqual(len(line), 1, "imgSync must decide that in one place")
+        for term in ("IMG_STATE.available", "IMG_STATE.busy", "problem", "imgprompt"):
+            self.assertIn(term, line[0], term)
+
+    def test_the_copyable_curl_carries_no_key_the_lane_cannot_check(self):
+        """The cockpit's own call had that header removed and gated; the snippet next to
+        it must not keep offering one."""
+        js = APP_JS.read_text()
+        curl = js[js.index("function imgCurl(){"):js.index("function imgSync(){")]
+        self.assertNotIn("Authorization", curl)
+        self.assertNotIn("api-key", curl)
+        # and it addresses the lane's own bind, not whatever host this browser is on
+        self.assertNotIn("location.hostname", curl)
+        self.assertIn("IMG_STATE.host", curl)
+
+    def test_a_prompt_with_an_apostrophe_does_not_break_the_snippet(self):
+        js = APP_JS.read_text()
+        self.assertIn("const shq =", js)
 
     def test_jpeg_is_not_offered_at_all(self):
         """Offering a format the engine cannot produce is offering a 500."""

@@ -195,6 +195,18 @@ for u in qwen38-sglang.service qwen38-flash.service; do
   systemctl is-active --quiet "$u" 2>/dev/null && WAS_LLM="$u"
 done
 [ -n "$WAS_LLM" ] && echo "note: $WAS_LLM is serving and will be stopped for this test, then started again."
+# From here on the text lane is DOWN, so putting it back cannot live on the happy path:
+# every die() below would leave the box serving nothing, with the image unit holding
+# 31 GB, until somebody noticed. The trap runs on success and on every failure alike.
+restore_text_lane() {
+  sudo systemctl stop "$UNIT" 2>/dev/null || true
+  if [ -n "$WAS_LLM" ]; then
+    echo "starting $WAS_LLM again"
+    sudo systemctl start "$WAS_LLM" || echo "WARNING: could not restart $WAS_LLM. Do it by hand: sudo systemctl start $WAS_LLM"
+  fi
+  rm -f "$RENDER" "${OUT:-}"
+}
+trap restore_text_lane EXIT
 sudo systemctl start "$UNIT"
 READY=0
 for i in $(seq 1 90); do
@@ -203,7 +215,7 @@ for i in $(seq 1 90); do
 done
 [ "$READY" -eq 1 ] || { sudo journalctl -u "$UNIT" -n 40 --no-pager; die "the lane did not answer /health within 15 min. The journal above says why."; }
 echo "up after ~$((i*10)) s; generating a 512x512 image"
-OUT="$(mktemp)"; trap 'rm -f "$RENDER" "$OUT"' EXIT
+OUT="$(mktemp)"
 CODE=$(curl -sS -o "$OUT" -w '%{http_code}' -m 300 "http://$IMAGE_BIND:$PORT/v1/images/generations" \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"A capybara reading a book by candlelight","size":"512x512","num_inference_steps":20,"output_format":"png","response_format":"b64_json","generator_device":"cpu","seed":42}')
@@ -217,8 +229,7 @@ w, h = struct.unpack(">II", raw[16:24])
 assert (w, h) == (512, 512), f"got {w}x{h}"
 print(f"   {w}x{h} {'RGBA' if raw[25] == 6 else raw[25]}, {len(raw)/1e6:.1f} MB")
 PY
-sudo systemctl stop "$UNIT"
-if [ -n "$WAS_LLM" ]; then sudo systemctl start "$WAS_LLM"; echo "$WAS_LLM started again"; fi
+# the trap stops the lane and brings the text lane back, whichever way this ends
 
 step "Done: the image lane serves on $IMAGE_BIND:$PORT"
 echo "  start   : sudo systemctl start $UNIT      (this stops the LLM lane)"

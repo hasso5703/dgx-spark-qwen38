@@ -63,7 +63,7 @@ DRY_RUN = os.environ.get("COCKPIT_DRY_RUN", "0") == "1"
 MASKED_FIELDS = {"api_key", "admin_api_key"}
 
 UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-keepalive.service")
-JOURNAL_UNITS = UNITS + (AGENT_UNIT,)   # what the Logs tab may read
+JOURNAL_UNITS = UNITS + (AGENT_UNIT, "qwen38-image.service")   # what the Logs tab may read
 CONTAINERS = ("qwen38-sglang", "qwen38-flash")
 
 UNIT2CONT = {"qwen38-sglang.service": "qwen38-sglang",
@@ -1226,8 +1226,11 @@ def sampler(period: float, collectors: dict):
 # renders from this registry; the backend never builds commands from free text.
 AUDIT_LOG = CONFIG_DIR / "cockpit-audit.log"
 
+# The image lane is here because a cockpit whose Image tab tells you to open a terminal
+# is not a cockpit. Starting it stops the text lane (the unit's own Conflicts=), which is
+# why the modal says so before it runs.
 SERVING_UNITS = {"qwen38-sglang.service", "qwen38-flash.service",
-                 "qwen38-keepalive.service", AGENT_UNIT}
+                 "qwen38-keepalive.service", "qwen38-image.service", AGENT_UNIT}
 UNIT_VERBS = {"start", "stop", "restart"}
 
 ACTIONS = {
@@ -1508,26 +1511,117 @@ IMAGE_LLM_UNITS = ("qwen38-sglang.service", "qwen38-flash.service")
 IMAGE_MAX_POST = 40 * 1024 * 1024
 IMAGE_MAX_REFS = 10
 IMAGE_TIMEOUT = 1800.0          # 2048x2048 at 60 steps is minutes, and it is a valid ask
+# This lane serves ONE request at a time, and that is not a preference. The diffusion
+# scheduler has no admission cap (batching_max_size is about batching, and it is already
+# 1), so overlapping requests each get their own working set: measured on the reference
+# box, one generation holds 31.2 GB and two at once held 90.5 GB of its 121.6, after
+# which the engine stopped answering entirely and had to be restarted. Two tabs, or a tab
+# and a script, are enough to do that. The refusal below is instant and says why, which
+# beats a queued request holding one of the browser's six connections to this origin.
+IMAGE_LOCK = threading.Lock()
+
+
+def _image_unit_flag(flag: str, fallback: str) -> str:
+    """What the installed unit passes, not what this file assumes. The installer accepts
+    IMAGE_BIND, so a lane bound elsewhere must not be probed on a loopback port that
+    nothing is listening on: the tab would read "loading weights" forever on a lane that
+    is serving fine."""
+    try:
+        for line in IMAGE_UNIT_PATH.read_text().splitlines():
+            if flag in line:
+                return line.split(flag, 1)[1].split()[0]
+    except Exception:                                   # noqa: BLE001 (absent unit is normal)
+        pass
+    return fallback
 
 
 def image_port() -> int:
-    """The port the installed unit actually serves on, not the one this file assumes."""
     try:
-        for line in IMAGE_UNIT_PATH.read_text().splitlines():
-            if "--port" in line:
-                return int(line.split("--port", 1)[1].split()[0])
-    except Exception:                                   # noqa: BLE001 (absent unit is normal)
-        pass
-    return 30020
+        return int(_image_unit_flag("--port", "30020"))
+    except ValueError:
+        return 30020
 
 
 def image_base() -> str:
-    return os.environ.get("COCKPIT_IMAGE", f"http://127.0.0.1:{image_port()}")
+    host = _image_unit_flag("--host", "127.0.0.1")
+    return os.environ.get("COCKPIT_IMAGE", f"http://{host}:{image_port()}")
+
+
+# What the engine says it is doing, in the order it says it, with the share of a boot each
+# milestone had on the reference box (two measured boots, 54 s and 60 s from process start
+# to "fired up"). The label is exact; the percentage is interpolated inside the phase,
+# because the 13.25 GB transformer load is half a minute with nothing printed in between.
+IMAGE_BOOT_PHASES = [
+    ("Starting server", 0.00, "starting the server"),
+    ("Loading pipeline modules", 0.12, "reading the checkpoint layout"),
+    ("Loaded text_encoder", 0.24, "loading the 16.5 GB Qwen3-VL encoder"),
+    ("Loaded transformer", 0.75, "loading the 13.3 GB DiT"),
+    ("Loaded vae", 0.82, "loading the VAE"),
+    ("Loaded scheduler", 0.85, "building the pipeline"),
+    ("Warmup requests", 0.90, "warming up on one throwaway image"),
+    ("fired up and ready", 1.00, "ready"),
+]
+IMAGE_JOURNAL_LINES = 300
+
+
+def _image_journal() -> list:
+    """The unit's own log since its last start. This is the only place the engine says
+    which component it is loading, or which denoising step it is on."""
+    raw = run(["journalctl", "-u", IMAGE_UNIT, "-n", str(IMAGE_JOURNAL_LINES),
+               "--no-pager", "-o", "cat"], timeout=8.0)
+    lines = raw.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        if "Starting server" in lines[i]:
+            return lines[i:]
+    return lines
+
+
+def image_progress(serving: bool) -> dict:
+    """Where the lane is, in its own words. Before it answers, that is which of the five
+    components it is loading; after, it is which denoising step the current request is on.
+    Returns {} when there is nothing to show, which is most of the time."""
+    lines = _image_journal()
+    if not lines:
+        return {}
+    if not serving:
+        idx, seen = 0, 0.0
+        for i, (needle, frac, _) in enumerate(IMAGE_BOOT_PHASES):
+            if any(needle in ln for ln in lines):
+                idx, seen = i, frac
+        nxt = IMAGE_BOOT_PHASES[min(idx + 1, len(IMAGE_BOOT_PHASES) - 1)][1]
+        # A warmup line carries its own progress and is the last thing before ready.
+        pct = int(round(100 * min(seen + (nxt - seen) * 0.5, 0.97)))
+        return {"kind": "boot", "pct": pct, "label": IMAGE_BOOT_PHASES[idx][2]}
+    # Serving: a request is in flight until the line that ends one. The three stages are
+    # named because "generating" for 40 s tells nobody anything, and the encode and the
+    # VAE decode either side of the denoise are where a slow request is actually stuck.
+    stage, running = "", False
+    for ln in lines:
+        if "Sampling params:" in ln:
+            stage, running = "encoding the prompt", True
+        elif "EncodingStage] started" in ln:
+            stage = "encoding the prompt"
+        elif "DenoisingStage] started" in ln:
+            stage = "denoising"
+        elif "DecodingStage] started" in ln:
+            stage = "decoding the image through the VAE"
+        elif "Pixel data generated" in ln or "Error executing request" in ln \
+                or "Failed to generate" in ln:
+            running = False
+    if not running:
+        return {}
+    # No live per-step number exists to report. tqdm writes its progress with carriage
+    # returns and journald only breaks on a newline, so the whole 0/40..40/40 sequence
+    # lands in one line AFTER the request is over; /metrics is not served and /stats is
+    # empty. The engine's stage name is live and exact, and that is what travels. The
+    # page draws the bar inside a stage from its own clock, and says it is an estimate.
+    return {"kind": "stage", "stage": stage or "working", "label": stage or "working"}
 
 
 def image_status() -> dict:
     """Installed, running, answering. Three different things, and the tab says which."""
     out = {"installed": IMAGE_UNIT_PATH.exists(), "port": image_port(),
+           "host": _image_unit_flag("--host", "127.0.0.1"),
            "model": "Qwen/Qwen-Image-2.1", "state": "not installed",
            "available": False, "llm_lane": ""}
     if not out["installed"]:
@@ -1547,6 +1641,7 @@ def image_status() -> dict:
                 out["model"] = line.split("--model-path", 1)[1].split()[0]
     except Exception:                                   # noqa: BLE001
         pass
+    out["progress"] = image_progress(serving=False)
     if out["state"] == "running":
         # Active is not answering: 31 GB of weights take about 77 s to load, and the unit
         # is active for all of it. Only a health check tells the tab it can send.
@@ -1561,6 +1656,10 @@ def image_status() -> dict:
             out["state"] = "loading weights" if e.code == 503 else f"answering HTTP {e.code}"
         except Exception:                               # noqa: BLE001
             out["state"] = "loading weights"
+    if out["available"]:
+        out["progress"] = image_progress(serving=True)
+    elif out["state"] not in ("loading weights", "starting"):
+        out["progress"] = {}
     return out
 
 
@@ -1627,6 +1726,11 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
     # No Authorization header: the diffusion runtime has no --api-key, so the lane cannot
     # check one and the unit binds loopback instead. The gate is this process's own session.
     key: dict = {}
+    if not IMAGE_LOCK.acquire(blocking=False):
+        return 409, {"error": "this lane serves one image at a time, and something is "
+                              "already generating on it. Two at once held 90 GB of this "
+                              "box's 122 and wedged the engine. Wait for the current one "
+                              "to finish."}
     t0 = time.time()
     try:
         if editing:
@@ -1654,6 +1758,8 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         return 502, {"error": f"the image lane did not answer ({type(e).__name__}). "
                               f"Start it: sudo systemctl start {IMAGE_UNIT}",
                      "seconds": round(time.time() - t0, 2)}
+    finally:
+        IMAGE_LOCK.release()
 
 
 def _multipart(fields: dict, images: list) -> tuple[bytes, str]:
@@ -2131,10 +2237,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or 0)
         # Ten reference images do not fit in 64 KiB and never will. The cap is raised for
         # the two image routes and for nothing else.
-        cap = IMAGE_MAX_POST if path in ("/api/image/edit", "/api/image/generate") else 65536
+        raised = path in ("/api/image/edit", "/api/image/generate")
+        cap = IMAGE_MAX_POST if raised else 65536
         if length > cap:
             self.close_connection = True
             return self.send_json({"error": "body too large"}, 413)
+        # On the raised-cap routes, authenticate BEFORE buffering the body: otherwise an
+        # unauthenticated client can make this process hold 40 MB in a thread just by
+        # declaring a Content-Length, which the 64 KiB cap used to bound.
+        if raised and not self.authed():
+            self.close_connection = True
+            return self.send_json({"error": "auth"}, 401)
         raw = self.rfile.read(length) if length else b""
         if path == "/api/login":
             # Rate limit: after 5 failures from one address, lock 60 s.

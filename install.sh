@@ -772,6 +772,14 @@ fi
 if [ "$NO_COCKPIT" -eq 1 ] && [ "$WITH_COCKPIT" -eq 1 ]; then
   printf -- '--no-cockpit and --with-cockpit contradict each other (drop one flag)\n' >&2; exit 1
 fi
+
+# --no-start and --no-service both return before the image step, so the flag would be
+# accepted and silently do nothing. Say so here rather than at the end of a long install.
+if [ "$WITH_IMAGE" -eq 1 ] && { [ "$NO_START" -eq 1 ] || [ "$NO_SERVICE" -eq 1 ]; }; then
+  printf -- '--with-image needs the full install: it installs a systemd unit and proves it serves.\n' >&2
+  printf -- 'Run ./install.sh without --no-start/--no-service, or ./install-image.sh on its own.\n' >&2
+  exit 1
+fi
 # Since v1.12 the cockpit is part of a plain install: the one-liner has to leave
 # a box you can open and drive, not a box plus a second command to find in a
 # README. The choice persists exactly like the opencode one, in a marker file,
@@ -1677,7 +1685,12 @@ except Exception as e:
     [ "$NO_IMAGE" -eq 1 ] && IMAGE_ON=0
     if [ "$IMAGE_ON" -eq 1 ]; then
       step "Qwen-Image 2.1 lane (text-to-image, editing, native RGBA)"
-      if "$REPO_DIR/install-image.sh"; then
+      # The smoke test stops the engine this run just verified, loads 31 GB and puts it
+      # back: minutes of unserved traffic. Worth it once, on the install that asked for
+      # the lane; not on every routine upgrade of a box that happens to have it.
+      IMAGE_ARGS=()
+      [ "$WITH_IMAGE" -eq 0 ] && IMAGE_ARGS=(--no-smoke)
+      if "$REPO_DIR/install-image.sh" ${IMAGE_ARGS[@]+"${IMAGE_ARGS[@]}"}; then
         IMAGE_READY=1
       else
         echo "NOTE: the image lane did not install. Everything above is up and serving."

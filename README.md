@@ -257,6 +257,12 @@ references, and the native RGBA this model is built for. It is opt-in because it
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --with-image
+```
+
+Start and stop it from the cockpit's **Image** tab, which confirms what stopping the text
+lane costs before it does it, or from a terminal:
+
+```bash
 sudo systemctl start qwen38-image.service     # images (this stops the text lane)
 sudo systemctl start qwen38-sglang.service    # back to text
 ```
@@ -276,6 +282,12 @@ to JPEG, this model always returns RGBA, and the plainest possible request fails
 both a scale above 1 and a negative prompt** (either alone is ignored byte for byte). The cockpit's
 **Image** tab refuses all three before they leave the box, exposes every parameter at the model's
 own defaults with a **Reset settings** button, and ships prompts and sample images to try.
+
+**One image at a time.** The diffusion scheduler has no admission cap, so two concurrent
+requests do not queue, they each take a working set: measured, one generation holds 31.2 GB
+and eight in a row hold exactly the same, but two at once held 90.5 GB of this box's 121.6
+and the engine stopped answering. The cockpit refuses a second one in under a millisecond
+and says why.
 
 Editing redraws the whole picture rather than patching it: the edit you ask for happens, and the
 rest comes back with about twice the fine detail of what you sent (2.16x, reproduced across every
