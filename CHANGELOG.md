@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.15.1 (2026-09-22): the proxy's version header says what the documents say
+
+v1.15.0 shipped `ARCHITECTURE.md` and `docs/clients.md` announcing the new refusals
+"since v6.20", and the proxy's own header still read v6.19. ARCHITECTURE.md calls that
+header the proxy's real version and says the cockpit reads it live, so the release
+contradicted itself on the one version string a running box displays. The header now
+carries a v6.20 entry naming what v6.20 is. No behaviour changes: the refusals, the
+vocabulary probe and their tests are the ones v1.15.0 already shipped.
+
 ## v1.15.0 (2026-09-22): typed decisions, a System One endpoint on the lane you run
 
 **TypeSafe launched Jev on 2026-09-15**, a hosted model that takes a state and typed
