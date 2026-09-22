@@ -38,7 +38,7 @@ const DEVICES = [
   { name: 'iPhone 15 Pro Max (430x932)', w: 430, h: 932, dpr: 3 },
   { name: 'iPhone 15 landscape (852x393)', w: 852, h: 393, dpr: 3 },
 ];
-const TABS = ['overview', 'agent', 'engines', 'requests', 'machine', 'models', 'logs', 'setup'];
+const TABS = ['overview', 'agent', 'engines', 'requests', 'machine', 'models', 'systemone', 'image', 'video', 'logs', 'setup'];
 
 const key = readFileSync(KEYFILE, 'utf8').trim();
 const login = await fetch(`${BASE}/api/login`, {

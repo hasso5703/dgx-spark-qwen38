@@ -1329,6 +1329,86 @@ def served_model_name() -> str:
     return "qwen3.8-27b"
 
 
+# ---- System One (local Jev), the tab that exercises POST /v1/systemone ------------
+# The cockpit talks to the proxy, never to the browser's own origin: the serving key
+# stays on this machine and no page ever holds it. Everything here is one call to
+# PROXY_BASE, with the same key job_smoke() uses.
+SYSTEMONE_CACHE = {"data": None, "ts": 0.0}
+SYSTEMONE_LOCK = threading.Lock()
+SYSTEMONE_MAX_STATE = 48_000        # the cockpit's own POST cap is 64 KiB for every route
+
+
+def systemone_available(max_age: float = 60.0) -> dict:
+    """Does the proxy in front of this box answer /v1/systemone, and which lane does it
+    answer for? Asked with a request that cannot reach the model: no `state`, which a
+    proxy that serves the route refuses at the schema with 422, and a proxy that does not
+    relays to the engine, where the path does not exist. So the probe costs no inference
+    either way, and the answer is cached for a minute."""
+    with SYSTEMONE_LOCK:
+        if SYSTEMONE_CACHE["data"] and time.time() - SYSTEMONE_CACHE["ts"] < max_age:
+            return SYSTEMONE_CACHE["data"]
+        out = {"available": False, "lane": served_model_name(), "reason": "", "status": None}
+        body = json.dumps({"model": "jev-latest", "questions": {}}).encode()
+        req = urllib.request.Request(PROXY_BASE + "/v1/systemone", body,
+                                     {"Content-Type": "application/json",
+                                      "Authorization": f"Bearer {api_key()}"})
+        try:
+            urllib.request.urlopen(req, timeout=20).read()
+            out.update(available=True, status=200)      # answered a stateless call: it serves
+        except urllib.error.HTTPError as e:
+            out["status"] = e.code
+            if e.code in (400, 422):
+                out["available"] = True
+            elif e.code == 404:
+                out["reason"] = ("the proxy in front of this box does not serve /v1/systemone. "
+                                 "It arrives with keepalive-proxy v6.19; run ./install.sh to "
+                                 "deploy the version in the checkout.")
+            else:
+                out["reason"] = f"the proxy answered HTTP {e.code} to the probe"
+        except Exception as e:                          # noqa: BLE001 (isolated probe)
+            out["reason"] = f"the proxy at {PROXY_BASE} did not answer ({type(e).__name__})"
+        SYSTEMONE_CACHE.update(data=out, ts=time.time())
+        return out
+
+
+def systemone_call(payload: dict) -> tuple[int, dict]:
+    """One typed decision, forwarded. The browser chooses the state and the questions and
+    nothing else: the path, the key and the timeout are this process's."""
+    state = payload.get("state")
+    questions = payload.get("questions")
+    if not isinstance(state, str) or not state.strip():
+        return 400, {"error": "a state is required"}
+    if len(state) > SYSTEMONE_MAX_STATE:
+        return 400, {"error": f"the cockpit forwards at most {SYSTEMONE_MAX_STATE} characters of "
+                              f"state; send a larger one straight to the proxy"}
+    if not isinstance(questions, dict) or not questions:
+        return 400, {"error": "at least one question is required"}
+    body = json.dumps({"state": state, "questions": questions,
+                       "model": str(payload.get("model") or "jev-latest")}).encode()
+    req = urllib.request.Request(PROXY_BASE + "/v1/systemone", body,
+                                 {"Content-Type": "application/json",
+                                  "Authorization": f"Bearer {api_key()}"})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            out = json.loads(r.read().decode())
+            # The two headers the contract has no room for are the interesting part of a
+            # readout, so the tab gets them rather than only the answer.
+            return 200, {"answer": out, "seconds": round(time.time() - t0, 3),
+                         "headers": {k.lower(): v for k, v in r.headers.items()
+                                     if k.lower().startswith("x-systemone")}}
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            detail = json.loads(raw.decode())
+        except Exception:                               # noqa: BLE001
+            detail = {"detail": raw[:400].decode("utf-8", "replace")}
+        return e.code, {"refused": detail, "seconds": round(time.time() - t0, 3)}
+    except Exception as e:                              # noqa: BLE001 (isolated route)
+        return 502, {"error": f"{type(e).__name__}: {str(e)[:200]}",
+                     "seconds": round(time.time() - t0, 3)}
+
+
 def job_flush_cache(job: Job):
     req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST", data=b"",
                                  headers={"Authorization": f"Bearer {api_key()}"})
@@ -1775,6 +1855,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not job:
                 return self.send_json({"error": "no such job"}, 404)
             return self.send_json(job.summary(tail=200))
+        if path == "/api/systemone":
+            return self.send_json(systemone_available(max_age=0.0 if fresh else 60.0))
         if path == "/api/stream":
             return self.stream()
         return self.send_json({"error": "not found"}, 404)
@@ -1840,6 +1922,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/action":
             code, out = start_action(str(payload.get("name", "")),
                                      payload.get("params") or {})
+            return self.send_json(out, code)
+        if path == "/api/systemone":
+            code, out = systemone_call(payload)
             return self.send_json(out, code)
         return self.send_json({"error": "not found"}, 404)
 

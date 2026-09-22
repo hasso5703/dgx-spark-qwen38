@@ -65,8 +65,8 @@ const stateChipCls = st => (STATE_CHIP[st] ?? 'warn') + (st === 'stopping' || TR
 
 // ── tabs and the collapsible rail ─────────────────────────────────────────────
 // declared here, not next to its loader: showTab() runs at parse time and reads it
-const loaded = {recipes: false};
-const TABS = ['overview', 'agent', 'engines', 'requests', 'machine', 'models', 'logs', 'setup'];
+const loaded = {recipes: false, systemone: false};
+const TABS = ['overview', 'agent', 'engines', 'requests', 'machine', 'models', 'systemone', 'image', 'video', 'logs', 'setup'];
 let activeTab = 'overview';
 function showTab(name, push = true){
   if (!TABS.includes(name)) name = 'overview';
@@ -79,6 +79,9 @@ function showTab(name, push = true){
   // the maximised frame covers every other tab: leaving the tab always shrinks it back
   if (name !== 'agent' && document.body.classList.contains('agentmax')) setAgentMax(false, false);
   if (name === 'models' && !loaded.recipes) loadRecipes();
+  // the probe costs one refused request to the proxy, so it runs when the tab is
+  // opened rather than on every state tick
+  if (name === 'systemone' && !loaded.systemone){ loaded.systemone = true; s1Probe(); }
   // at parse time the agent helpers below are not initialised yet; the first state
   // tick mounts the frame in that case, a later click mounts it at once
   if (name === 'agent' && document.readyState === 'complete'){ mountAgent(); applyAgentMax(); }
@@ -1363,3 +1366,251 @@ setTimeout(() => {
   const s = servingEngine(); const u = s ? s[0] : enabledUnit();
   $('logsel').value = u.includes('flash') ? 'qwen38-flash' : 'qwen38-sglang';
 }, 3000);
+
+// ── System One: the console ─────────────────────────────────────────────────
+// Everything a typed decision can be, from a browser: the three question types, the
+// answer drawn as the distribution it is, and the same call as a curl anyone can paste.
+// The serving key never reaches this page; the cockpit holds it and forwards the call.
+const S1_EXAMPLES = {
+  'Support ticket': {
+    state: 'Hi, I have been trying to connect my Stripe account for three days and it keeps failing.\nI am losing sales every hour. Please help as soon as you can.',
+    questions: [
+      {id: 'department', type: 'choice', instructions: 'Which team should handle this',
+       criteria: [['billing', 'Payment or subscription issues'], ['technical', 'Bugs or integration problems'], ['sales', 'Pricing or account questions']]},
+      {id: 'frustration', type: 'score', instructions: 'How frustrated the customer appears',
+       levels: ['Calm, just stating facts', 'Frustrated but civil', 'Very angry, strong language']},
+      {id: 'is_urgent', type: 'noul', instructions: 'The message conveys urgency or time-sensitivity'}
+    ]},
+  'Routing an agent': {
+    state: 'User asked: "read the last 200 lines of the proxy log and tell me why the stream cut"',
+    questions: [
+      {id: 'tool', type: 'choice', instructions: 'Which tool this turn needs first',
+       criteria: [['read_file', 'open a file on disk'], ['run_command', 'execute something and read its output'], ['answer', 'no tool needed, answer from what is known']]},
+      {id: 'needs_root', type: 'noul', instructions: 'Carrying this out requires root'}
+    ]},
+  'Moderation': {
+    state: 'Comment posted on the forum: "honestly this release is garbage and whoever shipped it should be fired"',
+    questions: [
+      {id: 'severity', type: 'score', instructions: 'How severe this is as a policy matter',
+       levels: ['Harmless opinion', 'Rude but allowed', 'Personal attack', 'Requires removal']},
+      {id: 'is_attack', type: 'noul', instructions: 'This targets a person rather than the work'}
+    ]},
+  'Extraction': {
+    state: 'Invoice 2026-0417, dated 12 September 2026, from Maurienne AI SARL, total 4,820.00 EUR, payable within 30 days, marked OVERDUE.',
+    questions: [
+      {id: 'currency', type: 'choice', instructions: 'The currency of the total',
+       criteria: [['EUR', 'euro'], ['USD', 'US dollar'], ['GBP', 'pound sterling'], ['other', 'anything else']]},
+      {id: 'overdue', type: 'noul', instructions: 'The invoice is past its due date'}
+    ]},
+  'Twenty options': {
+    state: 'The engine log ends with: "RuntimeError: selected index k out of range" inside the sampler, then the scheduler exits.',
+    questions: [
+      {id: 'cause', type: 'choice', instructions: 'The most likely cause',
+       criteria: [['bad_request', 'a request field the engine does not bound'], ['oom', 'out of memory'], ['driver', 'a GPU driver fault'],
+                  ['disk', 'a full disk'], ['network', 'a network failure'], ['config', 'a misconfiguration at start-up'],
+                  ['model', 'a corrupt checkpoint'], ['upstream_bug', 'a known upstream defect']]}
+    ]}
+};
+let s1Questions = [];
+
+function s1Chip(id, txt, cls){ const e = $(id); if (e){ e.textContent = txt; e.className = 'chip ' + (cls || ''); } }
+
+function s1RenderQuestions(){
+  const box = $('s1questions'); if (!box) return;
+  box.textContent = '';
+  s1Questions.forEach((q, i) => {
+    const card = el('div', 'q');
+    const top = el('div', 'qtop');
+    const kind = el('span', 'chip', q.type);
+    const id = el('input'); id.type = 'text'; id.value = q.id; id.placeholder = 'question id';
+    id.setAttribute('aria-label', 'question id');
+    id.addEventListener('input', () => { q.id = id.value; s1Curl(); });
+    const ins = el('input'); ins.type = 'text'; ins.value = q.instructions; ins.placeholder = 'what to judge';
+    ins.setAttribute('aria-label', 'instructions');
+    ins.addEventListener('input', () => { q.instructions = ins.value; s1Curl(); });
+    const del = el('button', 'del', '×'); del.title = 'remove this question';
+    del.addEventListener('click', () => { s1Questions.splice(i, 1); s1RenderQuestions(); s1Curl(); });
+    top.append(kind, id, del);
+    card.append(top, ins);
+    if (q.type === 'choice' || q.type === 'score'){
+      const crit = el('div', 'crit'); crit.style.marginTop = '7px';
+      const rows = q.type === 'choice' ? q.criteria : q.levels.map(l => [null, l]);
+      rows.forEach((row, j) => {
+        const r = el('div', 'row');
+        if (q.type === 'choice'){
+          const name = el('input'); name.type = 'text'; name.value = row[0]; name.placeholder = 'option';
+          name.setAttribute('aria-label', 'option name');
+          name.addEventListener('input', () => { q.criteria[j][0] = name.value; s1Curl(); });
+          r.append(name);
+        }
+        const desc = el('input'); desc.type = 'text'; desc.value = row[1] || '';
+        desc.placeholder = q.type === 'choice' ? 'what it means' : 'this level';
+        desc.setAttribute('aria-label', q.type === 'choice' ? 'option description' : 'level');
+        desc.addEventListener('input', () => {
+          if (q.type === 'choice') q.criteria[j][1] = desc.value; else q.levels[j] = desc.value;
+          s1Curl();
+        });
+        const x = el('button', 'del', '×'); x.title = 'remove';
+        x.addEventListener('click', () => {
+          if (q.type === 'choice') q.criteria.splice(j, 1); else q.levels.splice(j, 1);
+          s1RenderQuestions(); s1Curl();
+        });
+        r.append(desc, x); crit.append(r);
+      });
+      const add = el('button', 'btn mini ghost', q.type === 'choice' ? '+ option' : '+ level');
+      add.style.alignSelf = 'flex-start';
+      add.addEventListener('click', () => {
+        if (q.type === 'choice') q.criteria.push(['option' + (q.criteria.length + 1), '']);
+        else q.levels.push('level ' + (q.levels.length + 1));
+        s1RenderQuestions(); s1Curl();
+      });
+      crit.append(add); card.append(crit);
+    }
+    box.append(card);
+  });
+  if (!s1Questions.length) box.append(el('p', 'note', 'No question yet: add a noul, a choice or a score.'));
+}
+
+function s1Payload(){
+  const questions = {};
+  s1Questions.forEach(q => {
+    const id = (q.id || '').trim(); if (!id) return;
+    const out = {type: q.type, instructions: q.instructions || ''};
+    if (q.type === 'choice'){
+      out.criteria = {};
+      q.criteria.forEach(([name, desc]) => { if ((name || '').trim()) out.criteria[name.trim()] = desc || null; });
+    } else if (q.type === 'score'){
+      out.criteria = q.levels.filter(l => (l || '').trim());
+    }
+    questions[id] = out;
+  });
+  return {state: $('s1state').value, model: 'jev-latest', questions};
+}
+
+function s1Curl(){
+  const box = $('s1curl'); if (!box) return;
+  const body = JSON.stringify(s1Payload(), null, 2).split('\n').map((l, i) => i ? '  ' + l : l).join('\n');
+  box.textContent = "curl -s http://127.0.0.1:30001/v1/systemone \\\n"
+    + "  -H \"Authorization: Bearer $(cat ~/.config/qwen38/api-key)\" \\\n"
+    + "  -H 'Content-Type: application/json' -d '" + body + "'";
+}
+
+function s1Load(name){
+  const ex = S1_EXAMPLES[name]; if (!ex) return;
+  $('s1state').value = ex.state;
+  s1Questions = JSON.parse(JSON.stringify(ex.questions));
+  document.querySelectorAll('#s1examples .btn').forEach(b => b.classList.toggle('low', b.textContent !== name));
+  s1RenderQuestions(); s1Curl();
+}
+
+function s1DrawAnswer(id, ans){
+  const wrap = el('div', 'ans');
+  wrap.append(el('h4', null, id));
+  const verdict = el('div', 'verdict');
+  let rows = [];
+  if (ans.type === 'noul'){
+    const p = ans.noul;
+    verdict.textContent = p >= 0.5 ? 'yes' : 'no';
+    const s = el('small', null, (p * 100).toFixed(1) + '% yes'); verdict.append(s);
+    rows = [['yes', p], ['no', 1 - p]];
+  } else if (ans.type === 'choice'){
+    verdict.textContent = ans.choice;
+    verdict.append(el('small', null, 'confidence ' + (ans.confidence * 100).toFixed(0) + '%'));
+    rows = Object.entries(ans.probabilities || {});
+  } else {
+    const legend = ans.legend || {};
+    const n = Object.keys(legend).length;
+    verdict.textContent = ans.score.toFixed(2) + ' / ' + Math.max(0, n - 1);
+    verdict.append(el('small', null, (legend[String(Math.round(ans.score))] || '') + '  ·  confidence ' + (ans.confidence * 100).toFixed(0) + '%'));
+    rows = Object.entries(ans.probabilities || {}).map(([k, v]) => [legend[k] || k, v]);
+  }
+  const top = Math.max(...rows.map(r => r[1]), 0);
+  rows.forEach(([name, p]) => {
+    const r = el('div', 'pr' + (p >= top && top > 0 ? ' top' : ''));
+    r.append(el('span', 'nm', name === '' ? '(empty name)' : name));
+    const tr = el('span', 'tr'); const fl = el('span', 'fl'); fl.style.width = (p * 100).toFixed(2) + '%';
+    tr.append(fl); r.append(tr);
+    r.append(el('span', 'pv', (p * 100).toFixed(1) + '%'));
+    wrap.append(r);
+  });
+  wrap.insertBefore(verdict, wrap.children[1]);
+  return wrap;
+}
+
+async function s1Run(){
+  const btn = $('s1run'); const payload = s1Payload();
+  if (!payload.state.trim()) { toast('A state is required: that is what the questions are asked about.', 'warn'); return; }
+  if (!Object.keys(payload.questions).length) { toast('Add at least one question.', 'warn'); return; }
+  btn.disabled = true; $('s1status').textContent = 'asking the lane...';
+  $('s1answers').textContent = ''; $('s1meta').textContent = ''; s1Chip('s1time', '');
+  try{
+    const t = await fetch('/api/csrf', {method: 'POST'}); if (t.status === 401) return login();
+    const tok = (await t.json()).token;
+    const r = await fetch('/api/systemone', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                             body: JSON.stringify({...payload, csrf: tok})});
+    if (r.status === 401) return login();
+    const out = await r.json();
+    if (!r.ok){
+      const why = out.refused ? JSON.stringify(out.refused.detail ?? out.refused) : (out.error || ('HTTP ' + r.status));
+      const p = el('p', 'note'); p.textContent = 'Refused with HTTP ' + r.status + ': ' + why;
+      $('s1answers').append(p);
+      s1Chip('s1time', r.status + ' refused', 'err');
+      return;
+    }
+    const answers = (out.answer || {}).answers || {};
+    Object.entries(answers).forEach(([id, a]) => $('s1answers').append(s1DrawAnswer(id, a)));
+    if (!Object.keys(answers).length) $('s1answers').append(el('p', 'note', 'The call was answered with no answers.'));
+    s1Chip('s1time', out.seconds + ' s', 'ok');
+    const usage = (out.answer || {}).usage || {};
+    const meta = $('s1meta');
+    const chips = [['model', (out.answer || {}).model],
+                   ['input tokens', usage.input_tokens], ['output tokens', usage.output_tokens],
+                   ['branches', (out.headers || {})['x-systemone-branches']],
+                   ['label mass', (out.headers || {})['x-systemone-label-mass']],
+                   ['cached tokens', (out.headers || {})['x-systemone-cached-tokens']]];
+    chips.forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') meta.append(el('span', 'chip', k + ' ' + v)); });
+  } catch (e){
+    $('s1answers').append(el('p', 'note', 'The cockpit could not reach the proxy: ' + e));
+    s1Chip('s1time', 'failed', 'err');
+  } finally {
+    btn.disabled = false; $('s1status').textContent = '';
+  }
+}
+
+async function s1Probe(){
+  try{
+    const r = await fetch('/api/systemone'); if (r.status === 401) return login();
+    const d = await r.json();
+    setText('s1lane', d.lane || '...');
+    if (d.available){
+      s1Chip('s1chip', 'serving', 'ok');
+    } else {
+      s1Chip('s1chip', 'not served here', 'err');
+      note('s1note', d.reason || 'the proxy in front of this box does not answer /v1/systemone');
+      const b = $('s1run'); if (b) b.disabled = true;
+    }
+  } catch (e){ s1Chip('s1chip', 'unknown', 'warn'); }
+}
+
+if ($('s1examples')){
+  Object.keys(S1_EXAMPLES).forEach((name, i) => {
+    const b = el('button', 'btn mini' + (i ? ' low' : ''), name);
+    b.addEventListener('click', () => s1Load(name));
+    $('s1examples').append(b);
+  });
+  document.querySelectorAll('[data-addq]').forEach(b => b.addEventListener('click', () => {
+    const t = b.dataset.addq;
+    const q = {id: t + (s1Questions.length + 1), type: t, instructions: ''};
+    if (t === 'choice') q.criteria = [['yes', ''], ['no', '']];
+    if (t === 'score') q.levels = ['low', 'high'];
+    s1Questions.push(q); s1RenderQuestions(); s1Curl();
+  }));
+  $('s1run').addEventListener('click', s1Run);
+  $('s1reset').addEventListener('click', () => s1Load(Object.keys(S1_EXAMPLES)[0]));
+  $('s1state').addEventListener('input', s1Curl);
+  $('s1copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('s1curl').textContent); toast('Copied.', 'ok', 1800); }
+    catch (e) { toast('The browser refused the clipboard; select the text instead.', 'warn'); }
+  });
+  s1Load(Object.keys(S1_EXAMPLES)[0]);
+}

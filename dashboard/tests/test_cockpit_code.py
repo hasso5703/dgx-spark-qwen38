@@ -94,5 +94,40 @@ class Fingerprint(unittest.TestCase):
             self.assertIn("registry.py", ck.code_is_stale())
 
 
+class TabsAgree(unittest.TestCase):
+    """Three lists describe the tabs, and a tab exists only if all three carry it: the
+    rail's buttons, the panels they reveal, and the router's own array. Adding a tab to
+    two of the three is a rail entry that opens nothing, or a panel nobody can reach.
+    The System One, Image and Video tabs were added on 2026-09-21 and this is the gate
+    that says the next one is added everywhere."""
+
+    def setUp(self):
+        self.html = (DASH / "static/index.html").read_text()
+        self.js = (DASH / "static/app.js").read_text()
+
+    def test_the_rail_the_panels_and_the_router_carry_the_same_tabs(self):
+        import re
+        rail = re.findall(r'class="nav" data-tab="([a-z-]+)"', self.html)
+        panels = re.findall(r'class="tab[^"]*" id="tab-([a-z-]+)"', self.html)
+        m = re.search(r"const TABS = \[([^\]]+)\]", self.js)
+        self.assertTrue(m, "app.js no longer declares a TABS array")
+        router = re.findall(r"'([a-z-]+)'", m.group(1))
+        self.assertEqual(sorted(rail), sorted(panels),
+                         "a rail button opens no panel, or a panel has no button")
+        self.assertEqual(sorted(rail), sorted(router),
+                         "the router and the rail disagree on which tabs exist")
+        self.assertEqual(rail, router, "the rail and the router disagree on tab ORDER")
+
+    def test_every_tab_the_browser_checks_walk_is_a_tab_that_exists(self):
+        import re
+        rail = re.findall(r'class="nav" data-tab="([a-z-]+)"', self.html)
+        for name in ("monkey-check.mjs", "mobile-check.mjs"):
+            src = (DASH / "tests" / name).read_text()
+            m = re.search(r"const TABS = \[([^\]]+)\]", src)
+            self.assertTrue(m, f"{name} no longer declares a TABS array")
+            self.assertEqual(sorted(re.findall(r"'([a-z-]+)'", m.group(1))), sorted(rail),
+                             f"{name} walks a different set of tabs than the cockpit has")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
