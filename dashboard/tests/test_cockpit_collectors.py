@@ -379,10 +379,6 @@ class FitVerdict(Base):
                                 self.assertGreater(v["asked"], v["limit"])
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TheBootBarNeverGoesBack(Base):
     """Some boots flood the log the lifecycle reads the last 300 lines of: inductor compile
     errors during the graph capture, 450 lines in six minutes on the reference box on
@@ -460,3 +456,7 @@ class TheBootBarNeverGoesBack(Base):
                   "docker logs --since": fired})
         out = self.cp.collect_lifecycle()
         self.assertEqual(out.get("data", out)["engines"][self.U]["state"], "degraded")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
