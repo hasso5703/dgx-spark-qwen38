@@ -9,7 +9,18 @@ a Docker engine behind a Python proxy, a cockpit web UI that reaches systemd
 through an exact-argv sudo allowlist, and an opt-in relay that puts opencode's
 web interface behind the cockpit login. There is no telemetry and no
 phone-home: every byte that leaves the box is a download the installer names
-(Hugging Face, the image registry) or a request you sent.
+(Hugging Face, the image registry) or a request you sent. That includes the typed
+decisions route (`POST /v1/systemone`, v6.19): it speaks the wire contract of a hosted
+service, and it is answered by the engine on this box and nothing else; the proxy
+calls no address but its upstream.
+
+Two things the typed-decisions route is careful about, both found by a review of it on
+2026-09-19 and both fixed before it shipped. The proxy decodes the request path once,
+before any check reads it, because the engine routes on the decoded path: matching the raw
+string let `/%76%31/chat/completions` walk past the per-client identity wall and past the
+oversize guard with the engine's own key attached. And the `state` of a typed decision,
+which is third-party text by design, is fenced with a token drawn at start-up: without it
+a state could write the framing of the question itself and be answered instead of judged.
 
 ## Reporting
 
@@ -33,6 +44,28 @@ image parts are priced from their own headers, and the corruption tripwire
 aborts a decode that emits runs of token id 0. Fuzzed and state-machine
 tested (see TESTING.md); a crash you can reproduce in the proxy is a bug
 worth a private report.
+
+Several of those guards exist because the engine behind it does not survive
+the request, and a denial of service that costs one HTTP call is worth naming
+as such. A prompt past the KV pool wedges the scheduler rather than being
+refused (sglang#36333). A logprob request past the vocabulary raises
+`selected index k out of range` inside the scheduler and the server is gone
+for every client until it is restarted, about nine minutes here
+(sglang#40076, open). A `stop_token_ids` or `input_ids` entry past the
+vocabulary indexes a `scatter_add_` or the embedding out of bounds, which on
+CUDA is a device-side assert with the same blast radius, and `n` expands a
+list before scheduling with no bound at all (sglang#31597, whose two fixes
+were closed without being merged). Every one of those fields is declared
+unconstrained in the served release, checked in the image, and all of them
+are reachable from an ordinary chat request.
+
+The proxy refuses all of them with a 400. **That protects the clients that go
+through it, and nothing else.** On this box the engine binds `0.0.0.0:30000`
+with no firewall in front of it, so anything on the LAN or the tailnet that
+holds the serving API key can reach the engine directly and end it, exactly
+as it could before these guards existed. The key is the boundary there, not
+the proxy. An operator who wants the guards to be the only door binds the
+engine to `127.0.0.1` and lets `:30001` be the address clients know.
 
 **The cockpit (`dashboard/`, :30090)** reaches root through exactly one
 surface: the NOPASSWD sudoers lines rendered from

@@ -1,5 +1,234 @@
 # Changelog
 
+## v1.15.0 (2026-09-22): typed decisions, a System One endpoint on the lane you run
+
+**TypeSafe launched Jev on 2026-09-15**, a hosted model that takes a state and typed
+questions (choice, score, yes/no) and returns probabilities instead of text, at
+$0.042 per million input tokens. Three days of launch coverage later, its founder had
+conceded on the launch thread that it is "exactly" a zero-shot classifier, the
+independent evaluations put it a notch under the frontier on accuracy (67.8% against
+Opus 5's 73.1% on their own workflows) and well ahead on cost and latency, and its one
+load-bearing claim, calibration, had no external evidence. What it does have is a
+clean contract, and a box that already runs a 27B or a 176B model can serve that
+contract itself: the keepalive proxy now answers **`POST /v1/systemone`** with Jev's
+wire format, from the lane behind it, with nothing sent anywhere.
+
+**How the readout works.** Every question becomes one chat completion of exactly one
+token. The options are named by single-token letters (the 26 capitals and 562 verified
+two-letter pairs; `tokenizer.json` blob `0997f410c57a1f4e`, byte-identical on both
+lanes, every label one id that survives the `\n\n` the chat template ends on), the
+engine returns `top_logprobs` for the answer slot, and the probability of each letter
+is the probability of its option, renormalized. Thinking is off through the template.
+Nothing is generated and nothing is parsed. The state is the byte-identical prefix of
+every branch, which is what the radix cache reuses; every branch goes out at once (a
+send of the first branch alone, meant to warm the cache, was measured slower on this
+engine and is off). Question ids never reach the model: Jev does not send them either,
+and a key like `refund_requested` would leak the asker's expectation.
+
+**Why `top_logprobs` on `/v1/chat/completions` and never `token_ids_logprob` on
+`/generate`.** The obvious path, the one `ekzhang/openjev-sglang` takes, asks the engine
+for the logprobs of specific token ids. On the served build (nightly `4ccff141d`,
+2026-09-07) `get_token_ids_logprobs_raw` appends a bare `[]` for a co-batched request
+that asked for nothing (`logprob_processor.py:144-146`) and `batch_result_processor.py`
+calls `.tolist()` on every entry (419-422, 950-952; the 27B lane's official 0.5.19
+carries the same two at 489-498 and 1044-1054): the first batch that mixes one
+scoring request with one ordinary chat request kills the scheduler (sglang#34719; the
+guard in #35052 is still open). The top-k arm slices a tensor for every request, an
+empty tensor at k=0 (`logprob_processor.py:102-105`), and survives the mix. A dedicated
+deployment can make every request ask for logprobs and dodge this; a shared lane mixes
+on every step, so this proxy takes the only path that is safe on it. Read in the
+container's own source, not reproduced on the production engine.
+
+**What is the hosted API's, to the digit, and how that was learned.** The docs say the
+confidence is a normalized entropy, and their two worked examples fit it. The live
+`jev-1.13.0` does not: 166 (probabilities, confidence) pairs collected on 2026-09-18
+with a real key say that a Choice's confidence is `(p_max * N - 1) / (N - 1)` (46 pairs
+within 0.018) and a Score's is `1 - N * MAD_mode / floor(N^2 / 4)` (120 pairs within
+0.030, the residual being the two-decimal rounding of the published probabilities).
+Those pages were written for `jev-1.12`; the proxy implements what the live model
+returns. Also read off the live model, and worth knowing before comparing: its
+probabilities are sample frequencies (ten identical calls moved one option by a
+standard deviation of 0.014 to 0.027, a score by 0.025, a noul by 0.005), it spends
+17 plus about 7 output tokens per option of a Choice inside (2,412 output tokens for
+255 options, latency flat at 0.6 s), and it accepted every shape the docs promise.
+This readout is a softmax and spends one token per question whatever the option count;
+it does not repeat to the digit on this engine, whose kernels depend on batch
+composition (LEAN.md): the figures are in BENCHMARKS.md.
+
+**The SDK works unchanged.** Jev's three aliases resolve to the served model and the
+response names it; `typesafe-sdk` 0.7.0 round-trips against the proxy in the test suite,
+and CI installs the SDK so that round trip runs there too. Choice takes Jev's 255 options
+(asked for 255 top_logprobs, the served build returned 255, and for 261 it returned 261),
+Score takes one to ten levels because the live API answers a one-level Score, `GET
+/v1/models` keeps the OpenAI shape opencode and `bench.sh` read, so `models.list()` is the
+one SDK call that does not translate.
+
+**A path is read once, and the way the engine reads it.** Pre-existing, found by a review
+of this branch and fixed here: every check in the proxy matched the raw request path with
+`startswith("/v1/")`, while SGLang decodes percent-escapes before it routes. `POST
+/%76%31/chat/completions` therefore walked past the per-client identity wall AND past the
+oversize guard, and the proxy attached the engine's own key to it: an unauthenticated
+caller could reach the engine, and a 900 kB prompt could reach the scheduler that a guard
+exists to keep it away from (sglang#36333, restart-only cure). The path is now decoded
+once, before anything reads it, and the decoded path is what goes upstream: what was
+checked is what is sent. A path that hides a query separator (`%3F`) is refused rather
+than guessed at. `tests/test_proxy_client_keys.py` holds both, and both fail on the old
+line.
+
+**The state is fenced.** The state is third-party text by design, and it used to sit
+between markers it could type itself: a state carrying its own `QUESTION` / `OPTIONS` /
+"Reply with the label" block produced a branch with two of each, the attacker's first and
+byte-identical to the proxy's framing. It is now wrapped in a token drawn at start-up,
+which a caller cannot close from inside, and the system turn names that fence. One token
+per process, not per call, so the shared prefix every branch reuses in the radix cache
+stays shared. The benchmark grew six structural injections to measure it (BENCHMARKS.md,
+"Instructions hidden in the state").
+
+**A caller that leaves takes its work with it.** The SDK's default timeout is 10 s and a
+cold fan-out on a large state takes longer, so an abandoned call is the ordinary case, not
+the rare one. Every branch now carries an `x-override-rid` the proxy imposes before the
+request exists engine-side (a rid learned later names nothing once a disconnect has
+deleted the state, sglang#35255), the handler watches the caller's socket, and at EOF it
+stops the fan-out, POSTs `/abort_request` for the branches in flight and gives the
+admission slot back at once. The outcome is `CLIENT GONE mid-systemone`, which the
+cockpit already reads as the client leaving rather than a fault.
+
+**Four levers, off by default, decided by the benchmark.** `SYSTEMONE_PERMUTATIONS=2`
+asks every question in the given and the reversed option order and averages (a letter
+readout prefers some positions); `SYSTEMONE_TEMPERATURE` scales the label logits;
+`SYSTEMONE_MIN_LABEL_MASS` refuses a question whose first-token probability mostly
+missed the labels, which is what TypeSafe's CEO said a masked readout should do
+("if ever a model was assigning probability to an invalid token, the model is by
+definition confused. you'd be better off erroring"); `SYSTEMONE_THINK_TOKENS=N` lets
+the model think first, stopped at the end of the thought or at N tokens, then reads
+the label off the continued turn (two requests per branch, the second served from the
+cache up to the end of the thought), the one lever that trades System One's latency
+for accuracy where a single forward pass cannot settle the question. The share that
+landed on a label is always reported in `x-systemone-label-mass`.
+
+**A door sized by measurement.** `SYSTEMONE_MAX_CALLS` (8) calls in progress and
+`SYSTEMONE_MAX_INFLIGHT` (8) engine requests behind them; the next caller gets the hosted
+API's own 529 with `Retry-After`, which its SDK retries. The two numbers are a curve, not
+a guess: 32 clients in a closed loop against the 27B lane at four settings, one bystander
+streaming an ordinary completion the whole time. The rate is flat near one answer a second
+at every setting (the engine is the bottleneck), so the door only decides who waits where.
+At 32 calls and 16 slots every call was answered and the median one took 28.3 s, while the
+bystander's 120 tokens went from 4.6 s to 57.0 s; at 8 and 8 the median call came back in
+3.8 s, callers were told to come back 1,440 times in two minutes, and nothing failed.
+
+**The refusals are the hosted ones now, case by case.** Fifty malformed and edge requests
+were sent to `api.typesafe.ai` and to this proxy, the same bytes: 50 of 50 the same status,
+the same envelope (422 with a `detail` list naming the path, 400 for what parses and cannot
+be served) and the same path where there is one. Six behaviours changed to get there. An
+unknown model name is refused instead of being answered by the local lane ("Unknown model:
+jev-9", as there, while the lane's own name is served as itself); a Noul with neither
+instructions nor criteria, an empty question id and an unknown field at the top level are
+refused; and four shapes that the hosted API answers and this proxy used to refuse are
+answered: a Choice with one option, a Score with one level, a Noul with a stray criteria
+key, an option named "". The question cap became 1,024 (the hosted API took 300 questions
+in one call, so this one does too: 13.5 s for 300 nouls, one engine call each).
+
+**Measured, same payloads to this box and to the hosted Jev** (`bench-systemone.py`,
+BENCHMARKS.md "Typed decisions"): on
+TypeSafe's own 20 public cases (408 questions, references from GPT-6 Astra and Claude Fable 5.1)
+the 27B lane with two option orders scores 92.9% against the hosted model's 93.2%, and the same
+raw readout run twice scored 90.6% and 90.9%, which is the noise floor of that comparison; on BoolQ
+(3,270) 89.3% against 91.9% with a better calibration (ECE 1.2% against 2.4%); on MMLU-Pro
+(1,000, the same rows as ekzhang's run) 62.1% against 83.8%, the gap that a single forward pass
+of a 27B cannot close on calculation; in French 71.4% against 78.2% (XNLI) and 74.6% against
+87.4% (MMMLU). A single question answers in 0.2 s warm at any state size, 13 in about a second.
+The raw readout is over-confident by 3.5 to 16 points; the two-order lever removes it where
+position bias lives (BoolQ +2.6 points and ECE 4.7% to 1.2%, MMLU-Pro +4.0 points and 8.3% to
+4.2%) and a fitted temperature does the rest. The thinking budget (`SYSTEMONE_THINK_TOKENS=1024`) on the first 200
+MMLU-Pro rows: 80.0% against the hosted 84.0% on the same rows (the difference's interval
+holds zero) and 57.5% raw, at 8.8 s a question. The warm-first send the draft shipped with
+lost every cold and warm comparison (14.9 s against 5.4 s for 13 questions on a never-seen
+10,800-token state) and is off by default, `SYSTEMONE_WARM_CHARS=0`. Repeatability at
+concurrency 1: an uncertain yes/no moves by a standard deviation of up to 0.11 between
+identical calls, a settled one by under 0.01; this engine's kernels are not batch-invariant.
+Every number, protocol and trap is in BENCHMARKS.md, "Typed decisions".
+
+**What else the review changed.** Ten smaller defects, each with a test that fails on the
+old line: a `NaN` or `Infinity` logprob used to come back inside a 200 whose body no
+parser but Python's accepts, and is now dropped (a logprob a hair above zero is read as
+certainty rather than junk); `SYSTEMONE_TEMPERATURE=0`, the usual "greedy" idiom, was a
+divisor and answered every call with a dropped socket, and a temperature outside 0.05 to
+20 is now refused at start-up with the readout left raw; a branch that waited out its
+timeout was reported as an unreachable engine AND dropped the cached KV pool, which made
+the relay path refuse unrelated large prompts with "the engine restarted", and is now a
+502 that says the engine is busy; the top-k margin collapsed above 58 options, so at
+Jev's 255 a variant token could displace a real label and publish it as a probability of
+exactly 0.0, and the margin is now added at every count; a question whose labels took no
+probability at all used to 502 the whole call, discarding every other answer and the
+prefill with them, and is asked once more with a 256-wide top-k first; the reversed
+presentation of a Score carried the line "ordered from the lowest level to the highest"
+over a list that ran the other way; the plan held one copy of the state per question,
+which at this endpoint's own caps is gigabytes on a box whose documented failure mode is a
+memory livelock, and branches now carry their own tail only; a lane that could not name
+itself answered with the caller's alias as the model name, and now waits; an exception
+inside the handler dropped the connection with no status line at all, and is a 500 that
+says so; and this suite left `UPSTREAM`, `SYSTEMONE_WARM_CHARS` and
+`QWEN38_CLIENT_KEYS_FILE` changed in the interpreter every other suite runs in.
+`bench-systemone.py` also stopped writing an experiment's rows into the baseline's file
+(a resumed run then found every id done and sent nothing), gave each agreement column its
+own denominator, clamped a server's `Retry-After` to a minute, and prints the size of the
+filler it actually sent rather than the size it asked for.
+
+**A second audit, 2026-09-21, found the request that ends the engine, and it is not this
+endpoint's.** Reading logprobs is what this route does, so the audit went looking at what
+else can ask for them. OpenAI documents `top_logprobs` as "an integer between 0 and 20";
+SGLang declares it `Optional[int]` with no constraint, and the number reaches
+`logprobs.topk(max_k, dim=-1)` unexamined. Past the vocabulary that raises `selected
+index k out of range` **inside the scheduler**, and the engine is gone for every client
+(sglang#40076, opened 2026-09-18, still open; the field is unbounded in the served
+`v0.5.19`, checked in the image, and the same RuntimeError reproduces in two lines of
+torch). It was then reproduced the hard way on the reference box, by relaying one such
+request by accident: the scheduler died and systemd spent nine minutes bringing the lane
+back. **So the proxy refuses it**, above `TOP_LOGPROBS_CEILING` (1,024), on the three
+relayed routes that carry the number under three names: `top_logprobs` on
+`/v1/chat/completions`, `logprobs` on `/v1/completions`, `top_logprobs_num` on
+`/generate`, the last element by element when a batch sends a list. It refuses rather
+than lowering the number, because a narrowed top-k answers a question nobody asked. The
+ceiling is not the vocabulary, which the engine publishes nowhere: no vocabulary in use
+is under 32k, this readout asks 261 with its shipped caps and 594 at the widest an operator
+can set it, OpenAI's maximum is 20. This is the
+proxy's second guard of that kind, next to the prompt past the pool (sglang#36333), and
+it protects every client of the box, not this route. Eleven tests in
+`tests/test_proxy_guard.py`, one of them end to end on the refusal the engine never sees.
+
+Two defects of this route's own, from the same audit. The retry that asks a second, wider
+time (`SYSTEMONE_RETRY_TOP_K`) went straight to the engine without passing the door that
+now refuses everyone else, so an operator's number could take the lane down through this
+proxy's own code; and it ignored `SYSTEMONE_TOP_K_MAX`, the clamp an operator sets
+precisely because their build refuses a wide top-k, which the first ask honoured and the
+retry walked past. Both bounded, three tests. And one trap written down rather than
+fixed, because the code was already right and nothing said why: on the speculative path
+this lane runs, the engine divides the logprobs it returns by the request's temperature
+(`compute_spec_logprobs`), and on the ordinary path it does not. Only the 1.0 this route
+sends makes the two agree, which is why `SYSTEMONE_TEMPERATURE` is applied to the
+probabilities after they come back and must never be moved into the request. A test now
+fails if it is.
+
+**What now holds the line.** `tests/test_proxy_systemone.py`: 82 tests against a fake
+engine with scripted first-token distributions (the Jev shape key by key and in the
+hosted key order, the readout over the right tokens and never the wrong ones, never a
+`token_ids_logprob` in any body, both refusal shapes with the path each one names and
+the live cases behind them, the edge of every cap and floor, a newline in a request
+that cannot forge a line in the log, the oversize guard on the longest branch, a dead
+engine as the relay path's 503 and never a size refusal, the label list re-checked
+against the local tokenizer, the four levers, the door, the SDK round trip when it is
+importable); `dashboard/tests/test_lifecycle.py` holds four new members of the closed
+outcome vocabulary; every existing proxy suite is unchanged and green; `ruff F,E9`
+clean; `keepalive-proxy.py` at 83% branch coverage against a floor raised from 74 to 82.
+
+**Every checkpoint this repo can serve was checked, not two.** The label table rests on
+the tokenizer being the same file everywhere, and that was verified on the RadixArk 27B
+and flash checkpoints. It holds on all seven targets: `tokenizer.json` is byte-identical
+across RadixArk 27B (both pinned revisions), RadixArk and NVIDIA flash, stock Qwen FP8
+and the three abliterated builds (`sha256 0997f410c57a1f4e…`), and so is the chat
+template that ends the generation prompt on the `\n\n` the readout depends on
+(`c3cf9e34abf4f9e3…`, the same file in all eight). A switch to any target keeps the
+readout exactly as measured.
 ## v1.14.2 (2026-09-19): the docs reorganised, and the numbers in them checked against the record
 
 The README had grown to 1,045 lines and was the only door to all of it. It is 509

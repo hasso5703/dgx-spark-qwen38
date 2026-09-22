@@ -313,6 +313,54 @@
   .cmd{background:var(--soft); border:1px solid var(--line); border-radius:var(--r-ctl); padding:10px 12px;
        font:400 12px/1.65 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere}
 
+  /* ── System One: the console, and the probabilities it reads back ──
+     A typed decision is a distribution, so it is drawn as one. The bar is the
+     instrument; the number beside it is there to be read off, not decoded. */
+  .s1grid{display:grid; grid-template-columns:1fr 1fr; gap:var(--s3)}
+  .s1wide{grid-column:1 / -1}
+  .s1 textarea{width:100%; background:var(--soft); color:var(--txt); border:1px solid var(--line);
+               border-radius:var(--r-ctl); padding:10px 12px; font:400 12.5px/1.6 var(--mono);
+               resize:vertical; min-height:96px}
+  .s1 input[type=text]{background:var(--soft); color:var(--txt); border:1px solid var(--line);
+                       border-radius:9px; padding:5px 9px; font:400 12.5px var(--mono); min-width:0}
+  .s1 .ex{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px}
+  .s1 .q{border:1px solid var(--line); border-radius:var(--r-ctl); padding:10px 11px; margin-bottom:9px;
+         background:color-mix(in srgb, var(--card2) 55%, transparent)}
+  .s1 .qtop{display:flex; gap:7px; align-items:center; margin-bottom:7px; flex-wrap:wrap}
+  .s1 .qtop input[type=text]{flex:1 1 130px}
+  /* the instructions are the question: they get the whole width, not what is left */
+  .s1 .q > input[type=text]{display:block; width:100%}
+  .s1 .crit{display:flex; flex-direction:column; gap:5px}
+  .s1 .crit .row{display:flex; gap:6px; align-items:center}
+  .s1 .crit .row input{flex:1 1 90px}
+  .s1 .del{border:none; background:transparent; color:var(--mut); cursor:pointer; font-size:15px; line-height:1; padding:2px 5px}
+  .s1 .del:hover{color:var(--err)}
+  .s1 .ans{border-top:1px solid var(--line); padding-top:11px; margin-top:11px}
+  .s1 .ans:first-child{border-top:none; padding-top:0; margin-top:0}
+  .s1 .ans h4{font:600 11px/1.3 var(--mono); letter-spacing:.09em; text-transform:uppercase;
+              color:var(--mut); margin:0 0 3px}
+  .s1 .verdict{font:700 15px/1.3 var(--mono); color:var(--txt); margin-bottom:8px}
+  .s1 .verdict small{font:500 11.5px var(--mono); color:var(--mut); margin-left:8px; letter-spacing:.02em}
+  .s1 .pr{display:grid; grid-template-columns:minmax(64px,26%) 1fr auto; gap:7px; align-items:center;
+          font:400 12px var(--mono); margin-bottom:4px}
+  .s1 .pr .nm{color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .s1 .pr .tr{height:8px; border-radius:5px; background:color-mix(in srgb, var(--line) 55%, transparent);
+              border:1px solid var(--line); overflow:hidden}
+  /* display:block, because a span inside a non-flex track stays inline and an inline
+     box ignores both the width and the height that make this a bar at all. */
+  .s1 .pr .fl{display:block; height:100%; min-width:1px;
+              background:linear-gradient(90deg, color-mix(in srgb, var(--acc) 70%, var(--card)), var(--acc));
+              transition:width .4s ease-out}
+  .s1 .pr.top .nm{color:var(--txt)}
+  .s1 .pr .pv{color:var(--txt); min-width:5.5ch; text-align:right}
+  .s1 .meta{display:flex; flex-wrap:wrap; gap:6px; margin-top:11px}
+  .s1 .soon{display:grid; place-items:center; min-height:320px; text-align:center; gap:9px}
+  .s1 .soon svg{width:42px; height:42px; stroke:var(--mut); fill:none; stroke-width:1.4;
+                stroke-linecap:round; stroke-linejoin:round}
+  .s1 .soon .t{font:700 19px/1.3 var(--ui, inherit); color:var(--txt)}
+  .s1 .soon .d{font-size:13px; color:var(--mut); max-width:46ch; line-height:1.65}
+  @media (max-width:900px){ .s1grid{grid-template-columns:1fr} }
+
   /* ── modal ── */
   .modal{position:fixed; inset:0; background:rgba(6,6,8,.72); z-index:50; display:grid; place-items:center; backdrop-filter:blur(4px)}
   .mcard{width:min(600px,92vw); background:var(--card); border:1px solid var(--line); border-radius:16px; padding:22px 24px; box-shadow:0 24px 80px rgba(0,0,0,.5)}
@@ -573,6 +621,9 @@
     <button class="nav" data-tab="requests"><svg viewBox="0 0 24 24"><path d="M4 7h13l-3-3M20 17H7l3 3"/></svg><span class="lab">Requests</span><span class="bdg" id="bdg-requests"></span></button>
     <button class="nav" data-tab="machine"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg><span class="lab">Machine</span><span class="bdg" id="bdg-machine"></span></button>
     <button class="nav" data-tab="models"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg><span class="lab">Models</span><span class="bdg" id="bdg-models"></span></button>
+    <button class="nav" data-tab="systemone"><svg viewBox="0 0 24 24"><path d="M4 18V9M9 18V5M14 18v-6M19 18v-9"/><path d="M3 21h18"/></svg><span class="lab">System One</span><span class="bdg" id="bdg-systemone"></span></button>
+    <button class="nav" data-tab="image"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5-6 6-3-3-4 4"/></svg><span class="lab">Image</span><span class="bdg" id="bdg-image"></span></button>
+    <button class="nav" data-tab="video"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="M16 10l5-3v10l-5-3z"/></svg><span class="lab">Video</span><span class="bdg" id="bdg-video"></span></button>
     <button class="nav" data-tab="logs"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span class="lab">Logs</span><span class="bdg" id="bdg-logs"></span></button>
     <button class="nav" data-tab="setup"><svg viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/></svg><span class="lab">Setup</span><span class="bdg" id="bdg-setup"></span></button>
     <div class="foot" id="railfoot">Every action asks first and shows the exact command it will run. One action at a time, from any tab or browser.</div>
@@ -851,6 +902,105 @@
         <button class="agexit" id="agexit" title="Back to the cockpit (Escape)"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 20v-5h5M4 9l5-5M20 15l-5 5"/></svg>Back to cockpit</button>
         <div class="agentmsg" id="agmsg"><div><p class="empty" id="agmsgtext">...</p><pre class="cmd" id="agcmd" hidden></pre></div></div>
       </div>
+    </div>
+
+    <!-- ── System One (local Jev) ── -->
+    <div class="tab s1" id="tab-systemone">
+      <div class="tabhead"><h2>System One</h2><p>Jev's contract, answered by the lane on this box. Nothing leaves the machine.</p></div>
+
+      <section class="panel s1wide" style="margin-bottom:var(--s3)">
+        <h3>What answers here <span class="right"><span class="chip" id="s1chip">checking...</span></span></h3>
+        <p class="note" id="s1note" style="margin:0 0 10px">A typed question becomes one chat completion of exactly one token. The options are named by
+          single-token letters, the engine returns its probabilities for that one slot, and the probability of each letter is the probability
+          of its option. Nothing is generated and nothing is parsed, so nothing can be parsed wrong.</p>
+        <dl class="kv">
+          <dt>Serving</dt><dd class="num" id="s1lane">...</dd>
+          <dt>Endpoint</dt><dd class="num">POST /v1/systemone</dd>
+          <dt>Model names it accepts</dt><dd class="num">jev-latest · jev-preview · jev-1.13.0 · the lane's own name</dd>
+          <dt>Question types</dt><dd>choice (up to 255 options) · score (1 to 10 levels) · noul (yes/no)</dd>
+        </dl>
+      </section>
+
+      <div class="s1grid">
+        <section class="panel">
+          <h3>The call <span class="right"><button class="btn mini ghost" id="s1reset">Reset</button></span></h3>
+          <div class="ex" id="s1examples"></div>
+          <label class="eyebrow" for="s1state">State</label>
+          <textarea id="s1state" spellcheck="false" aria-label="State"></textarea>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin:12px 0 7px">
+            <span class="eyebrow">Questions</span>
+            <span style="display:flex; gap:6px">
+              <button class="btn mini low" data-addq="noul">+ noul</button>
+              <button class="btn mini low" data-addq="choice">+ choice</button>
+              <button class="btn mini low" data-addq="score">+ score</button>
+            </span>
+          </div>
+          <div id="s1questions"></div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:12px">
+            <button class="btn" id="s1run">Ask the lane</button>
+            <span class="follow" id="s1status"></span>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>The answer <span class="right"><span class="chip" id="s1time"></span></span></h3>
+          <div id="s1answers"><p class="note" style="margin:0">Pick an example or write your own, then ask. The answer comes back as probabilities, not prose.</p></div>
+          <div class="meta" id="s1meta"></div>
+        </section>
+
+        <section class="panel s1wide">
+          <h3>The same call, from anywhere <span class="right"><button class="btn mini ghost" id="s1copy">Copy</button></span></h3>
+          <p class="note" style="margin:0 0 9px">This is the request the button above sends, with the serving key read from your own machine.
+            A client written for the hosted API runs against it by changing one base URL: <span class="num">TYPESAFE_BASE_URL=http://127.0.0.1:30001</span>.</p>
+          <div class="cmd" id="s1curl"></div>
+        </section>
+
+        <section class="panel s1wide">
+          <h3>This box against the hosted Jev <span class="right"><span class="chip">measured 2026-09-18 to 21</span></span></h3>
+          <p class="note" style="margin:0 0 10px">Byte-identical payloads to both, public datasets at pinned revisions, scored the same way
+            (<span class="num">bench-systemone.py</span>, BENCHMARKS.md). Accuracy is the share right; ECE is how far the stated confidence is from the truth, lower is better.</p>
+          <div class="tablewrap">
+            <table id="s1bench">
+              <thead><tr><th>task</th><th class="r">hosted Jev</th><th class="r">this lane</th><th class="r">ECE, Jev vs here</th><th class="r">latency p50</th></tr></thead>
+              <tbody>
+                <tr><td>TypeSafe's 20 public cases, 408 questions</td><td class="r num">93.2%</td><td class="r num">92.9%</td><td class="r num">measured noise 0.3</td><td class="r num">0.61 s / 0.55 s</td></tr>
+                <tr><td>BoolQ, 3,270</td><td class="r num">91.9%</td><td class="r num">89.3%</td><td class="r num">2.4% / <b>1.2%</b></td><td class="r num">0.61 s / 0.55 s</td></tr>
+                <tr><td>MMLU-Pro, 1,000 (calculation)</td><td class="r num">83.8%</td><td class="r num">62.1%</td><td class="r num">7.2% / 4.2%</td><td class="r num">0.62 s / 0.99 s</td></tr>
+                <tr><td>MMLU-Pro, 200, with a thinking budget</td><td class="r num">84.0%</td><td class="r num"><b>84.5%</b></td><td class="r num">8.7% / 12.0%</td><td class="r num">0.61 s / 12.5 s</td></tr>
+                <tr><td>French XNLI 500 · French MMLU 500</td><td class="r num">78.2% · 87.4%</td><td class="r num">71.4% · 74.6%</td><td class="r num">-</td><td class="r num">-</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note" style="margin:10px 0 0">Where it ties: judgement on text, which is what this endpoint is for, and calibration on BoolQ is better here.
+            Where it loses: calculation in one forward pass, which a thinking budget closes at the cost of seconds.
+            What it never costs: a token leaving the building, or $0.042 per million.</p>
+        </section>
+      </div>
+    </div>
+
+    <!-- ── Image ── -->
+    <div class="tab s1" id="tab-image">
+      <div class="tabhead"><h2>Image</h2><p>generation and understanding, on this box</p></div>
+      <section class="panel s1wide">
+        <div class="soon">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5-6 6-3-3-4 4"/></svg>
+          <div class="t">Coming soon</div>
+          <div class="d">The lane already understands images: the served checkpoint reports a vision tower and the proxy prices image parts from their own headers.
+            What is missing is this tab, not the capability.</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ── Video ── -->
+    <div class="tab s1" id="tab-video">
+      <div class="tabhead"><h2>Video</h2><p>generation, on this box</p></div>
+      <section class="panel s1wide">
+        <div class="soon">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="M16 10l5-3v10l-5-3z"/></svg>
+          <div class="t">Coming soon</div>
+          <div class="d">Nothing here yet.</div>
+        </div>
+      </section>
     </div>
 
     <!-- ── Setup ── -->

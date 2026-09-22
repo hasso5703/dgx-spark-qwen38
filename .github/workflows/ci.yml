@@ -29,8 +29,8 @@ jobs:
       - name: Python correctness (ruff F,E9 + compile)
         run: |
           pip install 'ruff==0.5.0'
-          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py oc-point-default.py bench-agent.py conc-check.py build-token-map.py tools-check.py evals/*.py tests/*.py dashboard/*.py dashboard/tests/*.py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py bench-agent.py conc-check.py build-token-map.py tools-check.py evals/mmlu.py evals/humaneval.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
+          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py oc-point-default.py bench-agent.py conc-check.py build-token-map.py tools-check.py systemone-check.py bench-systemone.py evals/*.py tests/*.py dashboard/*.py dashboard/tests/*.py
+          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py bench-agent.py conc-check.py build-token-map.py tools-check.py systemone-check.py bench-systemone.py evals/mmlu.py evals/humaneval.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
 
       - name: Cockpit unit tests (every tests/test_*.py, discovered)
         run: |
@@ -78,6 +78,7 @@ jobs:
           rm -f .coverage*
           for f in tests/test_proxy_guard.py tests/test_proxy_abort.py \
                    tests/test_proxy_keepalive.py tests/test_proxy_client_keys.py \
+                   tests/test_proxy_systemone.py \
                    tests/test_tools.py tests/test_oc_fit_limits.py tests/test_oc_merge_limits.py; do
             "$PY" -m coverage run --branch --parallel-mode --source=. \
               --omit="dashboard/*,tests/*,.venv-test/*" "$f" >/dev/null 2>&1 || true
@@ -91,7 +92,12 @@ jobs:
           # and had no floor at all until this step; it went 68 to 75% when the
           # keepalive injection, the silence ceiling and the non-streamed relay
           # finally got tests. patch-yarn went 0 to 94% the same day.
-          FLOORS = {"keepalive-proxy.py": 74, "patch-yarn.py": 90,
+          # 2026-09-19: the System One endpoint and its suite took the module from 75 to
+          # 83% branch coverage, so the floor moves up with it. A floor that trails the
+          # measured number by ten points stops being a floor.
+          # 2026-09-21: 84% once the refusals for the unbounded sampling fields landed
+          # with their own tests, so the floor follows again.
+          FLOORS = {"keepalive-proxy.py": 83, "patch-yarn.py": 90,
                     "oc-fit-limits.py": 37, "build-token-map.py": 35}
           got, bad = {}, []
           for line in open("/tmp/rootcov.txt"):
@@ -368,6 +374,30 @@ jobs:
               echo "unsubstituted placeholder in $t:"; grep '__[A-Z_]*__' /tmp/unit.rendered; exit 1
             fi
           done
+      - name: No document ships a placeholder nobody filled in
+        run: |
+          # The same failure as an unsubstituted unit template, one directory up. The
+          # System One work left <MUTATION_SENTENCE> in TESTING.md and <PHASE3_MUTATION>
+          # under an empty "Mutation score of the block" heading in BENCHMARKS.md: a
+          # measurement that was going to be pasted in and never was. A reader cannot
+          # tell that from a sentence that is merely missing, so the gate is here.
+          hits=$(grep -rnE '<[A-Z][A-Z0-9_]{2,}>' --include='*.md' . || true)
+          if [ -n "$hits" ]; then
+            echo "a document still carries an unfilled placeholder:"; echo "$hits"; exit 1
+          fi
+
+      - name: Unit templates keep the flags their lane is measured with
+        run: |
+          render() {
+            sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" \
+                -e "s|__PORT__|30000|g" -e "s|__PROXY_PORT__|30001|g" -e "s|__IMAGE__|img:v|g" \
+                -e "s|__HF_CACHE__|/hf|g" -e "s|__DRAFT2_REV__|deadbeef|g" -e "s|__DRAFT2_REPO__|org/draft|g" -e "s|__DRAFT2_QUANT__|modelopt_fp4|g" -e "s|__DRAFT2_TOKENS__|16|g" -e "s|__PLE_DIR__|/ple|g" -e "s|__PROMPT_CEILING__|0|g" \
+                -e "s|__KV_CACHE_ARGS__||g" -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL_REV__|cafe|g" -e "s|__MODEL__|org/repo|g" \
+              -e "s|__FLASH_QUANT_ARGS__|--quantization modelopt_fp4 --speculative-draft-model-quantization unquant |g" \
+              -e "s|__FLASH_MEM_FRACTION__|0.85|g" -e "s|__PLE_RSS_BUDGET_GB__|8|g" \
+              -e "s|__SPEC_TOKEN_MAP_LINE__|TIER+=(--speculative-token-map /out/token-map-65536.pt)|g" \
+              -e "s|__FLASH_TIER_ARGS__|--max-running-requests 4 --max-mamba-cache-size 20 --mamba-radix-cache-strategy extra_buffer --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4|g" "$1"
+          }
           render qwen38-sglang-1m.service.template | grep -q -- '--context-length 1010000'
           render qwen38-sglang-1m.service.template | grep -q 'HF_HUB_OFFLINE=1'
           render qwen38-sglang.service.template | grep -q 'Restart=always'
@@ -870,7 +900,7 @@ jobs:
 
       - name: patch-template fixture (anchors, idempotence, revision pin)
         run: python3 tests/test_patch_template.py
-      - name: keepalive proxy oversize guard (offline, fake /tokenize)
+      - name: keepalive proxy guards, size and the fields the engine dies on (offline, fake /tokenize)
         run: python3 tests/test_proxy_guard.py
 
       - name: keepalive proxy abort contract (offline, fake engine with #35255 rule)
@@ -908,6 +938,16 @@ jobs:
 
       - name: keepalive proxy TLS surface
         run: python3 tests/test_proxy_tls.py
+
+      - name: keepalive proxy System One endpoint (offline, fake engine with scripted first-token distributions)
+        run: |
+          # The wire-contract claim of this route rests on two tests that skip themselves
+          # when what they check is absent: the round trip through TypeSafe's own SDK, and
+          # the label list re-derived from the served tokenizer. The SDK is installed here
+          # so the first one runs on the runner too; the second needs the model's
+          # tokenizer.json and stays a box-side check (TESTING.md says so).
+          pip install 'typesafe-sdk==0.7.0' 2>/dev/null || echo "typesafe-sdk unavailable: the SDK round trip will skip"
+          python3 tests/test_proxy_systemone.py
 
       - name: No test file in tests/ is left unrun
         run: |

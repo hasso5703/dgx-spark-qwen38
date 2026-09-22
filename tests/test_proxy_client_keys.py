@@ -50,12 +50,14 @@ class Engine(http.server.BaseHTTPRequestHandler):
     # what the proxy actually sent upstream on the last request.
     require_key = None
     last_auth = None
+    last_path = None          # the path the proxy sent upstream, decoded or not
 
     def log_message(self, *a):
         pass
 
     def _admit(self):
         Engine.last_auth = self.headers.get("Authorization")
+        Engine.last_path = self.path
         if Engine.require_key and Engine.last_auth != "Bearer " + Engine.require_key:
             body = json.dumps({"error": {"message": "engine: bad key",
                                          "type": "invalid_request_error"}}).encode()
@@ -215,6 +217,31 @@ class ClientKeys(unittest.TestCase):
         finally:
             sys.stderr = real
         self.assertIn("key=alice", capture.getvalue())
+
+    def test_an_escaped_path_does_not_walk_past_the_wall(self):
+        """SGLang decodes percent-escapes before it routes (checked live: GET /%76%31/models
+        answers with the model list), so "/%76%31/chat/completions" reached the engine while
+        this proxy's checks, which all match the raw string, saw a path that was not /v1/.
+        Without a listed key, and with the engine's own key attached by the proxy."""
+        Engine.require_key = "engine-K"
+        Engine.last_auth = None
+        port = self.live(self.keys_file('{"tok-alice":"alice"}'), upstream_key="engine-K")
+        for path in ("/v1/chat/completions", "/%76%31/chat/completions",
+                     "/v1/%63%68%61%74/completions", "/%76%31/chat/completions?stream=false"):
+            status, body = post(port, path)
+            self.assertEqual(status, 401, (path, body))
+            self.assertIn("client key", json.loads(body)["error"]["message"])
+        self.assertIsNone(Engine.last_auth, "not one of them reached the engine")
+        status, _ = post(port, "/%76%31/chat/completions", "tok-alice")
+        self.assertEqual(status, 200, "a listed key still gets through the decoded path")
+        self.assertEqual(Engine.last_path, "/v1/chat/completions",
+                         "and the engine is sent the path this proxy checked")
+
+    def test_a_path_that_hides_a_query_separator_is_refused(self):
+        port = self.live(self.keys_file('{"tok-alice":"alice"}'))
+        status, body = post(port, "/v1/chat/completions%3Fstream=true", "tok-alice")
+        self.assertEqual(status, 400, body)
+        self.assertIn("encoded query", json.loads(body)["error"]["message"])
 
     def test_health_stays_open_without_a_key(self):
         port = self.live(self.keys_file('{"tok-alice":"alice"}'))

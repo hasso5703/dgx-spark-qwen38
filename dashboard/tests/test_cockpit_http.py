@@ -130,7 +130,7 @@ class Unauthenticated(Base):
 
     def test_every_other_api_route_is_closed(self):
         for path in ("/api/registry", "/api/recipes", "/api/upstream", "/api/events",
-                     "/api/jobs", "/api/config"):
+                     "/api/jobs", "/api/config", "/api/systemone"):
             st, _, _ = self.req("GET", path)
             self.assertIn(st, (401, 404), f"{path} answered {st} with no session")
 
@@ -644,6 +644,97 @@ class ActionValidation(Base):
         self.assertTrue(starts, added)
         self.assertEqual(starts[0]["action"], "fit_opencode")
         self.assertTrue(starts[0]["dry_run"], "the audit line does not say it was a dry run")
+
+
+class SystemOneRoute(Base):
+    """The System One tab is a browser sending someone else's state to a lane. Two
+    things matter and neither is the answer: the serving key never leaves this process,
+    and the browser cannot choose anything but the state and the questions."""
+
+    def test_the_run_route_needs_a_session_and_a_csrf_token(self):
+        st, _, _ = self.req("POST", "/api/systemone", {"state": "s", "questions": {"q": {}}})
+        self.assertEqual(st, 401, "a typed decision was accepted with no session")
+        cookie = self.login()
+        st, _, body = self.req("POST", "/api/systemone",
+                               {"state": "s", "questions": {"q": {}}}, cookie=cookie)
+        self.assertEqual(st, 403, body)
+
+    def test_a_call_with_nothing_to_ask_is_refused_before_the_proxy(self):
+        cookie = self.login()
+        for payload, why in (({"state": "", "questions": {"q": {"type": "noul"}}}, "empty state"),
+                             ({"state": "s", "questions": {}}, "no question"),
+                             ({"state": "s", "questions": []}, "questions as a list"),
+                             ({"state": 5, "questions": {"q": {}}}, "a state that is not text")):
+            payload["csrf"] = self.csrf(cookie)
+            st, _, body = self.req("POST", "/api/systemone", payload, cookie=cookie)
+            self.assertEqual(st, 400, f"{why} was forwarded: {body}")
+
+    def test_a_state_past_the_cap_is_refused_with_the_number(self):
+        cookie = self.login()
+        big = {"state": "x" * (self.cp.SYSTEMONE_MAX_STATE + 1),
+               "questions": {"q": {"type": "noul", "instructions": "i"}},
+               "csrf": self.csrf(cookie)}
+        st, _, body = self.req("POST", "/api/systemone", big, cookie=cookie)
+        self.assertEqual(st, 400)
+        self.assertIn(str(self.cp.SYSTEMONE_MAX_STATE), json.loads(body)["error"])
+
+    def test_the_browser_chooses_the_state_and_the_questions_and_nothing_else(self):
+        """A page that could name the path or the key would be a page that can reach
+        anything this process can reach."""
+        seen = {}
+
+        def fake_urlopen(req, timeout=None):
+            seen["url"] = req.full_url
+            seen["body"] = json.loads(req.data)
+            seen["auth"] = req.headers.get("Authorization")
+            raise self.cp.urllib.error.HTTPError(req.full_url, 422, "x", {}, None)
+
+        cookie = self.login()
+        real = self.cp.urllib.request.urlopen
+        self.cp.urllib.request.urlopen = fake_urlopen
+        try:
+            self.req("POST", "/api/systemone",
+                     {"state": "s", "questions": {"q": {"type": "noul", "instructions": "i"}},
+                      "model": "jev-latest", "path": "/v1/chat/completions",
+                      "upstream": "http://evil.example", "csrf": self.csrf(cookie)},
+                     cookie=cookie)
+        finally:
+            self.cp.urllib.request.urlopen = real
+        self.assertTrue(seen["url"].endswith("/v1/systemone"), seen["url"])
+        self.assertNotIn("evil", seen["url"])
+        self.assertEqual(set(seen["body"]), {"state", "questions", "model"})
+        self.assertTrue(seen["auth"].startswith("Bearer "))
+
+    def test_the_probe_reports_a_proxy_that_does_not_serve_the_route(self):
+        """A cockpit whose proxy predates v6.19 must say so rather than look broken."""
+        def fake_urlopen(req, timeout=None):
+            raise self.cp.urllib.error.HTTPError(req.full_url, 404, "x", {}, None)
+
+        real = self.cp.urllib.request.urlopen
+        self.cp.urllib.request.urlopen = fake_urlopen
+        try:
+            self.cp.SYSTEMONE_CACHE.update(data=None, ts=0.0)
+            out = self.cp.systemone_available(max_age=0.0)
+        finally:
+            self.cp.urllib.request.urlopen = real
+            self.cp.SYSTEMONE_CACHE.update(data=None, ts=0.0)
+        self.assertFalse(out["available"])
+        self.assertIn("v6.19", out["reason"])
+
+    def test_the_probe_reads_a_schema_refusal_as_the_route_being_served(self):
+        def fake_urlopen(req, timeout=None):
+            raise self.cp.urllib.error.HTTPError(req.full_url, 422, "x", {}, None)
+
+        real = self.cp.urllib.request.urlopen
+        self.cp.urllib.request.urlopen = fake_urlopen
+        try:
+            self.cp.SYSTEMONE_CACHE.update(data=None, ts=0.0)
+            out = self.cp.systemone_available(max_age=0.0)
+        finally:
+            self.cp.urllib.request.urlopen = real
+            self.cp.SYSTEMONE_CACHE.update(data=None, ts=0.0)
+        self.assertTrue(out["available"])
+        self.assertEqual(out["reason"], "")
 
 
 if __name__ == "__main__":

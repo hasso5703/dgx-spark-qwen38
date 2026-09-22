@@ -33,6 +33,7 @@ The README is the entry point. Everything longer lives next to it, one subject p
 | Clients: Claude Code, VS Code Copilot, Open WebUI, Cursor, TLS, per-client identity | [docs/clients.md](docs/clients.md) |
 | Why `--mem-fraction-static` decides whether this box stays alive | [docs/gb10-memory.md](docs/gb10-memory.md) |
 | Where each lane stands against upstream SGLang, re-checked in the images | [docs/upstream.md](docs/upstream.md) |
+| Typed decisions in full: the contract, the four levers, the refusals, the load | [docs/systemone.md](docs/systemone.md) |
 | The `lean` reasoning level: method, numbers, negative results | [LEAN.md](LEAN.md) |
 | What changed in every release, with the measurement behind each change | [CHANGELOG.md](CHANGELOG.md) |
 | The layout, the state files, the invariants CI holds | [ARCHITECTURE.md](ARCHITECTURE.md) |
@@ -213,6 +214,39 @@ What it does about it, with the measurement behind every number, is in
   allocations, so the fraction is the real guard
 - the number to watch is GPU-side headroom after graph capture: 21.30 GiB at 0.76 against 19.38
   at the 0.70 pin that preceded it
+
+## Typed decisions: a System One endpoint (proxy v6.19)
+
+Since v1.15 the keepalive proxy answers **`POST /v1/systemone`** with the wire contract of
+TypeSafe's [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev), from the lane
+already running on this box. A state and typed questions (choice, score, yes/no) in, calibrated
+probabilities out, with nothing generated, nothing parsed and nothing sent anywhere:
+
+```bash
+curl -s http://127.0.0.1:30001/v1/systemone \
+  -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)" -H 'Content-Type: application/json' -d '{
+  "state": "Hi, I have been trying to connect my Stripe account for 3 days and it keeps failing.",
+  "model": "jev-latest",
+  "questions": {
+    "department":  {"type": "choice", "instructions": "Which team should handle this",
+                    "criteria": {"billing": "Payment issues", "technical": "Bugs", "sales": "Pricing"}},
+    "is_urgent":   {"type": "noul", "instructions": "The message conveys urgency"}
+  }}'
+```
+
+Every question becomes one chat completion of exactly one token: the options are named by
+single-token letters and the probability of each letter is the probability of its option. A
+question answers in **0.2 s** warm at any state size. The TypeSafe SDK runs against it with one
+base URL changed, and the cockpit's **System One** tab exercises the whole contract from a
+browser, with prefilled examples and the matching curl.
+
+**Measured against the hosted model, byte-identical payloads to both:** 92.9% against 93.2% on
+TypeSafe's own 20 public cases, 89.3% against 91.9% on BoolQ with a better calibration (ECE 1.2%
+against 2.4%), and 62.1% against 83.8% on MMLU-Pro, the gap a single forward pass cannot close on
+calculation, which a thinking budget closes at 84.5% against 84.0% for 12 s a question.
+
+The contract key by key, the four levers, the refusal parity, the door under load, the label
+table and every trap on the way: **[docs/systemone.md](docs/systemone.md)**.
 
 ## The 1M context mode
 
@@ -448,6 +482,7 @@ systemctl status qwen38-flash           # Flash-Next server state (target flash)
 systemctl status qwen38-keepalive       # keepalive proxy state
 systemctl status qwen38-dashboard       # cockpit state, if you installed it
 python3 conc-check.py                   # does this lane still answer correctly at concurrency 8
+python3 systemone-check.py              # /v1/systemone: every shape, every refusal, mixed with ordinary chat
 sudo systemctl restart qwen38-sglang    # 27B: ~5-7 min boot; the radix (prefix) cache starts empty
 sudo systemctl restart qwen38-flash     # flash: ~10 min boot (weight load + PLE prewarm)
 journalctl -u qwen38-sglang -f          # server logs (qwen38-flash for the flash target)
@@ -494,6 +529,8 @@ question you had when you opened the page.
 | **Requests** | What the engine and the proxy each did with the same traffic: live feed, zombie guard, pool and decode | Read a dead decode from both sides of the wire |
 | **Machine** | Unified memory, the GB10, the CPU, and whether the safety belts are holding | Watch the memory edge this hardware actually has |
 | **Models** | Every target as data: recipes, drift against what is running, registry of what is on disk, upstream watch, full inventory | Read what is installed and what it costs in bytes; rescan (the panels are read-only, reclaiming is `./uninstall.sh --list`) |
+| **System One** | The typed-decisions endpoint, from a browser: is it served, and what does it answer? | Ask the lane with prefilled examples, copy the matching curl, read the probabilities |
+| **Image**, **Video** | Nothing yet, and they say so | |
 | **Logs** | Live logs, the last 30 events, recent jobs | Run a bench, the 4-canary quality battery, a diagnostics bundle |
 | **Setup** | The repo itself, opencode integration, serving-stack updates, the cockpit's own settings | Regenerate the API key, update the stack, change what the page binds to |
 

@@ -1,6 +1,6 @@
 # The cockpit
 
-The full tour. The README carries the short version: what the cockpit is, how it is installed, what it binds to, and the table of its eight tabs. This is everything else, starting with what it looks like.
+The full tour. The README carries the short version: what the cockpit is, how it is installed, what it binds to, and the table of its tabs. This is everything else, starting with what it looks like.
 
 ## Installing it, and what it binds to
 
@@ -135,12 +135,38 @@ sudo rm -f /etc/systemd/system/qwen38-dashboard.service \
 sudo systemctl daemon-reload
 ```
 
+## The System One tab: the typed-decisions endpoint, from a browser
+
+`POST /v1/systemone` answers probabilities instead of text, and until this tab the only way
+to see one was curl. The tab is the console for it, and it exercises the whole contract:
+
+- **five prefilled examples**, one per shape the endpoint is actually used for: routing a
+  support ticket, choosing an agent's next tool, moderating a comment, extracting a field,
+  and an eight-option choice that pushes past the single-letter labels
+- **an editor for all three question types**, with options and levels you can add and remove,
+  so a question you are about to put in production can be tried before it is
+- **the answer drawn as the distribution it is**: a bar per option, the pick and its
+  confidence, and for a score the level the number lands on
+- **the headers the contract has no room for**: how many branches the call fanned out to, how
+  much of the model's first-token probability landed on a label, and how many tokens the
+  radix cache served
+- **the same call as a curl** that updates as you type and copies in one click, because the
+  point of the tab is the request, not the tab
+- **the measured comparison against the hosted Jev**, task by task, from BENCHMARKS.md
+
+The serving key never reaches the page. The browser sends the state and the questions to the
+cockpit, and the cockpit calls the proxy with the key it already holds; a test asserts that a
+body naming its own path or upstream changes neither. Availability is probed rather than
+assumed, so a box whose proxy predates v6.19 is told why instead of looking broken.
+
+**Image** and **Video** are next to it and say Coming soon, which is the honest state of both.
+
 ## On a phone
 
 The cockpit is built for a hand as well as for a desk, and the layout is checked
 rather than assumed: `dashboard/tests/mobile-check.mjs` drives a headless
 Chromium through four real iPhone geometries (SE, 15, 15 Pro Max, and 15 in
-landscape) on all eight tabs and asserts what a phone actually gets.
+landscape) on every tab and asserts what a phone actually gets.
 
 Below 980 px the top bar keeps one identity row and gives the actions a row of
 their own that scrolls sideways, the section rail becomes one swipeable row of

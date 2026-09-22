@@ -6,3 +6,6 @@ bench-matrix-*.json
 .coverage
 .coverage.*
 htmlcov/
+
+# bench-systemone.py: public datasets, run records and reports live here, never in git
+bench-systemone-data/
