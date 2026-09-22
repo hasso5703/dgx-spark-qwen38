@@ -298,11 +298,19 @@ class FeedOutcomes(unittest.TestCase):
         "503 engine unreachable": "fail",
         "503 engine unreachable (upstream 502)": "fail",
         "502 upstream": "fail",
+        # v6.20: the two fields SGLang leaves unbounded and dies on rather than
+        # refusing (sglang#40076, #31597). A client bug, like the oversize refusal.
+        "400 logprob width over ceiling": "fail",
+        "400 sampling field out of range": "fail",
         # v6.19, POST /v1/systemone: the answer was delivered; the request was
         # refused with the field named (a client bug, not the box's); the engine
         # answered a branch with something that is not a one-token distribution.
         "ok systemone": "ok",
+        "400 systemone refused": "fail",   # a request that parses and cannot be served
+        "400 suspect path": "fail",        # a path that changes meaning when it is decoded
         "422 systemone refused": "fail",
+        "500 systemone failed": "fail",    # the catch-all: nothing leaves the route unanswered
+        "CLIENT GONE mid-systemone": "gone",
         "502 systemone upstream": "fail",
         "529 systemone overloaded": "fail",   # admission: the caller past SYSTEMONE_MAX_CALLS got no answer
     }

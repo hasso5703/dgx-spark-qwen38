@@ -856,5 +856,345 @@ class HardeningUnits(unittest.TestCase):
         self.assertFalse(self.m.warmup_hold(200000, None))
 
 
+class PathsHttpClientCannotSend(unittest.TestCase):
+    """A path this proxy decodes and then hands to http.client, which encodes it as
+    ASCII. Anything outside printable ASCII raises UnicodeEncodeError, a ValueError that
+    neither the relay's HTTPError nor its OSError arm catches, so the caller used to get
+    an empty reply and the journal a traceback, on a route reachable before any client
+    key is checked (found in review, 2026-09-21)."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "kproxy_path", HERE.parents[1] / "keepalive-proxy.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    def test_a_percent_encoded_non_ascii_byte_is_refused_not_relayed(self):
+        for path in ("/h%C3%A9alth", "/%E2%9C%93", "/v1/mod%C3%A8ls"):
+            _out, suspect = self.m.canonical_path(path)
+            self.assertTrue(suspect, f"{path} would reach http.client and drop the socket")
+
+    def test_what_http_client_can_send_still_goes_through_decoded(self):
+        for path, want in (("/health", "/health"), ("/%76%31/models", "/v1/models"),
+                           ("/v1/chat/completions?x=1", "/v1/chat/completions?x=1")):
+            out, suspect = self.m.canonical_path(path)
+            self.assertFalse(suspect, path)
+            self.assertEqual(out, want)
+
+    def test_the_refusal_matches_what_http_client_actually_rejects(self):
+        """The gate and the library must agree: every path this says is fine has to be one
+        http.client can encode, and that is asserted rather than assumed."""
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", 1)
+        for path in ("/health", "/v1/models", "/%76%31/models", "/a~b", "/a.b-c_d",
+                     "/h%C3%A9alth", "/a%20b", "/a%0ab", "/%E2%9C%93", "/a%7fb"):
+            out, suspect = self.m.canonical_path(path)
+            try:
+                conn._encode_request(out)
+                encodable = True
+            except Exception:
+                encodable = False
+            if not suspect:
+                self.assertTrue(encodable, f"{path} passed the gate and http.client refuses it")
+
+
+class TopLogprobsCeiling(unittest.TestCase):
+    """A field SGLang leaves unbounded and torch turns into a dead scheduler.
+
+    `top_logprobs` (chat) and `logprobs` (completions) both become top_logprobs_num and
+    reach `logprobs.topk(max_k, dim=-1)`; past the vocabulary that raises "selected index
+    k out of range" inside the scheduler and the engine is gone for every client
+    (sglang#40076). The engine cannot defend itself here, so the proxy does, and it
+    refuses rather than rewrites: a silently narrowed top-k answers a different question
+    than the one the client asked."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "kproxy_ceiling", HERE.parents[1] / "keepalive-proxy.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    def over(self, obj, path="/v1/chat/completions"):
+        return self.m.top_logprobs_over_ceiling(json.dumps(obj).encode(), path)
+
+    def test_the_chat_field_past_the_ceiling_is_named_with_what_it_asked_for(self):
+        self.assertEqual(self.over({"model": "m", "top_logprobs": 1000000}),
+                         ("top_logprobs", 1000000))
+
+    def test_the_completions_endpoint_is_guarded_on_its_own_field(self):
+        """/v1/completions carries the same crash under a different name: its `logprobs`
+        is an int, not a bool, and serving_completions.py hands it to the same top-k."""
+        self.assertEqual(self.over({"model": "m", "logprobs": 300000}, "/v1/completions"),
+                         ("logprobs", 300000))
+        self.assertIsNone(self.over({"model": "m", "top_logprobs": 300000}, "/v1/completions"))
+
+    def test_the_ceiling_itself_is_relayed_and_one_past_it_is_not(self):
+        self.m.TOP_LOGPROBS_CEILING = 1024
+        self.assertIsNone(self.over({"model": "m", "top_logprobs": 1024}))
+        self.assertEqual(self.over({"model": "m", "top_logprobs": 1025})[1], 1025)
+
+    def test_the_chat_logprobs_boolean_is_never_judged_as_a_count(self):
+        """ChatCompletionRequest.logprobs is a bool and True is an int in Python: judging
+        it would refuse `{"logprobs": true, "top_logprobs": 20}`, the ordinary request."""
+        self.assertIsNone(self.over({"model": "m", "logprobs": True, "top_logprobs": 20}))
+        self.assertIsNone(self.over({"model": "m", "logprobs": True}, "/v1/completions"))
+
+    def test_what_this_proxy_cannot_read_is_left_to_the_engines_own_validator(self):
+        for body in (b'{"top_logprobs": 99999', b'[{"top_logprobs": 99999}]',
+                     b'{"top_logprobs": "many"}', b'{"top_logprobs": null}'):
+            self.assertIsNone(self.m.top_logprobs_over_ceiling(body, "/v1/chat/completions"), body)
+
+    def test_a_body_without_the_field_is_not_parsed_at_all(self):
+        """The hot path is one substring scan: every ordinary completion goes through
+        this function and none of them should pay a json.loads for it."""
+        called = []
+        real = json.loads
+        json.loads = lambda *a, **k: (called.append(1), real(*a, **k))[1]
+        try:
+            self.assertIsNone(self.m.top_logprobs_over_ceiling(
+                b'{"model": "m", "messages": []}', "/v1/chat/completions"))
+        finally:
+            json.loads = real
+        self.assertEqual(called, [])
+
+    def test_the_generate_route_is_guarded_and_a_batch_is_judged_element_by_element(self):
+        """/generate is relayed too (it is in RID_OVERRIDE_ROUTES) and its
+        top_logprobs_num is Optional[Union[List[int], int]]: one oversized entry in a
+        batch of ordinary ones is still the crash."""
+        self.assertEqual(self.over({"top_logprobs_num": 10 ** 6}, "/generate"),
+                         ("top_logprobs_num", 10 ** 6))
+        self.assertEqual(self.over({"top_logprobs_num": [4, 10 ** 6, 8]}, "/generate")[1], 10 ** 6)
+        self.assertIsNone(self.over({"top_logprobs_num": [4, 8]}, "/generate"))
+        self.assertIsNone(self.over({"top_logprobs_num": None}, "/generate"))
+
+    def test_other_routes_are_not_judged(self):
+        for path in ("/v1/messages", "/v1/models", "/v1/systemone"):
+            self.assertIsNone(self.over({"top_logprobs": 10 ** 6}, path), path)
+
+    def test_a_query_string_does_not_hide_the_route(self):
+        self.assertEqual(self.over({"top_logprobs": 10 ** 6}, "/v1/chat/completions?x=1")[1], 10 ** 6)
+
+    def test_zero_disables_the_ceiling_for_an_operator_who_knows_their_build(self):
+        self.m.TOP_LOGPROBS_CEILING = 0
+        self.assertIsNone(self.over({"model": "m", "top_logprobs": 10 ** 9}))
+
+
+class SamplingFieldsTheEngineDiesOn(unittest.TestCase):
+    """The rest of the family sglang#31597 catalogued, still unbounded in the served
+    release because both PRs that bounded them were closed without being merged.
+    `stop_token_ids` and `input_ids` index a scatter_add_ and an embedding; `n` expands a
+    list before scheduling. The vocabulary decides two of the three, so the guard stands
+    down for those when it could not be learned: refusing traffic because a probe failed
+    would be a worse bug than the one being prevented."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "kproxy_sampling", HERE.parents[1] / "keepalive-proxy.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    def refusal(self, obj, path="/v1/chat/completions", vocab=248320):
+        return self.m.sampling_field_refusal(json.dumps(obj).encode(), path, vocab)
+
+    def test_a_negative_token_id_is_refused_whatever_the_vocabulary(self):
+        for vocab in (0, 248320):
+            self.assertIn("negative token id", self.refusal({"stop_token_ids": [-1]}, vocab=vocab) or "")
+
+    def test_an_id_past_the_vocabulary_is_refused_once_it_is_known(self):
+        self.assertIn("248320 tokens", self.refusal({"stop_token_ids": [300000]}) or "")
+        self.assertIsNone(self.refusal({"stop_token_ids": [300000]}, vocab=0),
+                          "unknown vocabulary must not refuse an id it cannot judge")
+
+    def test_the_last_real_id_is_served_and_the_first_unreal_one_is_not(self):
+        self.assertIsNone(self.refusal({"stop_token_ids": [248319]}))
+        self.assertIsNotNone(self.refusal({"stop_token_ids": [248320]}))
+
+    def test_input_ids_are_judged_the_same_way(self):
+        self.assertIsNone(self.refusal({"input_ids": [1, 2, 3]}))
+        self.assertIsNotNone(self.refusal({"input_ids": [10 ** 9]}))
+
+    def test_generate_carries_them_inside_sampling_params(self):
+        self.assertIsNotNone(self.refusal({"sampling_params": {"stop_token_ids": [10 ** 9]}},
+                                          path="/generate"))
+        self.assertIsNone(self.refusal({"sampling_params": {"stop_token_ids": [7]}},
+                                       path="/generate"))
+
+    def test_n_is_bounded_at_the_value_openai_itself_allows(self):
+        self.assertIsNone(self.refusal({"n": 128}))
+        self.assertIn("n=129", self.refusal({"n": 129}) or "")
+        self.assertIn("n=100000000", self.refusal({"n": 100000000}) or "")
+
+    def test_a_boolean_is_never_read_as_a_count_or_an_id(self):
+        self.assertIsNone(self.refusal({"n": True}))
+        self.assertIsNone(self.refusal({"stop_token_ids": [True, False]}))
+
+    def test_an_ordinary_request_is_not_parsed_at_all(self):
+        called = []
+        real = json.loads
+        json.loads = lambda *a, **k: (called.append(1), real(*a, **k))[1]
+        try:
+            self.assertIsNone(self.m.sampling_field_refusal(
+                b'{"model": "m", "messages": [], "max_tokens": 10}', "/v1/chat/completions", 248320))
+        finally:
+            json.loads = real
+        self.assertEqual(called, [])
+
+    def test_zero_disables_the_parallel_sample_bound(self):
+        self.m.MAX_PARALLEL_SAMPLES = 0
+        self.assertIsNone(self.refusal({"n": 10 ** 9}))
+
+    def test_routes_that_do_not_reach_the_sampler_are_left_alone(self):
+        for path in ("/v1/messages", "/v1/models", "/v1/systemone"):
+            self.assertIsNone(self.refusal({"stop_token_ids": [-1]}, path=path), path)
+
+    def test_the_vocabulary_is_learned_from_the_refusal_that_names_it(self):
+        """The engine states its vocabulary in exactly one place: the message refusing an
+        out-of-range logit_bias. The probe is built to be refused, so it is rejected at
+        the validation boundary and never reaches the scheduler."""
+        sent = {}
+
+        class Refused(urllib.error.HTTPError):
+            def __init__(self):
+                super().__init__("u", 400, "Bad Request", {}, None)
+
+            def read(self):
+                return json.dumps({"object": "error", "message":
+                                   "logit_bias must has keys in [0, 248319], got 999999999."}).encode()
+
+        def fake_urlopen(req, timeout=None):
+            sent["body"] = json.loads(req.data)
+            raise Refused()
+
+        real = self.m.urllib.request.urlopen
+        self.m.urllib.request.urlopen = fake_urlopen
+        try:
+            self.m._VOCAB.update(size=0, ts=0.0)
+            self.assertEqual(self.m.served_vocab(), 248320)
+            self.assertEqual(sent["body"]["logit_bias"], {"999999999": 1})
+            self.assertEqual(sent["body"]["max_tokens"], 1, "the probe generates nothing")
+            self.m.urllib.request.urlopen = None      # a second call must use the cache
+            self.assertEqual(self.m.served_vocab(), 248320)
+        finally:
+            self.m.urllib.request.urlopen = real
+            self.m._VOCAB.update(size=0, ts=0.0)
+
+    def test_an_engine_that_says_nothing_useful_leaves_the_vocabulary_unknown(self):
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.URLError("nothing there")
+
+        real = self.m.urllib.request.urlopen
+        self.m.urllib.request.urlopen = fake_urlopen
+        try:
+            self.m._VOCAB.update(size=0, ts=0.0)
+            self.assertEqual(self.m.served_vocab(), 0)
+        finally:
+            self.m.urllib.request.urlopen = real
+            self.m._VOCAB.update(size=0, ts=0.0)
+
+    def test_a_failed_probe_is_not_retried_on_the_next_request(self):
+        """A busy engine makes the probe time out. Retrying it per request would put an
+        8-second wait in front of every one of them, which is the denial of service this
+        guard exists to prevent, delivered by the guard."""
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(1)
+            raise urllib.error.URLError("busy")
+
+        real = self.m.urllib.request.urlopen
+        self.m.urllib.request.urlopen = fake_urlopen
+        try:
+            self.m._VOCAB.update(size=0, ts=0.0)
+            for _ in range(5):
+                self.assertEqual(self.m.served_vocab(), 0)
+            self.assertEqual(len(calls), 1, "one probe, not one per request")
+        finally:
+            self.m.urllib.request.urlopen = real
+            self.m._VOCAB.update(size=0, ts=0.0)
+
+
+class TopLogprobsCeilingEndToEnd(unittest.TestCase):
+    """The refusal on the wire, and the engine's own record of what it never received."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = http.server.HTTPServer(("127.0.0.1", 0), FakeTokenize)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        os.environ["UPSTREAM"] = f"http://127.0.0.1:{cls.srv.server_port}"
+        spec = importlib.util.spec_from_file_location(
+            "kproxy_ceiling_e2e", HERE.parents[1] / "keepalive-proxy.py")
+        cls.m = importlib.util.module_from_spec(spec)
+        sys.argv = ["keepalive-proxy.py"]
+        spec.loader.exec_module(cls.m)
+        cls.keyfile = Path.home() / ".config/qwen38/api-key"
+        cls.had_key = cls.keyfile.exists()
+        if not cls.had_key:
+            cls.keyfile.parent.mkdir(parents=True, exist_ok=True)
+            cls.keyfile.write_text("test-key\n")
+        cls.proxy = cls.m.Server(("127.0.0.1", 0), cls.m.H)
+        threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.proxy.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proxy.shutdown()
+        cls.srv.shutdown()
+        if not cls.had_key:
+            cls.keyfile.unlink()
+
+    def post(self, obj, path="/v1/chat/completions"):
+        req = urllib.request.Request(
+            self.base + path, data=json.dumps(obj).encode(), method="POST",
+            headers={"Content-Type": "application/json", "Authorization": "Bearer t"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def test_the_request_is_refused_400_and_the_engine_never_sees_it(self):
+        FakeTokenize.seen = []
+        status, body = self.post({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                  "logprobs": True, "top_logprobs": 1000000})
+        self.assertEqual(status, 400)
+        message = json.loads(body)["error"]["message"]
+        self.assertIn("top_logprobs=1000000", message)
+        self.assertIn("sglang#40076", message)
+        self.assertEqual(FakeTokenize.seen, [], "nothing reached the upstream")
+
+    def test_a_negative_stop_token_id_is_refused_on_the_wire_too(self):
+        """The one of the family that needs no vocabulary, so it holds even when the probe
+        cannot run, which is the case here: the fake upstream answers no chat request.
+
+        What does reach the upstream is the vocabulary probe, and only that: the client's
+        own request never goes anywhere. The probe is a request built to be refused at the
+        engine's validation boundary, so the scheduler never sees it either."""
+        FakeTokenize.seen = []
+        status, body = self.post({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                  "min_new_tokens": 1, "stop_token_ids": [-1]})
+        self.assertEqual(status, 400)
+        message = json.loads(body)["error"]["message"]
+        self.assertIn("negative token id", message)
+        self.assertIn("sglang#31597", message)
+        for _path, sent in FakeTokenize.seen:
+            self.assertEqual(sent.get("model"), "probe", f"the client's request was relayed: {sent}")
+            self.assertEqual(sent.get("max_tokens"), 1)
+
+    def test_an_oversized_n_is_refused_on_the_wire_too(self):
+        FakeTokenize.seen = []
+        status, body = self.post({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                  "n": 100000000})
+        self.assertEqual(status, 400)
+        self.assertIn("n=100000000", json.loads(body)["error"]["message"])
+        self.assertEqual(FakeTokenize.seen, [])
+
+    def test_an_ordinary_n_still_reaches_the_engine(self):
+        """The guard must not become the thing that refuses `n: 1`, which many clients
+        send on every request."""
+        status, _body = self.post({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                   "n": 1})
+        self.assertNotEqual(status, 400, "an ordinary n was refused")
+
+
 if __name__ == "__main__":
     unittest.main()
