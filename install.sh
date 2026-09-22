@@ -67,6 +67,7 @@ fi
 _ENV_MODEL_CHOICE="${MODEL_CHOICE:-}"; _ENV_MODEL_REV="${MODEL_REV:-}"
 _ENV_PORT="${PORT:-}"; _ENV_HF_CACHE="${HF_CACHE:-}"
 _ENV_CONTEXT_MODE="${CONTEXT_MODE:-}"; _ENV_PROXY_PORT="${PROXY_PORT:-}"
+_ENV_ENGINE_BIND="${ENGINE_BIND:-}"; _ENV_PROXY_BIND="${PROXY_BIND:-}"
 _ENV_PLE_DIR="${PLE_DIR:-}"; FLASH_TIER_ENV="${FLASH_TIER:-}"
 _ENV_SERVE_IMAGE="${SERVE_IMAGE:-}"; _ENV_FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-}"
 _ENV_DRAFT2_REPO="${DRAFT2_REPO:-}"; _ENV_DRAFT2_REV="${DRAFT2_REV:-}"
@@ -514,6 +515,26 @@ for _p in "$SGL_UNIT_PATH" "$FLASH_UNIT_PATH"; do
     echo "      MODEL_CHOICE=, pass them explicitly on this command."
   fi
 done
+# Which interface the engine and the proxy answer on. Both listened on every one of them
+# until v1.16, and on the reference box seven days of journal put 581,479 engine requests
+# and 8,288 proxy requests at 100% from 127.0.0.1: the clients that need them run on the
+# same machine, and what is reached from a laptop or a phone is the cockpit, which has
+# had its own COCKPIT_BIND since v1.5. An open port nobody uses is worth closing, and
+# these two are the ones SGLang dies on rather than refuses (sglang#40076, #31597,
+# SECURITY.md), so an operator who wants the proxy's guards to be the only door writes:
+#
+#   ENGINE_BIND=127.0.0.1 PROXY_BIND=127.0.0.1 ./install.sh
+#
+# The defaults do not move. Somebody else's laptop may legitimately point at either port,
+# and a default must never take away something the operator did not ask to lose.
+ENGINE_BIND="${ENGINE_BIND:-0.0.0.0}"
+PROXY_BIND="${PROXY_BIND:-0.0.0.0}"
+for _b in "$ENGINE_BIND" "$PROXY_BIND"; do
+  case "$_b" in
+    *[!0-9.]*|"") printf 'ERROR: ENGINE_BIND and PROXY_BIND take an IPv4 address (got: %s)\n' "$_b" >&2; exit 1 ;;
+  esac
+done
+
 # Which choice is installed? The flash unit wins only when it is the enabled
 # one; a box can hold both unit files but only one engine serves the port.
 # On the (hand-made) both-enabled state, the 27B unit is followed and a note
@@ -644,6 +665,24 @@ if [ -n "$INSTALLED_CHOICE" ]; then
     HF_CACHE="$CUR_HF"
     echo "Keeping the installed HF cache location: $HF_CACHE. Pass HF_CACHE= to change."
   fi
+  # The same promise the context mode gets, for the same reason: a box hardened to
+  # localhost must not be reopened by a plain update. An installed choice wins over a
+  # default, both ways.
+  if [ -z "${_ENV_ENGINE_BIND:-}" ]; then
+    CUR_BIND="$(grep -oE -- '--host [0-9.]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+    if [ -n "$CUR_BIND" ] && [ "$CUR_BIND" != "$ENGINE_BIND" ]; then
+      ENGINE_BIND="$CUR_BIND"
+      echo "Keeping the installed engine bind: $ENGINE_BIND. Pass ENGINE_BIND= to change."
+    fi
+  fi
+  # The unit name, not $KEEPALIVE_UNIT: that variable is set 700 lines below this block.
+  if [ -z "${_ENV_PROXY_BIND:-}" ] && [ -r "/etc/systemd/system/qwen38-keepalive.service" ]; then
+    CUR_PBIND="$(grep -oE -- 'PROXY_BIND=[0-9.]+' "/etc/systemd/system/qwen38-keepalive.service" | head -1 | cut -d= -f2 || true)"
+    if [ -n "$CUR_PBIND" ] && [ "$CUR_PBIND" != "$PROXY_BIND" ]; then
+      PROXY_BIND="$CUR_PBIND"
+      echo "Keeping the installed proxy bind: $PROXY_BIND. Pass PROXY_BIND= to change."
+    fi
+  fi
   if [ "$INSTALLED_CHOICE" = "27b" ] && [ "$LANE" != "flash" ] && [ -z "$_ENV_CONTEXT_MODE" ]; then
     if grep -q -- '--context-length 1010000' "$SGL_UNIT_PATH"; then
       CONTEXT_MODE=1m
@@ -671,6 +710,7 @@ if [ -z "$_ENV_PROXY_PORT" ] && [ -r "/etc/systemd/system/qwen38-keepalive.servi
   [ -n "${CUR_PROXY:-}" ] && PROXY_PORT="$CUR_PROXY"
 fi
 PROXY_PORT="${PROXY_PORT:-$((PORT+1))}"
+
 # A non-number dies here with its name on it, and the engine and its proxy may
 # never share one (each check would see "its" port free, then both services
 # would fight over the same socket at runtime).
@@ -1353,6 +1393,7 @@ render_tpl() {  # $1 template file; substituted result on stdout
       -e "s|__USER__|$(esc "$(id -un)")|g" \
       -e "s|__GROUP__|$(esc "$(id -gn)")|g" \
       -e "s|__PORT__|$(esc "$PORT")|g" \
+      -e "s|__ENGINE_BIND__|$(esc "$ENGINE_BIND")|g" \
       -e "s|__IMAGE__|$(esc "$SERVE_IMAGE_FINAL")|g" \
       -e "s|__HF_CACHE__|$(esc "$HF_CACHE")|g" \
       -e "s|__DRAFT2_REV__|$(esc "$DRAFT2_REV")|g" \
@@ -1437,6 +1478,7 @@ sed -e "s|__HOME__|$HOME|g" \
     -e "s|__GROUP__|$(id -gn)|g" \
     -e "s|__PORT__|$PORT|g" \
     -e "s|__PROXY_PORT__|$PROXY_PORT|g" \
+    -e "s|__PROXY_BIND__|$PROXY_BIND|g" \
     -e "s|__PROMPT_CEILING__|$PROMPT_CEILING|g" \
     "$REPO_DIR/qwen38-keepalive.service.template" > "$TMP_KA"
 sudo install -m 644 "$TMP_KA" "/etc/systemd/system/$KEEPALIVE_UNIT"; rm -f "$TMP_KA"

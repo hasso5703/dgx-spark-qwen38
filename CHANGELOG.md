@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.16.0 (2026-09-22): the engine and the proxy can answer on localhost only
+
+Both listened on every interface, and the reference box shows what that was worth. Seven
+days of journal: **581,479 requests to the engine and 8,288 to the proxy, every single
+one from 127.0.0.1**, while the machine was reached from a MacBook and a phone on the
+cockpit port alone. Two ports open to a LAN and a tailnet, used by nobody but the box
+itself, and they are the two SGLang dies on rather than refuses (sglang#40076,
+sglang#31597, both unfixed upstream, both refused at the proxy since v1.15.0). The
+proxy's guards protect what goes through the proxy; a port that bypasses it is a door
+beside the one with the lock.
+
+`ENGINE_BIND` and `PROXY_BIND` close them:
+
+```bash
+ENGINE_BIND=127.0.0.1 PROXY_BIND=127.0.0.1 ./install.sh
+```
+
+**The defaults do not move.** Somebody else's laptop may legitimately point at either
+port, and a default must never take away something the operator did not ask to lose. What
+the knob buys is that an operator who wants the proxy to be the only door can have it,
+and the cockpit has had `COCKPIT_BIND` for the same reason since v1.5.
+
+An installed choice wins over the default, in both directions, which is the part that
+matters: a box hardened to localhost that a plain `./install.sh` reopened would be the
+worst outcome of the three, because nobody would have a reason to look. A bad value is
+refused by name before a unit is written rather than by a unit that fails to start
+minutes later, on a box whose engine has just been stopped.
+
+Ten tests hold it, and the gate added in v1.15.2 earned its place on the first try: the
+proxy's bind line changed shape, the banner stopped matching, and the test that keeps the
+three version statements together failed before the change could ship.
+
 ## v1.15.4 (2026-09-22): the update check recovers from a boot, instead of sleeping through it
 
 v1.15.3 shipped with a backoff that started at an hour, and a reboot showed why that is

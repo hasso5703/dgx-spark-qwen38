@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.20). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.21). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -28,6 +28,11 @@ Five roles, nothing else:
    yes/no probabilities from the model it already runs, with nothing generated and
    nothing parsed. The "System One endpoint" section below carries the design and
    its receipts.
+
+v6.21: PROXY_BIND chooses the interface this proxy answers on, and it answered on every
+one of them before. Seven days of journal on the reference box: 8,288 requests, all from
+127.0.0.1, because the clients that need it run on the same machine. The default does not
+move, since somebody else's laptop may legitimately point at this port.
 
 v6.20: the request fields SGLang leaves unbounded and dies on rather than refusing are
 refused here instead. top_logprobs (chat), logprobs (completions) and top_logprobs_num
@@ -143,6 +148,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 class EngineUnreachable(Exception):
     """The engine did not answer /tokenize: stopped, crashed, restarting or still loading."""
 
+# The interface this proxy listens on. It answered on every one of them until v6.21, and
+# on the reference box seven days of journal showed 8,288 requests, every last one from
+# 127.0.0.1: the clients that need it (opencode, Claude Code, the cockpit) run on the
+# same machine. An interface nobody uses is an interface worth not opening, so an
+# operator can close it, and the default stays what it was because someone else's laptop
+# may legitimately point at this port.
+BIND          = os.environ.get("PROXY_BIND", "0.0.0.0").strip() or "0.0.0.0"
 UPSTREAM      = os.environ.get("UPSTREAM", "http://127.0.0.1:30000")
 KEEPALIVE_S   = float(os.environ.get("KEEPALIVE_S", "10"))
 MAX_SILENCE_S = float(os.environ.get("MAX_SILENCE_S", "3600"))
@@ -2697,14 +2709,14 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.20 on :{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.21 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     if CLIENT_KEYS:
         log(f"client keys on: {len(CLIENT_KEYS)} identities ({CLIENT_KEYS_FILE})")
         if UPSTREAM_API_KEY:
             log("upstream key on: named clients are admitted upstream as the engine's key")
         else:
             log("WARNING: no QWEN38_UPSTREAM_API_KEY: named clients meet the engine's own key check verbatim")
-    httpd = Server(("0.0.0.0", port), H)
+    httpd = Server((BIND, port), H)
     if TLS_CERT:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2

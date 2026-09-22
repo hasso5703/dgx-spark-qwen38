@@ -11,6 +11,7 @@ Environment=UPSTREAM=http://127.0.0.1:__PORT__
 Environment=PROMPT_CEILING_TOKENS=__PROMPT_CEILING__
 Environment=KEEPALIVE_S=10
 Environment=MAX_SILENCE_S=3600
+Environment=PROXY_BIND=__PROXY_BIND__
 ExecStart=/usr/bin/python3 __HOME__/.config/qwen38/keepalive-proxy.py __PROXY_PORT__
 Restart=always
 RestartSec=3
