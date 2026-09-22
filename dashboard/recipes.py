@@ -45,8 +45,13 @@ TIER_ARGS = {
 # things, and a recipe is host-independent by design (drift() ignores a
 # placeholder on either side). Everything else in a lane template carries a
 # serving flag and MUST be substituted by builtin(), which is asserted there.
+# __ENGINE_BIND__ sits here with __PORT__ and for the same reason (v1.16): which
+# interface a box answers on is that box's choice, not a property of "the stock 27B
+# lane", and a box that closed its engine to localhost must not be reported as drifted
+# from the recipe it is in fact running.
 HOST_PLACEHOLDERS = ("__HOME__", "__USER__", "__GROUP__", "__HF_CACHE__",
-                     "__PLE_DIR__", "__PORT__", "__PROXY_PORT__", "__PROMPT_CEILING__")
+                     "__PLE_DIR__", "__PORT__", "__PROXY_PORT__", "__PROMPT_CEILING__",
+                     "__ENGINE_BIND__")
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
