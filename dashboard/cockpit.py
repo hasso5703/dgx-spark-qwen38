@@ -62,7 +62,8 @@ DRY_RUN = os.environ.get("COCKPIT_DRY_RUN", "0") == "1"
 # Fields from get_server_info that must never reach a browser.
 MASKED_FIELDS = {"api_key", "admin_api_key"}
 
-UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-keepalive.service")
+UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service",
+         "qwen38-keepalive.service")
 JOURNAL_UNITS = UNITS + (AGENT_UNIT, "qwen38-image.service")   # what the Logs tab may read
 CONTAINERS = ("qwen38-sglang", "qwen38-flash")
 
@@ -905,6 +906,12 @@ UNIT_TARGET_CACHE: dict = {}
 
 def unit_target(unit: str) -> dict:
     """{model, target} the unit is configured for, from its own file. Cached on mtime."""
+    if unit == "qwen38-image.service":
+        # one checkpoint, one target: the model is read from the unit so a lane
+        # installed with IMAGE_MODEL= reports what it really serves
+        model = _image_unit_flag("--model-path", "Qwen/Qwen-Image-2.1") \
+            if IMAGE_UNIT_PATH.exists() else None
+        return {"model": model, "target": "image" if model else None}
     path = UNIT_PATHS.get(unit)
     if not path:
         return {"model": None, "target": None}
@@ -958,12 +965,28 @@ def collect_lifecycle():
         if unit not in lc.ENGINE_UNITS:
             states[unit] = "ready" if active == "active" else "stopped"
             continue
-        cont = UNIT2CONT[unit]
-        running = bool(run(["docker", "ps", "-q", "-f",
-                            f"name=^{cont}$"]).strip())
+        is_image = unit == lc.IMAGE_UNIT
+        if is_image and not IMAGE_UNIT_PATH.exists():
+            continue                    # not installed: no card, no pill, no gate
         boot = {"stage": None, "fired_up": False, "done": []}
         rebuild = False
-        if running and not healthy:
+        if is_image:
+            # No container, no /get_load, no KV pool: the unit's own state, its own
+            # /health, and its journal for the boot stages. None of the LLM belts
+            # below (pool guard, wedge canary, autoheal) apply to it.
+            running = active in ("active", "activating")
+            healthy_u = running and image_healthy()
+            if running and not healthy_u:
+                boot = lc.parse_image_boot_log(_image_journal())
+            st = lc.derive_state(unit_active=active, unit_sub=d.get("SubState", "?"),
+                                 container_running=running, healthy=healthy_u, boot=boot)
+            if st["state"] == "degraded" and prev.get(unit) not in ("ready", "degraded"):
+                st["state"] = "warming-up"
+        else:
+            cont = UNIT2CONT[unit]
+            running = bool(run(["docker", "ps", "-q", "-f",
+                                f"name=^{cont}$"]).strip())
+        if not is_image and running and not healthy:
             # A mature server's tail is pure decode noise: only read logs
             # while health is down (boot or trouble), where markers live.
             tail = run(["docker", "logs", "--tail", "300", cont],
@@ -972,24 +995,27 @@ def collect_lifecycle():
         # Hysteresis: a 2 s health probe times out under a heavy prefill.
         # Leaving ready needs 3 consecutive misses AND no fresh progress line;
         # a single 200 restores it at once.
-        if healthy:
+        if is_image:
+            pass                        # its state was derived above, from its own facts
+        elif healthy:
             UNHEALTHY_TICKS[unit] = 0
         else:
             UNHEALTHY_TICKS[unit] = UNHEALTHY_TICKS.get(unit, 0) + 1
-        progressing = LAST_PROGRESS["ts"] and time.time() - LAST_PROGRESS["ts"] < 30
-        sticky_ready = (prev.get(unit) in ("ready", "wedged") and running and not healthy
-                        and (UNHEALTHY_TICKS[unit] < 3 or progressing))
-        st = lc.derive_state(unit_active=active, unit_sub=d.get("SubState", "?"),
-                             container_running=running,
-                             healthy=(healthy or sticky_ready) and running, boot=boot,
-                             rebuild=False)
-        # degraded means "WAS serving, lost health", not "health probe has
-        # not caught up yet": right after fired-up, stay warming-up unless
-        # we had already reached ready in this activation.
-        if st["state"] == "degraded" and prev.get(unit) not in ("ready",
-                                                                "degraded"):
-            st["state"] = "warming-up"
-        if st["state"] == "ready":
+        if not is_image:
+            progressing = LAST_PROGRESS["ts"] and time.time() - LAST_PROGRESS["ts"] < 30
+            sticky_ready = (prev.get(unit) in ("ready", "wedged") and running and not healthy
+                            and (UNHEALTHY_TICKS[unit] < 3 or progressing))
+            st = lc.derive_state(unit_active=active, unit_sub=d.get("SubState", "?"),
+                                 container_running=running,
+                                 healthy=(healthy or sticky_ready) and running, boot=boot,
+                                 rebuild=False)
+            # degraded means "WAS serving, lost health", not "health probe has
+            # not caught up yet": right after fired-up, stay warming-up unless
+            # we had already reached ready in this activation.
+            if st["state"] == "degraded" and prev.get(unit) not in ("ready",
+                                                                    "degraded"):
+                st["state"] = "warming-up"
+        if st["state"] == "ready" and not is_image:
             with STATE_LOCK:
                 load = ((STATE.get("engine_fast") or {}).get("data", {})
                         .get("load") or [{}])[0]
@@ -1071,7 +1097,7 @@ def collect_lifecycle():
                     audit({"kind": "autoheal", "unit": unit, "code": code, "out": out})
             else:
                 WEDGED_SINCE.pop(unit, None)
-        if st["state"] in lc.TRANSITIONAL and running:
+        if st["state"] in lc.TRANSITIONAL and running and not is_image:
             jl = run(["journalctl", "-u", unit, "-n", "40", "--no-pager",
                       "-o", "cat"], timeout=6).splitlines()
             rebuild = lc.journal_flags(jl)["rebuild"]
@@ -1112,6 +1138,11 @@ def collect_lifecycle():
         engines[unit] = {"state": st["state"], "rebuild": st.get("rebuild", False),
                          **unit_target(unit),
                          "stage_done": boot.get("done", []),
+                         # which stage list this engine walks, and what it is loading
+                         # now: the UI draws each from here rather than assuming
+                         "stages": list(lc.IMAGE_STAGES if is_image else lc.STAGES),
+                         "detail": boot.get("detail", ""),
+                         "kind": "image" if is_image else "text",
                          "elapsed": round(elapsed, 1) if elapsed else None,
                          "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,
                          "eta": eta, "overdue": overdue,
@@ -1126,6 +1157,13 @@ def collect_lifecycle():
             if st["state"] == "ready" and elapsed and witnessed \
                     and was in lc.TRANSITIONAL:
                 history = lc.record_boot(history, unit, elapsed, rebuild)
+                if is_image:
+                    # It has no KV pool, and ENGINE_BASE is the text lane's port: reading
+                    # a pool here would record the wrong engine's, or nothing.
+                    save_history(history)
+                    with LIFE_LOCK:
+                        LIFE["witnessed"][unit] = False
+                    continue
                 # The KV pool this boot won, kept per target: it decides whether the
                 # declared opencode limits can be served. Read from the engine now, not
                 # from the engine_info collector: at this instant that cache holds either
@@ -1246,7 +1284,7 @@ ACTIONS = {
     "switch": {
         "danger": "medium",
         "params": {"target": ["stock", "uncensored", "fp8", "uncensored-fp8",
-                              "flash", "flash-nvda", "flash-uncensored"]},
+                              "flash", "flash-nvda", "flash-uncensored", "image"]},
         "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"]],
         "timeout": 1800,
     },
@@ -1618,6 +1656,17 @@ def image_progress(serving: bool) -> dict:
     return {"kind": "stage", "stage": stage or "working", "label": stage or "working"}
 
 
+def image_healthy() -> bool:
+    """The image lane's own /health, on its own port. A 503 is its answer while it
+    loads, a connection refused its answer while it starts; only a 200 is ready."""
+    try:
+        urllib.request.urlopen(urllib.request.Request(image_base() + "/health"),
+                               timeout=3).read()
+        return True
+    except Exception:                                   # noqa: BLE001 (any non-200 is "not yet")
+        return False
+
+
 def image_status() -> dict:
     """Installed, running, answering. Three different things, and the tab says which."""
     out = {"installed": IMAGE_UNIT_PATH.exists(), "port": image_port(),
@@ -1756,7 +1805,8 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         return e.code, {"refused": detail, "seconds": round(time.time() - t0, 2)}
     except Exception as e:                              # noqa: BLE001 (isolated route)
         return 502, {"error": f"the image lane did not answer ({type(e).__name__}). "
-                              f"Start it: sudo systemctl start {IMAGE_UNIT}",
+                              f"Switch to Qwen-Image 2.1 in the action bar and start it "
+                              f"(or ./switch-model.sh image)",
                      "seconds": round(time.time() - t0, 2)}
     finally:
         IMAGE_LOCK.release()

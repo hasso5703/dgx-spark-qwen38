@@ -163,6 +163,115 @@ class BlockedReasons(unittest.TestCase):
         self.assertIn("rebuilds", w[0])
 
 
+class ThreeEngines(unittest.TestCase):
+    """The image lane is a third engine. The rule it has to obey is the one the two text
+    lanes already do, and the gate used to pick the other engine with [0], which with
+    three of them checked one neighbour of two and let the third through."""
+    IMG = "qwen38-image.service"
+
+    def test_image_is_blocked_while_the_27b_serves(self):
+        r = lc.blocked_reasons("unit", {"unit": self.IMG, "verb": "start"},
+                               {"qwen38-sglang.service": "ready", "qwen38-flash.service": "stopped"})
+        self.assertEqual(len(r), 1)
+        self.assertIn("qwen38-sglang.service", r[0])
+
+    def test_image_is_blocked_while_flash_boots(self):
+        """[0] would have been the 27B here, stopped, and let the start through."""
+        r = lc.blocked_reasons("unit", {"unit": self.IMG, "verb": "start"},
+                               {"qwen38-sglang.service": "stopped",
+                                "qwen38-flash.service": "loading-weights"})
+        self.assertEqual(len(r), 1)
+        self.assertIn("qwen38-flash.service", r[0])
+
+    def test_a_text_lane_is_blocked_while_the_image_lane_runs(self):
+        for text in ("qwen38-sglang.service", "qwen38-flash.service"):
+            with self.subTest(text=text):
+                r = lc.blocked_reasons("unit", {"unit": text, "verb": "start"},
+                                       {self.IMG: "ready"})
+                self.assertEqual(len(r), 1)
+                self.assertIn(self.IMG, r[0])
+
+    def test_image_starts_when_nothing_else_runs(self):
+        self.assertEqual(lc.blocked_reasons("unit", {"unit": self.IMG, "verb": "start"},
+                                            {"qwen38-sglang.service": "stopped",
+                                             "qwen38-flash.service": "stopped"}), [])
+
+    def test_the_switch_waits_for_an_image_boot_too(self):
+        self.assertEqual(len(lc.blocked_reasons("switch", {"target": "stock"},
+                                                {self.IMG: "warming-up"})), 1)
+
+    def test_stopping_a_ready_image_lane_warns_about_the_image_not_the_proxy(self):
+        """The proxy on :30001 is a text door; nothing reaches this lane through it."""
+        w = lc.warn_reasons("unit", {"unit": self.IMG, "verb": "stop"}, {self.IMG: "ready"})
+        self.assertEqual(len(w), 1)
+        self.assertIn("image", w[0])
+        self.assertNotIn(":30001", w[0])
+
+
+class ImageBootLog(unittest.TestCase):
+    """A real boot of the image lane, captured from journald on the reference box:
+    64 s from process start to fired up. The engine and uvicorn write two different
+    timestamp formats, so the parser matches what a line says, never when."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lines = (HERE.parent / "fixtures" / "image-boot.log").read_text().splitlines()
+
+    def at(self, needle):
+        """The boot as it looked the moment this line was written."""
+        for i, ln in enumerate(self.lines):
+            if needle in ln:
+                return lc.parse_image_boot_log(self.lines[:i + 1])
+        self.fail(f"the fixture has no line with {needle!r}")
+
+    def test_a_complete_boot_is_fired_up_with_every_stage_done(self):
+        b = lc.parse_image_boot_log(self.lines)
+        self.assertTrue(b["fired_up"])
+        self.assertEqual(b["done"], list(lc.IMAGE_STAGES))
+
+    def test_each_milestone_names_what_is_being_loaded(self):
+        """"loading weights" for 33 s says less than "the 13.3 GB DiT"."""
+        for needle, stage, detail in (
+                ("Starting server", "init", "starting the server"),
+                ("Loading text_encoder from", "loading-weights", "Qwen3-VL encoder"),
+                ("Loading transformer from", "loading-weights", "13.3 GB DiT"),
+                ("Loading vae from", "loading-weights", "the VAE"),
+                ("Starting FastAPI server", "warming-up", "throwaway image")):
+            with self.subTest(line=needle):
+                b = self.at(needle)
+                self.assertEqual(b["stage"], stage)
+                self.assertIn(detail, b["detail"])
+                self.assertFalse(b["fired_up"])
+
+    def test_only_the_latest_boot_counts(self):
+        """journald keeps every previous life of the unit. A "fired up" from an earlier
+        boot must not make the one in progress read as ready."""
+        restarted = self.lines + ["[09-22 18:00:00] Starting server...",
+                                  "[09-22 18:00:07] Loading pipeline modules..."]
+        b = lc.parse_image_boot_log(restarted)
+        self.assertFalse(b["fired_up"])
+        self.assertEqual(b["stage"], "loading-weights")
+
+    def test_an_empty_journal_is_not_a_boot(self):
+        b = lc.parse_image_boot_log([])
+        self.assertIsNone(b["stage"])
+        self.assertFalse(b["fired_up"])
+
+    def test_a_marker_behind_a_tqdm_prefix_is_still_found(self):
+        """journald keeps tqdm's carriage returns inside a newline-terminated line: this
+        fixture holds 17 of them in 52 lines, so "Loading transformer from" arrives glued
+        behind "Loading required modules: 20%|...". The parser matches by substring, so
+        that prefix changes nothing, whether the bytes are split on \\r or not."""
+        raw = (HERE.parent / "fixtures" / "image-boot.log").read_bytes()
+        self.assertGreater(raw.count(b"\r"), 0, "the fixture lost its carriage returns")
+        glued = raw.replace(b"\r", b" ").decode().split("\n")      # the worst case: no \r split
+        b = lc.parse_image_boot_log([ln for ln in glued if "Loaded transformer" not in ln
+                                     and "Loading vae" not in ln and "Loaded vae" not in ln
+                                     and "Pipeline instantiated" not in ln
+                                     and "FastAPI" not in ln and "fired up" not in ln])
+        self.assertIn("13.3 GB DiT", b["detail"])
+
+
 class EtaHistory(unittest.TestCase):
     def test_record_and_median(self):
         h = {}

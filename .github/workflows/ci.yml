@@ -598,13 +598,28 @@ jobs:
               fail("no BUILTIN_IDS in recipes.py")
           builtins = re.findall(r'"([^"]+)"', m.group(1))
 
-          lists = {"index.html select": sorted(ui), "cockpit switch enum": sorted(enum),
-                   "install.sh MODEL_CHOICE": choices, "switch-model.sh guard": guard,
-                   "recipes BUILTIN_IDS": sorted(builtins)}
-          ref = lists["install.sh MODEL_CHOICE"]
-          for name, got in lists.items():
+          # Two kinds of target since the image lane. The TEXT targets are what
+          # install.sh can serve as its LLM (MODEL_CHOICE) and what the Models tab
+          # builds a recipe for. The SWITCH targets are those plus the lanes a flag
+          # installs, which today is one: `image`, installed by --with-image, switched
+          # to like any other, and not an LLM checkpoint (it has no recipe, no KV pool
+          # and no opencode default). Both sets are asserted, so a lane added to the
+          # switcher and forgotten in the cockpit's enum is still caught.
+          FLAG_LANES = ["image"]
+          ref = choices
+          switch_ref = sorted(ref + FLAG_LANES)
+          text_lists = {"install.sh MODEL_CHOICE": choices, "recipes BUILTIN_IDS": sorted(builtins)}
+          switch_lists = {"index.html select": sorted(ui), "cockpit switch enum": sorted(enum),
+                          "switch-model.sh guard": guard}
+          for name, got in text_lists.items():
               if got != ref:
                   fail(f"{name} is {got}, install.sh says {ref}")
+          for name, got in switch_lists.items():
+              if got != switch_ref:
+                  fail(f"{name} is {got}, the switch targets are {switch_ref}")
+          for lane in FLAG_LANES:
+              if lane in ref:
+                  fail(f"{lane} is installed by a flag, not MODEL_CHOICE; install.sh must not list it")
           if len(ui) != len(set(ui)):
               fail("duplicate option in the selector")
           # And the prose must not lag the list: "any of the six" outlived the
@@ -618,7 +633,8 @@ jobs:
                                      or f"the {word} targets" in body
                                      or f"{word} switchable targets" in body):
                       fail(f"{path} still says {word} targets, there are {n}")
-          print(f"{len(ref)} targets, five lists agree: {', '.join(ref)}")
+          print(f"{len(ref)} text targets and {len(FLAG_LANES)} flag lane, five lists agree: "
+                f"{', '.join(switch_ref)}")
           PYEOF
 
       - name: opencode limits, the one table and both callers

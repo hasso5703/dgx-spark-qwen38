@@ -259,17 +259,13 @@ references, and the native RGBA this model is built for. It is opt-in because it
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --with-image
 ```
 
-Start and stop it from the cockpit's **Image** tab, which confirms what stopping the text
-lane costs before it does it, or from a terminal:
+Then it is a third lane, driven like the other two: pick **Qwen-Image 2.1** in the cockpit's
+switcher, **Switch**, stop the serving lane, **Start Qwen-Image** (about 70 s). From a terminal,
+`./switch-model.sh image` does the switch and prints the rest.
 
-```bash
-sudo systemctl start qwen38-image.service     # images (this stops the text lane)
-sudo systemctl start qwen38-sglang.service    # back to text
-```
-
-31 GB of weights do not fit beside a serving LLM, so the unit carries `Conflicts=` and the two
-lanes take turns. That is declared in systemd rather than left to a wrapper script, and the
-image unit is not enabled at boot.
+31 GB of weights do not fit beside a serving LLM, so the lanes take turns: the cockpit refuses
+to start any engine while another is busy, for all three alike, and the unit's `Conflicts=` is
+a second belt for a `systemctl start` typed at a terminal.
 
 **Measured on a Spark, not copied from the cookbook:** 1024x1024 at 40 steps in **38.2 s**
 (34.8 GB peak), 512x512 in 9.0 s, an edit with one reference in 44.6 s, ten references in 69.6 s,

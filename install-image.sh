@@ -176,16 +176,25 @@ sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" \
     -e "s|__HOME__|$HOME|g" \
     "$HERE/$UNIT.template" > "$RENDER"
 grep -q '__[A-Z_]*__' "$RENDER" && die "the unit template still holds an unsubstituted placeholder: $(grep -o '__[A-Z_]*__' "$RENDER" | sort -u | tr '\n' ' ')"
+# 0644 like every other unit, and set explicitly: mktemp creates 0600 and cp keeps the
+# mode, which left this unit readable by root alone. systemd did not mind; everything
+# else that reads the unit did, and failed quietly. switch-model.sh could not find the
+# runtime, and the cockpit's reads of the port, the bind and the model all fell back to
+# their defaults, which happened to be right on the reference box and would not have been
+# on one installed with IMAGE_PORT= or IMAGE_BIND=.
 if [ -f "$INSTALLED" ] && sudo cmp -s "$RENDER" "$INSTALLED"; then
   echo "unit unchanged"
+  sudo chmod 644 "$INSTALLED"      # a unit installed before this fix is still 0600
 else
-  sudo cp "$RENDER" "$INSTALLED"; sudo systemctl daemon-reload
+  sudo install -m 644 "$RENDER" "$INSTALLED"; sudo systemctl daemon-reload
   echo "unit installed at $INSTALLED"
 fi
-# Not enabled at boot on purpose: starting it stops the LLM lane, and a box that reboots
-# should come back the way its owner left it, not holding 31 GB of image weights.
-echo "not enabled at boot (starting it stops the LLM lane). Start it when you want images:"
-echo "  sudo systemctl start $UNIT"
+# Installed, not switched to: the lane this box serves stays the lane it serves. The image
+# lane becomes the boot lane the same way the other two do, by a switch, which is also
+# what makes it come back after a reboot.
+echo "installed as a lane of its own. Switch to it like any lane:"
+echo "  the cockpit: pick Qwen-Image 2.1 in the switcher, Switch, stop the serving lane, Start"
+echo "  a terminal : ./switch-model.sh image, then the two commands it prints"
 
 if [ "$SMOKE" -eq 0 ]; then step "Done (smoke test skipped)"; exit 0; fi
 
@@ -194,12 +203,16 @@ WAS_LLM=""
 for u in qwen38-sglang.service qwen38-flash.service; do
   systemctl is-active --quiet "$u" 2>/dev/null && WAS_LLM="$u"
 done
+# If this lane was already serving, the test leaves it serving: stopping it on the way out
+# would turn "re-run the installer" into "take the image lane down".
+WAS_IMAGE=0
+systemctl is-active --quiet "$UNIT" 2>/dev/null && WAS_IMAGE=1
 [ -n "$WAS_LLM" ] && echo "note: $WAS_LLM is serving and will be stopped for this test, then started again."
 # From here on the text lane is DOWN, so putting it back cannot live on the happy path:
 # every die() below would leave the box serving nothing, with the image unit holding
 # 31 GB, until somebody noticed. The trap runs on success and on every failure alike.
 restore_text_lane() {
-  sudo systemctl stop "$UNIT" 2>/dev/null || true
+  [ "$WAS_IMAGE" -eq 1 ] || sudo systemctl stop "$UNIT" 2>/dev/null || true
   if [ -n "$WAS_LLM" ]; then
     echo "starting $WAS_LLM again"
     sudo systemctl start "$WAS_LLM" || echo "WARNING: could not restart $WAS_LLM. Do it by hand: sudo systemctl start $WAS_LLM"
@@ -231,8 +244,7 @@ print(f"   {w}x{h} {'RGBA' if raw[25] == 6 else raw[25]}, {len(raw)/1e6:.1f} MB"
 PY
 # the trap stops the lane and brings the text lane back, whichever way this ends
 
-step "Done: the image lane serves on $IMAGE_BIND:$PORT"
-echo "  start   : sudo systemctl start $UNIT      (this stops the LLM lane)"
-echo "  stop    : sudo systemctl stop $UNIT"
-echo "  back to text: sudo systemctl start qwen38-sglang.service"
-echo "  drive it from the cockpit's Image tab, or straight from the API on :$PORT"
+step "Done: the image lane is installed and proved it serves on $IMAGE_BIND:$PORT"
+echo "  switch to it : the cockpit's switcher (Qwen-Image 2.1), or ./switch-model.sh image"
+echo "  back to text : the switcher again (any text target), or ./switch-model.sh stock"
+echo "  generate     : the cockpit's Image tab, or the API on :$PORT (loopback, no key)"

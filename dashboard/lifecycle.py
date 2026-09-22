@@ -33,6 +33,51 @@ REBUILD_RE = re.compile(r"rebuilding the PLE table")
 STAGES = ("init", "loading-weights", "loading-draft", "allocating-kv",
           "capturing-graphs", "warming-up")
 
+# ── The image lane speaks another dialect ───────────────────────────────────
+# SGLang Diffusion has no draft, no KV pool and no CUDA graphs, and it writes its
+# own timestamps in two formats (the engine "[09-22 17:20:37]", uvicorn "[2026-09-22
+# 17:21:34]"), so its lines are matched on what they say, never on when. Measured on
+# the reference box, one boot from process start to fired up, 64 s:
+#   0 s Starting server   7 s Loading pipeline modules   18 s Loaded text_encoder
+#   51 s Loaded transformer   57 s Loaded vae, Pipeline instantiated   64 s fired up
+# The transformer is half a minute with nothing printed in between, which is why the
+# component being loaded travels as `detail`: a stage called "weights" for 33 s says
+# less than "the 13.3 GB DiT".
+IMAGE_STAGES = ("init", "loading-weights", "warming-up")
+IMAGE_MARKERS = [
+    # (substring, stage it opens, what is being loaded while that line is the latest)
+    ("Starting server...", "init", "starting the server"),
+    ("Loading pipeline modules...", "loading-weights", "reading the checkpoint layout"),
+    ("Loading text_encoder from", "loading-weights", "the 16.5 GB Qwen3-VL encoder"),
+    ("Loading transformer from", "loading-weights", "the 13.3 GB DiT"),
+    ("Loading vae from", "loading-weights", "the VAE"),
+    ("Pipeline instantiated", "loading-weights", "building the pipeline"),
+    ("Starting FastAPI server", "warming-up", "one throwaway image"),
+    ("fired up and ready to roll", "warming-up", "ready"),
+]
+
+
+def parse_image_boot_log(lines: list[str]) -> dict:
+    """The image lane's journal, reduced to the same shape parse_boot_log returns.
+
+    Only the latest boot counts: journald keeps every previous life of the unit,
+    and a "fired up" from yesterday must not make today's boot read as ready."""
+    start = 0
+    for i, ln in enumerate(lines):
+        if "Starting server..." in ln:
+            start = i
+    stage, detail, fired = None, "", False
+    for ln in lines[start:]:
+        for needle, st, what in IMAGE_MARKERS:
+            if needle in ln:
+                stage, detail = st, what
+                if needle == "fired up and ready to roll":
+                    fired = True
+    done = list(IMAGE_STAGES[:IMAGE_STAGES.index(stage)]) if stage in IMAGE_STAGES else []
+    if fired:
+        done = list(IMAGE_STAGES)
+    return {"stage": stage, "done": done, "fired_up": fired, "detail": detail}
+
 
 def parse_boot_log(lines: list[str]) -> dict:
     """Reduce a container log tail to {stage, done[], fired_up, weight_loads}.
@@ -144,7 +189,11 @@ BUSY_STATES = {"starting", "loading-weights", "loading-draft", "allocating-kv",
                "capturing-graphs", "warming-up", "ready", "degraded",
                "stopping", "wedged"}
 TRANSITIONAL = BUSY_STATES - {"ready", "degraded"}
-ENGINE_UNITS = ("qwen38-sglang.service", "qwen38-flash.service")
+# Every unit that holds the GPU pool while it runs. The image lane is one of them:
+# 31 GB of weights, and two engines at once on 121.6 GB of unified memory is the
+# livelock this whole module exists to prevent.
+ENGINE_UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service")
+IMAGE_UNIT = "qwen38-image.service"
 
 
 def blocked_reasons(action: str, params: dict, states: dict) -> list[str]:
@@ -159,11 +208,13 @@ def blocked_reasons(action: str, params: dict, states: dict) -> list[str]:
     if action == "unit":
         unit, verb = params.get("unit", ""), params.get("verb", "")
         if unit in ENGINE_UNITS and verb in ("start", "restart"):
-            other = [u for u in ENGINE_UNITS if u != unit][0]
-            if st(other) in BUSY_STATES:
-                reasons.append(
-                    f"{other} is {st(other)}: two engines never run at once "
-                    f"on unified memory (stop it first)")
+            # Every other engine, not "the other one": with three lanes, picking [0]
+            # checked one of two neighbours and let the third through.
+            for other in ENGINE_UNITS:
+                if other != unit and st(other) in BUSY_STATES:
+                    reasons.append(
+                        f"{other} is {st(other)}: two engines never run at once "
+                        f"on unified memory (stop it first)")
     elif action in ("switch", "update_stack"):
         for u in ENGINE_UNITS:
             if st(u) in TRANSITIONAL:
@@ -181,6 +232,10 @@ def warn_reasons(action: str, params: dict, states: dict,
         if unit == "qwen38-flash.service" and state in TRANSITIONAL:
             warns.append("stopping the flash lane mid-boot marks the PLE "
                          "table dirty: the NEXT boot rebuilds it (~12 min)")
+        elif unit == IMAGE_UNIT and state == "ready":
+            # the proxy on :30001 is a text door; nothing reaches this lane through it
+            warns.append("an image being generated right now is lost, and the Image "
+                         "tab has nothing to talk to until this lane is back (about 70 s)")
         elif state == "ready":
             warns.append("clients on :30001 will get errors until an engine "
                          "is back")

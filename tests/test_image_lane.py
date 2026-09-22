@@ -196,6 +196,14 @@ class TheInstaller(unittest.TestCase):
         text = (REPO / "uninstall.sh").read_text()
         self.assertIn("^WorkingDirectory=", text)
 
+    def test_a_serving_image_lane_is_left_serving_by_the_smoke_test(self):
+        """Re-running the installer on a box whose image lane is serving must not end
+        with it stopped: the trap used to stop the unit unconditionally on the way out."""
+        text = INSTALLER.read_text()
+        self.assertIn('systemctl is-active --quiet "$UNIT" 2>/dev/null && WAS_IMAGE=1', text)
+        body = text[text.index("restore_text_lane() {"):text.index("trap restore_text_lane EXIT")]
+        self.assertIn('[ "$WAS_IMAGE" -eq 1 ] || sudo systemctl stop "$UNIT"', body)
+
     def test_the_smoke_test_proves_a_picture_not_a_status_code(self):
         """An HTTP 200 from this lane can carry an image of the wrong size, or no image.
         The install ends by reading the PNG header it got back."""
@@ -235,50 +243,120 @@ class TheOneLinerReachesIt(unittest.TestCase):
         """It is the only step that stops the engine that is already serving, and the
         only one that costs 38 GB. A lane that will not install must not take down an
         install that is otherwise finished."""
-        i = self.text.index('"$REPO_DIR/install-image.sh"')
-        self.assertLess(self.text.index("10/10 Spark Cockpit"), i)
+        # The normal path's call, the one after a text engine proved itself. The other
+        # call belongs to the image-is-the-boot-lane exit, which ends before step 9 on
+        # purpose and is held by AnUpdateKeepsTheImageLaneAsTheBootLane.
+        cockpit = self.text.index("10/10 Spark Cockpit")
+        i = self.text.index('"$REPO_DIR/install-image.sh"', cockpit)
+        self.assertLess(cockpit, i)
         tail = self.text[i:i + 500]
         self.assertIn("Everything above is up and serving", tail)
+        self.assertEqual(self.text.count('"$REPO_DIR/install-image.sh"'), 2,
+                         "one call per path, the normal one and the image-boot one")
 
     def test_the_help_says_what_it_costs_before_someone_spends_it(self):
         self.assertIn("--with-image", self.text)
         self.assertIn("38 GB", self.text)
 
 
-class TheLaneIsDrivableFromThePage(unittest.TestCase):
-    """A cockpit whose Image tab tells you to open a terminal is not a cockpit. Starting
-    and stopping the lane goes through the same modal, job strip and sudoers allowlist as
-    every other unit on this box."""
+class AnUpdateKeepsTheImageLaneAsTheBootLane(unittest.TestCase):
+    """install.sh keeps the operator's choices across a re-run: the target, the context
+    mode, the port. Once the image lane is a lane, which lane the box boots is one of
+    those choices. Before this, a box switched to images fell through to "27b", got the
+    27B unit enabled beside the image one, and was left with two engines set to start at
+    the next reboot."""
 
-    def test_the_unit_is_one_the_action_layer_accepts(self):
-        self.assertIn('"qwen38-image.service"', COCKPIT.read_text())
-        text = COCKPIT.read_text()
-        block = text[text.index("SERVING_UNITS = {"):text.index("UNIT_VERBS = {")]
-        self.assertIn("qwen38-image.service", block)
+    def setUp(self):
+        self.text = (REPO / "install.sh").read_text()
 
-    def test_every_verb_it_offers_is_in_the_sudoers_allowlist(self):
-        """The action layer runs sudo -n: a verb the allowlist does not carry fails with
-        a password prompt nobody can answer."""
+    def test_it_is_detected_where_the_other_two_lanes_are(self):
+        self.assertIn("systemctl is-enabled --quiet qwen38-image.service", self.text)
+        self.assertIn('[ "$SGL_ENABLED" -eq 0 ] && [ "$FLASH_ENABLED" -eq 0 ]', self.text)
+
+    def test_the_text_unit_is_not_enabled_on_that_path(self):
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        self.assertIn('sudo systemctl enable "$UNIT_NAME"', self.text[i:i + 120])
+        # and that is the ONLY enable of the serving unit: an unguarded one would undo it
+        self.assertEqual(self.text.count('sudo systemctl enable "$UNIT_NAME"'), 1)
+
+    def test_that_path_ends_before_any_text_engine_is_started(self):
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        early = self.text[i:self.text.index("exit 0", i)]
+        self.assertNotIn("systemctl start", early)
+        self.assertIn("--no-smoke", early, "the smoke test stops and starts the serving lane")
+        self.assertLess(i, self.text.index('step "9/10 Starting'))
+
+
+class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
+    """Switched to from the one switcher at the top, started and stopped by the action
+    bar's lane button, gated by the same "never two engines at once" rule, drawn by the
+    same Engines card. The first version put a Start button inside the Image tab, which
+    started the lane by a path none of the other lanes use and, through the unit's
+    Conflicts=, stopped the text lane silently where the cockpit's rule for every other
+    lane is to refuse and say "stop it first"."""
+
+    def test_it_is_in_the_switcher(self):
+        html = INDEX.read_text()
+        sel = re.search(r'<select id="switchsel".*?</select>', html, re.S).group(0)
+        self.assertIn('<option value="image">', sel)
+        # and grouped apart: it is not one more LLM checkpoint
+        self.assertIn('<optgroup label="Images">', sel)
+
+    def test_the_switch_accepts_it_everywhere_it_is_checked(self):
+        cock = COCKPIT.read_text()
+        enum = re.search(r'"switch":\s*\{.*?"params":\s*\{"target":\s*\[(.*?)\]\}', cock, re.S)
+        self.assertIn('"image"', enum.group(1))
+        sw = (REPO / "switch-model.sh").read_text()
+        guard = re.search(r'case "\$CHOICE" in ([a-z0-9|-]+)\)', sw).group(1)
+        self.assertIn("image", guard.split("|"))
+
+    def test_it_is_an_engine_to_the_lifecycle_and_a_unit_to_the_collector(self):
+        lc = (REPO / "dashboard" / "lifecycle.py").read_text()
+        self.assertRegex(lc, r'ENGINE_UNITS = \([^)]*"qwen38-image\.service"')
+        cock = COCKPIT.read_text()
+        units = cock[cock.index("UNITS = ("):cock.index(")", cock.index("UNITS = ("))]
+        self.assertIn("qwen38-image.service", units)
+
+    def test_the_image_tab_has_no_lane_control_of_its_own(self):
+        """One place starts and stops lanes. A second one is how the image lane came to
+        behave differently from the two others in the first place."""
+        js = APP_JS.read_text()
+        tab = js[js.index("async function imgLane(){"):js.index("function imgInit(){")]
+        self.assertNotIn("askAction('unit'", tab)
+        self.assertNotIn("function imgUnitButton", js)
+        # and it points at the controls that do exist, named as they read on screen
+        self.assertIn("Start Qwen-Image", tab)
+        self.assertIn("press Switch", tab)
+
+    def test_switching_to_a_text_target_takes_the_image_lane_off_the_boot(self):
+        """Exactly one serving unit enabled at boot. Leaving the image lane enabled when a
+        text lane is made the boot lane would bring two engines up at the next reboot."""
+        sw = (REPO / "switch-model.sh").read_text()
+        self.assertIn('sudo systemctl disable "$IMAGE_UNIT_NAME"', sw)
+
+    def test_switching_to_image_leaves_the_text_clients_alone(self):
+        """The proxy is a text door and opencode a text client: pointing opencode's default
+        model at an image lane would break every session it opened."""
+        sw = (REPO / "switch-model.sh").read_text()
+        branch = sw[sw.index('if [ "$CHOICE" = "image" ]; then'):sw.index("exit 0\nfi")]
+        self.assertNotIn("oc-point-default", branch)
+        self.assertNotIn("PROMPT_CEILING_TOKENS", branch)
+        # it runs from its own venv: no serving image to inspect, no container to download with
+        code = "\n".join(ln for ln in branch.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotIn("docker run", code)
+        self.assertNotIn("docker image inspect", code)
+        self.assertIn('"$IMG_PY" -', code)
+
+    def test_every_privileged_call_the_image_switch_makes_is_allowlisted(self):
         sudoers = (REPO / "dashboard" / "sudoers-cockpit.template").read_text()
-        for verb in ("start", "stop", "restart"):
+        for verb in ("start", "stop", "restart", "enable", "disable"):
             self.assertIn(f"/usr/bin/systemctl {verb} qwen38-image.service", sudoers, verb)
 
-    def test_the_page_has_the_buttons_rather_than_naming_another_tab(self):
-        js = APP_JS.read_text()
-        self.assertIn("function imgUnitButton(", js)
-        self.assertIn("askAction('unit', {verb, unit: IMAGE_UNIT}", js)
-        self.assertNotIn("start it from the Engines tab", js)
-
-    def test_the_confirmation_says_the_text_lane_will_stop(self):
-        """Conflicts= is silent at the point of clicking. The modal is where it gets said."""
+    def test_the_confirmation_says_how_this_lane_starts(self):
         js = APP_JS.read_text()
         self.assertIn("IMAGE_EXPLAIN", js)
-        self.assertIn("Starting this STOPS ", js)
-
-    def test_the_page_keeps_asking_while_the_weights_load(self):
-        """The unit reads active and /health answers 503 for about 70 s, so the only
-        honest progress signal is asking again."""
-        self.assertIn("function imgWatch(", APP_JS.read_text())
+        self.assertIn("only offered once no other engine is running", js)
+        self.assertNotIn("stops whichever text lane", js)
 
 
 class TheTabTellsTheTruth(unittest.TestCase):

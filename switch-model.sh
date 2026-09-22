@@ -8,6 +8,7 @@
 #   ./switch-model.sh flash           # RadixArk/Qwen3.8-Flash-Next-NVFP4 (SGLang)
 #   ./switch-model.sh flash-nvda      # nvidia/Qwen3.8-Flash-Next-NVFP4, ModelOpt mixed precision
 #   ./switch-model.sh flash-uncensored # the abliterated build of the same tree
+#   ./switch-model.sh image           # Qwen/Qwen-Image-2.1 (SGLang Diffusion, own venv)
 #
 # Within the 27B lane (stock, uncensored, fp8, uncensored-fp8) it does what it
 # always did:
@@ -31,7 +32,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 CHOICE="${1:-${MODEL_CHOICE:-stock}}"
-case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored) ;; *) die "usage: ./switch-model.sh [stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored]" ;; esac
+case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image) ;; *) die "usage: ./switch-model.sh [stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image]" ;; esac
+
 
 PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_NVDA_REPO|FLASH_NVDA_REV|FLASH_UNC_REPO|FLASH_UNC_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_SERVE_IMAGE|SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
 # A count of matched lines was the old check, and adding a pin broke both scripts
@@ -43,6 +45,68 @@ for _v in IMAGE SERVE_IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_R
   eval "[ -n \"\${$_v:-}\" ]" || die "install.sh no longer defines $_v (repo layout changed?)"
 done
 unset _v
+
+IMAGE_UNIT="/etc/systemd/system/qwen38-image.service"
+IMAGE_UNIT_NAME="qwen38-image.service"
+
+# ── The image lane: a third lane, switched to the same way as the other two ─────
+# Same contract as a cross-lane switch: verify the checkpoint, make it the one unit
+# enabled at boot, never start or stop anything, print the exact commands. What it
+# does NOT share with the text lanes is everything that is about text: there is no
+# serving image to inspect (it runs from its own venv), no unit to rewrite (one
+# checkpoint), no prompt ceiling on the proxy (the proxy is a text door and nothing
+# reaches this lane through it), and no opencode default to move (opencode is a text
+# client, and pointing it at an image lane would break every session it opens). So
+# it is handled here, whole, and exits, instead of threading "unless image" through
+# four hundred lines written for SGLang's text server.
+if [ "$CHOICE" = "image" ]; then
+  [ -f "$IMAGE_UNIT" ] || die "the image lane is not installed on this box (no $IMAGE_UNIT). Install it once: ./install.sh --with-image (38 GB)"
+  IMG_WD="$(grep -m1 -E '^WorkingDirectory=' "$IMAGE_UNIT" | cut -d= -f2- || true)"
+  IMG_PY="${IMG_WD:-$HOME/.local/share/qwen38-image}/venv/bin/python"
+  [ -x "$IMG_PY" ] || die "the image lane's runtime is missing ($IMG_PY): re-run ./install-image.sh, it resumes"
+  IMG_MODEL="$(grep -oE -- '--model-path [^ ]+' "$IMAGE_UNIT" | head -1 | cut -d' ' -f2 || true)"
+  IMG_MODEL="${IMG_MODEL:-Qwen/Qwen-Image-2.1}"
+  IMG_HF="$(grep -m1 -E '^Environment=HF_HOME=' "$IMAGE_UNIT" | cut -d= -f3- || true)"
+  printf '\n\033[1;36m── Verifying %s in the cache (resumable)\033[0m\n' "$IMG_MODEL"
+  # The same two lessons the text lanes learned: Xet stalls on this box, and an
+  # unauthenticated pull gets throttled. local_files_only first, so a complete cache
+  # answers without touching the network at all.
+  HF_HOME="${IMG_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 IMG_MODEL="$IMG_MODEL" \
+    "$IMG_PY" - <<'PYIMG' || die "the image checkpoint could not be verified or fetched (re-run to resume; set HF_TOKEN if it stalls)"
+import os
+from huggingface_hub import snapshot_download
+repo = os.environ["IMG_MODEL"]
+try:
+    print(snapshot_download(repo, local_files_only=True))
+except Exception:
+    print("not complete in the cache, fetching the rest", flush=True)
+    print(snapshot_download(repo))
+PYIMG
+  # The loop variable ends in UNIT_NAME on purpose: CI checks every
+  # `sudo systemctl <verb> "$..UNIT_NAME"` against the cockpit's sudoers allowlist,
+  # and a variable called $u would have walked straight past it.
+  for TEXT_UNIT_NAME in qwen38-sglang.service qwen38-flash.service; do
+    if systemctl is-enabled --quiet "$TEXT_UNIT_NAME" 2>/dev/null; then
+      echo "disabling $TEXT_UNIT_NAME at boot (unit file kept for switching back)"
+      sudo systemctl disable "$TEXT_UNIT_NAME"
+    fi
+  done
+  sudo systemctl enable "$IMAGE_UNIT_NAME" >/dev/null 2>&1 || sudo systemctl enable "$IMAGE_UNIT_NAME"
+  sudo systemctl daemon-reload
+  RUNNING=""
+  for u in qwen38-sglang.service qwen38-flash.service; do
+    systemctl is-active --quiet "$u" 2>/dev/null && RUNNING="$u"
+  done
+  printf '\n\033[1;32mSwitch queued: %s (%s)\033[0m\n' "$IMG_MODEL" "$IMAGE_UNIT_NAME"
+  if [ -n "$RUNNING" ]; then
+    echo "Effective after:  sudo systemctl stop $RUNNING && sudo systemctl start $IMAGE_UNIT_NAME   (or next reboot)"
+  else
+    echo "Effective after:  sudo systemctl start $IMAGE_UNIT_NAME   (or next reboot; ready in about 70 s)"
+  fi
+  echo "The proxy on :30001 and opencode are text clients and were left as they are."
+  echo "Switch back:      ./switch-model.sh stock   (or any text target)"
+  exit 0
+fi
 
 SGL_UNIT="/etc/systemd/system/qwen38-sglang.service"
 FLASH_UNIT="/etc/systemd/system/qwen38-flash.service"
@@ -331,6 +395,12 @@ if [ -f "$OTHER_UNIT" ] && systemctl is-enabled --quiet "$OTHER_UNIT_NAME" 2>/de
   echo "disabling $OTHER_UNIT_NAME at boot (unit file kept for switching back)"
   sudo systemctl disable "$OTHER_UNIT_NAME"
 fi
+# The image lane is the third serving unit. Leaving it enabled while a text lane
+# is made the boot lane would bring two engines up at the next reboot.
+if [ -f "$IMAGE_UNIT" ] && systemctl is-enabled --quiet "$IMAGE_UNIT_NAME" 2>/dev/null; then
+  echo "disabling $IMAGE_UNIT_NAME at boot (unit file kept for switching back)"
+  sudo systemctl disable "$IMAGE_UNIT_NAME"
+fi
 sudo systemctl enable "$TARGET_UNIT_NAME" >/dev/null 2>&1 || sudo systemctl enable "$TARGET_UNIT_NAME"
 sudo systemctl daemon-reload
 # 4b) the keepalive proxy's one-prompt ceiling follows the lane (v1.5.6 contract, see
@@ -424,6 +494,7 @@ fi
 
 RUNNING=""
 systemctl is-active --quiet "$OTHER_UNIT_NAME" 2>/dev/null && RUNNING="$OTHER_UNIT_NAME"
+systemctl is-active --quiet "$IMAGE_UNIT_NAME" 2>/dev/null && RUNNING="$IMAGE_UNIT_NAME"
 printf '\n\033[1;32mSwitch queued: %s (%s)\033[0m\n' "$TARGET_REPO" "$TARGET_UNIT_NAME"
 if [ -n "$RUNNING" ]; then
   echo "Effective after:  sudo systemctl stop $RUNNING && sudo systemctl start $TARGET_UNIT_NAME   (or next reboot)"
@@ -440,7 +511,7 @@ fi
 echo "Then fit them:    python3 oc-fit-limits.py   (the limits above are this target's"
 echo "                  nominal pair; the pool is only known once the engine is up)"
 case "$CHOICE" in
-  stock)      echo "Switch back:      ./switch-model.sh uncensored   (or fp8, flash)" ;;
+  stock)      echo "Switch back:      ./switch-model.sh uncensored   (or fp8, flash, image)" ;;
   uncensored) echo "Switch back:      ./switch-model.sh stock   (or fp8, flash)" ;;
   fp8)        echo "Switch back:      ./switch-model.sh stock   (or uncensored, uncensored-fp8, flash)" ;;
   uncensored-fp8) echo "Switch back:      ./switch-model.sh fp8   (or stock, uncensored, flash)" ;;

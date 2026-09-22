@@ -565,6 +565,18 @@ SGL_READABLE=0; FLASH_READABLE=0
 FLASH_ENABLED=0; SGL_ENABLED=0
 systemctl is-enabled --quiet qwen38-flash.service 2>/dev/null && FLASH_ENABLED=1
 systemctl is-enabled --quiet qwen38-sglang.service 2>/dev/null && SGL_ENABLED=1
+# The image lane is a lane too, and when it is the one enabled at boot it was switched to
+# on purpose. A plain re-run must keep that, the same promise it keeps for the target, the
+# context mode and the port: without this it fell through to "27b" below, enabled the 27B
+# unit beside the image one, and left two engines set to start at the next reboot, with
+# only the order systemd happened to pull them in deciding which one came up.
+IMAGE_BOOT=0
+if systemctl is-enabled --quiet qwen38-image.service 2>/dev/null \
+   && [ "$SGL_ENABLED" -eq 0 ] && [ "$FLASH_ENABLED" -eq 0 ]; then
+  IMAGE_BOOT=1
+  echo "The image lane is this box's boot lane: this run brings the text lane up to date"
+  echo "without making it the boot lane again. Switch back to text from the cockpit when you want it."
+fi
 if [ "$FLASH_READABLE" -eq 1 ] && [ "$FLASH_ENABLED" -eq 1 ] && [ "$SGL_ENABLED" -eq 1 ]; then
   echo "NOTE: both qwen38-sglang and qwen38-flash are enabled (only one can serve the port)."
   echo "      Following the 27B unit; run ./switch-model.sh to resolve this cleanly."
@@ -1527,7 +1539,24 @@ if [ -f "/etc/systemd/system/$UNIT_NAME.d/warmup.conf" ]; then
 fi
 rm -f "$CONFIG_DIR/warmup-claude-code.sh"
 sudo systemctl daemon-reload
-sudo systemctl enable "$UNIT_NAME"
+if [ "$IMAGE_BOOT" -eq 0 ]; then
+  sudo systemctl enable "$UNIT_NAME"
+else
+  # Updated, not switched to. Starting it would stop the image lane that is serving, and
+  # the cockpit and the image step below only run once a text engine has proved itself,
+  # so this path finishes here, on its own, instead of waiting for a boot it must not do.
+  if [ "$COCKPIT" -eq 1 ] && [ -x "$REPO_DIR/dashboard/install-dashboard.sh" ]; then
+    "$REPO_DIR/dashboard/install-dashboard.sh" \
+      || echo "NOTE: the cockpit did not reinstall; retry with ./dashboard/install-dashboard.sh"
+  fi
+  # --no-smoke always: the smoke test starts and stops the lane, and this lane is serving.
+  "$REPO_DIR/install-image.sh" --no-smoke \
+    || echo "NOTE: the image lane did not update; retry with ./install-image.sh --no-smoke"
+  step "Done: the text lane is up to date; the image lane stays this box's serving lane"
+  echo "  text lane : installed as $UNIT_NAME, not enabled at boot"
+  echo "  back to it: the cockpit's switcher, or ./switch-model.sh $MODEL_CHOICE"
+  exit 0
+fi
 
 if [ "$NO_START" -eq 1 ]; then
   step "Done (service installed and enabled at boot; start it with: sudo systemctl start $UNIT_NAME)"
@@ -1722,7 +1751,7 @@ except Exception as e:
     fi
     [ "$COCKPIT" -eq 0 ] && echo "  cockpit    : off (--no-cockpit); ./install.sh --with-cockpit turns it on"
     if [ "${IMAGE_READY:-0}" -eq 1 ]; then
-      echo "  Images     : sudo systemctl start qwen38-image.service  (stops the LLM lane; Image tab of the cockpit)"
+      echo "  Images     : a third lane; switch to Qwen-Image 2.1 in the cockpit (or ./switch-model.sh image)"
     elif [ "${IMAGE_ON:-0}" -eq 0 ]; then
       echo "  Images     : not installed; ./install.sh --with-image adds the Qwen-Image 2.1 lane (38 GB)"
     fi

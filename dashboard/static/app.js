@@ -41,8 +41,28 @@ const TRANSITIONAL = new Set(['starting', 'loading-weights', 'loading-draft', 'a
 const STAGE_LABEL = {'init': 'init', 'loading-weights': 'weights', 'loading-draft': 'draft', 'allocating-kv': 'KV', 'capturing-graphs': 'graphs', 'warming-up': 'warmup'};
 const ALL_STAGES = Object.keys(STAGE_LABEL);
 const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B',
-                  'qwen38-image.service': 'the image lane'};
+                  'qwen38-image.service': 'Qwen-Image'};
+// How long each lane takes to answer after a start, before the box has seen one of its
+// boots. Measured on the reference box: the text lanes load, compile and capture graphs
+// for about nine minutes; the image lane loads 31 GB and warms up in about 70 seconds.
+// Once a lane has booted in front of the cockpit, its own median replaces these.
+const READY_DEFAULT = {'qwen38-sglang.service': 540, 'qwen38-flash.service': 780,
+                       'qwen38-image.service': 70};
+function readyIn(unit){
+  const e = ((F.life || {}).engines || {})[unit] || {};
+  const b = (e.boots || []).slice().sort((a, c) => a - c);
+  const s = b.length ? b[Math.floor(b.length / 2)] : (READY_DEFAULT[unit] || 540);
+  return 'about ' + fmtDur(s);
+}
 const IMAGE_UNIT = 'qwen38-image.service';
+// The image lane's live facts. Declared up here, not beside the Image tab's code: the
+// lane pill and the action bar read them too, and a const read before its line has run
+// is a ReferenceError that takes the whole page down with it.
+const IMG_STATE = {port: 30020, host: '127.0.0.1', available: false, busy: false};
+let imgInflight = null;    // when this page's own request started, or null
+let IMG_RUN = null;        // the shape of that request: {w, h, steps, n, editing}
+let IMG_RUNPROG = null;    // the run bar, held by reference (it moves into the frame)
+function imgRunProg(){ return IMG_RUNPROG || (IMG_RUNPROG = $('imgrunprog')); }
 const AGENT_UNIT = 'opencode-web.service';
 // Both lanes have several targets sharing one unit, so the lane name alone ("27B",
 // "flash") does not say which checkpoint is loaded. Every control that names a lane
@@ -50,7 +70,8 @@ const AGENT_UNIT = 'opencode-web.service';
 // purpose: it is that lane's default and the lane name already reads right.
 const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8',
                       'uncensored-fp8': 'FP8 uncensored', flash: '',
-                      'flash-uncensored': 'uncensored', 'flash-nvda': 'NVIDIA export'};
+                      'flash-uncensored': 'uncensored', 'flash-nvda': 'NVIDIA export',
+                      image: '2.1'};
 function laneLabel(unit){
   if (unit === AGENT_UNIT) return 'the opencode web server';
   const base = LANE_NAME[unit] || unit.replace('.service', '');
@@ -62,7 +83,7 @@ function laneLabel(unit){
   const t = target && TARGET_SHORT[target] ? ' ' + TARGET_SHORT[target] : '';
   return base + t;
 }
-const laneCls = name => name.includes('flash') ? 'flash' : 'lane27';
+const laneCls = name => name.includes('flash') ? 'flash' : name === IMAGE_UNIT ? 'laneimg' : 'lane27';
 const stateChipCls = st => (STATE_CHIP[st] ?? 'warn') + (st === 'stopping' || TRANSITIONAL.has(st) ? ' live' : '');
 
 // ── tabs and the collapsible rail ─────────────────────────────────────────────
@@ -274,6 +295,16 @@ function servingReady(){
   const s = servingEngine();
   return !!(s && ['ready', 'degraded', 'wedged'].includes(s[1].state));
 }
+// A TEXT engine is up. Not the same question once the image lane exists: the pool,
+// the context window, Flush cache, Abort all and Smoke all talk to the text engine on
+// :30000, and with the image lane serving that port is closed. Asking servingReady()
+// there enabled three buttons that would hit a dead port and left the previous LLM's
+// facts on screen under an image engine.
+function textReady(){
+  const s = servingEngine();
+  return servingReady() && !!s && s[0] !== IMAGE_UNIT;
+}
+const imageServing = () => { const s = servingEngine(); return !!s && s[0] === IMAGE_UNIT; };
 function rPool(){
   const l = F.load || {};
   if (!F.pool){ setText('poollab', 'waiting for the engine'); $('poolfill').style.width = '0%'; setText('poolnote', 'the pool size arrives with the engine (max_total_num_tokens at boot)'); return; }
@@ -366,6 +397,7 @@ function rKernel(d){
 }
 function rUnits(d){
   F.units = d.units || {};
+  const sel = $('switchsel'); if (sel) markInstalled(sel);
   const box = $('unitlist'); clear(box);
   Object.entries(F.units).filter(([n]) => n.includes('keepalive')).forEach(([name, u]) => {
     const row = el('div', 'eng'); const top = el('div', 'row');
@@ -553,7 +585,12 @@ function rLanePill(){
   setText('lanename', laneLabel(name));
   const l = F.load || {};
   let sub = '';
-  if (e.state === 'ready' || e.state === 'degraded'){
+  if ((e.state === 'ready' || e.state === 'degraded') && name === IMAGE_UNIT){
+    // no pool and no running count: the image lane serves one request at a time, and
+    // what is worth a glance is whether it is working on one right now
+    const busy = IMG_STATE.busy || imgInflight;
+    sub = (busy ? 'generating' : 'idle, one image at a time') + (e.elapsed ? ` · up ${fmtDur(e.elapsed)}` : '');
+  } else if (e.state === 'ready' || e.state === 'degraded'){
     sub = (F.pool ? `pool ${Math.round(100 * (l.num_tokens || 0) / F.pool)} %` : '') + ((l.num_reqs || 0) ? ` · ${l.num_reqs} running` : '') + (e.elapsed ? ` · up ${fmtDur(e.elapsed)}` : '');
   } else if (TRANSITIONAL.has(e.state)){
     const eta = e.eta && e.elapsed ? Math.max(0, e.eta - e.elapsed) : null;
@@ -563,18 +600,30 @@ function rLanePill(){
   }
   setText('lanesub', sub);
 }
-function bootBlock(e){
-  const doneN = (e.stage_done || []).length, stage = ALL_STAGES[doneN] || 'init';
-  const pct = e.eta && e.elapsed ? Math.min(97, 100 * e.elapsed / e.eta) : Math.min(95, 8 + doneN * (84 / ALL_STAGES.length));
-  const eta = e.eta && e.elapsed ? Math.max(0, e.eta - e.elapsed) : null;
+function bootBlock(e, unit){
+  // Each engine names the stages it walks: the image lane has no draft, no KV pool
+  // and no CUDA graphs, and drawing those as pending would say it is stuck on them.
+  const stagesOf = e.stages && e.stages.length ? e.stages : ALL_STAGES;
+  const doneN = (e.stage_done || []).length, stage = stagesOf[doneN] || 'init';
+  // Before the cockpit has watched a boot of this lane, the duration measured on the
+  // reference box stands in: "learning the duration" is true and tells nobody anything.
+  const learned = !!e.eta;
+  const etaTotal = e.eta || (unit ? READY_DEFAULT[unit] : null);
+  const pct = etaTotal && e.elapsed ? Math.min(97, 100 * e.elapsed / etaTotal) : Math.min(95, 8 + doneN * (84 / stagesOf.length));
+  const eta = etaTotal && e.elapsed ? Math.max(0, etaTotal - e.elapsed) : null;
   const boot = el('div', 'boot');
   const bar = el('div', 'bbar'); const fill = el('div', 'bfill'); fill.style.width = pct.toFixed(1) + '%'; bar.append(fill); boot.append(bar);
   const stages = el('div', 'stages');
-  ALL_STAGES.forEach((st, i) => stages.append(el('span', 'stage ' + (i < doneN ? 'done' : st === stage ? 'now' : ''), STAGE_LABEL[st])));
+  stagesOf.forEach((st, i) => stages.append(el('span', 'stage ' + (i < doneN ? 'done' : st === stage ? 'now' : ''), STAGE_LABEL[st])));
   boot.append(stages);
   const lab = el('div', 'blab');
-  lab.append(el('span', null, `${STATE_LABEL[e.state] || stage} · ${fmtDur(e.elapsed)} elapsed`));
-  lab.append(el('span', null, eta != null ? `about ${fmtDur(eta)} left (median of ${(e.boots || []).length} boots)` : 'first boot: learning the duration'));
+  // what it is loading right now, when the engine says: "loading weights" for half a
+  // minute says less than "the 13.3 GB DiT"
+  const doing = e.detail && e.detail !== 'ready' ? ` (${e.detail})` : '';
+  lab.append(el('span', null, `${STATE_LABEL[e.state] || stage}${doing} · ${fmtDur(e.elapsed)} elapsed`));
+  lab.append(el('span', null, eta == null ? 'first boot: learning the duration'
+    : learned ? `about ${fmtDur(eta)} left (median of ${(e.boots || []).length} boots)`
+    : `about ${fmtDur(eta)} left (measured on the reference box; this box learns its own)`));
   boot.append(lab);
   if (e.rebuild) boot.append(el('div', 'why warn', 'the flash PLE table is being rebuilt: this boot takes about 12 minutes instead of 9'));
   if (e.overdue) boot.append(el('div', 'why warn', 'this boot is taking more than twice the usual time: check the Logs tab'));
@@ -605,7 +654,9 @@ function engineCard(name){
     const on = e.state !== 'stopped' && e.state !== 'failed';
     const warns = [];
     if (on && TRANSITIONAL.has(e.state) && name.includes('flash')) warns.push('stopping the flash lane mid-boot marks the PLE table dirty: the NEXT boot rebuilds it (about 12 min)');
-    if (on && e.state === 'ready') warns.push('clients on :30001 get "engine unavailable" until an engine is back (about 9 min after a start)');
+    if (on && e.state === 'ready') warns.push(name === IMAGE_UNIT
+      ? 'an image being generated right now is lost, and the Image tab has nothing to talk to until this lane is back (' + readyIn(name) + ' after a start)'
+      : 'clients on :30001 get "engine unavailable" until an engine is back (' + readyIn(name) + ' after a start)');
     askAction('unit', {verb: on ? 'stop' : 'start', unit: name}, ['sudo', '-n', '/usr/bin/systemctl', on ? 'stop' : 'start', name], warns);
   });
   CARDS.set(name, c); $('enginelist').append(root);
@@ -613,6 +664,7 @@ function engineCard(name){
 }
 function rLifecycle(d){
   F.life = d; syncSelector(); rLanePill(); renderLaneAction();
+  if (typeof imgRenderLane === 'function') imgRenderLane();
   const g = d.pool_guard;
   if (g){
     F.poolGuard = g;
@@ -652,23 +704,24 @@ function rLifecycle(d){
     c.hist.textContent = hist;
     // the animated block is rebuilt only when its shape changes, its numbers every tick
     const sig = TRANSITIONAL.has(e.state) ? 'boot' : e.state === 'stopping' ? 'stop' : 'none';
-    if (sig !== c.sig || sig !== 'none'){ clear(c.extra); if (sig === 'boot') c.extra.append(bootBlock(e)); if (sig === 'stop') c.extra.append(stoppingBlock(e)); c.sig = sig; }
+    if (sig !== c.sig || sig !== 'none'){ clear(c.extra); if (sig === 'boot') c.extra.append(bootBlock(e, name)); if (sig === 'stop') c.extra.append(stoppingBlock(e)); c.sig = sig; }
   });
   // overview lane card: the serving engine's card, mirrored
   const ov = $('ovlane'); clear(ov);
   const s = servingEngine();
   // engine facts belong to a lane that is actually up: while it boots, stops or is gone,
   // say so rather than showing the previous lane's model, pool and percentages
-  if (!servingReady()) rEngineInfoDown(s ? 'engine ' + (STATE_LABEL[s[1].state] || s[1].state) : 'no engine running');
+  if (!textReady()) rEngineInfoDown(imageServing() ? 'the image lane is serving, so there is no text engine: its facts are in the Image tab'
+                                    : s ? 'engine ' + (STATE_LABEL[s[1].state] || s[1].state) : 'no engine running');
   if (!s){
-    const p = el('p', 'empty', 'No engine is serving. Start the enabled lane from the action bar (about 9 minutes to ready), or switch the target first.');
+    const p = el('p', 'empty', `No engine is serving. Start ${laneLabel(enabledUnit())} from the action bar (${readyIn(enabledUnit())} to ready), or switch the target first.`);
     ov.append(p);
   } else {
     const [name, e] = s; const row = el('div', 'row');
     row.append(el('span', 'chip ' + stateChipCls(e.state), STATE_LABEL[e.state] || e.state), el('span', 'name', laneLabel(name)),
                el('span', 'chip ' + laneCls(name), name.replace('.service', '')), el('span', 'since', e.state === 'ready' && e.elapsed ? 'up ' + fmtDur(e.elapsed) : ''));
     ov.append(row);
-    if (TRANSITIONAL.has(e.state)) ov.append(bootBlock(e));
+    if (TRANSITIONAL.has(e.state)) ov.append(bootBlock(e, name));
     else if (e.state === 'stopping') ov.append(stoppingBlock(e));
     else if (e.state === 'wedged') ov.append(el('div', 'why warn', 'the engine answers health checks but generates nothing: the autoheal belt restarts it after its grace period (Engines tab, Logs tab for the forensics)'));
     else if (e.state === 'degraded') ov.append(el('div', 'why warn', 'the engine was serving and stopped answering: probes retry every 2 s'));
@@ -690,10 +743,30 @@ function rLifecycle(d){
   badge('engines', bad ? (STATE_BADGE[bad] || 'check') : trans ? 'booting' : '', bad ? 'err' : trans ? 'warn' : '');
   applyBusy();
 }
+// Which unit serves a target, and how that lane is installed when it is not.
+const TARGET_UNIT = t => t === 'image' ? IMAGE_UNIT : t.startsWith('flash') ? 'qwen38-flash.service' : 'qwen38-sglang.service';
+const LANE_INSTALL = {'qwen38-sglang.service': './install.sh', 'qwen38-flash.service': 'MODEL_CHOICE=flash ./install.sh',
+                      'qwen38-image.service': './install.sh --with-image'};
+// An option whose lane has no unit file on this box is shown as such and cannot be
+// picked. Picking it used to be allowed, and the switch then failed a second later
+// with "not installed": the image lane is opt-in, so that was the default on most boxes.
+function markInstalled(sel){
+  const units = F.units || {};
+  if (!Object.keys(units).length) return;         // no facts yet: leave it as it is
+  sel.querySelectorAll('option').forEach(o => {
+    if (!o.dataset.label) o.dataset.label = o.textContent;
+    const u = TARGET_UNIT(o.value);
+    const missing = (units[u] || {}).enabled === '';
+    o.disabled = missing;
+    o.textContent = o.dataset.label + (missing ? '  (not installed)' : '');
+    o.title = missing ? `this lane is not installed on this box: ${LANE_INSTALL[u]}` : '';
+  });
+}
 function syncSelector(){
   // show the target of the lane that is serving, booting, or enabled: never just the
   // first option, which read as "stock" through nine minutes of an FP8 boot
   const sel = $('switchsel');
+  if (sel) markInstalled(sel);
   if (!sel || sel.dataset.touched) return;
   const eng = (F.life || {}).engines || {};
   const s = servingEngine();
@@ -709,7 +782,7 @@ const JOBLINES = {id: null, lines: []};
 // as the parameter dict that happens to be its wire format.
 const ACTION_PHRASE = {
   unit: p => `${p.verb || 'act on'} ${String(p.unit || '').replace('.service', '')}`,
-  switch: p => `switch to ${TARGET_SHORT[p.target] || p.target || 'flash 176B'}`,
+  switch: p => `switch to ${p.target === 'image' ? 'Qwen-Image 2.1' : (TARGET_SHORT[p.target] || p.target || 'flash 176B')}`,
   flush_cache: () => 'flush the radix cache',
   abort_all: () => 'abort every generation in flight',
   smoke: () => 'smoke probe through the proxy',
@@ -795,8 +868,10 @@ function applyBusy(){
   const busy = !!(F.job && F.job.current);
   const why = offline ? 'the cockpit is unreachable: actions are disabled until the connection is back'
             : busy ? `another action is running (${F.job.current.action}); wait for it to finish` : '';
-  const engineUp = servingReady();
-  const noEngineWhy = engineUp ? '' : 'no engine is serving: start one first (it answers in about 9 minutes)';
+  const engineUp = textReady();
+  const noEngineWhy = engineUp ? '' : imageServing()
+    ? 'the image lane is serving: this acts on the text engine, which is not running'
+    : `no engine is serving: start one first (it answers in ${readyIn(enabledUnit())})`;
   document.querySelectorAll('[data-act]').forEach(b => {
     if (b.id === 'lanebtn') return;
     if (b.dataset.act === 'unit'){
@@ -829,7 +904,7 @@ function renderLaneAction(why){
     const name = enabledUnit(); const bl = ((F.life || {}).blocked || {})[`unit:start:${name}`];
     b.textContent = `Start ${LANE_NAME[name] || name.replace('.service', '')}`; b.className = 'btn mini low';
     b.disabled = !!(why || bl || !F.life);
-    b.title = why || (bl ? bl[0] : `Start ${laneLabel(name)} (systemctl start ${name}, about 9 minutes to ready)`);
+    b.title = why || (bl ? bl[0] : `Start ${laneLabel(name)} (systemctl start ${name}, ${readyIn(name)} to ready)`);
     b.onclick = () => askAction('unit', {verb: 'start', unit: name}, ['sudo', '-n', '/usr/bin/systemctl', 'start', name], []);
   }
 }
@@ -1058,7 +1133,7 @@ function apply(state){
       if (!errors[name]) renderErr[name] = e.message;   // a bug here, not a dead source
       // a timeout on a busy engine is not a lane change: keep the last known facts and
       // let the panel age visibly. Only lifecycle decides that a lane is gone.
-      if (name === 'engine_info' && !servingReady()) rEngineInfoDown();
+      if (name === 'engine_info' && !textReady()) rEngineInfoDown();
       warnOnce(name, e.message);
     }
   }
@@ -1105,8 +1180,13 @@ function banners(state, errors){
   if ((upd.stale_code || []).length) add('warn', 'This cockpit is running older code than the files on disk.',
     `${upd.stale_code.join(', ')} changed under it, so its controls and its checks no longer agree. Restart it: sudo systemctl restart qwen38-dashboard.service`);
   const ocf = F.ocfit;
+  // The limit is the usable share of the pool (the proxy keeps 8% back), which is a
+  // number printed nowhere else on the page: said alone, "823,193" beside a panel reading
+  // "KV pool 894,775" reads as the cockpit contradicting itself. So both are named.
   if (ocf && !ocf.ok) add('warn', 'opencode asks for more than this engine can hold.',
-    `${ocf.why} (${fmtN(ocf.asked)} asked against ${fmtN(ocf.limit)} on ${ocf.served}): the session would break mid-conversation when the proxy refuses the prompt. Setup tab, "Fit the limits to this engine".`);
+    `${ocf.why}: opencode declares ${fmtN(ocf.asked)} tokens, and ${ocf.served} can serve ${fmtN(ocf.limit)}`
+    + (ocf.pool && ocf.limit === ocf.usable ? ` (the ${fmtN(ocf.pool)}-token pool this boot got, less the 8% the proxy keeps back)` : '')
+    + `. The session would break mid-conversation when the proxy refuses the prompt. Setup tab, "Fit the limits to this engine".`);
   ((F.life || {}).orphans || []).forEach(o => add('warn',
     `${LANE_NAME[o.unit] || o.unit} is running outside systemd.`,
     `The container ${o.container} is serving${o.image ? ` from ${o.image}` : ''}, but its unit is stopped, so the buttons here cannot manage it and a reboot will not bring it back. Stop it from a terminal (docker rm -f ${o.container}) and start the unit instead.`));
@@ -1161,15 +1241,23 @@ function toast(text, cls, ms = 4000){
 }
 function askAction(name, params, argv, warns){
   if (offline){ toast('The cockpit is unreachable right now: nothing can be started.', 'err'); return; }
-  if (NEEDS_ENGINE.has(name) && !servingReady()){ toast('No engine is serving: start one first, then this action has something to talk to.', 'warn'); return; }
+  if (NEEDS_ENGINE.has(name) && !textReady()){ toast(imageServing()
+      ? 'The image lane is serving: this action talks to the text engine, which is not running.'
+      : 'No engine is serving: start one first, then this action has something to talk to.', 'warn'); return; }
   if (F.job && F.job.current){ toast(`Another action is running (${F.job.current.action}). Wait for the job strip to finish.`, 'warn'); return; }
   if (!$('modal').hidden) return;
-  const TARGET_NAME = {stock: 'stock 27B (NVFP4)', uncensored: 'uncensored 27B (NVFP4)',
+  const TARGET_NAME = {image: 'Qwen-Image 2.1 (images)',
+                       stock: 'stock 27B (NVFP4)', uncensored: 'uncensored 27B (NVFP4)',
                        fp8: 'FP8 27B (Qwen official)', 'uncensored-fp8': 'FP8 27B abliterated',
                        flash: 'flash 176B (NVFP4)',
                        'flash-uncensored': 'flash 176B uncensored (NVFP4)',
                        'flash-nvda': 'flash 176B, NVIDIA export'};
   const TARGET_NOTE = {
+    image: 'The image lane: text to image, editing with up to ten references, and native RGBA. '
+         + 'It is a third lane with its own unit and its own venv, and like the other two it '
+         + 'takes the box alone: 31 GB of weights do not fit beside a serving LLM. It answers in '
+         + 'about 70 seconds after a start. The proxy on :30001 and opencode are text clients '
+         + 'and are left exactly as they are.',
     fp8: 'Qwen\u2019s own FP8 release: the most faithful weights of this lane, and the heaviest. '
        + '30.9 GB against 21 GB for NVFP4, and SGLang takes that out of the KV pool: expect around '
        + '200,000 fewer tokens of context and a slower decode, because this box is bandwidth bound. '
@@ -1190,19 +1278,20 @@ function askAction(name, params, argv, warns){
                   switch: p => `switch the target model to ${TARGET_NAME[p.target] || p.target}`,
                   flush_cache: () => 'flush the engine cache', abort_all: () => 'abort every in-flight generation', smoke: () => 'run a smoke generation through the proxy', diag_bundle: () => 'write a diagnostics bundle'};
   const IMAGE_EXPLAIN = {
-    start: 'systemd starts the image lane and, through the unit\u2019s own Conflicts=, stops whichever text lane '
-         + 'is serving: 31 GB of image weights do not fit beside a serving LLM. It answers in about 70 seconds. '
-         + 'Starting a text lane again later stops this one the same way.',
-    stop: 'systemd stops the image lane. It does NOT bring a text lane back by itself: start the one you want.',
-    restart: 'systemd restarts the image lane; it reloads 31 GB and answers again in about 70 seconds.'};
+    start: `systemd starts the image lane: it loads 31 GB (the Qwen3-VL encoder, the DiT, the VAE) and answers in ${readyIn(IMAGE_UNIT)}. `
+         + 'Like every lane it takes the box alone, so this is only offered once no other engine is running.',
+    stop: 'systemd stops the image lane and the 31 GB come back at once. It does not bring a text lane back by itself: start the one you want.',
+    restart: `systemd restarts the image lane; it reloads 31 GB and answers again in ${readyIn(IMAGE_UNIT)}.`};
   const AGENT_EXPLAIN = {stop: 'systemd stops opencode serve: the Agent tab goes dark until the server is started again.',
                          start: 'systemd starts opencode serve on loopback; the Agent tab is back within seconds.',
                          restart: 'systemd restarts opencode serve, which picks up an upgraded binary; the Agent tab reconnects by itself within seconds.'};
   const EXPLAIN = {unit: p => p.unit === AGENT_UNIT ? AGENT_EXPLAIN[p.verb] || ''
                      : p.unit === IMAGE_UNIT ? IMAGE_EXPLAIN[p.verb] || ''
-                     : p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : 'systemd starts the unit; the engine loads its weights and is ready in about 9 minutes (watch the boot bar).',
+                     : p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : `systemd starts the unit; the engine loads its weights and is ready in ${readyIn(p.unit)} (watch the boot bar).`,
                    switch: p => (TARGET_NOTE[p.target] ? TARGET_NOTE[p.target] + '\n\n' : '')
-                     + 'switch-model.sh rewrites the unit for the chosen target, updates the boot enablement, the proxy ceiling and the opencode default model. It never restarts anything: stop and start the engines afterwards.',
+                     + (p.target === 'image'
+                        ? 'switch-model.sh verifies the checkpoint and makes the image lane the one unit enabled at boot. It never restarts anything: stop the serving lane, then start this one.'
+                        : 'switch-model.sh rewrites the unit for the chosen target, updates the boot enablement, the proxy ceiling and the opencode default model. It never restarts anything: stop and start the engines afterwards.'),
                    flush_cache: () => 'Empties the radix cache. Harmless; refused by the engine if requests are running.',
                    abort_all: () => 'Every running or queued generation ends now; the clients see their stream end.',
                    smoke: () => 'One real 200-token generation through the proxy, the way a client uses it (up to a few minutes while a boot finishes).',
@@ -1689,16 +1778,14 @@ const IMG_EXAMPLES = {
   'Transparent sticker': {mode: 't2i', bg: 'transparent',
     prompt: 'This is an RGBA image with transparency. A cute cartoon dragon sticker. The image has an '
           + 'alpha channel and the background is transparent.'},
+  // the cookbook's own edit example, word for word, and the subject of "Use a sample"
   'Local edit': {mode: 'edit',
-    prompt: 'Change the book cover to blue, keeping its shape, the candle, the table and the lighting unchanged.'},
+    prompt: 'Change the red teapot to blue, keeping its shape, table, window, and lighting unchanged.'},
   'Combine two': {mode: 'edit',
     prompt: 'Combine the subjects from Picture 1 and Picture 2 into one coherent scene, preserving their appearance.'},
 };
 let imgRefs = [];          // [{name, dataUrl, w, h}], in the order the model labels them
-// Declared here rather than beside imgLane(), because imgSync() reads `available` and
-// runs long before the first status poll comes back.
-const IMG_STATE = {port: 30020, host: '127.0.0.1', available: false, busy: false};
-let imgInflight = null;    // when this page's own request started, or null
+
 
 const imgVal = id => ($(id) ? $(id).value.trim() : '');
 function imgSize(){
@@ -1731,18 +1818,25 @@ function imgProblem(){
   return '';
 }
 
-// Fitted to this box, not to the engine's own stage timings: end-to-end seconds against
-// steps at 1024x1024 (8/20/40/60 -> 8.4/19.8/38.2/57.3) and against pixels at 40 steps
-// (512/768/1024/1664x928 -> 9.0/22.6/38.2/60.4). Both are very nearly linear. Editing
-// pays for one more encode: 44.6 s where the same generation costs 38.2.
-function imgEstimate(){
+// Fitted to this box, end to end, on six measured sizes at 40 steps: 512x512 9.0 s,
+// 768x768 22.6, 1024x1024 36.6-38.2, 1664x928 60.4, 2048x2048 190.9, 2752x1536 193.1.
+// Not linear in pixels: four times the pixels of 1024x1024 cost 5.2 times the time,
+// because attention grows faster than the token count. A power law fits all six within
+// 6%: t = 1 + steps x 0.97 x (pixels / 1024^2)^1.14. Linear in steps, measured at 1024
+// (8/20/40/60 -> 8.4/19.8/38.2/57.3). Editing pays for one more encode: 44.6 s where the
+// same generation costs 38.2.
+function imgEstimate(req){
+  const q = req || imgFormRequest();
+  if (!q.w || !q.h || !q.steps) return null;
+  const px = (q.w * q.h) / (1024 * 1024);
+  return (1 + q.steps * 0.97 * Math.pow(px, 1.14) + (q.editing ? 6 : 0)) * (q.n || 1);
+}
+// What the form would send. The request in flight keeps its own copy (IMG_RUN), because
+// the form can change under it, and the sample reference is a request of its own.
+function imgFormRequest(){
   const {w, h} = imgSize();
-  const steps = Number($('imgsteps').value) || 0;
-  const n = Number($('imgn').value) || 1;
-  if (!w || !h || !steps) return null;
-  const px = (w * h) / (1024 * 1024);
-  const editing = $('imgmode-edit').getAttribute('aria-pressed') === 'true';
-  return (0.9 + steps * 0.94 * px + (editing ? 6 : 0)) * n;
+  return {w, h, steps: Number($('imgsteps').value) || 0, n: Number($('imgn').value) || 1,
+          editing: $('imgmode-edit').getAttribute('aria-pressed') === 'true'};
 }
 
 function imgCost(){
@@ -1751,7 +1845,7 @@ function imgCost(){
   const bits = [];
   if (secs) bits.push('about ' + fmtDur(secs) + ' on this box');
   if (w && h) bits.push((w * h / 1e6).toFixed(2) + ' megapixels');
-  if (w >= 2048 || h >= 2048) bits.push('this is four times the verified size: slower, and it has not been measured here');
+  if (w * h >= 3.5e6) bits.push('peaks at 44.8 GB instead of 34: four times the pixels, five times the time');
   setText('imgcost', bits.join(' · '));
 }
 
@@ -1896,6 +1990,7 @@ function imgDraw(out, fmt){
   // The format is the one this answer was REQUESTED with, captured by the caller. Read
   // off the select at click time instead, changing it without regenerating saved PNG
   // bytes under a .webp name.
+  imgParkBar();                      // before the frame holding it is emptied
   const box = $('imgout'); clear(box);
   const imgs = (out.data || []);
   const shots = el('div', 'shots' + (imgs.length > 1 ? ' multi' : ''));
@@ -1937,14 +2032,39 @@ function imgDraw(out, fmt){
 // and an empty panel for 38 seconds looks like nothing is happening.
 function imgFrame(n){
   const {w, h} = imgSize();
+  imgParkBar();                      // before the frame holding it is emptied
   const box = $('imgout'); clear(box);
   const wrap = el('div', 'shots' + (n > 1 ? ' multi' : ''));
   for (let i = 0; i < Math.min(n, 2); i++){
-    const f = el('div', 'frame', n > 1 ? `image ${i + 1} of ${n}` : `${w} x ${h}`);
+    const f = el('div', 'frame');
     f.style.aspectRatio = `${w} / ${h}`;
+    // The progress goes inside the frame of the answer it is producing, where the eye
+    // already is. Below it, a 1024 square pushed it off a laptop screen.
+    if (i === 0) f.append(imgRunProg());
+    else f.append(el('span', null, `image ${i + 1} of ${n}`));
     wrap.append(f);
   }
   box.append(wrap);
+  // On a phone the result panel sits under the form: bring it on screen, or the wait
+  // happens somewhere the user cannot see.
+  const panel = box.closest('.panel');
+  const r = panel && panel.getBoundingClientRect();
+  if (r && (r.top > window.innerHeight * 0.6 || r.bottom < 0)){
+    // Offset by the sticky bars as they are right now: on a phone the top bar wraps onto
+    // two or three rows, so a fixed margin would park the panel's own header under it.
+    const cover = [...document.querySelectorAll('.top, .jobstrip')]
+      .reduce((h, e) => h + (e.offsetParent !== null ? e.getBoundingClientRect().height : 0), 0);
+    window.scrollTo({top: window.scrollY + r.top - cover - 8, behavior: 'smooth'});
+  }
+}
+// The bar has a home under the output, and leaves it only while a request runs. It is
+// held by reference because it travels INTO the frame, and emptying the output panel
+// (a finished image, a refusal) detaches it: getElementById does not find a detached
+// node, so the next generation would have appended null.
+function imgParkBar(){
+  const p = imgRunProg(); const meta = $('imgmeta');
+  if (p && meta && p.nextElementSibling !== meta) meta.before(p);
+  if (p) p.hidden = true;
 }
 
 async function imgRun(){
@@ -1956,7 +2076,7 @@ async function imgRun(){
   setText('imgstatus', editing ? 'editing...' : 'generating...');
   setChip('imgtime', est ? '~' + fmtDur(est) : '');
   const t0 = Date.now();
-  imgInflight = t0;
+  imgInflight = t0; IMG_RUN = imgFormRequest();
   imgFrame(Number($('imgn').value) || 1);
   clear($('imgmeta'));
   imgStageAt = {stage: '', at: 0};
@@ -1978,7 +2098,7 @@ async function imgRun(){
     if (!r.ok){
       const why = out.error || (out.refused ? JSON.stringify(out.refused).slice(0, 300) : 'HTTP ' + r.status);
       if (r.status === 409){ toast(why, 'warn', 7000); setChip('imgtime', 'lane busy', 'warn'); return; }
-      clear($('imgout')); $('imgout').append(el('p', 'note', 'Refused with HTTP ' + r.status + ': ' + why));
+      imgParkBar(); clear($('imgout')); $('imgout').append(el('p', 'note', 'Refused with HTTP ' + r.status + ': ' + why));
       setChip('imgtime', r.status + ' refused', 'err');
       return;
     }
@@ -1988,22 +2108,12 @@ async function imgRun(){
     toast('The cockpit could not reach the image lane: ' + e.message, 'err');
     setChip('imgtime', 'failed', 'err');
   } finally {
-    clearInterval(tick); imgInflight = null;
-    $('imgrunprog').hidden = true;
+    clearInterval(tick); imgInflight = null; IMG_RUN = null;
+    imgParkBar();
     imgWatch(false);
     btn.disabled = false; setText('imgstatus', ''); imgSync();
     imgLane();                     // the lane may have gone away under the request
   }
-}
-
-// The lane is started and stopped from here, through the same modal, job strip and
-// sudoers allowlist as every other unit. A tab that tells you to open a terminal is not
-// a cockpit, which is the whole point of this page.
-function imgUnitButton(verb, label, warns){
-  const b = el('button', 'btn mini' + (verb === 'start' ? '' : ' low'), label);
-  b.addEventListener('click', () => askAction('unit', {verb, unit: IMAGE_UNIT},
-    ['sudo', '-n', '/usr/bin/systemctl', verb, IMAGE_UNIT], warns));
-  return b;
 }
 
 let imgPoll = null;
@@ -2025,7 +2135,7 @@ function imgWatch(on, ms = 2500){
 // per-step signal: tqdm writes with carriage returns, journald only breaks on newlines,
 // /metrics is not served and /stats is empty.
 function imgBar(ids, prog, right, pct){
-  const box = $(ids.box);
+  const box = ids.box === 'imgrunprog' ? imgRunProg() : $(ids.box);
   if (!prog || !prog.label){ box.hidden = true; return; }
   box.hidden = false;
   box.classList.toggle('indet', pct == null);
@@ -2036,7 +2146,6 @@ function imgBar(ids, prog, right, pct){
   // is a width. Going from a full track to 2% would read as progress running backwards.
   $(ids.bar).style.width = pct == null ? '100%' : Math.max(2, Math.min(100, pct)) + '%';
 }
-const IMG_BOOT_BAR = {box: 'imgbootprog', lab: 'imgbootlab', pct: 'imgbootpct', bar: 'imgbootbar'};
 const IMG_RUN_BAR = {box: 'imgrunprog', lab: 'imgrunlab', pct: 'imgrunpct', bar: 'imgrunbar'};
 
 // When the engine entered the stage it is in now. The page times the bar from here
@@ -2050,14 +2159,20 @@ function imgDrawRunBar(p){
   if (p.stage !== 'denoising')
     return imgBar(IMG_RUN_BAR, p, fmtDur(secs), null);   // seconds, no honest fraction
   // Denoising is nearly all of the cost and is linear in steps, measured on this box.
-  const steps = Number($('imgsteps').value) || 40;
-  const budget = Math.max(1, imgEstimate() - 3);
+  // Timed against the request that is actually running, not the form as it reads now.
+  const req = IMG_RUN || imgFormRequest();
+  const steps = req.steps || 40;
+  const budget = Math.max(1, imgEstimate(req) - 3);
   const frac = Math.min(secs / budget, 0.99);
   imgBar(IMG_RUN_BAR, {label: `denoising, ${steps} steps`},
          `about ${Math.round(frac * 100)}%, ~${fmtDur(Math.max(0, budget - secs))} left`,
          frac * 100);
 }
 
+// The Image tab reads the SAME lifecycle as the action bar, the lane pill and the
+// Engines tab, so the four can never disagree about whether this lane is up. It has no
+// start or stop of its own: the image lane is switched to and started exactly like the
+// two text lanes, from the one switcher at the top.
 async function imgLane(){
   try{
     const r = await fetch('/api/image');
@@ -2066,47 +2181,68 @@ async function imgLane(){
     IMG_STATE.port = d.port || 30020;
     IMG_STATE.host = d.host || '127.0.0.1';
     IMG_STATE.available = !!d.available;
-    setText('imgmodel', d.model || 'Qwen/Qwen-Image-2.1');
-    const ctl = $('imgctl'); clear(ctl);
-    if (!d.installed){
-      setChip('imgchip', 'not installed', 'warn');
-      ctl.append(el('span', 'chip', 'install it with:  ./install.sh --with-image'));
-      ctl.append(el('span', 'chip', '38 GB, about 25 min, one command'));
-      imgWatch(false);
-    } else if (d.available){
-      setChip('imgchip', 'serving on :' + IMG_STATE.port, 'ok');
-      ctl.append(imgUnitButton('stop', 'Stop the image lane'));
-      ctl.append(el('span', 'chip', d.llm_lane
-        ? 'the text lane is stopped while this serves' : 'this lane has the box'));
-      imgWatch(false);
-    } else if (d.state === 'loading weights' || d.state === 'starting'){
-      setChip('imgchip', 'starting', 'warn');
-      ctl.append(el('span', 'chip', 'about a minute; the button turns on by itself'));
-      ctl.append(imgUnitButton('stop', 'Stop'));
-      imgWatch(true, 2000);
-    } else {
-      setChip('imgchip', d.state || 'stopped', d.state === 'failed' ? 'err' : '');
-      ctl.append(imgUnitButton('start', 'Start the image lane',
-        d.llm_lane ? ['Starting this STOPS ' + d.llm_lane + ': 31 GB of image weights do not fit '
-                      + 'beside a serving LLM. Bringing the text lane back afterwards is another '
-                      + '9 minutes of boot.'] : []));
-      if (d.llm_lane) ctl.append(el('span', 'chip', 'serving now: ' + d.llm_lane));
-      if (d.state === 'failed') ctl.append(el('span', 'chip', 'read why in the Logs tab'));
-      imgWatch(false);
-    }
+    IMG_STATE.installed = !!d.installed;
+    IMG_STATE.model = d.model || 'Qwen/Qwen-Image-2.1';
     const p = d.progress || {};
-    imgBar(IMG_BOOT_BAR, p.kind === 'boot' ? p : null, (p.pct || 0) + '%', p.pct);
     if (imgInflight) imgDrawRunBar(p.kind === 'boot' ? null : p);
     // Someone else generating counts: this lane serves one at a time, and a second
     // request does not queue politely, it holds another 60 GB of a 122 GB box.
-    const busyElsewhere = !imgInflight && p.kind === 'stage';
-    IMG_STATE.busy = busyElsewhere;
-    if (busyElsewhere){
-      setChip('imgchip', 'busy: ' + p.label, 'warn');
-      imgWatch(true, 2000);
-    }
-    $('imgrun').disabled = !d.available || busyElsewhere || !!imgProblem() || !imgVal('imgprompt');
+    IMG_STATE.busy = !imgInflight && p.kind === 'stage';
+    IMG_STATE.busyLabel = p.label || '';
+    if (IMG_STATE.busy) imgWatch(true, 2000);
+    imgRenderLane();
   } catch (e){ setChip('imgchip', 'unknown', 'warn'); }
+}
+
+// Render only, no request: called from imgLane() and from every lifecycle tick, so a
+// boot moves here at the same pace it moves in the Engines tab.
+function imgRenderLane(){
+  if (!$('imgctl')) return;
+  setText('imgmodel', IMG_STATE.model || 'Qwen/Qwen-Image-2.1');
+  const e = ((F.life || {}).engines || {})[IMAGE_UNIT];
+  const ctl = $('imgctl'); clear(ctl);
+  const boot = $('imgboot'); clear(boot);
+  const guide = $('imgsteps-guide'); clear(guide); guide.hidden = true;
+  const say = txt => ctl.append(el('span', 'chip', txt));
+  const serving = servingEngine();
+  const other = serving && serving[0] !== IMAGE_UNIT ? serving[0] : null;
+  const otherName = other ? laneLabel(other) : '';
+  // The lifecycle only carries this unit when it is installed, so its presence is the
+  // answer; the fetch's own flag may not have come back yet on a first render.
+  if (!e){
+    setChip('imgchip', 'not installed', 'warn');
+    say('install it with:  ./install.sh --with-image');
+    say('38 GB, about 25 min, one command');
+  } else if (e.state === 'ready' || e.state === 'degraded'){
+    setChip('imgchip', IMG_STATE.busy ? 'busy: ' + IMG_STATE.busyLabel : 'serving on :' + IMG_STATE.port,
+            IMG_STATE.busy ? 'warn' : 'ok');
+    say(IMG_STATE.busy ? 'someone is generating: one image at a time on this lane'
+                       : 'stop it from the action bar at the top, like any lane');
+  } else if (TRANSITIONAL.has(e.state)){
+    setChip('imgchip', STATE_LABEL[e.state] || e.state, 'warn');
+    boot.append(bootBlock(e, IMAGE_UNIT));
+    say('Generate turns on by itself the moment it answers');
+  } else if (e.state === 'stopping'){
+    setChip('imgchip', 'stopping', 'warn');
+    boot.append(stoppingBlock(e));
+  } else {
+    setChip('imgchip', e.state === 'failed' ? 'failed' : 'stopped', e.state === 'failed' ? 'err' : '');
+    if (e.state === 'failed') say('the unit failed: its journal is in the Logs tab');
+    // The same three moves as for any lane, in the action bar at the top, named exactly
+    // as its buttons read. Only the steps still to do are shown, the first one marked.
+    const steps = [];
+    if (other) steps.push(`Stop ${LANE_NAME[other] || otherName}: ${otherName} is serving, and two engines never run at once`);
+    if (enabledUnit() !== IMAGE_UNIT) steps.push('Pick Qwen-Image 2.1 in the switcher, then press Switch');
+    steps.push(`Press Start Qwen-Image (${readyIn(IMAGE_UNIT)} to ready)`);
+    guide.hidden = false;
+    steps.forEach((s, i) => guide.append(el('li', i === 0 ? 'now' : '', s)));
+  }
+  // The lifecycle derives ready from the lane's own /health answering 200, every two
+  // seconds. Trusting it here, rather than the tab's last fetch, is what lets Generate
+  // turn on by itself at the end of a boot the tab watched from its first second.
+  const ready = !!e && (e.state === 'ready' || e.state === 'degraded');
+  IMG_STATE.available = ready;
+  $('imgrun').disabled = !ready || IMG_STATE.busy || !!imgProblem() || !imgVal('imgprompt');
 }
 
 function imgInit(){
@@ -2131,10 +2267,23 @@ function imgInit(){
     toast('Back to the model’s own defaults: 1024×1024, 40 steps, one image, CFG off.', 'ok', 2600); });
   $('imgrefadd').addEventListener('click', () => $('imgreffile').click());
   $('imgreffile').addEventListener('change', e => { imgAddFiles(e.target.files); e.target.value = ''; });
+  // The sample is a generation like any other, so it waits like one: the same frame,
+  // the same bar in it, the same lock on both buttons. It used to run for twenty seconds
+  // behind a one-line status, with both buttons still live, so a second click was a
+  // second request the cockpit refused with 409 and a toast that read like a failure.
+  // The subject is the cookbook's own edit example, a red teapot by a window, so the
+  // "Local edit" prompt (also the cookbook's) actually describes what is in the picture.
   $('imgrefsample').addEventListener('click', async () => {
     if (imgRefs.length >= 10) return toast('Ten references is the maximum.', 'warn');
-    setText('imgstatus', 'making a sample to edit...');
-    const saved = {prompt: $('imgprompt').value, mode: $('imgmode-edit').getAttribute('aria-pressed')};
+    if (imgInflight || IMG_STATE.busy) return toast('The lane is already generating; one image at a time.', 'warn');
+    const btns = [$('imgrefsample'), $('imgrun')];
+    btns.forEach(b => { b.disabled = true; });
+    const t0 = Date.now(); imgInflight = t0;
+    IMG_RUN = {w: 1024, h: 1024, steps: 20, n: 1, editing: false};   // what the sample asks for
+    setText('imgstatus', 'making a sample reference: a red teapot by a window');
+    imgFrame(1); imgStageAt = {stage: '', at: 0};
+    imgBar(IMG_RUN_BAR, {label: 'making the sample reference'}, '', null);
+    imgWatch(true, 1500);
     try{
       const t = await fetch('/api/csrf', {method: 'POST'}); if (t.status === 401) return login();
       const tok = (await t.json()).token;
@@ -2143,17 +2292,22 @@ function imgInit(){
           + 'next to a window, even natural light', width: 1024, height: 1024, num_inference_steps: 20, n: 1,
           output_format: 'png', response_format: 'b64_json', generator_device: 'cpu', seed: 42})});
       const out = await r.json();
-      if (!r.ok) return toast('Could not make a sample: ' + (out.error || r.status), 'err');
+      if (!r.ok) return toast(r.status === 409 ? out.error : 'Could not make a sample: ' + (out.error || r.status),
+                              r.status === 409 ? 'warn' : 'err', 7000);
       const first = ((out.image || out).data || [])[0];
       if (!first || !first.b64_json)
         return toast('The lane answered 200 with no image in it.', 'err');
       imgRefs.push({name: 'sample-teapot.png', dataUrl: 'data:image/png;base64,' + first.b64_json,
                     w: 1024, h: 1024});
+      imgDraw(out.image || out, 'png');
       imgDrawRefs();
-      toast('Sample added as Picture ' + imgRefs.length + '. Try the "Local edit" example on it.', 'ok');
+      toast('Sample added as Picture ' + imgRefs.length + ': a red teapot. The "Local edit" example turns it blue.', 'ok', 5000);
     } catch (e){
       toast('Could not make a sample: ' + e.message, 'err');
-    } finally { setText('imgstatus', ''); $('imgprompt').value = saved.prompt; imgSync(); }
+    } finally {
+      imgInflight = null; IMG_RUN = null; imgParkBar(); imgWatch(false);
+      setText('imgstatus', ''); btns.forEach(b => { b.disabled = false; }); imgSync();
+    }
   });
   $('imgrun').addEventListener('click', imgRun);
   $('imgcopy').addEventListener('click', async () => {

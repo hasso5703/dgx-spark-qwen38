@@ -14,31 +14,43 @@ Once installed, a plain `./install.sh` keeps it and updates it. `./install-image
 installs or repairs it on its own, and `./install-image.sh --uninstall` removes the unit
 and the runtime (the checkpoint stays in your HF cache).
 
-## One engine at a time
+## A third lane, switched to like the other two
 
-31 GB of weights do not fit beside a serving LLM, and a request peaks at 34.8 GB on top
-of that. The unit says so rather than a README:
+Once installed, the image lane is driven exactly like the 27B and flash lanes, from the
+same three controls at the top of the cockpit, and it obeys the same rule.
 
-```ini
-Conflicts=qwen38-sglang.service qwen38-flash.service qwen38-llamacpp.service
-```
+1. **Pick `Qwen-Image 2.1`** in the switcher (it sits under its own *Images* heading)
+   and press **Switch**. `switch-model.sh image` verifies the checkpoint and makes the
+   image lane the one unit enabled at boot. Like every switch, it never starts or
+   stops anything.
+2. **Stop** the lane that is serving. The action bar's lane button reads `Stop 27B`
+   while the 27B serves.
+3. **Start Qwen-Image**. It answers in about 70 seconds; the lane pill, the Engines card
+   and the Image tab all show which component it is loading, in the engine's own words
+   ("the 16.5 GB Qwen3-VL encoder", "the 13.3 GB DiT"), and Generate turns on by itself.
 
-Starting the image lane stops the text lane. Starting a text lane stops the image lane.
-Nothing has to be remembered, and nothing can be bypassed by typing `systemctl start`.
-The image unit is **not enabled at boot**: a box that reboots comes back the way its
-owner left it.
+Back to text is the same three moves the other way. From a terminal the switch is
+`./switch-model.sh image` (or `stock`), and it prints the two commands that follow.
 
-The Image tab has the buttons, through the same confirmation modal, job strip and
-sudoers allowlist as every other unit on this box. The modal says what `Conflicts=` is
-about to do before it does it, and the tab keeps asking while the 31 GB load, because
-the unit reads `active` and `/health` answers 503 for that whole minute and a bit.
+**Never two engines at once.** 31 GB of weights do not fit beside a serving LLM, and a
+request peaks at 34.8 GB on top of that. The cockpit refuses to start any engine while
+another one is busy, and says which one to stop, for all three lanes alike: starting the
+image lane while the 27B serves comes back `409 blocked`, and so does starting the 27B
+while the image lane loads. That gate used to pick "the other engine" with `[0]`, which
+with three of them checked one neighbour in two.
 
-From a terminal, if you prefer one:
+The unit also carries `Conflicts=` with every text unit, as a second belt for a
+`systemctl start` typed at a terminal, which the cockpit's gate never sees. Through the
+cockpit it is never reached, because the start is refused first.
 
-```bash
-sudo systemctl start qwen38-image.service     # images, text lane stops
-sudo systemctl start qwen38-sglang.service    # text, image lane stops
-```
+The Image tab has no start or stop of its own. The first version had one, and it started
+this lane by a path none of the others use, stopping the text lane silently through
+`Conflicts=` where every other lane is refused with "stop it first". The tab now says
+which of the three moves is next, naming the buttons as they read on screen.
+
+The Engines tab's Flush cache, Abort all and Smoke are greyed out while the image lane
+serves: they talk to the text engine on :30000, which is closed then. They used to test
+"is an engine ready", which the image lane is.
 
 ## Why a venv and not the docker image
 
@@ -148,6 +160,14 @@ its current stage in its log.
 
 Nothing enforces this below the cockpit. A script that posts twice to port 30020 will
 still do what the numbers above describe.
+
+**What is not detected.** When the engine wedged that afternoon, its `/health` kept
+answering `200` the whole time, while a generation request timed out and nothing reached
+its log. The lifecycle derives "ready" from `/health`, so a wedge like that one would read
+as ready. The text lanes have a generation canary for exactly this (health fine, nothing
+generated); this lane does not yet. The one-at-a-time rule removes the one cause that was
+measured. If the Image tab ever waits far past its estimate on a lane that reads ready,
+stop and start it from the action bar.
 
 ## Three refusals worth knowing before a client hits them
 

@@ -25,7 +25,7 @@
        clay = broken. Green, orange, blue and neon pink are gone from this app. */
     --acc:#d8b161; --acc-hi:#ecd9a4; --ok:#d8b161; --warn:#b5814e; --err:#c9706a;
     /* the two lanes share the house palette: flash wears the gold, 27B the steel */
-    --flash:#d8b161; --lane27:#9d9ea3;
+    --flash:#d8b161; --lane27:#9d9ea3; --image:#7fa6b8;
     --shadow:0 10px 30px rgba(0,0,0,.5);
     --rail:236px; --rail-min:64px; --top:58px;
     /* One spacing scale for the whole app, so no component invents its own. */
@@ -193,6 +193,7 @@
   .chip.warn{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 50%, transparent); background:color-mix(in srgb, var(--warn) 12%, transparent)}
   .chip.flash{color:var(--flash); border-color:color-mix(in srgb, var(--flash) 50%, transparent); background:color-mix(in srgb, var(--flash) 12%, transparent)}
   .chip.lane27{color:var(--lane27); border-color:color-mix(in srgb, var(--lane27) 50%, transparent); background:color-mix(in srgb, var(--lane27) 12%, transparent)}
+  .chip.laneimg{color:var(--image); border-color:color-mix(in srgb, var(--image) 50%, transparent); background:color-mix(in srgb, var(--image) 12%, transparent)}
   .chip.live::before{content:''; display:inline-block; width:7px; height:7px; border-radius:50%; background:currentColor; margin-right:6px; animation:pulse 1.2s ease-in-out infinite}
   .skel{color:transparent !important; background:linear-gradient(90deg, var(--soft), var(--line), var(--soft)); background-size:200% 100%;
         animation:skel 1.2s linear infinite; border-radius:6px}
@@ -386,6 +387,15 @@
   .img .warn{font-size:12px; color:var(--err); margin:7px 0 0; line-height:1.55}
   .img .cost{font:400 12px var(--mono); color:var(--mut); margin-top:8px}
   /* the checkerboard is the instrument: it is what makes an alpha channel visible */
+  /* The answer fits the screen: a square 1024 frame at the panel's width is taller than
+     a laptop viewport, which put the progress bar and then the image's own facts below
+     the fold, the one place nobody was looking while they waited. */
+  .img .shot img{max-height:62vh; object-fit:contain}
+  .img .frame{max-height:62vh}
+  .img .frame .prog{width:min(420px, 86%); margin:0; text-align:left}
+  .img .steps{margin:9px 0 0; padding-left:20px; font-size:13px; line-height:1.7; color:var(--mut)}
+  .img .steps li.now{color:var(--txt); font-weight:600}
+  .img .steps li.done{text-decoration:line-through; opacity:.6}
   .img .shot{border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; line-height:0;
              background-color:#f3f3f3;
              background-image:linear-gradient(45deg,#d2d2d2 25%,transparent 25%,transparent 75%,#d2d2d2 75%),
@@ -408,7 +418,7 @@
      off the engine's own log. The phase name is exact; the bar is real per-step progress
      once denoising starts. */
   .img .prog{margin-top:10px}
-  .img .prog .lab{display:flex; justify-content:space-between; gap:10px; align-items:baseline;
+  .img .prog .lab{display:flex; justify-content:space-between; gap:4px 10px; align-items:baseline; flex-wrap:wrap;
                   font:400 12px/1.5 var(--mono); color:var(--mut); margin-bottom:5px}
   .img .prog .lab b{color:var(--txt); font-weight:600}
   .img .prog .tr{height:7px; border-radius:5px; overflow:hidden; border:1px solid var(--line);
@@ -425,12 +435,12 @@
   @keyframes imgpulse{0%,100%{opacity:.45} 50%{opacity:1}}
   @media (prefers-reduced-motion:reduce){
     .img .prog.indet .fl{animation:imgpulse 1.8s ease-in-out infinite; left:0; width:100% !important}
-    .img .frame{animation:none}
   }
+  /* no opacity pulse on the frame itself: it now holds the progress text, and a
+     fading label is a label nobody can read. The bar inside carries the motion. */
   .img .frame{border:1px dashed var(--line); border-radius:var(--r-ctl); display:grid;
               place-items:center; color:var(--mut); font:400 12px var(--mono); text-align:center;
-              background:color-mix(in srgb, var(--card2) 40%, transparent); padding:14px;
-              animation:imgpulse 2s ease-in-out infinite}
+              background:color-mix(in srgb, var(--card2) 40%, transparent); padding:14px}
   @media (max-width:900px){ .img .shots.multi{grid-template-columns:1fr} }
 
   /* ── modal ── */
@@ -652,13 +662,18 @@
   <div class="actbar" id="actbar" aria-label="Actions">
     <div class="grp" title="Change which model the serving unit runs (the switch itself never restarts anything)">
       <select id="switchsel" aria-label="Target model to switch to">
-        <option value="stock">27B stock (NVFP4)</option>
-        <option value="uncensored">27B uncensored (NVFP4)</option>
-        <option value="fp8">27B FP8 (Qwen)</option>
-        <option value="uncensored-fp8">27B FP8 uncensored</option>
-        <option value="flash">flash 176B (NVFP4)</option>
-        <option value="flash-uncensored">flash 176B uncensored</option>
-        <option value="flash-nvda">flash 176B (NVIDIA export)</option>
+        <optgroup label="Text">
+          <option value="stock">27B stock (NVFP4)</option>
+          <option value="uncensored">27B uncensored (NVFP4)</option>
+          <option value="fp8">27B FP8 (Qwen)</option>
+          <option value="uncensored-fp8">27B FP8 uncensored</option>
+          <option value="flash">flash 176B (NVFP4)</option>
+          <option value="flash-uncensored">flash 176B uncensored</option>
+          <option value="flash-nvda">flash 176B (NVIDIA export)</option>
+        </optgroup>
+        <optgroup label="Images">
+          <option value="image">Qwen-Image 2.1</option>
+        </optgroup>
       </select>
       <button class="btn mini" data-act="switch">Switch</button>
     </div>
@@ -1065,10 +1080,8 @@
           <dt>Licence</dt><dd>Qwen Research License: research and evaluation, <b>not commercial use</b></dd>
         </dl>
         <div id="imgctl" class="meta" style="margin-top:12px"></div>
-          <div class="prog" id="imgbootprog" hidden>
-            <div class="lab"><span id="imgbootlab"></span><span class="num" id="imgbootpct"></span></div>
-            <div class="tr"><span class="fl" id="imgbootbar" style="width:0%"></span></div>
-          </div>
+          <ol class="steps" id="imgsteps-guide" hidden></ol>
+          <div id="imgboot"></div>
       </section>
 
       <div class="s1grid">
@@ -1177,9 +1190,9 @@
         <section class="panel s1wide">
           <h3>What each setting costs <span class="right"><span class="chip">measured on this box, 2026-09-22</span></span></h3>
           <p class="note" style="margin:0 0 10px">Every number below came from a request to this lane, not from the cookbook.
-            Time is dominated by pixels and steps and is very nearly linear in both, which is where the estimate under the
-            button comes from: about 0.9 s fixed, plus 0.94 s per step at 1024&times;1024, scaled by megapixels. An edit pays
-            for one more encode, six seconds.</p>
+            Time is linear in steps and a little faster than linear in pixels: four times the pixels of 1024&times;1024 cost
+            5.2 times the time, because attention grows faster than the token count. The estimate under the button is the
+            curve through the sizes below, within 6% of every one of them. An edit pays for one more encode, six seconds.</p>
           <div class="tablewrap">
             <table id="imgbench">
               <thead><tr><th>request</th><th class="r">time</th><th class="r">peak memory</th><th>result</th></tr></thead>
@@ -1188,6 +1201,8 @@
                 <tr><td>768&times;768, 40 steps</td><td class="r num">22.6 s</td><td class="r num">31.9 GB</td><td>RGBA</td></tr>
                 <tr><td><b>1024&times;1024, 40 steps (the defaults)</b></td><td class="r num"><b>38.2 s</b></td><td class="r num">34.8 GB</td><td>RGBA</td></tr>
                 <tr><td>1664&times;928, 40 steps</td><td class="r num">60.4 s</td><td class="r num">34.8 GB</td><td>RGBA</td></tr>
+                <tr><td>2048&times;2048, 40 steps (the model card's own size)</td><td class="r num">190.9 s</td><td class="r num">44.7 GB</td><td>RGBA</td></tr>
+                <tr><td>2752&times;1536, 40 steps (16:9 at the card's base)</td><td class="r num">193.1 s</td><td class="r num">44.8 GB</td><td>RGBA</td></tr>
                 <tr><td>1024&times;1024, 8 / 20 / 60 steps</td><td class="r num">8.4 / 19.8 / 57.3 s</td><td class="r num">31.9 GB</td><td>8 steps is visibly unfinished</td></tr>
                 <tr><td>transparent 1024&times;1024</td><td class="r num">39.8 s</td><td class="r num">34.8 GB</td><td>68% of pixels fully transparent</td></tr>
                 <tr><td>edit, one reference, 40 steps</td><td class="r num">44.6 s</td><td class="r num">34.8 GB</td><td>alpha preserved from the reference</td></tr>

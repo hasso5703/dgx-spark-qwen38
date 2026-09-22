@@ -1,0 +1,52 @@
+[09-22 17:20:37] Starting server...
+[09-22 17:20:43] Scheduler (dp replica 0) bind at endpoint: tcp://127.0.0.1:5563
+[09-22 17:20:43] torch.compile cache: TORCHINDUCTOR_CACHE_DIR=/home/hasan/.cache/sgl_diffusion/torch_compile_cache/inductor TRITON_CACHE_DIR=/home/hasan/.cache/sgl_diffusion/torch_compile_cache/triton
+[09-22 17:20:43] Initializing distributed environment with world_size=1, device=cuda:0, timeout=3600
+[09-22 17:20:43] Setting distributed timeout to 3600 seconds
+[09-22 17:20:44] No pipeline_class_name specified, using model_index.json
+[09-22 17:20:44] Using pipeline from model_index.json: QwenImage21Pipeline
+[09-22 17:20:44] Loading pipeline modules...
+[09-22 17:20:44] Checking for cached model in Hugging Face Hub cache for Qwen/Qwen-Image-2.1...
+[09-22 17:20:44] Found complete model in cache at /home/hasan/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1/snapshots/790c92633540aa0cb11d9abf19eb46d861714758
+[09-22 17:20:44] Model path: /home/hasan/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1/snapshots/790c92633540aa0cb11d9abf19eb46d861714758
+[09-22 17:20:44] Diffusers version: 0.37.0.dev0
+[09-22 17:20:44] Loading required components: ['processor', 'text_encoder', 'transformer', 'vae', 'scheduler']
+[09-22 17:20:44] Memory-aware component load order: ['text_encoder', 'transformer', 'vae', 'processor', 'scheduler']
+Loading required modules:   0%|          | 0/5 [00:00<?, ?it/s][09-22 17:20:44] Loading text_encoder from /home/hasan/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1/snapshots/790c92633540aa0cb11d9abf19eb46d861714758/text_encoder. avail mem: 114.26 GB
+[09-22 17:20:44] Defaulting to Torch SDPA backend on SM12.x
+[09-22 17:20:44] Defaulting to Torch SDPA backend on SM12.x
+Loading safetensors checkpoint shards: 0%|          | 0/4[A
+Loading safetensors checkpoint shards: 25%|██▌       | 1/4[A
+Loading safetensors checkpoint shards: 50%|█████     | 2/4[A
+Loading safetensors checkpoint shards: 75%|███████▌  | 3/4[A
+Loading safetensors checkpoint shards: 100%|██████████| 4/4[ALoading safetensors checkpoint shards: 100%|██████████| 4/4
+[09-22 17:20:55] Attention backends for text_encoder: torch_sdpa
+[09-22 17:20:55] Loaded text_encoder: Qwen3VLForConditionalGeneration (sgl-diffusion version). model size: 16.46 GB, vram: 16.46 GB. avail GPU mem: 94.35 GB
+Loading required modules:  20%|██        | 1/5 [00:10<00:42, 10.69s/it][09-22 17:20:55] Loading transformer from /home/hasan/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1/snapshots/790c92633540aa0cb11d9abf19eb46d861714758/transformer. avail mem: 94.35 GB
+[09-22 17:20:55] Loading QwenImage21Transformer2DModel from 2 safetensors file(s) , param_dtype: torch.bfloat16
+[09-22 17:20:55] Defaulting to Torch SDPA backend on SM12.x
+Loading safetensors checkpoint shards: 0%|          | 0/2[ALoading safetensors checkpoint shards: 100%|██████████| 2/2
+[09-22 17:21:28] Attention backends for transformer: torch_sdpa
+[09-22 17:21:28] Loaded transformer: QwenImage21Transformer2DModel (sgl-diffusion version). model size: 13.25 GB, vram: 13.25 GB. avail GPU mem: 81.51 GB
+Loading required modules:  40%|████      | 2/5 [00:44<01:12, 24.29s/it][09-22 17:21:28] Loading vae from /home/hasan/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1/snapshots/790c92633540aa0cb11d9abf19eb46d861714758/vae. avail mem: 81.51 GB
+[09-22 17:21:34] Loaded vae: AutoencoderKLQwenImage21 (sgl-diffusion version). model size: 0.63 GB, vram: 0.63 GB. avail GPU mem: 80.83 GB
+Loading required modules:  60%|██████    | 3/5 [00:49<00:31, 15.55s/it][09-22 17:21:34] Loading processor from /home/hasan/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1/snapshots/790c92633540aa0cb11d9abf19eb46d861714758/processor. avail mem: 80.83 GB
+[09-22 17:21:34] Loaded processor: Qwen3VLProcessor (sgl-diffusion version). model size: NA GB, weights: none. avail GPU mem: 80.65 GB
+Loading required modules:  80%|████████  | 4/5 [00:50<00:09,  9.60s/it][09-22 17:21:34] Loading scheduler from /home/hasan/.cache/huggingface/hub/models--Qwen--Qwen-Image-2.1/snapshots/790c92633540aa0cb11d9abf19eb46d861714758/scheduler. avail mem: 80.65 GB
+[09-22 17:21:34] Loaded scheduler: FlowMatchEulerDiscreteScheduler (sgl-diffusion version). model size: NA GB, weights: none. avail GPU mem: 80.65 GB
+Loading required modules: 100%|██████████| 5/5 [00:50<00:00, 10.03s/it]
+[09-22 17:21:34] Creating pipeline stages...
+[09-22 17:21:34] Using torch_sdpa attention backend
+[09-22 17:21:34] Pipeline instantiated
+[09-22 17:21:34] Worker 0: Initialized device, model, and distributed environment.
+[09-22 17:21:34] Worker 0: Scheduler loop started.
+[09-22 17:21:34] [server-load] workers_ready_monotonic_ns=18688448723954
+[09-22 17:21:34] Starting FastAPI server.
+[2026-09-22 17:21:34] [32mINFO[0m:     Started server process [[36m1703598[0m]
+[2026-09-22 17:21:34] [32mINFO[0m:     Waiting for application startup.
+[09-22 17:21:34] ZMQ Broker is listening for offline jobs on tcp://127.0.0.1:30021
+[2026-09-22 17:21:34] [32mINFO[0m:     Application startup complete.
+[2026-09-22 17:21:34] [32mINFO[0m:     Uvicorn running on [1mhttp://127.0.0.1:30020[0m (Press CTRL+C to quit)
+[2026-09-22 17:21:35] [32mINFO[0m:     127.0.0.1:55518 - "[1mGET /liveness HTTP/1.1[0m" [32m200 OK[0m
+Warmup requests:   0%|          | 0/1 [00:00<?, ?req/s]Warmup requests: 100%|██████████| 1/1 [00:05<00:00,  5.98s/req, server warmup req (1024x1024, 2/40 steps), last=5.98s]Warmup requests: 100%|██████████| 1/1 [00:05<00:00,  5.98s/req, server warmup req (1024x1024, 2/40 steps), last=5.98s]
+[09-22 17:21:41] The server is fired up and ready to roll!
