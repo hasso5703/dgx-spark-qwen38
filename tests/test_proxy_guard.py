@@ -992,6 +992,11 @@ class SamplingFieldsTheEngineDiesOn(unittest.TestCase):
             "kproxy_sampling", HERE.parents[1] / "keepalive-proxy.py")
         self.m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.m)
+        # The probe reads the serving key before it sends anything, and a CI runner has
+        # none: _api_key() raised, the probe never left, and the two tests below passed
+        # or failed on whether the machine happened to have a key file. Stubbed, so they
+        # assert the guard instead of the box (found by CI, 2026-09-22).
+        self.m._api_key = lambda: "test-key"
 
     def refusal(self, obj, path="/v1/chat/completions", vocab=248320):
         return self.m.sampling_field_refusal(json.dumps(obj).encode(), path, vocab)
@@ -1090,6 +1095,21 @@ class SamplingFieldsTheEngineDiesOn(unittest.TestCase):
         finally:
             self.m.urllib.request.urlopen = real
             self.m._VOCAB.update(size=0, ts=0.0)
+
+    def test_a_box_with_no_readable_key_stands_the_guard_down(self):
+        """_api_key() reads a file, and a file can be missing or unreadable. The probe
+        must then leave the vocabulary unknown, which stands the two id checks down,
+        rather than refuse traffic it cannot judge."""
+        def no_key():
+            raise OSError("no key file here")
+
+        self.m._api_key = no_key
+        self.m._VOCAB.update(size=0, ts=0.0)
+        self.assertEqual(self.m.served_vocab(), 0)
+        self.assertIsNone(self.refusal({"stop_token_ids": [300000]},
+                                       vocab=self.m.served_vocab()))
+        self.assertIsNotNone(self.refusal({"stop_token_ids": [-1]},
+                                          vocab=self.m.served_vocab()))
 
     def test_a_failed_probe_is_not_retried_on_the_next_request(self):
         """A busy engine makes the probe time out. Retrying it per request would put an
