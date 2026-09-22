@@ -70,11 +70,15 @@ through it, and nothing else.** On this box the engine binds `0.0.0.0:30000`
 with no firewall in front of it, so anything on the LAN or the tailnet that
 holds the serving API key can reach the engine directly and end it, exactly
 as it could before these guards existed. The key is the boundary there, not
-the proxy. An operator who wants the guards to be the only door closes both
-ports to localhost, which since v1.16 is one variable each:
-`ENGINE_BIND=127.0.0.1 PROXY_BIND=127.0.0.1 ./install.sh`. The defaults
-stay open because a remote client of either port is a legitimate setup;
-an installed choice is kept across updates, in both directions.
+the proxy. **Since v1.17 the engine binds `127.0.0.1` by default**, so on a fresh
+install the proxy's guards are the only door and the engine is not on the
+network at all. Nothing is lost by it: the proxy is a full pass-through of
+every route the engine serves, so a client that used `:30000` from another
+machine uses `:30001` and gets the guards with it. `ENGINE_BIND=0.0.0.0`
+restores the old behaviour, `PROXY_BIND` does the same for the proxy, and an
+installed choice is kept across updates in both directions, so neither a
+hardened box nor one that deliberately exposed its engine is changed by an
+update nobody read about.
 
 **The cockpit (`dashboard/`, :30090)** reaches root through exactly one
 surface: the NOPASSWD sudoers lines rendered from

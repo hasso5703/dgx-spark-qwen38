@@ -11,9 +11,12 @@ Agent clients should connect to the **keepalive proxy** (default
 client watchdogs from killing long prefills, aborts decodes when clients
 disappear, caps and refuses what cannot be served with a body a client can
 act on, and aborts decodes that emit the corruption marker. The engine
-port (`:30000`) speaks the same APIs without that protection; the proxy is
-the door this repo leaves unlocked-for-your-clients, the engine is the door
-it assumes you walk through on a trusted network.
+port (`:30000`) speaks the same APIs without that protection, and **since
+v1.17 it binds `127.0.0.1`, so it answers on the box only**. That is the
+whole arrangement in one line: one door, and it is the one with the lock.
+`ENGINE_BIND=0.0.0.0 ./install.sh` puts the engine back on the network for
+a box that wants it, and a box that already had it there keeps it across
+updates.
 
 **The proxy also refuses the requests that take the engine down instead of being
 refused by it.** One is a prompt past the KV pool ([sglang#36333](https://github.com/sgl-project/sglang/issues/36333)),

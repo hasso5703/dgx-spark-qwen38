@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.17.0 (2026-09-22): the engine answers on localhost only, and that is the default
+
+**A changed default, and the reason it could change at all.** The engine listened on
+every interface. Seven days of journal on the reference box: **581,479 requests, every
+single one from 127.0.0.1**, while the machine was reached from a laptop and a phone on
+the cockpit port alone. An open port nobody uses would be an ordinary waste. This one is
+the port SGLang dies on rather than refuses (sglang#40076 and sglang#31597, both unfixed
+upstream, both refused at the proxy since v1.15.0), so leaving it open left a door beside
+the one with the lock.
+
+**Nothing is lost by closing it**, which is the only honest reason to move a default. The
+keepalive proxy on `PORT+1` is a full pass-through: every route the engine serves, both
+the OpenAI and the Anthropic dialects, the same `/v1/models` and `/metrics`, plus the
+guards. A client that pointed at `:30000` from another machine points at `:30001` and
+gets more, not less. The README has told agent clients to use that port since v1.5.
+
+The proxy's own default does not move. It is the door clients are told to use, and the
+one that refuses what the engine cannot.
+
+`ENGINE_BIND=0.0.0.0 ./install.sh` brings the old behaviour back, and **a box that
+already runs the engine on the network keeps it**: convergence holds in both directions,
+so an operator with a remote client on `:30000` does not lose it to an update they did
+not read about. Moving such a box to the new default is the same variable, once:
+`ENGINE_BIND=127.0.0.1 ./install.sh`.
+
+Eleven tests, and the recipe guard in the cockpit caught the placeholder this change
+added to three templates before CI was through its eighth step.
+
 ## v1.16.0 (2026-09-22): the engine and the proxy can answer on localhost only
 
 Both listened on every interface, and the reference box shows what that was worth. Seven

@@ -515,19 +515,25 @@ for _p in "$SGL_UNIT_PATH" "$FLASH_UNIT_PATH"; do
     echo "      MODEL_CHOICE=, pass them explicitly on this command."
   fi
 done
-# Which interface the engine and the proxy answer on. Both listened on every one of them
-# until v1.16, and on the reference box seven days of journal put 581,479 engine requests
-# and 8,288 proxy requests at 100% from 127.0.0.1: the clients that need them run on the
-# same machine, and what is reached from a laptop or a phone is the cockpit, which has
-# had its own COCKPIT_BIND since v1.5. An open port nobody uses is worth closing, and
-# these two are the ones SGLang dies on rather than refuses (sglang#40076, #31597,
-# SECURITY.md), so an operator who wants the proxy's guards to be the only door writes:
+# Which interface the engine and the proxy answer on.
 #
-#   ENGINE_BIND=127.0.0.1 PROXY_BIND=127.0.0.1 ./install.sh
+# THE ENGINE IS LOCALHOST-ONLY SINCE v1.17, and that is a changed default. It listened on
+# every interface before, and the measurement that decided it: seven days of journal on
+# the reference box, 581,479 requests to the engine, every single one from 127.0.0.1,
+# while the machine was reached from a laptop and a phone on the cockpit port alone. An
+# open port nobody uses would be an ordinary waste; this one is the port SGLang dies on
+# rather than refuses (sglang#40076 and sglang#31597, both unfixed upstream, both refused
+# at the proxy since v1.15.0). Leaving it open leaves a door beside the one with the lock.
 #
-# The defaults do not move. Somebody else's laptop may legitimately point at either port,
-# and a default must never take away something the operator did not ask to lose.
-ENGINE_BIND="${ENGINE_BIND:-0.0.0.0}"
+# Nothing is lost by closing it, which is why the default could move at all: the proxy on
+# PORT+1 is a full pass-through, every route the engine serves and the same OpenAI and
+# Anthropic dialects, plus the guards. A client that pointed at :30000 from another
+# machine points at :30001 and gets more, not less. ENGINE_BIND=0.0.0.0 restores the old
+# behaviour for a box that wants it.
+#
+# The proxy's own default does NOT move: it is the door clients are told to use, the
+# README has said so since v1.5, and it is the one that refuses what the engine cannot.
+ENGINE_BIND="${ENGINE_BIND:-127.0.0.1}"
 PROXY_BIND="${PROXY_BIND:-0.0.0.0}"
 for _b in "$ENGINE_BIND" "$PROXY_BIND"; do
   case "$_b" in

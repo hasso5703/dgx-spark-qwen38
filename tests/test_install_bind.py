@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """Which interface the engine and the proxy answer on, and who decides it.
 
-Both listened on every interface until v1.16, which is the default this repo shipped and
-the one it keeps: somebody else's laptop may legitimately point at either port, and a
-default must never take away something the operator did not ask to lose.
+Both listened on every interface until v1.17. The engine does not any more, and that is a
+changed default rather than a knob: seven days of journal on the reference box put
+581,479 engine requests at 100% from 127.0.0.1, while the machine was reached from a
+laptop and a phone on the cockpit port alone. An open port nobody uses would be an
+ordinary waste; this one is the port SGLang dies on rather than refuses (sglang#40076 and
+sglang#31597, both unfixed upstream, both refused at the proxy since v1.15.0), so leaving
+it open leaves a door beside the one with the lock.
 
-What the reference box measured is why the knob exists at all. Seven days of journal:
-581,479 requests to the engine and 8,288 to the proxy, every single one from 127.0.0.1,
-while the machine was reached from a MacBook and a phone on the cockpit port alone. Those
-two open ports are also the ones SGLang dies on rather than refuses (sglang#40076,
-sglang#31597, both unfixed upstream), so an operator who wants the proxy's guards to be
-the only door can close them:
+Nothing is lost by closing it, which is the only reason a default may move: the proxy on
+PORT+1 is a full pass-through, every route and both dialects, plus the guards. A client
+that pointed at :30000 from another machine points at :30001 and gets more, not less. The
+proxy's own default does not move, because it is the door clients are told to use.
 
-  ENGINE_BIND=127.0.0.1 PROXY_BIND=127.0.0.1 ./install.sh
-
-Three things are held here. The default does not move. A bad value is refused by name
-rather than written into a unit that then fails to start. And an installed choice wins
-over the default, because a box hardened to localhost that a plain `./install.sh`
-reopens would be the worst of the three outcomes: the operator would have no reason to
-look, and the port would be back.
+Four things are held here. The engine closes and the proxy stays open on a fresh install.
+`ENGINE_BIND=0.0.0.0` brings the old behaviour back for a box that wants it. A bad value
+is refused by name rather than written into a unit that fails to start minutes later. And
+an installed choice wins over the default IN BOTH DIRECTIONS: a box that had chosen to
+keep its engine on the network must not lose it to an update nobody read about, which is
+the same promise that protects a box hardened before v1.17.
 
 Every run stops at a later refusal on purpose, past the bind resolution and long before
 the preflight downloads anything.
@@ -90,13 +91,25 @@ KEPT_ENGINE = "Keeping the installed engine bind:"
 KEPT_PROXY = "Keeping the installed proxy bind:"
 
 
-class TheDefaultDoesNotMove(unittest.TestCase):
-    def test_a_fresh_install_still_answers_on_every_interface(self):
-        """The knob is for an operator who asks for it. Nobody's remote client breaks
-        because this repo decided their port should close."""
-        _, out = run(STOP, script=fresh_box(), **STOCK)
-        self.assertNotIn(KEPT_ENGINE, out)
+class TheDefaults(unittest.TestCase):
+    def test_a_fresh_install_closes_the_engine_and_leaves_the_proxy_open(self):
+        """The changed default of v1.17, asserted where it is decided. The engine is the
+        port SGLang dies on rather than refuses and the one nothing remote was using; the
+        proxy is the door clients are told to use and the one that refuses what the engine
+        cannot, so only the first moves."""
+        code, out = run(STOP, script=fresh_box(), **STOCK)
+        self.assertNotIn(KEPT_ENGINE, out, "a fresh box has no unit to converge from")
         self.assertNotIn(KEPT_PROXY, out)
+        # the resolution itself, read from the script rather than from a rendered unit,
+        # because this run stops before anything is written
+        text = (REPO / "install.sh").read_text()
+        self.assertIn('ENGINE_BIND="${ENGINE_BIND:-127.0.0.1}"', text)
+        self.assertIn('PROXY_BIND="${PROXY_BIND:-0.0.0.0}"', text)
+
+    def test_the_old_behaviour_is_one_variable_away(self):
+        """A box that wants the engine on the network says so, and is not argued with."""
+        _, out = run(STOP, script=fresh_box(), ENGINE_BIND="0.0.0.0", **STOCK)
+        self.assertNotIn("take an IPv4 address", out)
 
     def test_a_value_that_is_not_an_address_is_refused_by_name(self):
         """A bad bind writes a unit that fails to start minutes later, on a box whose
@@ -115,12 +128,6 @@ class TheDefaultDoesNotMove(unittest.TestCase):
 
 
 class AnInstalledChoiceWins(unittest.TestCase):
-    def test_a_box_closed_to_localhost_is_not_reopened_by_a_plain_update(self):
-        """The whole point. An operator who closed the port has no reason to re-read the
-        unit after an update, so an update that reopened it would go unnoticed."""
-        _, out = run(STOP, script=box_with_units(engine_host="127.0.0.1"), **STOCK)
-        self.assertIn(KEPT_ENGINE + " 127.0.0.1", out)
-
     def test_the_proxy_bind_is_kept_the_same_way(self):
         _, out = run(STOP, script=box_with_units(engine_host="0.0.0.0", proxy_bind="127.0.0.1"),
                      **STOCK)
@@ -132,10 +139,15 @@ class AnInstalledChoiceWins(unittest.TestCase):
                      ENGINE_BIND="0.0.0.0", **STOCK)
         self.assertNotIn(KEPT_ENGINE, out)
 
-    def test_an_open_box_stays_open_without_a_word(self):
-        """Nothing is said when nothing changed: a line per unchanged setting is how a
-        log stops being read."""
+    def test_a_box_that_kept_the_engine_open_is_not_closed_by_an_update(self):
+        """The default moved in v1.17, and convergence is what keeps that from reaching
+        a box that had already chosen otherwise: an operator with a remote client on
+        :30000 must not lose it to an update they did not read about."""
         _, out = run(STOP, script=box_with_units(engine_host="0.0.0.0"), **STOCK)
+        self.assertIn(KEPT_ENGINE + " 0.0.0.0", out)
+
+    def test_a_box_already_closed_says_nothing_because_nothing_changed(self):
+        _, out = run(STOP, script=box_with_units(engine_host="127.0.0.1"), **STOCK)
         self.assertNotIn(KEPT_ENGINE, out)
 
 
