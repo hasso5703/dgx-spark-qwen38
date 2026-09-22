@@ -1,0 +1,48 @@
+[Unit]
+Description=Qwen-Image 2.1 (SGLang Diffusion, native venv), OpenAI images API :__IMAGE_PORT__
+After=network-online.target
+Wants=network-online.target
+# One engine at a time on this box, and systemd is where that is said rather than in a
+# wrapper someone can bypass: the image checkpoint is 31 GB of weights and peaks at
+# 34.8 GB during a 1024px request (measured), while the LLM lane holds its pool for the
+# life of the process. Starting this stops the LLM lane; starting an LLM lane stops this.
+Conflicts=qwen38-sglang.service qwen38-flash.service qwen38-llamacpp.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__IMAGE_LANE_DIR__
+Environment=HF_HOME=__HF_CACHE__
+Environment=HF_HUB_OFFLINE=1
+Environment=PYTHONUNBUFFERED=1
+# The cookbook's DGX Spark recipe, and nothing else: one GPU, every component resident,
+# the runtime picking its own attention (it logs "Defaulting to Torch SDPA backend on
+# SM12.x"), full-image VAE decode, eager execution, batch 1. Forcing any of those is how
+# a verified recipe stops being the verified recipe.
+# NO --api-key, and that is not an omission. The diffusion runtime is a different parser
+# from the LLM one: it has no --api-key and no --sleep-on-idle, and passing either kills
+# the unit at startup with "unrecognized arguments" (measured 2026-09-22; `sglang serve
+# --help` lists them because without a resolvable diffusion model it prints the LLM
+# parser). So this lane cannot authenticate anyone, and the loopback bind below is the
+# only thing standing in front of it. The cockpit is the authenticated door.
+#
+# --output-path "" and --input-save-path "": by default this server writes every image it
+# makes AND every reference anyone uploads under its working directory, forever
+# (measured: 103 MB in one afternoon of testing). Both are read back as None when empty,
+# and the cockpit and the API take their pixels from the response, so nothing needs the
+# copy. Give them a directory instead if you want an archive, and watch it grow.
+ExecStart=__IMAGE_VENV__/bin/sglang serve \
+  --model-path __IMAGE_MODEL__ \
+  --performance-mode speed \
+  --output-path "" \
+  --input-save-path "" \
+  --host __IMAGE_BIND__ --port __IMAGE_PORT__
+Restart=on-failure
+RestartSec=15
+# Loading 31 GB of weights takes ~77 s from a warm page cache and longer from cold NVMe.
+TimeoutStartSec=900
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

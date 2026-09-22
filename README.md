@@ -249,6 +249,40 @@ calculation, which a thinking budget closes at 84.5% against 84.0% for 12 s a qu
 The contract key by key, the four levers, the refusal parity, the door under load, the label
 table and every trap on the way: **[docs/systemone.md](docs/systemone.md)**.
 
+## Images: Qwen-Image 2.1 on the same box (opt-in)
+
+`./install.sh --with-image` adds a second lane: text to image, image editing with up to ten
+references, and the native RGBA this model is built for. It is opt-in because it costs 38 GB
+(31 checkpoint, 7 runtime) and about 25 minutes, and once installed a plain re-run keeps it.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --with-image
+sudo systemctl start qwen38-image.service     # images (this stops the text lane)
+sudo systemctl start qwen38-sglang.service    # back to text
+```
+
+31 GB of weights do not fit beside a serving LLM, so the unit carries `Conflicts=` and the two
+lanes take turns. That is declared in systemd rather than left to a wrapper script, and the
+image unit is not enabled at boot.
+
+**Measured on a Spark, not copied from the cookbook:** 1024x1024 at 40 steps in **38.2 s**
+(34.8 GB peak), 512x512 in 9.0 s, an edit with one reference in 44.6 s, ten references in 69.6 s,
+and a transparent generation that comes back with 68% of its pixels genuinely transparent. Same
+seed twice is byte-identical.
+
+Three things bite before a client does: **width and height must be multiples of 32** (anything
+else is a bare HTTP 500), **an output format must always be sent** (left out, the API falls back
+to JPEG, this model always returns RGBA, and the plainest possible request fails), and **CFG needs
+both a scale above 1 and a negative prompt** (either alone is ignored byte for byte). The cockpit's
+**Image** tab refuses all three before they leave the box, exposes every parameter at the model's
+own defaults with a **Reset settings** button, and ships prompts and sample images to try.
+
+Editing redraws the whole picture rather than patching it: the edit you ask for happens, and the
+rest comes back with about twice the fine detail of what you sent (2.16x, reproduced across every
+reference, prompt, step count and guidance setting). Licence: Qwen Research, **not commercial**.
+
+Every number, every refusal and how the runtime is pinned: **[docs/image-lane.md](docs/image-lane.md)**.
+
 ## The 1M context mode
 
 Since v1.12.1 a plain 27B install serves a **1,010,000-token window** (YaRN static scaling, the

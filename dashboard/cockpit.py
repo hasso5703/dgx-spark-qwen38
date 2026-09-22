@@ -13,6 +13,7 @@ Then open http://127.0.0.1:30090 and paste the API key from
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import http.cookies
@@ -1495,6 +1496,182 @@ def systemone_call(payload: dict) -> tuple[int, dict]:
                      "seconds": round(time.time() - t0, 3)}
 
 
+# ── the image lane ──────────────────────────────────────────────────────────────
+# Qwen-Image 2.1, served by SGLang Diffusion in its own venv on its own port, installed
+# by ./install.sh --with-image. The browser never holds the serving key and never talks
+# to the lane: it sends a description of the call and this process makes it.
+IMAGE_UNIT = "qwen38-image.service"
+IMAGE_UNIT_PATH = Path("/etc/systemd/system/qwen38-image.service")
+IMAGE_LLM_UNITS = ("qwen38-sglang.service", "qwen38-flash.service")
+# Ten references at the size the browser caps them to, base64 and JSON-escaped, plus the
+# fields. Everything else on this server stays at the 64 KiB cap.
+IMAGE_MAX_POST = 40 * 1024 * 1024
+IMAGE_MAX_REFS = 10
+IMAGE_TIMEOUT = 1800.0          # 2048x2048 at 60 steps is minutes, and it is a valid ask
+
+
+def image_port() -> int:
+    """The port the installed unit actually serves on, not the one this file assumes."""
+    try:
+        for line in IMAGE_UNIT_PATH.read_text().splitlines():
+            if "--port" in line:
+                return int(line.split("--port", 1)[1].split()[0])
+    except Exception:                                   # noqa: BLE001 (absent unit is normal)
+        pass
+    return 30020
+
+
+def image_base() -> str:
+    return os.environ.get("COCKPIT_IMAGE", f"http://127.0.0.1:{image_port()}")
+
+
+def image_status() -> dict:
+    """Installed, running, answering. Three different things, and the tab says which."""
+    out = {"installed": IMAGE_UNIT_PATH.exists(), "port": image_port(),
+           "model": "Qwen/Qwen-Image-2.1", "state": "not installed",
+           "available": False, "llm_lane": ""}
+    if not out["installed"]:
+        return out
+    raw = run(["systemctl", "show", IMAGE_UNIT, "-p", "ActiveState"])
+    d = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
+    active = d.get("ActiveState", "?")
+    out["state"] = "starting" if active == "activating" else \
+                   "failed" if active == "failed" else \
+                   "running" if active == "active" else "stopped"
+    for u in IMAGE_LLM_UNITS:
+        if run(["systemctl", "is-active", u]).strip() == "active":
+            out["llm_lane"] = u
+    try:
+        for line in IMAGE_UNIT_PATH.read_text().splitlines():
+            if "--model-path" in line:
+                out["model"] = line.split("--model-path", 1)[1].split()[0]
+    except Exception:                                   # noqa: BLE001
+        pass
+    if out["state"] == "running":
+        # Active is not answering: 31 GB of weights take about 77 s to load, and the unit
+        # is active for all of it. Only a health check tells the tab it can send.
+        req = urllib.request.Request(image_base() + "/health")
+        try:
+            urllib.request.urlopen(req, timeout=4).read()
+            out["available"] = True
+        except urllib.error.HTTPError as e:
+            # /health answers 503 for the whole minute and a quarter it takes to load
+            # 31 GB of weights, while the unit reads `active` throughout. Answering is
+            # not the question; answering 200 is.
+            out["state"] = "loading weights" if e.code == 503 else f"answering HTTP {e.code}"
+        except Exception:                               # noqa: BLE001
+            out["state"] = "loading weights"
+    return out
+
+
+def _image_decoded_refs(payload: dict) -> tuple[list, str]:
+    """The data: URLs the browser sent, as bytes. Anything else is refused by shape."""
+    refs = payload.get("images") or []
+    if not isinstance(refs, list):
+        return [], "images must be a list of data URLs"
+    if not refs:
+        return [], "editing needs at least one reference image"
+    if len(refs) > IMAGE_MAX_REFS:
+        return [], f"this model takes at most {IMAGE_MAX_REFS} reference images"
+    out = []
+    for i, ref in enumerate(refs, 1):
+        if not isinstance(ref, str) or not ref.startswith("data:image/"):
+            return [], f"reference {i} is not an image data URL"
+        head, _, b64 = ref.partition(",")
+        if ";base64" not in head or not b64:
+            return [], f"reference {i} is not base64"
+        try:
+            raw = base64.b64decode(b64, validate=True)
+        except Exception:                               # noqa: BLE001
+            return [], f"reference {i} is not valid base64"
+        if not raw:
+            return [], f"reference {i} is empty"
+        out.append(raw)
+    return out, ""
+
+
+# Only what this model accepts, and nothing that lets a browser reach past the lane:
+# a page cannot ask for an upscaler path, a LoRA, a perf dump target or a diffusers
+# kwargs blob just because the protocol has a field for it.
+IMAGE_ALLOWED = {"prompt", "width", "height", "num_inference_steps", "n", "output_format",
+                 "response_format", "generator_device", "background", "seed",
+                 "true_cfg_scale", "guidance_scale", "flow_shift", "negative_prompt",
+                 "size", "max_sequence_length"}
+
+
+def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
+    """One image request, forwarded with the serving key this process holds."""
+    fields = {k: v for k, v in payload.items() if k in IMAGE_ALLOWED and v is not None}
+    if not str(fields.get("prompt", "")).strip():
+        return 400, {"error": "a prompt is required"}
+    # The two refusals worth making here rather than reading out of a 500 later.
+    for axis in ("width", "height"):
+        v = fields.get(axis)
+        if v is not None and (not isinstance(v, int) or v < 32 or v % 32):
+            return 400, {"error": f"{axis} must be a positive multiple of 32 "
+                                  f"(the engine answers a bare HTTP 500 otherwise)"}
+    if str(fields.get("output_format", "")).lower() in ("jpeg", "jpg"):
+        return 400, {"error": "this model returns RGBA for everything it makes and JPEG "
+                              "cannot hold an alpha channel, so the engine fails the "
+                              "encode and answers HTTP 500. Use png or webp."}
+    fields.setdefault("output_format", "png")           # left out, the engine picks JPEG
+    fields.setdefault("response_format", "b64_json")
+    if editing:
+        # The two endpoints do not take the size the same way: generations has width and
+        # height, edits has only `size`. Sent as width/height an edit silently ignores
+        # them and returns the reference's own size instead, which is how a request for
+        # 512x512 came back 1024x1024 on the reference box.
+        w, h = fields.pop("width", None), fields.pop("height", None)
+        if w and h:
+            fields["size"] = f"{w}x{h}"
+    # No Authorization header: the diffusion runtime has no --api-key, so the lane cannot
+    # check one and the unit binds loopback instead. The gate is this process's own session.
+    key: dict = {}
+    t0 = time.time()
+    try:
+        if editing:
+            refs, why = _image_decoded_refs(payload)
+            if why:
+                return 400, {"error": why}
+            body, ctype = _multipart(fields, refs)
+            req = urllib.request.Request(image_base() + "/v1/images/edits", body,
+                                         {**key, "Content-Type": ctype})
+        else:
+            req = urllib.request.Request(image_base() + "/v1/images/generations",
+                                         json.dumps(fields).encode(),
+                                         {**key, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=IMAGE_TIMEOUT) as r:
+            return 200, {"image": json.loads(r.read().decode()),
+                         "seconds": round(time.time() - t0, 2)}
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            detail = json.loads(raw.decode())
+        except Exception:                               # noqa: BLE001
+            detail = raw[:400].decode("utf-8", "replace")
+        return e.code, {"refused": detail, "seconds": round(time.time() - t0, 2)}
+    except Exception as e:                              # noqa: BLE001 (isolated route)
+        return 502, {"error": f"the image lane did not answer ({type(e).__name__}). "
+                              f"Start it: sudo systemctl start {IMAGE_UNIT}",
+                     "seconds": round(time.time() - t0, 2)}
+
+
+def _multipart(fields: dict, images: list) -> tuple[bytes, str]:
+    """The edits endpoint is multipart only. Built here so the browser never has to
+    guess the field name: the OpenAI SDK sends image[] for a list, and so do we."""
+    boundary = "----cockpit" + secrets.token_hex(16)
+    out = bytearray()
+    for k, v in fields.items():
+        out += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n"
+                f"{v}\r\n").encode()
+    for i, raw in enumerate(images, 1):
+        out += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"image[]\"; "
+                f"filename=\"picture-{i}.png\"\r\nContent-Type: image/png\r\n\r\n").encode()
+        out += raw + b"\r\n"
+    out += f"--{boundary}--\r\n".encode()
+    return bytes(out), f"multipart/form-data; boundary={boundary}"
+
+
 def job_flush_cache(job: Job):
     req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST", data=b"",
                                  headers={"Authorization": f"Bearer {api_key()}"})
@@ -1943,6 +2120,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(job.summary(tail=200))
         if path == "/api/systemone":
             return self.send_json(systemone_available(max_age=0.0 if fresh else 60.0))
+        if path == "/api/image":
+            return self.send_json(image_status())
         if path == "/api/stream":
             return self.stream()
         return self.send_json({"error": "not found"}, 404)
@@ -1950,7 +2129,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length", "0") or 0)
-        if length > 65536:
+        # Ten reference images do not fit in 64 KiB and never will. The cap is raised for
+        # the two image routes and for nothing else.
+        cap = IMAGE_MAX_POST if path in ("/api/image/edit", "/api/image/generate") else 65536
+        if length > cap:
             self.close_connection = True
             return self.send_json({"error": "body too large"}, 413)
         raw = self.rfile.read(length) if length else b""
@@ -2011,6 +2193,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(out, code)
         if path == "/api/systemone":
             code, out = systemone_call(payload)
+            return self.send_json(out, code)
+        if path in ("/api/image/generate", "/api/image/edit"):
+            code, out = image_call(payload, editing=path.endswith("edit"))
             return self.send_json(out, code)
         return self.send_json({"error": "not found"}, 404)
 

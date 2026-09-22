@@ -395,6 +395,8 @@ NO_OPENCODE=0
 WITH_OPENCODE=0
 NO_COCKPIT=0
 WITH_COCKPIT=0
+WITH_IMAGE=0
+NO_IMAGE=0
 for arg in "$@"; do
   case "$arg" in
     --no-start) NO_START=1 ;;
@@ -403,13 +405,15 @@ for arg in "$@"; do
     --with-opencode) WITH_OPENCODE=1 ;;
     --no-cockpit) NO_COCKPIT=1 ;;
     --with-cockpit) WITH_COCKPIT=1 ;;
+    --with-image) WITH_IMAGE=1 ;;
+    --no-image) NO_IMAGE=1 ;;
     --with-claude-warmup)
       echo "NOTE: --with-claude-warmup was removed in v1.3 (the repo's client story moved to opencode)."
       echo "      The flag is ignored; an installed warmup drop-in from an earlier version is cleaned up." ;;
     -h|--help)
       cat <<'HLP'
 Usage: ./install.sh [--no-start] [--no-service] [--no-opencode | --with-opencode]
-                   [--no-cockpit | --with-cockpit]
+                   [--no-cockpit | --with-cockpit] [--with-image | --no-image]
 
 Run it as yourself. Never with sudo in front: it calls sudo itself for the
 privileged steps, and under sudo every path it writes moves to /root (see the
@@ -430,6 +434,15 @@ from there you start, stop, switch, watch and benchmark without a terminal.
   --no-cockpit          skip the web cockpit and its Agent tab (no dashboard
                         unit, no sudoers allowlist). Remembered by later runs.
   --with-cockpit        re-enable it after a --no-cockpit
+  --with-image          also install the Qwen-Image 2.1 lane: text-to-image,
+                        image editing and native RGBA, served on its own port
+                        and driven from the cockpit's Image tab. Adds 38 GB
+                        (31 checkpoint, 7 runtime) and about 25 min, which is
+                        why a plain run does not. Once installed, later runs
+                        keep and update it.
+  --no-image            skip it on a box that already has it (the unit and the
+                        venv stay in place; ./install-image.sh --uninstall
+                        removes them)
 
 Re-running over an existing install keeps the operator's choices: the target
 model (any of the seven), the context mode (native/1m), the flash serving tier,
@@ -1655,6 +1668,23 @@ except Exception as e:
         || echo "  NOTE: could not restart it; do it by hand or its controls and its checks disagree"
     fi
 
+    # ── The image lane, last, because it is the only step that stops the engine
+    # that is already serving above, and the only one that costs 38 GB. It is
+    # opt-in, and remembered: a box that has it keeps it across upgrades.
+    IMAGE_ON=0
+    [ -f /etc/systemd/system/qwen38-image.service ] && IMAGE_ON=1
+    [ "$WITH_IMAGE" -eq 1 ] && IMAGE_ON=1
+    [ "$NO_IMAGE" -eq 1 ] && IMAGE_ON=0
+    if [ "$IMAGE_ON" -eq 1 ]; then
+      step "Qwen-Image 2.1 lane (text-to-image, editing, native RGBA)"
+      if "$REPO_DIR/install-image.sh"; then
+        IMAGE_READY=1
+      else
+        echo "NOTE: the image lane did not install. Everything above is up and serving."
+        echo "      retry on its own with ./install-image.sh (it resumes what it already did)"
+      fi
+    fi
+
     printf '\n\033[1;32m✅ Installed, verified, and enabled at boot.\033[0m\n'
     if [ -n "$COCKPIT_URL" ]; then
       printf '\n\033[1;36m  ▶ OPEN THE COCKPIT:  %s\033[0m\n' "$COCKPIT_URL"
@@ -1678,6 +1708,11 @@ except Exception as e:
       echo "  opencode   : integration off (--no-opencode); ./install.sh --with-opencode turns it on"
     fi
     [ "$COCKPIT" -eq 0 ] && echo "  cockpit    : off (--no-cockpit); ./install.sh --with-cockpit turns it on"
+    if [ "${IMAGE_READY:-0}" -eq 1 ]; then
+      echo "  Images     : sudo systemctl start qwen38-image.service  (stops the LLM lane; Image tab of the cockpit)"
+    elif [ "${IMAGE_ON:-0}" -eq 0 ]; then
+      echo "  Images     : not installed; ./install.sh --with-image adds the Qwen-Image 2.1 lane (38 GB)"
+    fi
     [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh  (or the Benchmarks tab of the cockpit)"
     exit 0
   fi

@@ -361,6 +361,50 @@
   .s1 .soon .d{font-size:13px; color:var(--mut); max-width:46ch; line-height:1.65}
   @media (max-width:900px){ .s1grid{grid-template-columns:1fr} }
 
+  /* ── Image: controls whose price is known, and a picture that shows its alpha ──
+     Every control here moves a number that was measured on this box, so the cost
+     line under the button is arithmetic rather than a guess. The preview sits on a
+     checkerboard because this model returns RGBA for everything it makes, and a
+     transparent cutout on a white card looks exactly like an opaque one. */
+  .img .ctl{display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); gap:9px var(--s3); margin-top:11px}
+  .img .ctl label{display:flex; flex-direction:column; gap:4px; min-width:0}
+  .img .ctl .eyebrow{margin:0}
+  .img select, .img input[type=number], .img input[type=text]{
+      background:var(--soft); color:var(--txt); border:1px solid var(--line); border-radius:9px;
+      padding:6px 9px; font:400 12.5px var(--mono); width:100%; min-width:0}
+  .img input[type=number]:invalid, .img input.bad{border-color:var(--err)}
+  .img .seg{display:inline-flex; border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden}
+  .img .seg button{border:none; background:transparent; color:var(--mut); cursor:pointer;
+                   font:600 12px var(--mono); padding:6px 13px}
+  .img .seg button[aria-pressed=true]{background:var(--acc); color:var(--card)}
+  .img .adv{margin-top:12px; border-top:1px solid var(--line); padding-top:10px}
+  .img .adv summary{cursor:pointer; font:600 11px/1.3 var(--mono); letter-spacing:.09em;
+                    text-transform:uppercase; color:var(--mut); list-style:none}
+  .img .adv summary::-webkit-details-marker{display:none}
+  .img .adv summary::before{content:"▸ "; }
+  .img .adv[open] summary::before{content:"▾ "; }
+  .img .warn{font-size:12px; color:var(--err); margin:7px 0 0; line-height:1.55}
+  .img .cost{font:400 12px var(--mono); color:var(--mut); margin-top:8px}
+  /* the checkerboard is the instrument: it is what makes an alpha channel visible */
+  .img .shot{border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; line-height:0;
+             background-color:#f3f3f3;
+             background-image:linear-gradient(45deg,#d2d2d2 25%,transparent 25%,transparent 75%,#d2d2d2 75%),
+                              linear-gradient(45deg,#d2d2d2 25%,transparent 25%,transparent 75%,#d2d2d2 75%);
+             background-size:20px 20px; background-position:0 0,10px 10px}
+  .img .shot img{width:100%; height:auto; display:block}
+  .img .shots{display:grid; gap:9px}
+  .img .shots.multi{grid-template-columns:1fr 1fr}
+  .img .refs{display:flex; flex-wrap:wrap; gap:7px; margin-top:8px}
+  .img .ref{position:relative; width:62px; height:62px; border:1px solid var(--line);
+            border-radius:9px; overflow:hidden; background:var(--soft)}
+  .img .ref img{width:100%; height:100%; object-fit:cover}
+  .img .ref button{position:absolute; top:1px; right:1px; border:none; cursor:pointer; line-height:1;
+                   background:color-mix(in srgb, var(--card) 80%, transparent); color:var(--txt);
+                   border-radius:0 0 0 7px; font-size:13px; padding:1px 4px}
+  .img .ref .n{position:absolute; bottom:0; left:0; font:600 9.5px var(--mono); padding:1px 4px;
+               background:color-mix(in srgb, var(--card) 80%, transparent); color:var(--mut)}
+  @media (max-width:900px){ .img .shots.multi{grid-template-columns:1fr} }
+
   /* ── modal ── */
   .modal{position:fixed; inset:0; background:rgba(6,6,8,.72); z-index:50; display:grid; place-items:center; backdrop-filter:blur(4px)}
   .mcard{width:min(600px,92vw); background:var(--card); border:1px solid var(--line); border-radius:16px; padding:22px 24px; box-shadow:0 24px 80px rgba(0,0,0,.5)}
@@ -979,16 +1023,151 @@
     </div>
 
     <!-- ── Image ── -->
-    <div class="tab s1" id="tab-image">
-      <div class="tabhead"><h2>Image</h2><p>generation and understanding, on this box</p></div>
-      <section class="panel s1wide">
-        <div class="soon">
-          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5-6 6-3-3-4 4"/></svg>
-          <div class="t">Coming soon</div>
-          <div class="d">The lane already understands images: the served checkpoint reports a vision tower and the proxy prices image parts from their own headers.
-            What is missing is this tab, not the capability.</div>
-        </div>
+    <div class="tab s1 img" id="tab-image">
+      <div class="tabhead"><h2>Image</h2><p>Qwen-Image 2.1 on this box: text to image, editing, and the transparency it generates natively. No pixel leaves the machine.</p></div>
+
+      <section class="panel s1wide" style="margin-bottom:var(--s3)">
+        <h3>The lane <span class="right"><span class="chip" id="imgchip">checking...</span></span></h3>
+        <p class="note" id="imgnote" style="margin:0 0 10px">A 7B DiT with 32 single-stream layers, its own Qwen3-VL encoder and a VAE that
+          decodes RGBA. One checkpoint does generation, editing and transparency; up to ten reference images per call. It holds 31 GB of weights
+          and peaks at 34.8 GB while it works, which is why it and the text lane take turns rather than share.</p>
+        <dl class="kv">
+          <dt>Serving</dt><dd class="num" id="imgmodel">Qwen/Qwen-Image-2.1</dd>
+          <dt>Endpoints</dt><dd class="num">POST /v1/images/generations · /v1/images/edits</dd>
+          <dt>Licence</dt><dd>Qwen Research License: research and evaluation, <b>not commercial use</b></dd>
+        </dl>
+        <div id="imgctl" class="meta" style="margin-top:12px"></div>
       </section>
+
+      <div class="s1grid">
+        <section class="panel">
+          <h3>The call <span class="right"><button class="btn mini ghost" id="imgreset">Reset settings</button></span></h3>
+
+          <div class="seg" role="group" aria-label="What to do" style="margin-bottom:11px">
+            <button id="imgmode-t2i" data-mode="t2i" aria-pressed="true">Generate</button>
+            <button id="imgmode-edit" data-mode="edit" aria-pressed="false">Edit</button>
+          </div>
+
+          <label class="eyebrow" for="imgprompt" style="display:block">Prompt</label>
+          <div class="ex" id="imgexamples"></div>
+          <textarea id="imgprompt" spellcheck="false" aria-label="Prompt"></textarea>
+
+          <div id="imgrefbox" hidden>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin:12px 0 0">
+              <span class="eyebrow">Reference images <span class="num" id="imgrefcount">0 of 10</span></span>
+              <span style="display:flex; gap:6px">
+                <button class="btn mini low" id="imgrefadd">+ Add</button>
+                <button class="btn mini low" id="imgrefsample">Use a sample</button>
+              </span>
+            </div>
+            <input type="file" id="imgreffile" accept="image/png,image/jpeg,image/webp" multiple hidden>
+            <div class="refs" id="imgrefs"></div>
+            <p class="note" style="margin:7px 0 0">They are labelled <span class="num">Picture 1</span>, <span class="num">Picture 2</span>
+              and so on, in this order, and you can name them in the prompt. A PNG keeps its alpha; anything else gets an opaque one.</p>
+            <p class="warn" style="margin:8px 0 0">Editing redraws the whole picture, it does not patch a region. What you ask for does
+              happen, and the rest comes back with about twice the fine detail of what you sent: measured here at 2.16&times; the
+              high-frequency energy of the source, on every reference, every prompt, every step count and every guidance setting,
+              including an edit that asks for nothing to change. Generation does not do this. Expect a re-rendered image, not a retouched one.</p>
+          </div>
+
+          <div class="ctl">
+            <label><span class="eyebrow">Size</span>
+              <select id="imgsize"></select></label>
+            <label id="imgwbox" hidden><span class="eyebrow">Width</span>
+              <input type="number" id="imgw" min="32" max="4096" step="32" value="1024"></label>
+            <label id="imghbox" hidden><span class="eyebrow">Height</span>
+              <input type="number" id="imgh" min="32" max="4096" step="32" value="1024"></label>
+            <label><span class="eyebrow">Steps</span>
+              <input type="number" id="imgsteps" min="1" max="100" step="1" value="40"></label>
+            <label><span class="eyebrow">Images</span>
+              <input type="number" id="imgn" min="1" max="10" step="1" value="1"></label>
+            <label><span class="eyebrow">Background</span>
+              <select id="imgbg">
+                <option value="auto">Scene (default)</option>
+                <option value="transparent">Transparent</option>
+              </select></label>
+            <label><span class="eyebrow">Format</span>
+              <select id="imgfmt">
+                <option value="png">PNG (default)</option>
+                <option value="webp">WebP</option>
+              </select></label>
+          </div>
+
+          <details class="adv" id="imgadv">
+            <summary>Advanced</summary>
+            <div class="ctl">
+              <label><span class="eyebrow">Seed</span>
+                <input type="text" id="imgseed" placeholder="empty = random" inputmode="numeric"></label>
+              <label><span class="eyebrow">True CFG scale</span>
+                <input type="number" id="imgcfg" min="1" max="10" step="0.5" placeholder="1 = off"></label>
+              <label><span class="eyebrow">Flow shift</span>
+                <input type="number" id="imgshift" min="0" max="20" step="0.1" placeholder="model default"></label>
+              <label><span class="eyebrow">RNG device</span>
+                <select id="imgdev">
+                  <option value="cpu">cpu (model default)</option>
+                  <option value="cuda">cuda</option>
+                </select></label>
+            </div>
+            <label class="eyebrow" for="imgneg" style="display:block; margin-top:9px">Negative prompt</label>
+            <textarea id="imgneg" spellcheck="false" style="min-height:52px" aria-label="Negative prompt"></textarea>
+            <p class="note" style="margin:7px 0 0">CFG needs <b>both</b>: a scale above 1 <b>and</b> a negative prompt.
+              Either one alone is ignored, byte for byte (<span class="num">schedule_batch.py:399</span>).
+              The RNG device decides where the starting noise is drawn, not where the model runs: it is on the GPU either way.</p>
+          </details>
+
+          <p class="warn" id="imgwarn" hidden></p>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:12px">
+            <button class="btn" id="imgrun">Generate</button>
+            <span class="follow" id="imgstatus"></span>
+          </div>
+          <p class="cost" id="imgcost"></p>
+        </section>
+
+        <section class="panel">
+          <h3>The image <span class="right"><span class="chip" id="imgtime"></span></span></h3>
+          <div id="imgout"><p class="note" style="margin:0">Pick an example or write your own, then generate.
+            The preview sits on a checkerboard because this model returns RGBA for everything it makes,
+            and a transparent cutout on a white card is indistinguishable from an opaque one.</p></div>
+          <div class="meta" id="imgmeta"></div>
+        </section>
+
+        <section class="panel s1wide">
+          <h3>The same call, from anywhere <span class="right"><button class="btn mini ghost" id="imgcopy">Copy</button></span></h3>
+          <p class="note" style="margin:0 0 9px">Exactly what the button above sends, with the serving key read from your own machine.
+            Any OpenAI images client works against it by changing one base URL.</p>
+          <div class="cmd" id="imgcurl"></div>
+        </section>
+
+        <section class="panel s1wide">
+          <h3>What each setting costs <span class="right"><span class="chip">measured on this box, 2026-09-22</span></span></h3>
+          <p class="note" style="margin:0 0 10px">Every number below came from a request to this lane, not from the cookbook.
+            Time is dominated by pixels and steps and is very nearly linear in both, which is where the estimate under the
+            button comes from: about 0.9 s fixed, plus 0.94 s per step at 1024&times;1024, scaled by megapixels. An edit pays
+            for one more encode, six seconds.</p>
+          <div class="tablewrap">
+            <table id="imgbench">
+              <thead><tr><th>request</th><th class="r">time</th><th class="r">peak memory</th><th>result</th></tr></thead>
+              <tbody>
+                <tr><td>512&times;512, 40 steps</td><td class="r num">9.0 s</td><td class="r num">31.9 GB</td><td>RGBA</td></tr>
+                <tr><td>768&times;768, 40 steps</td><td class="r num">22.6 s</td><td class="r num">31.9 GB</td><td>RGBA</td></tr>
+                <tr><td><b>1024&times;1024, 40 steps (the defaults)</b></td><td class="r num"><b>38.2 s</b></td><td class="r num">34.8 GB</td><td>RGBA</td></tr>
+                <tr><td>1664&times;928, 40 steps</td><td class="r num">60.4 s</td><td class="r num">34.8 GB</td><td>RGBA</td></tr>
+                <tr><td>1024&times;1024, 8 / 20 / 60 steps</td><td class="r num">8.4 / 19.8 / 57.3 s</td><td class="r num">31.9 GB</td><td>8 steps is visibly unfinished</td></tr>
+                <tr><td>transparent 1024&times;1024</td><td class="r num">39.8 s</td><td class="r num">34.8 GB</td><td>68% of pixels fully transparent</td></tr>
+                <tr><td>edit, one reference, 40 steps</td><td class="r num">44.6 s</td><td class="r num">34.8 GB</td><td>alpha preserved from the reference</td></tr>
+                <tr><td>edit, ten references, 20 steps</td><td class="r num">69.6 s</td><td class="r num">34.8 GB</td><td>the announced maximum, accepted</td></tr>
+                <tr><td>two images in one call, 8 steps</td><td class="r num">16.8 s</td><td class="r num">31.9 GB</td><td>independent noise per image</td></tr>
+                <tr><td>same seed, twice</td><td class="r num">-</td><td class="r num">-</td><td>byte-identical</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note" style="margin:10px 0 0">Three things this lane refuses that are worth knowing before a client does:
+            a width or height that is not a multiple of 32 comes back <span class="num">HTTP 500</span> with an empty body;
+            so does any request that does not name an output format, because the API falls back to JPEG and this model always
+            returns RGBA, which JPEG cannot hold; and on the editing endpoint <span class="num">flow_shift</span> is accepted and
+            ignored, byte for byte. This page sends a format on every call and refuses the other two before they leave the box.</p>
+        </section>
+      </div>
     </div>
 
     <!-- ── Video ── -->

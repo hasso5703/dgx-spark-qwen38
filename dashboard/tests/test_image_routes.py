@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""The cockpit's image routes: the refusals it makes so the engine does not have to.
+
+Three of these correspond to a live HTTP 500 from the lane with nothing in the body, and
+one to a wrong answer with a 200. All four were measured against Qwen-Image 2.1 on a DGX
+Spark on 2026-09-22:
+
+  * a width or height that is not a multiple of 32 -> HTTP 500, reason only in the
+    engine's own log ("must be divisible by 32");
+  * no output_format -> HTTP 500, because the API falls back to JPEG when the background
+    is not transparent and this model returns RGBA for everything it makes, which PIL
+    refuses to write as JPEG. The plainest possible request fails for that alone;
+  * an edit sent width and height -> HTTP 200 with the reference's size instead of the
+    one asked for, because /edits takes `size` and /generations takes width and height;
+  * /health answers 503 for the ~77 s the weights take to load, while systemd reads the
+    unit `active` throughout.
+
+The module is imported with its environment pointed at a throwaway box, like every other
+test here, so importing it writes nothing into the developer's own HOME.
+"""
+import importlib.util
+import json
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve()
+DASH = HERE.parents[1]
+REPO = HERE.parents[2]
+
+
+def load_cockpit(config_dir: Path):
+    os.environ.update(
+        COCKPIT_DRY_RUN="1",
+        COCKPIT_CONFIG_DIR=str(config_dir),
+        COCKPIT_REPO_DIR=str(REPO),
+        COCKPIT_PORT="0",
+        COCKPIT_AGENT_PORT="0",
+        COCKPIT_AUTOHEAL="0",
+    )
+    sys.path.insert(0, str(DASH))
+    spec = importlib.util.spec_from_file_location("cockpit_image_under_test",
+                                                  DASH / "cockpit.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class Sent:
+    """Whatever the cockpit put on the wire, captured instead of sent."""
+
+    def __init__(self):
+        self.body = None
+        self.headers = {}
+        self.url = ""
+        self.status = 200
+        self.payload = b'{"data":[{"b64_json":"AAAA"}]}'
+
+    def urlopen(self, req, timeout=None):
+        self.body, self.url = req.data, req.full_url
+        self.headers = dict(req.headers)
+        outer = self
+
+        class R:
+            def read(self_inner):
+                return outer.payload
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+        return R()
+
+
+class Base(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="cockpit-image-"))
+        (cls.tmp / "api-key").write_text("test-key-not-a-real-one\n")
+        cls.ck = load_cockpit(cls.tmp)
+        cls.ck.image_base = lambda: "http://127.0.0.1:30020"
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        self.spy = Sent()
+        self._orig = self.ck.urllib.request.urlopen
+        self.ck.urllib.request.urlopen = self.spy.urlopen
+
+    def tearDown(self):
+        self.ck.urllib.request.urlopen = self._orig
+
+    def call(self, payload, editing=False):
+        return self.ck.image_call(payload, editing=editing)
+
+
+class TheRefusals(Base):
+    def test_a_size_that_is_not_a_multiple_of_32_never_reaches_the_engine(self):
+        for bad in (1328, 1000, 33, 100, 0, -32):
+            code, out = self.call({"prompt": "x", "width": bad, "height": 1024})
+            self.assertEqual(code, 400, bad)
+            self.assertIn("multiple of 32", out["error"])
+        code, _ = self.call({"prompt": "x", "width": 1024, "height": 1328})
+        self.assertEqual(code, 400)
+        self.assertIsNone(self.spy.body, "nothing should have been sent")
+
+    def test_a_size_that_is_a_multiple_of_32_goes_through(self):
+        code, _ = self.call({"prompt": "x", "width": 1184, "height": 896})
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(self.spy.body)["width"], 1184)
+
+    def test_jpeg_is_refused_with_the_reason_the_engine_withholds(self):
+        for fmt in ("jpeg", "jpg", "JPEG", "Jpg"):
+            code, out = self.call({"prompt": "x", "output_format": fmt})
+            self.assertEqual(code, 400, fmt)
+            self.assertIn("alpha", out["error"])
+
+    def test_an_empty_prompt_is_refused(self):
+        for bad in ("", "   ", None):
+            code, out = self.call({"prompt": bad} if bad is not None else {})
+            self.assertEqual(code, 400, repr(bad))
+
+    def test_a_format_is_always_sent_even_when_the_caller_forgot(self):
+        self.call({"prompt": "x"})
+        body = json.loads(self.spy.body)
+        self.assertEqual(body["output_format"], "png")
+        self.assertEqual(body["response_format"], "b64_json")
+
+    def test_the_callers_own_format_is_kept(self):
+        self.call({"prompt": "x", "output_format": "webp"})
+        self.assertEqual(json.loads(self.spy.body)["output_format"], "webp")
+
+
+class WhatABrowserMayAsk(Base):
+    def test_fields_that_would_reach_past_the_lane_are_dropped(self):
+        """The request model accepts extras. A page must not be able to name an upscaler
+        path, a LoRA, a perf dump target, a diffusers kwargs blob or another model."""
+        self.call({"prompt": "x", "upscaling_model_path": "/etc/passwd",
+                   "perf_dump_path": "/tmp/x", "diffusers_kwargs": {"a": 1},
+                   "lora_path": "/x", "enable_upscaling": True, "model": "other"})
+        body = json.loads(self.spy.body)
+        for forbidden in ("upscaling_model_path", "perf_dump_path", "diffusers_kwargs",
+                          "lora_path", "enable_upscaling", "model"):
+            self.assertNotIn(forbidden, body, forbidden)
+
+    def test_the_fields_the_tab_needs_do_get_through(self):
+        self.call({"prompt": "x", "width": 512, "height": 512, "num_inference_steps": 8,
+                   "n": 2, "background": "transparent", "seed": 7, "true_cfg_scale": 4.0,
+                   "negative_prompt": "blurry", "flow_shift": 3.0,
+                   "generator_device": "cpu"})
+        body = json.loads(self.spy.body)
+        for field in ("width", "height", "num_inference_steps", "n", "background", "seed",
+                      "true_cfg_scale", "negative_prompt", "flow_shift", "generator_device"):
+            self.assertIn(field, body, field)
+
+
+class TheEditingPath(Base):
+    PNG = "data:image/png;base64,iVBORw0KGgo="
+
+    def test_it_sends_the_size_the_way_the_edits_endpoint_takes_it(self):
+        """/edits has no width or height fields. Sent that way an edit ignores them and
+        returns the reference's own size: a request for 512x512 came back 1024x1024
+        against the live lane."""
+        self.call({"prompt": "x", "width": 512, "height": 512, "images": [self.PNG]},
+                  editing=True)
+        self.assertIn(b'name="size"', self.spy.body)
+        self.assertIn(b"512x512", self.spy.body)
+        self.assertNotIn(b'name="width"', self.spy.body)
+        self.assertNotIn(b'name="height"', self.spy.body)
+
+    def test_it_posts_to_the_edits_endpoint(self):
+        self.call({"prompt": "x", "images": [self.PNG]}, editing=True)
+        self.assertTrue(self.spy.url.endswith("/v1/images/edits"), self.spy.url)
+        self.assertIn("multipart/form-data", self.spy.headers.get("Content-type", ""))
+
+    def test_every_reference_becomes_its_own_ordered_part(self):
+        """The OpenAI SDK sends image[] for a list and so does this, or a second
+        reference is silently dropped. Order is the model's Picture 1, Picture 2."""
+        self.call({"prompt": "x", "images": [self.PNG] * 3}, editing=True)
+        self.assertEqual(self.spy.body.count(b'name="image[]"'), 3)
+        for i in (1, 2, 3):
+            self.assertIn(f'filename="picture-{i}.png"'.encode(), self.spy.body)
+
+    def test_it_refuses_anything_that_is_not_an_image_data_url(self):
+        for bad in (["http://example.com/x.png"], ["data:text/html;base64,AAA"],
+                    ["data:image/png,notbase64"], ["data:image/png;base64,"],
+                    ["data:image/png;base64,!!!!"], [""], [None], "notalist", []):
+            code, _ = self.call({"prompt": "x", "images": bad}, editing=True)
+            self.assertEqual(code, 400, bad)
+
+    def test_it_refuses_more_references_than_the_model_takes(self):
+        code, out = self.call({"prompt": "x", "images": [self.PNG] * 11}, editing=True)
+        self.assertEqual(code, 400)
+        self.assertIn("10", out["error"])
+        code, _ = self.call({"prompt": "x", "images": [self.PNG] * 10}, editing=True)
+        self.assertEqual(code, 200)
+
+    def test_no_bearer_is_sent_because_the_lane_cannot_check_one(self):
+        """The diffusion runtime has no --api-key. A header that reads as a gate and is
+        not one is worse than none."""
+        self.call({"prompt": "x", "images": [self.PNG]}, editing=True)
+        self.assertNotIn("Authorization", self.spy.headers)
+        self.call({"prompt": "x"})
+        self.assertNotIn("Authorization", self.spy.headers)
+
+
+class WhatTheTabIsTold(Base):
+    def test_a_lane_that_is_not_installed_says_so_rather_than_stopped(self):
+        """"Stopped" invites a start button for a unit that does not exist."""
+        self.ck.IMAGE_UNIT_PATH = Path("/nonexistent/qwen38-image.service")
+        out = self.ck.image_status()
+        self.assertFalse(out["installed"])
+        self.assertFalse(out["available"])
+        self.assertEqual(out["state"], "not installed")
+
+    def test_the_port_is_read_from_the_installed_unit_not_assumed(self):
+        unit = self.tmp / "qwen38-image.service"
+        unit.write_text("[Service]\nExecStart=/x/sglang serve --model-path Q/M \\\n"
+                        "  --host 127.0.0.1 --port 31234\n")
+        self.ck.IMAGE_UNIT_PATH = unit
+        self.assertEqual(self.ck.image_port(), 31234)
+        self.assertEqual(self.ck.image_status()["model"], "Q/M")
+
+    def test_a_missing_unit_falls_back_to_the_documented_port(self):
+        self.ck.IMAGE_UNIT_PATH = Path("/nonexistent/qwen38-image.service")
+        self.assertEqual(self.ck.image_port(), 30020)
+
+    def test_a_lane_loading_its_weights_is_not_reported_as_ready(self):
+        """/health answers 503 for the ~77 s it takes to load 31 GB, while systemd reads
+        `active` throughout. A tab that enables its button on `active` sends into a 503."""
+        unit = self.tmp / "qwen38-image.service"
+        unit.write_text("[Service]\nExecStart=/x/sglang serve --model-path Q/M "
+                        "--host 127.0.0.1 --port 30020\n")
+        self.ck.IMAGE_UNIT_PATH = unit
+        self.ck.run = lambda argv, **kw: ("ActiveState=active\nSubState=running\n"
+                                          if "show" in argv else "inactive")
+
+        def refuse(req, timeout=None):
+            raise self.ck.urllib.error.HTTPError(req.full_url, 503, "loading", {}, None)
+
+        self.ck.urllib.request.urlopen = refuse
+        out = self.ck.image_status()
+        self.assertFalse(out["available"])
+        self.assertEqual(out["state"], "loading weights")
+
+
+class TheCapOnTheseTwoRoutes(Base):
+    def test_ten_references_do_not_fit_in_the_ordinary_post_cap(self):
+        self.assertGreater(self.ck.IMAGE_MAX_POST, 10 * 1024 * 1024)
+
+    def test_the_raised_cap_applies_to_the_image_routes_and_nothing_else(self):
+        text = (DASH / "cockpit.py").read_text()
+        self.assertIn('cap = IMAGE_MAX_POST if path in ("/api/image/edit", '
+                      '"/api/image/generate") else 65536', text)
+
+
+class WhenTheLaneIsNotThere(Base):
+    def test_a_lane_that_does_not_answer_says_how_to_start_it(self):
+        def refuse(req, timeout=None):
+            raise ConnectionRefusedError("nothing listening")
+
+        self.ck.urllib.request.urlopen = refuse
+        code, out = self.call({"prompt": "x"})
+        self.assertEqual(code, 502)
+        self.assertIn("systemctl start qwen38-image.service", out["error"])
+
+    def test_an_engine_refusal_is_relayed_with_its_own_status(self):
+        def refuse(req, timeout=None):
+            raise self.ck.urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
+
+        self.ck.urllib.request.urlopen = refuse
+        code, out = self.call({"prompt": "x"})
+        self.assertEqual(code, 500)
+        self.assertIn("refused", out)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

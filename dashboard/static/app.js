@@ -82,6 +82,9 @@ function showTab(name, push = true){
   // the probe costs one refused request to the proxy, so it runs when the tab is
   // opened rather than on every state tick
   if (name === 'systemone' && !loaded.systemone){ loaded.systemone = true; s1Probe(); }
+  // the lane can be started and stopped from elsewhere in this page, so unlike the
+  // System One probe this one re-reads on every visit rather than once
+  if (name === 'image' && typeof imgLane === 'function') imgLane();
   // at parse time the agent helpers below are not initialised yet; the first state
   // tick mounts the frame in that case, a later click mounts it at once
   if (name === 'agent' && document.readyState === 'complete'){ mountAgent(); applyAgentMax(); }
@@ -1636,3 +1639,388 @@ if ($('s1examples')){
   });
   s1Load(Object.keys(S1_EXAMPLES)[0]);
 }
+
+// ── Image: Qwen-Image 2.1, every control it actually has ──────────────────────
+// Defaults are the model's own, read out of its config rather than chosen here:
+// 1024x1024, 40 steps, one image, CFG off, the RNG on the CPU (qwen_image21.py).
+// Reset puts every field back to exactly this.
+const IMG_DEFAULTS = {mode: 't2i', size: '1024x1024', w: 1024, h: 1024, steps: 40, n: 1,
+                      bg: 'auto', fmt: 'png', seed: '', cfg: '', shift: '', dev: 'cpu',
+                      neg: '', prompt: ''};
+// Qwen publishes seven aspect ratios at a 2048 base. Every one is already a multiple of
+// 32, and each is offered twice: at the cookbook's verified 1024-equivalent area, and at
+// the size the model card itself prints. The second costs four times the first.
+const IMG_SIZES = [
+  ['1024x1024', '1:1  1024x1024  default'],
+  ['1184x896', '4:3  1184x896'],
+  ['896x1184', '3:4  896x1184'],
+  ['1248x832', '3:2  1248x832'],
+  ['832x1248', '2:3  832x1248'],
+  ['1376x768', '16:9  1376x768'],
+  ['768x1376', '9:16  768x1376'],
+  ['512x512', '1:1  512x512  quick'],
+  ['768x768', '1:1  768x768'],
+  ['2048x2048', "1:1  2048x2048  Qwen's own, 4x the cost"],
+  ['2400x1792', "4:3  2400x1792  Qwen's own"],
+  ['2752x1536', "16:9  2752x1536  Qwen's own"],
+  ['custom', 'custom, any multiple of 32'],
+];
+// Prompts worth trying, each chosen because it exercises something this model is
+// specifically claimed to do. The transparent ones follow the wording Qwen's own card
+// uses, because the alpha is conditioned by the prompt, not by the background field.
+const IMG_EXAMPLES = {
+  'Capybara': {mode: 't2i', prompt: 'A capybara reading a book by candlelight'},
+  'Text rendering': {mode: 't2i', size: '1376x768',
+    prompt: 'A neon shop sign that reads "QWEN IMAGE 2.1", rainy night, reflections on wet pavement'},
+  'Transparent cutout': {mode: 't2i', bg: 'transparent',
+    prompt: 'This is an RGBA image with transparency. A single fluffy orange cat sitting, full body, '
+          + 'isolated on a transparent background. The image has an alpha channel and the background is '
+          + 'transparent. A clean cutout, no floor, no shadow, no background.'},
+  'Transparent sticker': {mode: 't2i', bg: 'transparent',
+    prompt: 'This is an RGBA image with transparency. A cute cartoon dragon sticker. The image has an '
+          + 'alpha channel and the background is transparent.'},
+  'Local edit': {mode: 'edit',
+    prompt: 'Change the book cover to blue, keeping its shape, the candle, the table and the lighting unchanged.'},
+  'Combine two': {mode: 'edit',
+    prompt: 'Combine the subjects from Picture 1 and Picture 2 into one coherent scene, preserving their appearance.'},
+};
+let imgRefs = [];          // [{name, dataUrl, w, h}], in the order the model labels them
+let imgLast = null;        // the last answer, kept so the download button has something
+
+const imgVal = id => ($(id) ? $(id).value.trim() : '');
+function imgSize(){
+  if ($('imgsize').value !== 'custom') {
+    const [w, h] = $('imgsize').value.split('x').map(Number);
+    return {w, h};
+  }
+  return {w: Number($('imgw').value) || 0, h: Number($('imgh').value) || 0};
+}
+
+// Height and width must be positive multiples of 32 (the cookbook says so, and the
+// engine proves it: 1328x1328 comes back 500 with "must be divisible by 32" in its log).
+// Refusing here costs nothing; refusing there costs a 500 with no explanation in the body.
+function imgProblem(){
+  const {w, h} = imgSize();
+  if (!w || !h) return 'Set a width and a height.';
+  if (w % 32 || h % 32) return `${w}x${h} is not a multiple of 32, and the engine refuses those with a bare `
+    + `HTTP 500. Nearest: ${Math.max(32, Math.round(w / 32) * 32)}x${Math.max(32, Math.round(h / 32) * 32)}.`;
+  const steps = Number($('imgsteps').value);
+  if (!(steps >= 1 && steps <= 100)) return 'Steps run from 1 to 100. The model default is 40.';
+  const n = Number($('imgn').value);
+  if (!(n >= 1 && n <= 10)) return 'Between 1 and 10 images per call.';
+  const cfg = Number(imgVal('imgcfg') || 1);
+  if (cfg > 1 && !imgVal('imgneg')) return 'A CFG scale above 1 does nothing without a negative prompt: '
+    + 'the engine needs both, and ignores the scale alone byte for byte.';
+  if (imgVal('imgneg') && cfg <= 1) return 'A negative prompt does nothing without a CFG scale above 1: '
+    + 'the engine needs both.';
+  if ($('imgmode-edit').getAttribute('aria-pressed') === 'true' && !imgRefs.length)
+    return 'Editing needs at least one reference image.';
+  return '';
+}
+
+// Fitted to this box, not to the engine's own stage timings: end-to-end seconds against
+// steps at 1024x1024 (8/20/40/60 -> 8.4/19.8/38.2/57.3) and against pixels at 40 steps
+// (512/768/1024/1664x928 -> 9.0/22.6/38.2/60.4). Both are very nearly linear. Editing
+// pays for one more encode: 44.6 s where the same generation costs 38.2.
+function imgEstimate(){
+  const {w, h} = imgSize();
+  const steps = Number($('imgsteps').value) || 0;
+  const n = Number($('imgn').value) || 1;
+  if (!w || !h || !steps) return null;
+  const px = (w * h) / (1024 * 1024);
+  const editing = $('imgmode-edit').getAttribute('aria-pressed') === 'true';
+  return (0.9 + steps * 0.94 * px + (editing ? 6 : 0)) * n;
+}
+
+function imgCost(){
+  const secs = imgEstimate();
+  const {w, h} = imgSize();
+  const bits = [];
+  if (secs) bits.push('about ' + fmtDur(secs) + ' on this box');
+  if (w && h) bits.push((w * h / 1e6).toFixed(2) + ' megapixels');
+  if (w >= 2048 || h >= 2048) bits.push('this is four times the verified size: slower, and it has not been measured here');
+  setText('imgcost', bits.join(' · '));
+}
+
+function imgPayload(){
+  const {w, h} = imgSize();
+  const p = {prompt: imgVal('imgprompt'), width: w, height: h,
+             num_inference_steps: Number($('imgsteps').value),
+             n: Number($('imgn').value),
+             // Always explicit. Left out, the engine falls back to JPEG, and this model
+             // returns RGBA for everything, so PIL refuses and the request 500s. The
+             // barest possible request fails for that reason alone.
+             output_format: $('imgfmt').value,
+             response_format: 'b64_json',
+             generator_device: $('imgdev').value};
+  if ($('imgbg').value !== 'auto') p.background = $('imgbg').value;
+  if (imgVal('imgseed') !== '') p.seed = Number(imgVal('imgseed'));
+  if (imgVal('imgcfg') !== '') p.true_cfg_scale = Number(imgVal('imgcfg'));
+  if (imgVal('imgshift') !== '') p.flow_shift = Number(imgVal('imgshift'));
+  if (imgVal('imgneg') !== '') p.negative_prompt = imgVal('imgneg');
+  return p;
+}
+
+function imgCurl(){
+  const editing = $('imgmode-edit').getAttribute('aria-pressed') === 'true';
+  const p = imgPayload();
+  const host = location.hostname || '127.0.0.1';
+  const base = `http://${host}:${IMG_STATE.port || 30020}/v1/images`;
+  let text;
+  if (!editing){
+    text = `curl -sS ${base}/generations \\\n`
+         + `  -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)" \\\n`
+         + `  -H 'Content-Type: application/json' \\\n`
+         + `  -d '${JSON.stringify(p, null, 2)}'`;
+  } else {
+    const fields = Object.entries(p).filter(([k]) => k !== 'width' && k !== 'height')
+      .map(([k, v]) => `  --form-string '${k}=${v}'`);
+    fields.unshift(`  --form-string 'size=${p.width}x${p.height}'`);
+    const refs = (imgRefs.length ? imgRefs : [{name: 'input.png'}])
+      .map(r => `  -F "image[]=@${r.name};type=image/png"`);
+    text = `curl -sS ${base}/edits \\\n`
+         + `  -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)" \\\n`
+         + [...fields, ...refs].join(' \\\n');
+  }
+  setText('imgcurl', text);
+}
+
+function imgSync(){
+  const custom = $('imgsize').value === 'custom';
+  $('imgwbox').hidden = !custom; $('imghbox').hidden = !custom;
+  if (!custom){
+    const [w, h] = $('imgsize').value.split('x');
+    $('imgw').value = w; $('imgh').value = h;
+  }
+  const editing = $('imgmode-edit').getAttribute('aria-pressed') === 'true';
+  $('imgrefbox').hidden = !editing;
+  $('imgrun').textContent = editing ? 'Edit' : 'Generate';
+  const problem = imgProblem();
+  note('imgwarn', problem);
+  $('imgrun').disabled = !!problem || !imgVal('imgprompt');
+  imgCost(); imgCurl();
+}
+
+function imgReset(){
+  const d = IMG_DEFAULTS;
+  imgMode(d.mode);
+  $('imgsize').value = d.size; $('imgw').value = d.w; $('imgh').value = d.h;
+  $('imgsteps').value = d.steps; $('imgn').value = d.n;
+  $('imgbg').value = d.bg; $('imgfmt').value = d.fmt; $('imgdev').value = d.dev;
+  $('imgseed').value = d.seed; $('imgcfg').value = d.cfg; $('imgshift').value = d.shift;
+  $('imgneg').value = d.neg; $('imgprompt').value = d.prompt;
+  $('imgadv').open = false;
+  imgSync();
+}
+
+function imgMode(mode){
+  $('imgmode-t2i').setAttribute('aria-pressed', String(mode === 't2i'));
+  $('imgmode-edit').setAttribute('aria-pressed', String(mode === 'edit'));
+}
+
+function imgLoadExample(name){
+  const ex = IMG_EXAMPLES[name]; if (!ex) return;
+  imgReset();
+  imgMode(ex.mode);
+  $('imgprompt').value = ex.prompt;
+  if (ex.size) $('imgsize').value = ex.size;
+  if (ex.bg) $('imgbg').value = ex.bg;
+  imgSync();
+}
+
+// References are re-encoded to PNG and capped on the long side before they leave the
+// browser. The model resizes them to roughly the output area anyway, so a 12-megapixel
+// phone photo would be megabytes spent to be thrown away, and PNG is what keeps an alpha
+// channel that the model is documented to read.
+const IMG_REF_MAX = 1280;
+function imgAddFiles(files){
+  const room = 10 - imgRefs.length;
+  if (files.length > room) toast(`Ten references is the model's maximum; taking the first ${room}.`, 'warn');
+  [...files].slice(0, Math.max(0, room)).forEach(f => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const im = new Image();
+      im.onload = () => {
+        const scale = Math.min(1, IMG_REF_MAX / Math.max(im.width, im.height));
+        const c = document.createElement('canvas');
+        c.width = Math.round(im.width * scale); c.height = Math.round(im.height * scale);
+        c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+        imgRefs.push({name: f.name, dataUrl: c.toDataURL('image/png'), w: c.width, h: c.height});
+        imgDrawRefs();
+      };
+      im.onerror = () => toast(`${f.name} is not an image the browser can read.`, 'err');
+      im.src = fr.result;
+    };
+    fr.readAsDataURL(f);
+  });
+}
+
+function imgDrawRefs(){
+  const box = $('imgrefs'); clear(box);
+  imgRefs.forEach((r, i) => {
+    const d = el('div', 'ref');
+    const im = el('img'); im.src = r.dataUrl; im.alt = r.name; im.title = `${r.name}, ${r.w}x${r.h}`;
+    const x = el('button', '', '×'); x.title = 'remove';
+    x.addEventListener('click', () => { imgRefs.splice(i, 1); imgDrawRefs(); });
+    d.append(im, x, el('span', 'n', 'Picture ' + (i + 1)));
+    box.append(d);
+  });
+  setText('imgrefcount', imgRefs.length + ' of 10');
+  imgSync();
+}
+
+function imgDraw(out){
+  const box = $('imgout'); clear(box);
+  const imgs = (out.data || []);
+  const shots = el('div', 'shots' + (imgs.length > 1 ? ' multi' : ''));
+  imgs.forEach((d, i) => {
+    const w = el('div', 'shot');
+    const im = el('img');
+    im.src = 'data:image/' + ($('imgfmt').value === 'webp' ? 'webp' : 'png') + ';base64,' + d.b64_json;
+    im.alt = 'generated image ' + (i + 1);
+    w.append(im); shots.append(w);
+  });
+  box.append(shots);
+  imgLast = out;
+  const meta = $('imgmeta'); clear(meta);
+  const bytes = imgs.reduce((a, d) => a + (d.b64_json || '').length * 0.75, 0);
+  [['images', imgs.length], ['size', (bytes / 1e6).toFixed(1) + ' MB'],
+   ['peak memory', out.peak_memory_mb ? (out.peak_memory_mb / 1024).toFixed(1) + ' GB' : null],
+   ['engine time', out.inference_time_s ? out.inference_time_s.toFixed(1) + ' s' : null],
+  ].forEach(([k, v]) => { if (v != null) meta.append(el('span', 'chip', k + ': ' + v)); });
+  const dl = el('button', 'btn mini low', 'Download');
+  dl.addEventListener('click', () => imgs.forEach((d, i) => {
+    const a = document.createElement('a');
+    a.href = 'data:application/octet-stream;base64,' + d.b64_json;
+    a.download = `qwen-image-${Date.now()}${imgs.length > 1 ? '-' + i : ''}.${$('imgfmt').value}`;
+    a.click();
+  }));
+  meta.append(dl);
+  if (imgs.length){
+    const again = el('button', 'btn mini low', 'Send the first one back as a reference');
+    again.addEventListener('click', () => {
+      if (imgRefs.length >= 10) return toast('Ten references is the maximum.', 'warn');
+      imgRefs.push({name: 'previous-output.png', dataUrl: 'data:image/png;base64,' + imgs[0].b64_json, w: 0, h: 0});
+      imgMode('edit'); imgDrawRefs();
+      toast('Added as Picture ' + imgRefs.length + '. Multi-round editing is chaining these.', 'ok');
+    });
+    meta.append(again);
+  }
+}
+
+const IMG_STATE = {port: 30020, available: false};
+
+async function imgRun(){
+  const problem = imgProblem();
+  if (problem) return toast(problem, 'warn');
+  const editing = $('imgmode-edit').getAttribute('aria-pressed') === 'true';
+  const btn = $('imgrun'); btn.disabled = true;
+  const est = imgEstimate();
+  setText('imgstatus', editing ? 'editing...' : 'generating...');
+  setChip('imgtime', est ? '~' + fmtDur(est) : '');
+  const t0 = Date.now();
+  const tick = setInterval(() => setChip('imgtime', fmtDur((Date.now() - t0) / 1000)
+    + (est ? ' of ~' + fmtDur(est) : '')), 1000);
+  try{
+    const t = await fetch('/api/csrf', {method: 'POST'}); if (t.status === 401) return login();
+    const tok = (await t.json()).token;
+    const body = {...imgPayload(), csrf: tok};
+    if (editing) body.images = imgRefs.map(r => r.dataUrl);
+    const r = await fetch(editing ? '/api/image/edit' : '/api/image/generate',
+                          {method: 'POST', headers: {'Content-Type': 'application/json'},
+                           body: JSON.stringify(body)});
+    if (r.status === 401) return login();
+    const out = await r.json();
+    if (!r.ok){
+      const why = out.error || (out.refused ? JSON.stringify(out.refused).slice(0, 300) : 'HTTP ' + r.status);
+      clear($('imgout')); $('imgout').append(el('p', 'note', 'Refused with HTTP ' + r.status + ': ' + why));
+      setChip('imgtime', r.status + ' refused', 'err');
+      return;
+    }
+    imgDraw(out.image || out);
+    setChip('imgtime', (out.seconds != null ? out.seconds.toFixed(1) + ' s' : 'done'), 'ok');
+  } catch (e){
+    toast('The cockpit could not reach the image lane: ' + e.message, 'err');
+    setChip('imgtime', 'failed', 'err');
+  } finally {
+    clearInterval(tick); btn.disabled = false; setText('imgstatus', ''); imgSync();
+  }
+}
+
+async function imgLane(){
+  try{
+    const r = await fetch('/api/image');
+    if (r.status === 401) return;
+    const d = await r.json();
+    IMG_STATE.port = d.port || 30020;
+    IMG_STATE.available = !!d.available;
+    setText('imgmodel', d.model || 'Qwen/Qwen-Image-2.1');
+    const ctl = $('imgctl'); clear(ctl);
+    if (!d.installed){
+      setChip('imgchip', 'not installed', 'warn');
+      ctl.append(el('span', 'chip', 'install it with:  ./install.sh --with-image'));
+      ctl.append(el('span', 'chip', '38 GB, about 25 min, one command'));
+    } else if (d.available){
+      setChip('imgchip', 'serving on :' + IMG_STATE.port, 'ok');
+      ctl.append(el('span', 'chip', d.llm_lane ? 'the text lane is stopped while this serves' : 'this lane has the box'));
+    } else {
+      setChip('imgchip', d.state || 'stopped', d.state === 'failed' ? 'err' : '');
+      ctl.append(el('span', 'chip', 'start it from the Engines tab, or:  sudo systemctl start qwen38-image.service'));
+      if (d.llm_lane) ctl.append(el('span', 'chip', 'starting it stops ' + d.llm_lane));
+    }
+    $('imgrun').disabled = !d.available || !!imgProblem() || !imgVal('imgprompt');
+  } catch (e){ setChip('imgchip', 'unknown', 'warn'); }
+}
+
+function imgInit(){
+  if (!$('imgsize')) return;
+  IMG_SIZES.forEach(([v, label]) => {
+    const o = document.createElement('option'); o.value = v; o.textContent = label;
+    $('imgsize').append(o);
+  });
+  Object.keys(IMG_EXAMPLES).forEach((name, i) => {
+    const b = el('button', 'btn mini' + (i ? ' low' : ''), name);
+    b.addEventListener('click', () => imgLoadExample(name));
+    $('imgexamples').append(b);
+  });
+  ['imgsize', 'imgw', 'imgh', 'imgsteps', 'imgn', 'imgbg', 'imgfmt', 'imgdev',
+   'imgseed', 'imgcfg', 'imgshift', 'imgneg', 'imgprompt'].forEach(id => {
+    const e = $(id); if (e) { e.addEventListener('input', imgSync); e.addEventListener('change', imgSync); }
+  });
+  ['imgmode-t2i', 'imgmode-edit'].forEach(id => $(id).addEventListener('click', () => {
+    imgMode($(id).dataset.mode); imgSync();
+  }));
+  $('imgreset').addEventListener('click', () => { imgRefs = []; imgDrawRefs(); imgReset();
+    toast('Back to the model’s own defaults: 1024×1024, 40 steps, one image, CFG off.', 'ok', 2600); });
+  $('imgrefadd').addEventListener('click', () => $('imgreffile').click());
+  $('imgreffile').addEventListener('change', e => { imgAddFiles(e.target.files); e.target.value = ''; });
+  $('imgrefsample').addEventListener('click', async () => {
+    if (imgRefs.length >= 10) return toast('Ten references is the maximum.', 'warn');
+    setText('imgstatus', 'making a sample to edit...');
+    const saved = {prompt: $('imgprompt').value, mode: $('imgmode-edit').getAttribute('aria-pressed')};
+    try{
+      const t = await fetch('/api/csrf', {method: 'POST'}); if (t.status === 401) return login();
+      const tok = (await t.json()).token;
+      const r = await fetch('/api/image/generate', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({csrf: tok, prompt: 'A bright daylight photograph of a red teapot on a wooden table '
+          + 'next to a window, even natural light', width: 1024, height: 1024, num_inference_steps: 20, n: 1,
+          output_format: 'png', response_format: 'b64_json', generator_device: 'cpu', seed: 42})});
+      const out = await r.json();
+      if (!r.ok) return toast('Could not make a sample: ' + (out.error || r.status), 'err');
+      const b64 = ((out.image || out).data || [])[0].b64_json;
+      imgRefs.push({name: 'sample-teapot.png', dataUrl: 'data:image/png;base64,' + b64, w: 1024, h: 1024});
+      imgDrawRefs();
+      toast('Sample added as Picture ' + imgRefs.length + '. Try the "Local edit" example on it.', 'ok');
+    } finally { setText('imgstatus', ''); $('imgprompt').value = saved.prompt; imgSync(); }
+  });
+  $('imgrun').addEventListener('click', imgRun);
+  $('imgcopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('imgcurl').textContent); toast('Copied.', 'ok', 1800); }
+    catch (e) { toast('The browser refused the clipboard; select the text instead.', 'warn'); }
+  });
+  imgReset();
+  imgLoadExample(Object.keys(IMG_EXAMPLES)[0]);
+  imgLane();
+}
+
+imgInit();

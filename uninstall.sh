@@ -61,7 +61,7 @@ inventory_images() {
 dir_size() { du -sh "$1" 2>/dev/null | cut -f1; }
 
 echo "── Inventory (everything any version of this repo may have left here) ──"
-for u in qwen38-sglang.service qwen38-flash.service qwen38-keepalive.service qwen38-dashboard.service opencode-web.service; do
+for u in qwen38-sglang.service qwen38-flash.service qwen38-keepalive.service qwen38-dashboard.service qwen38-image.service opencode-web.service; do
   if [ -f "/etc/systemd/system/$u" ]; then
     STATE="$(systemctl is-enabled "$u" 2>/dev/null || true)/$(systemctl is-active "$u" 2>/dev/null || true)"
     echo "  unit      /etc/systemd/system/$u ($STATE)"
@@ -72,6 +72,8 @@ done
 [ -d /etc/systemd/system/qwen38-dashboard.service.d ] && echo "  drop-ins  /etc/systemd/system/qwen38-dashboard.service.d (cockpit overrides)"
 [ -f /etc/sudoers.d/qwen38-cockpit ] && echo "  sudoers   /etc/sudoers.d/qwen38-cockpit (cockpit argv allowlist, NOPASSWD)"
 [ -f /usr/local/bin/qwen38-pyspy-scheduler ] && echo "  wrapper   /usr/local/bin/qwen38-pyspy-scheduler (cockpit forensics helper)"
+IMAGE_LANE_DIR="${IMAGE_LANE_DIR:-$HOME/.local/share/qwen38-image}"
+[ -d "$IMAGE_LANE_DIR" ] && echo "  runtime   $IMAGE_LANE_DIR ($(dir_size "$IMAGE_LANE_DIR"), image lane venv + pinned SGLang checkout)"
 for f in "$CONFIG_DIR"/*.bak-preupdate; do
   [ -f "$f" ] && echo "  backup    $f (pre-update unit backup)"
 done
@@ -108,13 +110,17 @@ sudo systemctl disable --now qwen38-sglang.service 2>/dev/null || true
 sudo systemctl disable --now qwen38-flash.service 2>/dev/null || true
 sudo systemctl disable --now qwen38-keepalive.service 2>/dev/null || true
 sudo systemctl disable --now qwen38-dashboard.service 2>/dev/null || true
+sudo systemctl disable --now qwen38-image.service 2>/dev/null || true
 sudo systemctl disable --now opencode-web.service 2>/dev/null || true
 docker rm -f qwen38-sglang qwen38-sglang-run qwen38-flash 2>/dev/null || true
-sudo rm -f /etc/systemd/system/qwen38-sglang.service /etc/systemd/system/qwen38-flash.service /etc/systemd/system/qwen38-keepalive.service /etc/systemd/system/qwen38-dashboard.service /etc/systemd/system/opencode-web.service
+sudo rm -f /etc/systemd/system/qwen38-sglang.service /etc/systemd/system/qwen38-flash.service /etc/systemd/system/qwen38-keepalive.service /etc/systemd/system/qwen38-dashboard.service /etc/systemd/system/qwen38-image.service /etc/systemd/system/opencode-web.service
 sudo rm -rf /etc/systemd/system/qwen38-sglang.service.d /etc/systemd/system/qwen38-dashboard.service.d /etc/systemd/system/qwen38-keepalive.service.d
 # The cockpit's privileged surface goes with it: a NOPASSWD allowlist left behind
 # after an uninstall is the one leftover that is not merely clutter.
 sudo rm -f /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler
+# The image lane's runtime is the user's, not root's: no sudo, and the 31 GB checkpoint
+# stays in the HF cache with every other checkpoint, which this script reports separately.
+[ -d "$IMAGE_LANE_DIR" ] && rm -rf "$IMAGE_LANE_DIR"
 sudo systemctl daemon-reload
 # The oc launcher, only if it is ours (never a foreign oc binary)
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
