@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.18.0 (unreleased): Qwen-Image 2.1, a third lane
+## v1.18.0 (2026-09-22): Qwen-Image 2.1, a third lane
 
 **Text to image, image editing with up to ten references, and the native RGBA this model
 is built for, on the same box.** `./install.sh --with-image` installs it, and so does the
@@ -44,7 +44,10 @@ that finds no engine because the box is serving images so, and how to switch bac
 instead of "restarting, about 9 minutes". A text boot that floods its log (inductor
 compile errors during the graph capture, 850 lines against a 300-line window) no longer
 sends the boot bar back to "starting", and a serving engine that loses health reads
-"degraded" even to a cockpit that did not watch it boot.
+"degraded" even to a cockpit that did not watch it boot. `docs/clients.md` no longer tells
+Claude Code users to size its window to the 1M context: a session sized that way outgrows
+the share of the pool the proxy accepts and is refused mid-conversation instead of
+compacting. It now gives two settings sized on the smallest pool measured here.
 
 120 tests hold it, and eleven of the fixes were checked by undoing each one and watching
 its test or its CI step fail. Licence of the model: Qwen Research, **not for commercial use**.

@@ -97,11 +97,23 @@ message naming the ceiling and the retry shape.
 
   ```bash
   ANTHROPIC_BASE_URL=http://<host>:30001   ANTHROPIC_AUTH_TOKEN="<key>"
-  CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144    # or 1010000 with CONTEXT_MODE=1m
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144    # native; with CONTEXT_MODE=1m, see below
   API_TIMEOUT_MS=3600000
   CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=1800000
   CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000
   ```
+
+  With `CONTEXT_MODE=1m` the limit is the KV pool, not the 1M window.
+  Claude Code (measured on 2.1.239) compacts at that variable minus 33,000
+  input tokens, refuses to send past it minus 23,000, and asks for its
+  `max_tokens` on top. The proxy refuses a prompt past 92% of the pool,
+  prompt and answer together must fit in it, and the pool is decided at
+  boot (832,993 to 922,094 tokens over sixteen 27B boots here; the
+  cockpit's Overview shows yours). Set to the window, a session grows past
+  what the proxy takes and is refused mid-conversation instead of
+  compacting. Sized on the smallest pool: `700000` with the
+  default output (worst case 709,000), or `529000` with
+  `CLAUDE_CODE_EXTRA_BODY='{"max_tokens":250000}'` (worst case 756,000).
 
   The idle-timeout variables are the difference between "hangs" and "slow";
   they are named in issue #2 and in the failure family diagnosed in
