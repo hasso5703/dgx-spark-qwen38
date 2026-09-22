@@ -29,6 +29,18 @@ Five roles, nothing else:
    nothing parsed. The "System One endpoint" section below carries the design and
    its receipts.
 
+v6.20: the request fields SGLang leaves unbounded and dies on rather than refusing are
+refused here instead. top_logprobs (chat), logprobs (completions) and top_logprobs_num
+(/generate) past a ceiling: the number reaches logprobs.topk(max_k) unexamined and, past
+the vocabulary, raises "selected index k out of range" inside the scheduler, which ends
+the engine for every client (sglang#40076, open; reproduced on the reference box). And
+the family sglang#31597 catalogued in July, whose two fixes were closed without being
+merged: a stop_token_ids or input_ids entry past the vocabulary indexes a scatter_add_ or
+the embedding out of bounds, and n expands a list before anything is scheduled. The
+vocabulary is learned from the one place the engine states it, the message refusing an
+out-of-range logit_bias; when that probe fails the guard stands down rather than refuse
+traffic it cannot judge, and a negative id is refused either way.
+
 v6.19: POST /v1/systemone, typed decisions with the Jev wire contract, served by the
 lane this proxy fronts. One chat completion of one token per question, options as
 single-token letters, probabilities from top_logprobs, the state as the shared prefix
