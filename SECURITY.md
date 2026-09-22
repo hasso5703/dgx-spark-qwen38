@@ -9,7 +9,13 @@ a Docker engine behind a Python proxy, a cockpit web UI that reaches systemd
 through an exact-argv sudo allowlist, and an opt-in relay that puts opencode's
 web interface behind the cockpit login. There is no telemetry and no
 phone-home: every byte that leaves the box is a download the installer names
-(Hugging Face, the image registry) or a request you sent. That includes the typed
+(Hugging Face, the image registry) or a request you sent. One exception, added in
+v1.15.2 and named here because it is one: the cockpit asks GitHub's public releases
+endpoint, at most once every six hours, whether a newer release exists, so that a box
+running an old version is told rather than left to find out. It sends nothing but the
+cockpit's version in a `User-Agent`, it reads a public URL that needs no credential, and
+`COCKPIT_UPDATE_CHECK=0` turns it off, after which the cockpit says nothing about
+releases at all. A check that fails backs off instead of retrying. That includes the typed
 decisions route (`POST /v1/systemone`, v6.19): it speaks the wire contract of a hosted
 service, and it is answered by the engine on this box and nothing else; the proxy
 calls no address but its upstream.

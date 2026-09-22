@@ -646,6 +646,95 @@ class ActionValidation(Base):
         self.assertTrue(starts[0]["dry_run"], "the audit line does not say it was a dry run")
 
 
+class UpdateCheck(Base):
+    """An update nobody is told about is an update nobody installs. The answer existed
+    before this behind a button in a tab; what is tested here is that it is now a fact
+    the cockpit volunteers, that it never claims an update that is not there, and that a
+    box with no network says so instead of looking broken."""
+
+    def setUp(self):
+        super().setUp()
+        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0)
+
+    def tearDown(self):
+        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0)
+        self.cp.UPDATE_CHECK = True
+
+    def test_a_version_number_is_read_as_numbers_not_as_a_string(self):
+        """v1.9.0 sorts after v1.15.0 as text, which would announce an update that is
+        eleven releases old."""
+        self.assertEqual(self.cp._semver("v1.15.2"), (1, 15, 2))
+        self.assertEqual(self.cp._semver("1.15"), (1, 15, 0))
+        self.assertGreater(self.cp._semver("v1.15.0"), self.cp._semver("v1.9.0"))
+        for bad in ("main", "", None, "v1.15.2-rc1", "latest"):
+            self.assertIsNone(self.cp._semver(bad), bad)
+
+    def _with_latest(self, tag, installed="v1.15.0"):
+        self.cp._get_json = lambda url, timeout=5.0: {"tag_name": tag}
+        real_run = self.cp.run
+        self.cp.run = lambda argv, **k: installed if "describe" in argv else real_run(argv, **k)
+        try:
+            return self.cp.collect_update()
+        finally:
+            self.cp.run = real_run
+
+    def test_a_newer_published_release_is_reported_as_behind(self):
+        out = self._with_latest("v1.15.2")
+        self.assertTrue(out["behind"])
+        self.assertEqual(out["latest"], "v1.15.2")
+        self.assertEqual(out["installed"], "v1.15.0")
+
+    def test_the_same_release_is_not_an_update(self):
+        self.assertFalse(self._with_latest("v1.15.0")["behind"])
+
+    def test_a_box_ahead_of_the_newest_tag_is_never_nagged(self):
+        """This repo is developed on a box that runs it, and that box is regularly ahead
+        of the newest published tag. A plain inequality would nag it forever."""
+        self.assertFalse(self._with_latest("v1.15.0", installed="v1.16.0")["behind"])
+
+    def test_a_tag_that_is_not_a_version_is_ignored_rather_than_compared(self):
+        out = self._with_latest("nightly")
+        self.assertFalse(out["behind"])
+        self.assertIsNone(out["latest"])
+
+    def test_no_network_says_unknown_and_never_behind(self):
+        def boom(url, timeout=5.0):
+            raise OSError("no route to host")
+
+        self.cp._get_json = boom
+        out = self.cp.collect_update()
+        self.assertIsNone(out["latest"])
+        self.assertFalse(out["behind"])
+        self.assertGreaterEqual(self.cp._RELEASE["fails"], 1)
+
+    def test_a_failing_check_backs_off_instead_of_asking_every_tier(self):
+        calls = []
+
+        def boom(url, timeout=5.0):
+            calls.append(1)
+            raise OSError("offline")
+
+        self.cp._get_json = boom
+        for _ in range(5):
+            self.cp.collect_update()
+        self.assertEqual(len(calls), 1, "an offline box asked GitHub once per collection")
+
+    def test_the_operator_can_turn_the_outbound_check_off(self):
+        asked = []
+        self.cp._get_json = lambda url, timeout=5.0: (asked.append(url), {"tag_name": "v9.9.9"})[1]
+        self.cp.UPDATE_CHECK = False
+        out = self.cp.collect_update()
+        self.assertEqual(asked, [], "COCKPIT_UPDATE_CHECK=0 still called GitHub")
+        self.assertIs(out["checked"], False)
+        self.assertNotIn("latest", out)
+
+    def test_code_older_than_the_files_on_disk_is_reported(self):
+        self.cp.CODE_AT_START = dict(self.cp.code_fingerprint())
+        self.cp.CODE_AT_START["static/app.js"] = "0:0"
+        self.cp.UPDATE_CHECK = False
+        self.assertIn("static/app.js", self.cp.collect_update().get("stale_code", []))
+
+
 class SystemOneRoute(Base):
     """The System One tab is a browser sending someone else's state to a lane. Two
     things matter and neither is the answer: the serving key never leaves this process,

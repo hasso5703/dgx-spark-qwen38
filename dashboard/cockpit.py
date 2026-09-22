@@ -788,6 +788,64 @@ def agent_relay_thread():
         time.sleep(delay)
         delay = min(delay * 1.5, 30.0)
 
+# ---- "there is a newer release" ---------------------------------------------------
+# The release check existed before this: /api/upstream compared the installed tag against
+# the newest published one, and printed the answer in a line of the Models tab that only
+# appears after someone presses a button. Nobody presses a button to discover news they
+# do not know exists, so an install could sit versions behind a fix without one sign of
+# it. This collector asks the same question on a slow tier and hands the answer to the
+# banner strip, where the cockpit already says the things you did not go looking for.
+#
+# It is an outbound request the operator did not type, which this project otherwise does
+# not make, so: once every six hours, to GitHub's public releases endpoint, carrying
+# nothing but the cockpit's version in a User-Agent; COCKPIT_UPDATE_CHECK=0 turns it off
+# and the cockpit then says nothing about releases at all. SECURITY.md states both.
+UPDATE_CHECK = os.environ.get("COCKPIT_UPDATE_CHECK", "1") != "0"
+_RELEASE = {"latest": None, "ts": 0.0, "fails": 0}
+
+
+def _semver(tag):
+    """(1, 15, 2) from "v1.15.2", or None from anything else. Compared as numbers because
+    a string compare puts v1.9.0 after v1.15.0, and this box is often ahead of the newest
+    published tag: a plain inequality would nag about an update that does not exist."""
+    m = re.match(r"^v?(\d+)\.(\d+)(?:\.(\d+))?$", (tag or "").strip())
+    return tuple(int(p or 0) for p in m.groups()) if m else None
+
+
+@guard
+def collect_update():
+    """{installed, latest, behind, stale_code}. Every field is optional: a box with no
+    network, or one that opted out, reports what it knows and claims nothing else."""
+    out = {"installed": run(["git", "-C", str(REPO_DIR), "describe", "--tags",
+                             "--abbrev=0"]).strip() or None}
+    stale = code_is_stale()
+    if stale:
+        out["stale_code"] = stale
+    if not UPDATE_CHECK:
+        out["checked"] = False
+        return out
+    now = time.time()
+    # A failing check backs off instead of retrying every tier: an offline box should not
+    # spend a request every thirty seconds learning it is still offline.
+    age = 21600.0 if _RELEASE["latest"] else min(3600.0 * (1 + _RELEASE["fails"]), 21600.0)
+    if now - _RELEASE["ts"] >= age:
+        _RELEASE["ts"] = now
+        try:
+            j = _get_json("https://api.github.com/repos/hasso5703/"
+                          "dgx-spark-qwen38/releases/latest", timeout=8.0)
+            tag = (j.get("tag_name") or "").strip()
+            if _semver(tag):
+                _RELEASE.update(latest=tag, fails=0)
+        except Exception:  # noqa: BLE001 (an update check must never be a failure mode)
+            _RELEASE["fails"] += 1
+    out["latest"] = _RELEASE["latest"]
+    here, there = _semver(out["installed"]), _semver(_RELEASE["latest"])
+    # Strictly newer, never merely different: this repo is developed on a box that runs it,
+    # and that box is regularly ahead of the newest tag.
+    out["behind"] = bool(here and there and there > here)
+    return out
+
+
 @guard
 def collect_repo():
     def g(*args):
@@ -1128,7 +1186,8 @@ TIERS = [
     (5.0, {"units": collect_units, "containers": collect_containers,
            "feed": collect_feed, "agent": collect_agent}),
     (30.0, {"engine_info": collect_engine_info, "repo": collect_repo, "kernel": collect_kernel,
-            "opencode": collect_opencode, "reqguard": collect_guard}),
+            "opencode": collect_opencode, "reqguard": collect_guard,
+            "update": collect_update}),
 ]
 
 

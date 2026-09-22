@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.15.3 (2026-09-22): the cockpit tells you a newer version exists
+
+The release check was written in v1.5 and printed its answer in a line of the Models tab
+that appears after a button press. It therefore reached exactly the people who already
+suspected there was news, and a box could sit several releases behind a fix without one
+sign of it on screen. The check is unchanged; what changed is that nobody has to go
+looking for it.
+
+A collector asks GitHub's public releases endpoint every six hours and hands the answer
+to the banner strip, where this cockpit already says the things you did not go looking
+for: **"Version v1.15.3 is out; this box runs v1.15.0"**, with the command that installs
+it. The Setup tab carries the same line permanently. The other staleness a live cockpit
+can have gets a banner too: a `git pull` under a running process leaves it serving new
+HTML against old Python, and the banner names the files that moved and the one command
+that fixes it.
+
+Two decisions keep it from becoming noise. Versions are compared as **numbers**, because
+`v1.9.0` sorts after `v1.15.0` as text and would announce an update eleven releases old.
+And it speaks only when the published version is **strictly newer** than the installed
+one: this repo is developed on a box that runs it, and that box is regularly ahead of the
+newest tag.
+
+It is an outbound request the operator did not type, which this project otherwise does
+not make, so it is named in SECURITY.md, it carries nothing but the cockpit's version in
+a `User-Agent`, it backs off instead of retrying when it fails, a box with no network
+reads "latest release unknown" rather than an alarm, and `COCKPIT_UPDATE_CHECK=0` turns
+it off entirely.
+
+Nine assertions in a headless browser hold the banners and the Setup line, including the
+one that matters most: an up-to-date box shows nothing.
+
 ## v1.15.2 (2026-09-22): the version a running box prints, and a gate so it cannot drift again
 
 v1.15.1 fixed one of the three places this proxy states its own version and shipped

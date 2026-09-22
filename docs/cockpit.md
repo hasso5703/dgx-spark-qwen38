@@ -161,6 +161,30 @@ assumed, so a box whose proxy predates v6.19 is told why instead of looking brok
 
 **Image** and **Video** are next to it and say Coming soon, which is the honest state of both.
 
+## Being told there is a newer version
+
+A box that runs an old release does not know it. The answer existed from v1.5 in the
+Models tab, printed after a button press, which means it reached whoever already
+suspected there was news. Since v1.15.2 the cockpit volunteers it: every six hours it
+asks GitHub whether a newer release is published, and if there is one the banner strip
+says so with the command that installs it. The Setup tab carries the same line
+permanently, next to the repo's own version.
+
+Two details decide whether this is useful or irritating. It compares version **numbers**,
+not strings, so `v1.15.0` is correctly newer than `v1.9.0`, and it only speaks when the
+published version is **strictly newer** than the installed one, because a box that
+develops this repo is regularly ahead of the newest tag and would otherwise be nagged
+forever. A box with no network says "latest release unknown" rather than raising an
+alarm, and stops asking for a while instead of spending a request every collection.
+
+The same strip carries the other staleness a running cockpit can have: a `git pull`
+under a live process leaves it serving new HTML against the Python it imported at start,
+so its controls and its checks disagree. The banner names the files that changed and the
+one command that fixes it.
+
+`COCKPIT_UPDATE_CHECK=0` turns the outbound check off. SECURITY.md names it as the one
+request this stack makes that the operator did not type.
+
 ## On a phone
 
 The cockpit is built for a hand as well as for a desk, and the layout is checked

@@ -985,10 +985,24 @@ $('agrestart').addEventListener('click', () => askAction('unit', {verb: 'restart
   ['sudo', '-n', '/usr/bin/systemctl', 'restart', AGENT_UNIT],
   ['a generation in flight in the agent is lost; the panel reconnects when the server is back']));
 
+// The update check has no panel of its own: it feeds the banner strip and one line of
+// the Setup tab, so its renderer only has to put the fact where both can read it.
+function rUpdate(d){
+  F.update = d || {};
+  const parts = [];
+  if (d.installed) parts.push(d.installed);
+  if (d.checked === false) parts.push('update check off (COCKPIT_UPDATE_CHECK=0)');
+  else if (!d.latest) parts.push('latest release unknown (no network, or GitHub unreachable)');
+  else if (d.behind) parts.push(`${d.latest} is out: git pull && ./install.sh`);
+  else parts.push('up to date');
+  setText('upd', parts.join(' \u00b7 '));
+  const e = $('upd'); if (e) e.classList.toggle('warn', !!d.behind);
+}
+
 // ── apply: freshness, banners, isolation ──────────────────────────────────────
 const RENDER = {machine: rMachine, gpu: rGpu, engine_info: rEngineInfo, engine_fast: rEngineFast, decode: rDecode,
                 canary: rCanary, kernel: rKernel, units: rUnits, containers: rContainers, repo: rRepo,
-                lifecycle: rLifecycle, feed: rFeed, reqguard: rGuard, opencode: rOpencode, config: rConfig, job: rJob, agent: rAgent};
+                lifecycle: rLifecycle, feed: rFeed, reqguard: rGuard, opencode: rOpencode, config: rConfig, job: rJob, agent: rAgent, update: rUpdate};
 document.querySelectorAll('dd, .chip, .num').forEach(e => { if (e.textContent.trim() === '...') e.classList.add('skel'); });
 let lastMsgAt = 0, lastState = null, lastAges = {}, lastErrors = {};
 const lastGood = {};   // per collector: the last sample that was NOT an error
@@ -1077,6 +1091,14 @@ function banners(state, errors){
   });
   if (F.memFloor && F.memFloor.aborts && F.memFloor.last_abort && Date.now() / 1000 - F.memFloor.last_abort < 600)
     add('warn', 'Memory floor fired.', `Host memory fell under ${F.memFloor.gib} GiB with requests running: every generation was aborted ${fmtDur(Date.now() / 1000 - F.memFloor.last_abort)} ago to keep the box out of a livelock.`);
+  // An update nobody is told about is an update nobody installs. The Models tab has
+  // carried this answer since v1.5, behind a button: this says it where the cockpit
+  // already says what you did not go looking for.
+  const upd = F.update || {};
+  if (upd.behind) add('info', `Version ${upd.latest} is out; this box runs ${upd.installed}.`,
+    'Update with: cd ~/dgx-spark-qwen38 && git pull && ./install.sh. It keeps your target, context mode, port and cache, and restarts the engine once. The release notes are on GitHub.');
+  if ((upd.stale_code || []).length) add('warn', 'This cockpit is running older code than the files on disk.',
+    `${upd.stale_code.join(', ')} changed under it, so its controls and its checks no longer agree. Restart it: sudo systemctl restart qwen38-dashboard.service`);
   const ocf = F.ocfit;
   if (ocf && !ocf.ok) add('warn', 'opencode asks for more than this engine can hold.',
     `${ocf.why} (${fmtN(ocf.asked)} asked against ${fmtN(ocf.limit)} on ${ocf.served}): the session would break mid-conversation when the proxy refuses the prompt. Setup tab, "Fit the limits to this engine".`);
