@@ -237,23 +237,41 @@ class WhatTheTabIsTold(Base):
         self.assertEqual(self.ck.image_port(), 30020)
 
     def test_a_lane_loading_its_weights_is_not_reported_as_ready(self):
-        """/health answers 503 for the ~77 s it takes to load 31 GB, while systemd reads
-        `active` throughout. A tab that enables its button on `active` sends into a 503."""
+        """/health answers 503 for the ~70 s it takes to load 31 GB, while systemd reads
+        `active` throughout. The status takes the lifecycle's word, which derives ready
+        from a 200 only, rather than probing again on its own."""
         unit = self.tmp / "qwen38-image.service"
         unit.write_text("[Service]\nExecStart=/x/sglang serve --model-path Q/M "
                         "--host 127.0.0.1 --port 30020\n")
         self.ck.IMAGE_UNIT_PATH = unit
-        self.ck.run = lambda argv, **kw: ("ActiveState=active\nSubState=running\n"
-                                          if "show" in argv else "inactive")
-
-        def refuse(req, timeout=None):
-            raise self.ck.urllib.error.HTTPError(req.full_url, 503, "loading", {}, None)
-
-        self.ck.urllib.request.urlopen = refuse
+        with self.ck.LIFE_LOCK:
+            self.ck.LIFE["states"] = {"qwen38-image.service": "loading-weights"}
         out = self.ck.image_status()
         self.assertFalse(out["available"])
-        self.assertEqual(out["state"], "loading weights")
+        self.assertEqual(out["state"], "loading-weights")
 
+    def test_the_status_does_not_probe_the_lane_itself(self):
+        """The lifecycle probes /health every 2 s; the tab polls this every 1.5 s through a
+        generation. Two probes of one lane is two answers that can disagree for a tick."""
+        unit = self.tmp / "qwen38-image.service"
+        unit.write_text("[Service]\nExecStart=/x/sglang serve --model-path Q/M --port 30020\n")
+        self.ck.IMAGE_UNIT_PATH = unit
+        calls = []
+        self.ck.urllib.request.urlopen = lambda req, timeout=None: calls.append(req.full_url)
+        with self.ck.LIFE_LOCK:
+            self.ck.LIFE["states"] = {"qwen38-image.service": "stopped"}
+        self.ck.image_status()
+        self.assertEqual(calls, [], "image_status sent a request of its own")
+
+    def test_before_the_first_lifecycle_tick_the_state_is_unknown_not_stopped(self):
+        unit = self.tmp / "qwen38-image.service"
+        unit.write_text("[Service]\nExecStart=/x/sglang serve --model-path Q/M --port 30020\n")
+        self.ck.IMAGE_UNIT_PATH = unit
+        with self.ck.LIFE_LOCK:
+            self.ck.LIFE["states"] = {}
+        out = self.ck.image_status()
+        self.assertEqual(out["state"], "unknown")
+        self.assertFalse(out["available"])
 
 class OneAtATime(Base):
     """The diffusion scheduler has no admission cap. Measured on the reference box on
@@ -296,6 +314,80 @@ class OneAtATime(Base):
     def test_the_lock_is_given_back_when_a_request_is_refused_by_shape(self):
         self.assertEqual(self.call({"prompt": "x", "width": 1000})[0], 400)
         self.assertFalse(self.ck.IMAGE_LOCK.locked())
+
+
+class TheImageLaneStateHoldsWhileItServes(Base):
+    """A lane that has served in this activation does not go back to "starting" on one
+    slow probe: its boot lines leave the 300-line journal tail within minutes (the
+    cockpit's own /health probe writes one every 2 s), and a tail without them used to
+    parse as stage None, which derives starting. Measured shape, not a guess: one probe
+    over its 3 s timeout during a 190 s 2048px generation is enough."""
+    U = "qwen38-image.service"
+
+    def state(self, healthy, enter="100", prev="ready"):
+        self.ck.image_healthy = lambda: healthy
+        self.ck._image_journal = lambda: ["[x] INFO: GET /health 200 OK"] * 300
+        st, boot, running = self.ck.image_engine_state(self.U, active="active", sub="running",
+                                                       prev_state=prev, enter_key=enter)
+        return st["state"]
+
+    def setUp(self):
+        super().setUp()
+        self.ck.UNHEALTHY_TICKS.pop(self.U, None)
+        self.ck.IMAGE_READY_ENTER.pop(self.U, None)
+
+    def test_one_missed_probe_keeps_a_serving_lane_ready(self):
+        self.assertEqual(self.state(True), "ready")
+        self.assertEqual(self.state(False), "ready")
+        self.assertEqual(self.state(False), "ready")
+
+    def test_three_misses_in_a_row_make_it_degraded_not_starting(self):
+        self.assertEqual(self.state(True), "ready")
+        for _ in range(2):
+            self.state(False)
+        self.assertEqual(self.state(False), "degraded")
+
+    def test_a_restart_is_a_new_life_at_once(self):
+        """Keyed on the activation: a restart inside one 2 s tick must not read as three
+        more ticks of the old life's "ready"."""
+        self.assertEqual(self.state(True, enter="100"), "ready")
+        self.assertEqual(self.state(False, enter="200", prev="ready"), "starting")
+
+    def test_a_lane_that_never_served_is_read_from_its_boot_log(self):
+        self.ck.image_healthy = lambda: False
+        self.ck._image_journal = lambda: ["[09-22 17:20:37] Starting server...",
+                                          "[09-22 17:20:44] Loading pipeline modules...",
+                                          "... Loading transformer from /x"]
+        st, boot, _ = self.ck.image_engine_state(self.U, active="active", sub="running",
+                                                 prev_state="starting", enter_key="300")
+        self.assertEqual(st["state"], "loading-weights")
+        self.assertIn("DiT", boot["detail"])
+
+
+class TheTextBeltsAreForTextEngines(Base):
+    """The canary, the pool guard and the wedge autoheal all talk to ENGINE_BASE, the text
+    port. With the image lane serving that port is closed."""
+
+    def test_the_canary_skips_when_only_the_image_lane_is_ready(self):
+        with self.ck.LIFE_LOCK:
+            self.ck.LIFE["states"] = {"qwen38-image.service": "ready",
+                                      "qwen38-sglang.service": "stopped",
+                                      "qwen38-flash.service": "stopped"}
+        self.ck.DRY_RUN = False
+        try:
+            out = self.ck.collect_canary()
+        finally:
+            self.ck.DRY_RUN = True
+        data = out.get("data", out)
+        self.assertTrue(data.get("skipped"), "the canary probed a text port nothing listens on")
+        self.assertIsNone(self.spy.body)
+
+    def test_text_units_exclude_the_image_lane(self):
+        self.assertNotIn("qwen38-image.service", self.ck.lc.TEXT_UNITS)
+        self.assertIn("qwen38-image.service", self.ck.lc.ENGINE_UNITS)
+
+    def test_the_logs_tab_lists_each_unit_once(self):
+        self.assertEqual(len(self.ck.JOURNAL_UNITS), len(set(self.ck.JOURNAL_UNITS)))
 
 
 class TheBindIsReadNotAssumed(Base):

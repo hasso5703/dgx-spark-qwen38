@@ -64,7 +64,7 @@ MASKED_FIELDS = {"api_key", "admin_api_key"}
 
 UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service",
          "qwen38-keepalive.service")
-JOURNAL_UNITS = UNITS + (AGENT_UNIT, "qwen38-image.service")   # what the Logs tab may read
+JOURNAL_UNITS = UNITS + (AGENT_UNIT,)   # what the Logs tab may read (UNITS carries the image lane)
 CONTAINERS = ("qwen38-sglang", "qwen38-flash")
 
 UNIT2CONT = {"qwen38-sglang.service": "qwen38-sglang",
@@ -472,6 +472,7 @@ WEDGE_MIN_READY_S = float(os.environ.get("COCKPIT_WEDGE_MIN_READY_S", "180"))
 LAST_HEAL: dict = {"ts": 0.0}
 LAST_PROGRESS: dict = {"ts": None}
 UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
+IMAGE_READY_ENTER: dict = {}   # image lane: the activation (enter timestamp) it served in
 POOL_GUARD = os.environ.get("COCKPIT_POOL_GUARD", "1") == "1"
 POOL_GUARD_THRESHOLD = float(os.environ.get("COCKPIT_POOL_GUARD_THRESHOLD", "0.6"))
 LAST_USAGE: dict = {"value": 0.0, "mamba": 0.0, "ts": 0.0}   # pool usage from the engine's own log lines
@@ -493,7 +494,7 @@ def collect_canary():
     runs: the only probe that tells a wedged scheduler from a healthy one."""
     with LIFE_LOCK:
         states = dict(LIFE.get("states", {}))
-    ready = [u for u in lc.ENGINE_UNITS if states.get(u) in ("ready", "wedged")]
+    ready = [u for u in lc.TEXT_UNITS if states.get(u) in ("ready", "wedged")]
     with STATE_LOCK:
         load = ((STATE.get("engine_fast") or {}).get("data", {}).get("load") or [{}])[0]
     busy = int(load.get("num_reqs") or 0) + int(load.get("num_waiting_reqs") or 0) > 0
@@ -971,17 +972,9 @@ def collect_lifecycle():
         boot = {"stage": None, "fired_up": False, "done": []}
         rebuild = False
         if is_image:
-            # No container, no /get_load, no KV pool: the unit's own state, its own
-            # /health, and its journal for the boot stages. None of the LLM belts
-            # below (pool guard, wedge canary, autoheal) apply to it.
-            running = active in ("active", "activating")
-            healthy_u = running and image_healthy()
-            if running and not healthy_u:
-                boot = lc.parse_image_boot_log(_image_journal())
-            st = lc.derive_state(unit_active=active, unit_sub=d.get("SubState", "?"),
-                                 container_running=running, healthy=healthy_u, boot=boot)
-            if st["state"] == "degraded" and prev.get(unit) not in ("ready", "degraded"):
-                st["state"] = "warming-up"
+            st, boot, running = image_engine_state(
+                unit, active=active, sub=d.get("SubState", "?"), prev_state=prev.get(unit),
+                enter_key=d.get("ActiveEnterTimestampMonotonic", "0"))
         else:
             cont = UNIT2CONT[unit]
             running = bool(run(["docker", "ps", "-q", "-f",
@@ -1543,7 +1536,6 @@ def systemone_call(payload: dict) -> tuple[int, dict]:
 # to the lane: it sends a description of the call and this process makes it.
 IMAGE_UNIT = "qwen38-image.service"
 IMAGE_UNIT_PATH = Path("/etc/systemd/system/qwen38-image.service")
-IMAGE_LLM_UNITS = ("qwen38-sglang.service", "qwen38-flash.service")
 # Ten references at the size the browser caps them to, base64 and JSON-escaped, plus the
 # fields. Everything else on this server stays at the 64 KiB cap.
 IMAGE_MAX_POST = 40 * 1024 * 1024
@@ -1559,17 +1551,36 @@ IMAGE_TIMEOUT = 1800.0          # 2048x2048 at 60 steps is minutes, and it is a 
 IMAGE_LOCK = threading.Lock()
 
 
+IMAGE_UNIT_CACHE: dict = {}
+
+
+def _image_unit_text() -> str:
+    """The unit's text, read once per mtime: a lifecycle tick, a status call and the tab's
+    poll each ask for the port, the bind and the model, several times a second between
+    them. Empty when the unit is absent or unreadable."""
+    try:
+        key = (str(IMAGE_UNIT_PATH), IMAGE_UNIT_PATH.stat().st_mtime_ns)
+    except OSError:
+        return ""
+    hit = IMAGE_UNIT_CACHE.get("unit")
+    if hit and hit[0] == key:
+        return hit[1]
+    try:
+        text = IMAGE_UNIT_PATH.read_text(errors="replace")
+    except OSError:
+        return ""
+    IMAGE_UNIT_CACHE["unit"] = (key, text)
+    return text
+
+
 def _image_unit_flag(flag: str, fallback: str) -> str:
     """What the installed unit passes, not what this file assumes. The installer accepts
     IMAGE_BIND, so a lane bound elsewhere must not be probed on a loopback port that
     nothing is listening on: the tab would read "loading weights" forever on a lane that
     is serving fine."""
-    try:
-        for line in IMAGE_UNIT_PATH.read_text().splitlines():
-            if flag in line:
-                return line.split(flag, 1)[1].split()[0]
-    except Exception:                                   # noqa: BLE001 (absent unit is normal)
-        pass
+    for line in _image_unit_text().splitlines():
+        if flag in line:
+            return line.split(flag, 1)[1].split()[0]
     return fallback
 
 
@@ -1585,20 +1596,6 @@ def image_base() -> str:
     return os.environ.get("COCKPIT_IMAGE", f"http://{host}:{image_port()}")
 
 
-# What the engine says it is doing, in the order it says it, with the share of a boot each
-# milestone had on the reference box (two measured boots, 54 s and 60 s from process start
-# to "fired up"). The label is exact; the percentage is interpolated inside the phase,
-# because the 13.25 GB transformer load is half a minute with nothing printed in between.
-IMAGE_BOOT_PHASES = [
-    ("Starting server", 0.00, "starting the server"),
-    ("Loading pipeline modules", 0.12, "reading the checkpoint layout"),
-    ("Loaded text_encoder", 0.24, "loading the 16.5 GB Qwen3-VL encoder"),
-    ("Loaded transformer", 0.75, "loading the 13.3 GB DiT"),
-    ("Loaded vae", 0.82, "loading the VAE"),
-    ("Loaded scheduler", 0.85, "building the pipeline"),
-    ("Warmup requests", 0.90, "warming up on one throwaway image"),
-    ("fired up and ready", 1.00, "ready"),
-]
 IMAGE_JOURNAL_LINES = 300
 
 
@@ -1614,22 +1611,15 @@ def _image_journal() -> list:
     return lines
 
 
-def image_progress(serving: bool) -> dict:
-    """Where the lane is, in its own words. Before it answers, that is which of the five
-    components it is loading; after, it is which denoising step the current request is on.
-    Returns {} when there is nothing to show, which is most of the time."""
+def image_progress(serving: bool = True) -> dict:
+    """Which stage a request in flight is at, in the engine's own words. The boot is the
+    lifecycle's business (lc.parse_image_boot_log), not this function's: two parsers of one
+    journal is how two parts of a page end up disagreeing. Returns {} when nothing runs."""
+    if not serving:
+        return {}
     lines = _image_journal()
     if not lines:
         return {}
-    if not serving:
-        idx, seen = 0, 0.0
-        for i, (needle, frac, _) in enumerate(IMAGE_BOOT_PHASES):
-            if any(needle in ln for ln in lines):
-                idx, seen = i, frac
-        nxt = IMAGE_BOOT_PHASES[min(idx + 1, len(IMAGE_BOOT_PHASES) - 1)][1]
-        # A warmup line carries its own progress and is the last thing before ready.
-        pct = int(round(100 * min(seen + (nxt - seen) * 0.5, 0.97)))
-        return {"kind": "boot", "pct": pct, "label": IMAGE_BOOT_PHASES[idx][2]}
     # Serving: a request is in flight until the line that ends one. The three stages are
     # named because "generating" for 40 s tells nobody anything, and the encode and the
     # VAE decode either side of the denoise are where a slow request is actually stuck.
@@ -1656,6 +1646,40 @@ def image_progress(serving: bool) -> dict:
     return {"kind": "stage", "stage": stage or "working", "label": stage or "working"}
 
 
+def image_engine_state(unit: str, *, active: str, sub: str, prev_state: str | None,
+                       enter_key: str) -> tuple:
+    """(state, boot, running) for the image lane, from its own facts: the unit, its own
+    /health, and its journal while it boots. None of the text lanes' belts apply to it
+    (pool guard, generation canary, autoheal): they all talk to ENGINE_BASE.
+
+    Once the lane has served in THIS activation it does not go back to booting on a
+    slow probe. Its boot lines leave the journal tail within minutes (the cockpit's own
+    /health probe writes a line every 2 s, so 300 lines are ten minutes), and a tail
+    without "Starting server" parsed as stage None, which derives "starting": one probe
+    over its 3 s timeout during a 190 s 2048px generation read a serving lane as booting,
+    blocked Switch and greyed Generate. So, like the text lanes: one miss keeps it ready,
+    three in a row make it degraded. The activation is keyed on its enter timestamp, so a
+    restart inside one 2 s tick is a new life at once, not three ticks of stale "ready"."""
+    running = active in ("active", "activating")
+    healthy = running and image_healthy()
+    UNHEALTHY_TICKS[unit] = 0 if healthy else UNHEALTHY_TICKS.get(unit, 0) + 1
+    served_here = IMAGE_READY_ENTER.get(unit) == enter_key and enter_key != "0"
+    boot = {"stage": None, "fired_up": False, "done": []}
+    if running and not healthy:
+        if served_here:
+            boot = {"stage": "warming-up", "fired_up": True, "done": list(lc.IMAGE_STAGES)}
+            healthy = UNHEALTHY_TICKS[unit] < 3
+        else:
+            boot = lc.parse_image_boot_log(_image_journal())
+    st = lc.derive_state(unit_active=active, unit_sub=sub, container_running=running,
+                         healthy=healthy, boot=boot)
+    if st["state"] == "degraded" and prev_state not in ("ready", "degraded"):
+        st["state"] = "warming-up"
+    if st["state"] == "ready":
+        IMAGE_READY_ENTER[unit] = enter_key
+    return st, boot, running
+
+
 def image_healthy() -> bool:
     """The image lane's own /health, on its own port. A 503 is its answer while it
     loads, a connection refused its answer while it starts; only a 200 is ready."""
@@ -1668,47 +1692,29 @@ def image_healthy() -> bool:
 
 
 def image_status() -> dict:
-    """Installed, running, answering. Three different things, and the tab says which."""
+    """What the Image tab needs that the lifecycle does not already carry: where the lane
+    listens, which model its unit serves, and which stage a request in flight is at.
+
+    Whether it is up comes FROM the lifecycle, which probes the lane's /health every two
+    seconds anyway. This used to probe it again on every call, plus three systemctl runs
+    and a boot-log journalctl that ran even with the lane stopped, and the tab calls it
+    every 1.5 s through a generation. The lifecycle and the tab also read two different
+    probes, so they could disagree for a tick about whether the lane was up."""
     out = {"installed": IMAGE_UNIT_PATH.exists(), "port": image_port(),
            "host": _image_unit_flag("--host", "127.0.0.1"),
-           "model": "Qwen/Qwen-Image-2.1", "state": "not installed",
-           "available": False, "llm_lane": ""}
+           "model": _image_unit_flag("--model-path", "Qwen/Qwen-Image-2.1"),
+           "state": "not installed", "available": False, "llm_lane": "", "progress": {}}
     if not out["installed"]:
         return out
-    raw = run(["systemctl", "show", IMAGE_UNIT, "-p", "ActiveState"])
-    d = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
-    active = d.get("ActiveState", "?")
-    out["state"] = "starting" if active == "activating" else \
-                   "failed" if active == "failed" else \
-                   "running" if active == "active" else "stopped"
-    for u in IMAGE_LLM_UNITS:
-        if run(["systemctl", "is-active", u]).strip() == "active":
-            out["llm_lane"] = u
-    try:
-        for line in IMAGE_UNIT_PATH.read_text().splitlines():
-            if "--model-path" in line:
-                out["model"] = line.split("--model-path", 1)[1].split()[0]
-    except Exception:                                   # noqa: BLE001
-        pass
-    out["progress"] = image_progress(serving=False)
-    if out["state"] == "running":
-        # Active is not answering: 31 GB of weights take about 77 s to load, and the unit
-        # is active for all of it. Only a health check tells the tab it can send.
-        req = urllib.request.Request(image_base() + "/health")
-        try:
-            urllib.request.urlopen(req, timeout=4).read()
-            out["available"] = True
-        except urllib.error.HTTPError as e:
-            # /health answers 503 for the whole minute and a quarter it takes to load
-            # 31 GB of weights, while the unit reads `active` throughout. Answering is
-            # not the question; answering 200 is.
-            out["state"] = "loading weights" if e.code == 503 else f"answering HTTP {e.code}"
-        except Exception:                               # noqa: BLE001
-            out["state"] = "loading weights"
+    with LIFE_LOCK:
+        states = dict(LIFE.get("states", {}))
+    # before the lifecycle's first tick (a cockpit that just started) nothing is known yet,
+    # and saying so beats guessing "stopped" at a lane that may be serving
+    out["state"] = states.get(IMAGE_UNIT) or "unknown"
+    out["available"] = out["state"] in ("ready", "degraded")
+    out["llm_lane"] = next((u for u in lc.TEXT_UNITS if states.get(u) in lc.BUSY_STATES), "")
     if out["available"]:
         out["progress"] = image_progress(serving=True)
-    elif out["state"] not in ("loading weights", "starting"):
-        out["progress"] = {}
     return out
 
 

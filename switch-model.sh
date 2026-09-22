@@ -82,6 +82,13 @@ except Exception:
     print("not complete in the cache, fetching the rest", flush=True)
     print(snapshot_download(repo))
 PYIMG
+  # Which text lane this box served, written down before it is disabled: install.sh
+  # updates that lane on a later run, and enablement cannot tell it once both are off.
+  for TEXT_UNIT_NAME in qwen38-flash.service qwen38-sglang.service; do
+    if systemctl is-enabled --quiet "$TEXT_UNIT_NAME" 2>/dev/null; then
+      printf '%s\n' "$TEXT_UNIT_NAME" > "$CONFIG_DIR/lane-before-image"
+    fi
+  done
   # The loop variable ends in UNIT_NAME on purpose: CI checks every
   # `sudo systemctl <verb> "$..UNIT_NAME"` against the cockpit's sudoers allowlist,
   # and a variable called $u would have walked straight past it.

@@ -194,6 +194,11 @@ TRANSITIONAL = BUSY_STATES - {"ready", "degraded"}
 # livelock this whole module exists to prevent.
 ENGINE_UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service")
 IMAGE_UNIT = "qwen38-image.service"
+# The engines that serve text on ENGINE_BASE. Every probe, guard and belt that talks to
+# that port (the generation canary, the pool guard, the wedge autoheal) is about these
+# and only these: with the image lane serving, :30000 is closed, and asking "is an
+# engine ready" instead sent the canary a chat completion to a dead port every 90 s.
+TEXT_UNITS = tuple(u for u in ENGINE_UNITS if u != IMAGE_UNIT)
 
 
 def blocked_reasons(action: str, params: dict, states: dict) -> list[str]:

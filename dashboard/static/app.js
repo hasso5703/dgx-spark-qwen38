@@ -79,7 +79,10 @@ function laneLabel(unit){
   // engine is still loading; the live engine only confirms it once it answers
   const cfg = ((F.life || {}).engines || {})[unit] || {};
   const serving = servingEngine();
-  const target = (serving && serving[0] === unit && F.target) || cfg.target;
+  // F.target comes from the TEXT engine's /get_server_info and outlives it: a page left
+  // open across a switch to images kept "stock" there and labelled the lane "Qwen-Image
+  // stock". The image lane's target is always its unit's.
+  const target = (serving && serving[0] === unit && unit !== IMAGE_UNIT && F.target) || cfg.target;
   const t = target && TARGET_SHORT[target] ? ' ' + TARGET_SHORT[target] : '';
   return base + t;
 }
@@ -283,7 +286,8 @@ function rEngineInfoDown(reason){
   ENG_FIELDS.forEach(id => setText(id, '...'));
   ['ovmodel', 'ovrev', 'ovctx', 'ovpool', 'ovspec'].forEach(id => setText(id, 'no engine'));
   showEngineFacts(false, reason || 'no engine');
-  F.pool = null; F.maxRun = null; rPool(); rReservoir();
+  // the served target is a fact about the text engine, and it is gone with it
+  F.pool = null; F.maxRun = null; F.target = null; rPool(); rReservoir();
 }
 function showEngineFacts(on, reason){
   const kv = $('engkv'), down = $('engdown');
@@ -771,7 +775,7 @@ function syncSelector(){
   const eng = (F.life || {}).engines || {};
   const s = servingEngine();
   const unit = s ? s[0] : enabledUnit();
-  const target = (s && F.target) || (eng[unit] || {}).target;
+  const target = (s && s[0] !== IMAGE_UNIT && F.target) || (eng[unit] || {}).target;
   if (target && sel.value !== target) sel.value = target;
 }
 function badge(tab, txt, cls){ const b = $('bdg-' + tab); if (b){ b.textContent = txt; b.className = 'bdg ' + (cls || ''); } }
@@ -1910,7 +1914,7 @@ function imgSync(){
   // IMG_STATE.available belongs in here too: without it, typing one character in the
   // prompt re-enabled the button on a lane that is not serving, and so did the finally
   // of a failed run.
-  $('imgrun').disabled = !IMG_STATE.available || IMG_STATE.busy || !!problem || !imgVal('imgprompt');
+  $('imgrun').disabled = !IMG_STATE.available || IMG_STATE.busy || !!imgInflight || !!problem || !imgVal('imgprompt');
   imgCost(); imgCurl();
 }
 
@@ -2208,8 +2212,11 @@ function imgRenderLane(){
   const other = serving && serving[0] !== IMAGE_UNIT ? serving[0] : null;
   const otherName = other ? laneLabel(other) : '';
   // The lifecycle only carries this unit when it is installed, so its presence is the
-  // answer; the fetch's own flag may not have come back yet on a first render.
-  if (!e){
+  // answer, once there IS a lifecycle. Before its first snapshot (the page just opened)
+  // nothing is known, and "install it with" on a box that has the lane is a false fact.
+  if (!F.life){
+    setChip('imgchip', 'checking', '');
+  } else if (!e){
     setChip('imgchip', 'not installed', 'warn');
     say('install it with:  ./install.sh --with-image');
     say('38 GB, about 25 min, one command');
@@ -2242,7 +2249,10 @@ function imgRenderLane(){
   // turn on by itself at the end of a boot the tab watched from its first second.
   const ready = !!e && (e.state === 'ready' || e.state === 'degraded');
   IMG_STATE.available = ready;
-  $('imgrun').disabled = !ready || IMG_STATE.busy || !!imgProblem() || !imgVal('imgprompt');
+  // This page's own request in flight keeps it off too: IMG_STATE.busy is only about
+  // SOMEONE ELSE's request, so without imgInflight here every two-second lifecycle tick
+  // turned Generate back on mid-run, and a second click raced the first to a 409.
+  $('imgrun').disabled = !ready || IMG_STATE.busy || !!imgInflight || !!imgProblem() || !imgVal('imgprompt');
 }
 
 function imgInit(){

@@ -573,16 +573,30 @@ systemctl is-enabled --quiet qwen38-sglang.service 2>/dev/null && SGL_ENABLED=1
 IMAGE_BOOT=0
 if systemctl is-enabled --quiet qwen38-image.service 2>/dev/null \
    && [ "$SGL_ENABLED" -eq 0 ] && [ "$FLASH_ENABLED" -eq 0 ]; then
-  IMAGE_BOOT=1
-  echo "The image lane is this box's boot lane: this run brings the text lane up to date"
-  echo "without making it the boot lane again. Switch back to text from the cockpit when you want it."
+  if [ -n "$_ENV_MODEL_CHOICE" ]; then
+    # An explicit MODEL_CHOICE asks for a text lane: honour it, and the image lane leaves
+    # the boot below, where the text unit is enabled. Keeping the image lane here would
+    # answer "install flash" with "flash updated, not served", and exit 0.
+    echo "MODEL_CHOICE=$_ENV_MODEL_CHOICE given on a box booting the image lane: making that text lane the boot lane again."
+  else
+    IMAGE_BOOT=1
+    echo "The image lane is this box's boot lane: this run brings the text lane up to date"
+    echo "without making it the boot lane again. Switch back to text from the cockpit when you want it."
+  fi
 fi
+# Which text lane to bring up to date on that path. Both text units can be on disk with
+# neither enabled, since a switch to images disables both, so enablement cannot say which
+# one was in use; the switch writes it down instead, and without it the 27B lane is the
+# fallback, the same one the code below picks when nothing is enabled.
+LANE_BEFORE_IMAGE="$(cat "$CONFIG_DIR/lane-before-image" 2>/dev/null || true)"
 if [ "$FLASH_READABLE" -eq 1 ] && [ "$FLASH_ENABLED" -eq 1 ] && [ "$SGL_ENABLED" -eq 1 ]; then
   echo "NOTE: both qwen38-sglang and qwen38-flash are enabled (only one can serve the port)."
   echo "      Following the 27B unit; run ./switch-model.sh to resolve this cleanly."
 fi
 if [ "$FLASH_READABLE" -eq 1 ] && [ "$FLASH_ENABLED" -eq 1 ] && [ "$SGL_ENABLED" -eq 0 ]; then
   INSTALLED_CHOICE=flash
+elif [ "$IMAGE_BOOT" -eq 1 ] && [ "$LANE_BEFORE_IMAGE" = "qwen38-flash.service" ] && [ "$FLASH_READABLE" -eq 1 ]; then
+  INSTALLED_CHOICE=flash          # the text lane this box used before it switched to images
 elif [ "$SGL_READABLE" -eq 1 ]; then
   INSTALLED_CHOICE=27b
 elif [ "$FLASH_READABLE" -eq 1 ]; then
@@ -1478,6 +1492,13 @@ if [ -n "$OTHER_UNIT" ] && systemctl is-enabled --quiet "$OTHER_UNIT" 2>/dev/nul
   echo "disabling the other engine's unit at boot: $OTHER_UNIT (file kept, switch back anytime with ./switch-model.sh)"
   sudo systemctl disable "$OTHER_UNIT"
 fi
+# The image lane is the third engine. When this run makes a text lane the boot lane (an
+# explicit MODEL_CHOICE on a box that booted images), leaving it enabled would put two
+# engines at the next boot.
+if [ "$IMAGE_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-image.service 2>/dev/null; then
+  echo "disabling the image lane at boot (unit kept, switch back anytime from the cockpit)"
+  sudo systemctl disable qwen38-image.service
+fi
 KEEPALIVE_UNIT="qwen38-keepalive.service"
 # One-prompt ceiling enforced by the proxy (tokens; 0 = pool share only). The proxy
 # always refuses a prompt above its share of the KV pool as well, so the smaller of
@@ -1545,16 +1566,28 @@ else
   # Updated, not switched to. Starting it would stop the image lane that is serving, and
   # the cockpit and the image step below only run once a text engine has proved itself,
   # so this path finishes here, on its own, instead of waiting for a boot it must not do.
+  # The proxy's code and unit were just rewritten above; on the text path it is restarted
+  # once the engine behind it answers, which this path never waits for. Without this it
+  # kept the old keepalive-proxy.py in memory until someone restarted it by hand.
+  sudo systemctl restart "$KEEPALIVE_UNIT" \
+    || echo "NOTE: could not restart $KEEPALIVE_UNIT; restart it by hand so it runs the new code"
   if [ "$COCKPIT" -eq 1 ] && [ -x "$REPO_DIR/dashboard/install-dashboard.sh" ]; then
     "$REPO_DIR/dashboard/install-dashboard.sh" \
       || echo "NOTE: the cockpit did not reinstall; retry with ./dashboard/install-dashboard.sh"
   fi
   # --no-smoke always: the smoke test starts and stops the lane, and this lane is serving.
-  "$REPO_DIR/install-image.sh" --no-smoke \
-    || echo "NOTE: the image lane did not update; retry with ./install-image.sh --no-smoke"
+  if [ "$NO_IMAGE" -eq 0 ]; then
+    "$REPO_DIR/install-image.sh" --no-smoke \
+      || echo "NOTE: the image lane did not update; retry with ./install-image.sh --no-smoke"
+  fi
   step "Done: the text lane is up to date; the image lane stays this box's serving lane"
   echo "  text lane : installed as $UNIT_NAME, not enabled at boot"
-  echo "  back to it: the cockpit's switcher, or ./switch-model.sh $MODEL_CHOICE"
+  if [ "$MODEL_CHOICE" = "custom" ]; then
+    # a kept custom model has no switch target of its own; the installer is the way back
+    echo "  back to it: MODEL_CHOICE=<target> ./install.sh (this box serves a custom model)"
+  else
+    echo "  back to it: the cockpit's switcher, or ./switch-model.sh $MODEL_CHOICE"
+  fi
   exit 0
 fi
 

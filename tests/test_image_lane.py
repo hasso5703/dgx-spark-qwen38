@@ -90,13 +90,16 @@ class TheUnit(unittest.TestCase):
         self.assertIn("anyone who can reach that address can generate on your GPU", text)
 
     def test_a_lane_still_loading_its_weights_is_not_reported_as_ready(self):
-        """/health answers 503 for the ~77 s it takes to load 31 GB, while systemd reads
-        `active` throughout. A tab that enables its button on `active` sends a request
-        into a 503."""
+        """/health answers 503 for the ~70 s it takes to load 31 GB, while systemd reads
+        `active` throughout. Only a 200 is ready, and there is ONE probe: the lifecycle's.
+        The status the tab polls takes its word instead of asking the lane a second time."""
         text = COCKPIT.read_text()
+        healthy = text[text.index("def image_healthy("):text.index("def image_status(")]
+        self.assertIn('urllib.request.urlopen(urllib.request.Request(image_base() + "/health")', healthy)
+        self.assertIn("return False", healthy)          # any non-200 answer is "not yet"
         st = text[text.index("def image_status("):text.index("def _image_decoded_refs(")]
-        self.assertIn("e.code == 503", st)
-        self.assertNotIn('out["available"] = True                     # it answered', st)
+        self.assertIn('out["available"] = out["state"] in ("ready", "degraded")', st)
+        self.assertNotIn("/health", st.split('"""', 2)[2], "image_status probes the lane itself again")
 
     def test_the_cockpit_does_not_send_a_key_the_lane_cannot_check(self):
         """A Bearer header on a server with no --api-key is noise that reads as a gate.
@@ -285,6 +288,77 @@ class AnUpdateKeepsTheImageLaneAsTheBootLane(unittest.TestCase):
         self.assertNotIn("systemctl start", early)
         self.assertIn("--no-smoke", early, "the smoke test stops and starts the serving lane")
         self.assertLess(i, self.text.index('step "9/10 Starting'))
+
+
+class TheBootLaneConvergenceHoldsEveryWay(unittest.TestCase):
+    """What an adversarial review found in the first version of the boot-lane logic."""
+
+    def setUp(self):
+        self.text = (REPO / "install.sh").read_text()
+        self.sw = (REPO / "switch-model.sh").read_text()
+
+    def test_an_explicit_model_choice_is_honoured(self):
+        """MODEL_CHOICE=flash on a box booting images asks for flash. Keeping the image
+        lane answered "flash updated, not served" and exited 0."""
+        i = self.text.index("IMAGE_BOOT=0\nif systemctl is-enabled --quiet qwen38-image.service")
+        block = self.text[i:i + 900]
+        self.assertIn('if [ -n "$_ENV_MODEL_CHOICE" ]; then', block)
+        self.assertLess(block.index('if [ -n "$_ENV_MODEL_CHOICE" ]; then'), block.index("IMAGE_BOOT=1"))
+
+    def test_the_normal_path_takes_the_image_lane_off_the_boot(self):
+        """Enabling a text lane beside an enabled image lane is two engines at the next boot."""
+        self.assertIn('if [ "$IMAGE_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-image.service', self.text)
+        self.assertIn("sudo systemctl disable qwen38-image.service", self.text)
+
+    def test_the_image_boot_path_restarts_the_proxy_it_rewrote(self):
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        early = self.text[i:self.text.index("exit 0", i)]
+        self.assertIn('sudo systemctl restart "$KEEPALIVE_UNIT"', early)
+
+    def test_the_image_boot_path_respects_no_image(self):
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        early = self.text[i:self.text.index("exit 0", i)]
+        call = early.index('"$REPO_DIR/install-image.sh" --no-smoke')
+        self.assertIn('if [ "$NO_IMAGE" -eq 0 ]; then', early[:call])
+
+    def test_the_text_lane_used_before_images_is_the_one_brought_up_to_date(self):
+        """A switch to images disables both text units, so enablement cannot say which one
+        was in use: the switch writes it down, and install.sh reads it."""
+        self.assertIn('> "$CONFIG_DIR/lane-before-image"', self.sw)
+        # written BEFORE the loop that disables them, or it would record nothing
+        self.assertLess(self.sw.index('> "$CONFIG_DIR/lane-before-image"'),
+                        self.sw.index('sudo systemctl disable "$TEXT_UNIT_NAME"'))
+        self.assertIn('[ "$LANE_BEFORE_IMAGE" = "qwen38-flash.service" ]', self.text)
+
+    def test_it_never_points_at_a_switch_target_that_does_not_exist(self):
+        """A kept custom model is MODEL_CHOICE=custom, which switch-model.sh rejects."""
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        early = self.text[i:self.text.index("exit 0", i)]
+        self.assertIn('if [ "$MODEL_CHOICE" = "custom" ]; then', early)
+
+
+class ThePageNeverShowsAStaleOrRacingState(unittest.TestCase):
+    """The frontend findings of the same review. All three pass in a page opened fresh and
+    fail in one left open, which is how the cockpit is actually used."""
+
+    def setUp(self):
+        self.js = APP_JS.read_text()
+
+    def test_the_text_engines_target_never_labels_the_image_lane(self):
+        self.assertIn("unit !== IMAGE_UNIT && F.target", self.js)
+        self.assertIn("s[0] !== IMAGE_UNIT && F.target", self.js)
+        down = self.js[self.js.index("function rEngineInfoDown("):self.js.index("function showEngineFacts(")]
+        self.assertIn("F.target = null", down)
+
+    def test_this_pages_own_request_keeps_generate_off(self):
+        for fn in ("function imgSync(){", "function imgRenderLane(){"):
+            body = self.js[self.js.index(fn):]
+            line = [ln for ln in body.splitlines() if "$('imgrun').disabled" in ln][0]
+            self.assertIn("imgInflight", line, fn)
+
+    def test_nothing_is_claimed_before_the_first_lifecycle_snapshot(self):
+        render = self.js[self.js.index("function imgRenderLane(){"):]
+        self.assertLess(render.index("if (!F.life){"), render.index("} else if (!e){"))
 
 
 class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
