@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.15.0 (2026-09-19): typed decisions, a System One endpoint on the lane you run
+## v1.15.0 (2026-09-22): typed decisions, a System One endpoint on the lane you run
 
 **TypeSafe launched Jev on 2026-09-15**, a hosted model that takes a state and typed
 questions (choice, score, yes/no) and returns probabilities instead of text, at
