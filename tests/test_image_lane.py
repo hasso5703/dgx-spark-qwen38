@@ -488,6 +488,18 @@ class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
         # and grouped apart: it is not one more LLM checkpoint
         self.assertIn('<optgroup label="Images">', sel)
 
+    def test_the_tab_says_switch_before_stop_like_the_readme(self):
+        """Stopped first, the lane button offers "Start 27B", the unit still enabled: one
+        click from a 7-minute boot nobody asked for. The README, the installer and the
+        tab give the same order, switch first."""
+        js = APP_JS.read_text()
+        render = js[js.index("function imgRenderLane(){"):]
+        self.assertLess(render.index("then press Switch"), render.index("two engines never run at once"))
+        readme = (REPO / "README.md").read_text()
+        self.assertIn("switcher, **Switch**, stop the serving lane, **Start Qwen-Image**", readme)
+        self.assertIn("pick Qwen-Image 2.1 in the switcher, Switch, stop the serving lane, Start",
+                      INSTALLER.read_text())
+
     def test_the_switch_accepts_it_everywhere_it_is_checked(self):
         cock = COCKPIT.read_text()
         enum = re.search(r'"switch":\s*\{.*?"params":\s*\{"target":\s*\[(.*?)\]\}', cock, re.S)

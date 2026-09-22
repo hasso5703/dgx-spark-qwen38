@@ -2237,9 +2237,13 @@ function imgRenderLane(){
     if (e.state === 'failed') say('the unit failed: its journal is in the Logs tab');
     // The same three moves as for any lane, in the action bar at the top, named exactly
     // as its buttons read. Only the steps still to do are shown, the first one marked.
+    // Switch comes first, as in the README and the installer: stopped first, the lane
+    // button offers "Start 27B" (the unit still enabled), one click from a 7-minute boot
+    // nobody asked for; switched first, it goes from "Stop 27B" straight to "Start
+    // Qwen-Image".
     const steps = [];
-    if (other) steps.push(`Stop ${LANE_NAME[other] || otherName}: ${otherName} is serving, and two engines never run at once`);
     if (enabledUnit() !== IMAGE_UNIT) steps.push('Pick Qwen-Image 2.1 in the switcher, then press Switch');
+    if (other) steps.push(`Stop ${LANE_NAME[other] || otherName}: ${otherName} is serving, and two engines never run at once`);
     steps.push(`Press Start Qwen-Image (${readyIn(IMAGE_UNIT)} to ready)`);
     guide.hidden = false;
     steps.forEach((s, i) => guide.append(el('li', i === 0 ? 'now' : '', s)));

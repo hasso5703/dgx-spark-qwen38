@@ -261,7 +261,7 @@ curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get
 ```
 
 Then it is a third lane, driven like the other two: pick **Qwen-Image 2.1** in the cockpit's
-switcher, **Switch**, stop the serving lane, **Start Qwen-Image** (about 70 s). From a terminal,
+switcher, **Switch**, stop the serving lane, **Start Qwen-Image** (about a minute). From a terminal,
 `./switch-model.sh image` does the switch and prints the rest.
 
 31 GB of weights do not fit beside a serving LLM, so the lanes take turns: the cockpit refuses
