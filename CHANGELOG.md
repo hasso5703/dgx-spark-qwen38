@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.15.4 (2026-09-22): the update check recovers from a boot, instead of sleeping through it
+
+v1.15.3 shipped with a backoff that started at an hour, and a reboot showed why that is
+the wrong number. The cockpit unit starts in the same second `network-online.target` does
+on this hardware, so the very first probe of a fresh boot is the one most likely to find
+no route. It failed, the backoff put the check to sleep, and the box sat two hours
+without being able to learn that an update existed: the machine that most needs the
+check is the one that just came back.
+
+It backs off from one minute now, doubling to six hours, so a boot-time failure costs a
+minute. Found by rebooting and reading what the cockpit reported about itself rather
+than by trusting the feature that had just been tested.
+
 ## v1.15.3 (2026-09-22): the cockpit tells you a newer version exists
 
 The release check was written in v1.5 and printed its answer in a line of the Models tab

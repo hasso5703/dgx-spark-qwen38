@@ -719,6 +719,30 @@ class UpdateCheck(Base):
             self.cp.collect_update()
         self.assertEqual(len(calls), 1, "an offline box asked GitHub once per collection")
 
+    def test_the_first_retry_after_a_failure_is_a_minute_not_an_hour(self):
+        """This unit starts in the same second network-online.target does, so the probe
+        most likely to fail is the first one of a fresh boot. An hour-scale first step
+        left a rebooted box unable to learn about an update for two hours (measured on
+        the reference box, 2026-09-22): the box that most needs the check is the one that
+        just came back."""
+        calls = []
+
+        def boom(url, timeout=5.0):
+            calls.append(time.time())
+            raise OSError("no route to host")
+
+        self.cp._get_json = boom
+        self.cp.collect_update()
+        self.assertEqual(len(calls), 1)
+        # one failure: the next probe is due a minute later, not an hour
+        self.cp._RELEASE["ts"] = time.time() - 61
+        self.cp.collect_update()
+        self.assertEqual(len(calls), 2, "a box that failed once waited more than a minute")
+        # and it keeps doubling rather than hammering
+        self.cp._RELEASE["ts"] = time.time() - 61
+        self.cp.collect_update()
+        self.assertEqual(len(calls), 2, "the second failure did not back off")
+
     def test_the_operator_can_turn_the_outbound_check_off(self):
         asked = []
         self.cp._get_json = lambda url, timeout=5.0: (asked.append(url), {"tag_name": "v9.9.9"})[1]

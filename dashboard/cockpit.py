@@ -826,8 +826,14 @@ def collect_update():
         return out
     now = time.time()
     # A failing check backs off instead of retrying every tier: an offline box should not
-    # spend a request every thirty seconds learning it is still offline.
-    age = 21600.0 if _RELEASE["latest"] else min(3600.0 * (1 + _RELEASE["fails"]), 21600.0)
+    # spend a request every thirty seconds learning it is still offline. It backs off from
+    # ONE MINUTE, not from an hour, because of where the first failure actually happens:
+    # this unit starts in the same second network-online.target does (measured on the
+    # reference box, 2026-09-22), so the very first probe of a fresh boot is the one most
+    # likely to find no route, and an hour-scale first step left a box that had just
+    # rebooted unable to learn about an update for two hours. A minute, then two, four,
+    # eight, up to six hours.
+    age = 21600.0 if _RELEASE["latest"] else min(60.0 * 2 ** max(0, _RELEASE["fails"] - 1), 21600.0)
     if now - _RELEASE["ts"] >= age:
         _RELEASE["ts"] = now
         try:
