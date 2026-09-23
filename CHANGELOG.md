@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.18.5 (unreleased): an update restarts the engine only when it has to
+
+**Every `./install.sh` restarted the engine**, even when it changed nothing the engine
+reads: a full boot per update, about 8 minutes on the 27B and 12 on flash, for an update
+that touched only the cockpit, the proxy or opencode (on the reference box, an update whose
+27B unit came out byte-identical still cost a 7-minute boot). `engine-inputs.py` now finds what the engine reads at start from its own
+unit (the unit and its drop-ins, the flash launcher, every file of the config dir they
+name directly or through the `/out` mount, the checkpoint configs YaRN is patched into,
+the image IDs) and says whether the running engine already has it: active, started after
+each of those files was last written, its container on the image the unit names. The
+installer takes that answer before it writes anything and compares the content of the
+same files after it wrote them; when both hold and the engine answers `/health`, step 9
+keeps it ("Keeping the running engine: nothing it reads changed since it started") and
+still runs the real generation smoke test against it. Otherwise it says why it restarts
+(a file changed after the start, this run changed what it reads, the engine is stopped,
+or `RESTART_ENGINE=1`). On the reference box, a plain `./install.sh` on the serving 27B went
+from 7 to 8 minutes to 28 s, twice in a row, with the engine's start time unchanged.
+
+The second run is what showed the trap: the first kept the engine but rewrote its unit and
+chat template identically, which dated them after its start, so the next run would have
+restarted it. The unit, the flash launcher and the patched template (`patch-template.py`)
+are now written only when their content changes.
+
 ## v1.18.4 (2026-09-23): a fresh box's opencode stays on the box, and the image lane installs without Rust
 
 **The case v1.18.3 missed, a DGX Spark with no opencode and no opencode config.** The

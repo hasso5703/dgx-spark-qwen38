@@ -1095,6 +1095,19 @@ if [ "$LANE" = "flash" ] && [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ]; then
   fi
 fi
 
+# What the engine this run installs reads when it starts, as it stands before this run
+# writes any of it, and whether the running engine already has exactly that. Step 9
+# restarts the engine only when one of the two says otherwise: an update used to cost a
+# full boot (8 min on the 27B, 12 on flash) even when it changed nothing the engine reads.
+ENGINE_UNIT_PATH="$SGL_UNIT_PATH"; [ "$LANE" = "flash" ] && ENGINE_UNIT_PATH="$FLASH_UNIT_PATH"
+ENGINE_CKPTS=("$MODEL_REPO@$MODEL_REV")
+[ "$LANE" = "27b" ] && ENGINE_CKPTS+=("$DRAFT2_REPO@$DRAFT2_REV")
+ENGINE_FP_BEFORE=""; ENGINE_RUNNING_IT="no: not installed yet"
+if [ -f "$ENGINE_UNIT_PATH" ]; then
+  ENGINE_FP_BEFORE="$(python3 "$REPO_DIR/engine-inputs.py" fingerprint "$ENGINE_UNIT_PATH" "$CONFIG_DIR" "$HF_CACHE" "${ENGINE_CKPTS[@]}" 2>/dev/null || true)"
+  ENGINE_RUNNING_IT="$(python3 "$REPO_DIR/engine-inputs.py" running "$ENGINE_UNIT_PATH" "$CONFIG_DIR" "$HF_CACHE" "${ENGINE_CKPTS[@]}" 2>/dev/null || echo "no: could not tell")"
+fi
+
 step "6/10 API key + patched chat template"
 if [ ! -s "$CONFIG_DIR/api-key" ]; then
   # Subshell umask like install-agent.sh: with umask 022 the file would be
@@ -1624,12 +1637,17 @@ if [ "$LANE" = "flash" ]; then
   TMP_LAUNCH="$(mktemp)"
   render_tpl "$REPO_DIR/qwen38-flash-launch.sh.template" > "$TMP_LAUNCH"
   bash -n "$TMP_LAUNCH" || die "rendered flash launch script does not parse (report this repo bug)"
-  install -m 755 "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh"; rm -f "$TMP_LAUNCH"
+  # rewritten only when it changes: the engine reads it at start, and a rewrite, even an
+  # identical one, would make the next run restart a running engine (engine-inputs.py)
+  cmp -s "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh" || install -m 755 "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh"
+  rm -f "$TMP_LAUNCH"
   echo "wrote $CONFIG_DIR/launch-flash.sh"
 fi
 TMP_UNIT="$(mktemp)"
 render_tpl "$UNIT_TPL" > "$TMP_UNIT"
-sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME"; rm -f "$TMP_UNIT"
+# the same rule for the unit: an identical one is left as it is, mtime included
+cmp -s "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME" || sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME"
+rm -f "$TMP_UNIT"
 # Cross-engine switch: exactly one serving unit may start at boot. The other
 # engine's unit (if present) is disabled now and stopped at step 9, right
 # before this one starts; its unit file is kept for a fast switch back.
@@ -1753,18 +1771,35 @@ if [ "$NO_START" -eq 1 ]; then
   exit 0
 fi
 
-if [ "$LANE" = "flash" ]; then
+# Kept only when the running engine started after every file it reads was last written,
+# this run changed none of them by content (engine-inputs.py), and it answers.
+ENGINE_KEEP=0; ENGINE_WHY=""
+if [ "${RESTART_ENGINE:-0}" = "1" ]; then
+  ENGINE_WHY="RESTART_ENGINE=1"
+elif [ "$ENGINE_RUNNING_IT" != "yes" ]; then
+  ENGINE_WHY="${ENGINE_RUNNING_IT#no: }"
+elif [ -z "$ENGINE_FP_BEFORE" ] || [ "$(python3 "$REPO_DIR/engine-inputs.py" fingerprint "$ENGINE_UNIT_PATH" "$CONFIG_DIR" "$HF_CACHE" "${ENGINE_CKPTS[@]}" 2>/dev/null || true)" != "$ENGINE_FP_BEFORE" ]; then
+  ENGINE_WHY="this run changed what it reads"
+elif ! curl -sf -m 5 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+  ENGINE_WHY="it does not answer /health"
+else
+  ENGINE_KEEP=1
+fi
+if [ "$ENGINE_KEEP" -eq 1 ]; then
+  step "9/10 Keeping the running engine: nothing it reads changed since it started (RESTART_ENGINE=1 restarts it)"
+elif [ "$LANE" = "flash" ]; then
   step "9/10 Starting (every boot ≈ 12-15 min: the weight load writes the whole 47.7 GiB PLE table into its file, then CUDA graph capture)"
 else
   step "9/10 Starting (first boot ≈ 9 min: torch.compile + CUDA graph capture; later boots are faster)"
 fi
+[ "$ENGINE_KEEP" -eq 0 ] && [ "$ENGINE_RUNNING_IT" != "no: not installed yet" ] && echo "why: $ENGINE_WHY"
 if [ -n "$OTHER_UNIT" ] && systemctl is-active --quiet "$OTHER_UNIT" 2>/dev/null; then
   echo "stopping the other engine first ($OTHER_UNIT): one engine at a time on a GB10"
   sudo systemctl stop "$OTHER_UNIT"
 fi
 SMOKE_MODEL="qwen3.8-27b"
 [ "$LANE" = "flash" ] && SMOKE_MODEL="qwen3.8-flash-next"
-sudo systemctl restart "$UNIT_NAME"
+[ "$ENGINE_KEEP" -eq 1 ] || sudo systemctl restart "$UNIT_NAME"
 # what the wait is made of: the flash lane rewrites its PLE table on every boot, and said
 # "first boot compiles kernels" through a 13-minute load that compiled nothing
 LOAD_WHY="first boot compiles kernels, be patient"

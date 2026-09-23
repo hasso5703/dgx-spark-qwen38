@@ -54,6 +54,14 @@ def main() -> None:
         assert "lean (default), xhigh, medium, and low" in patched, "the refusal must name lean"
         assert "<system-reminder>" in patched, "system patch must render reminders"
         assert patched.startswith("HEAD\n") and patched.endswith("TAIL\n")
+        # The same template again leaves the file as it is, mtime included: the engine
+        # reads it at start, and install.sh keeps a running engine only when nothing it
+        # reads was written after it started (every run used to rewrite it, 2026-09-23).
+        os.utime(out, (1_000_000_000, 1_000_000_000))
+        log_same = run(base, out, sha, repo)
+        assert "patched template unchanged" in log_same, log_same
+        assert os.stat(out).st_mtime == 1_000_000_000, "an identical template was rewritten"
+        assert open(out).read() == patched
         # A template that already carries both fixes: succeed, change nothing.
         make_fixture(base, repo, sha, patched)
         log2 = run(base, out, sha, repo)

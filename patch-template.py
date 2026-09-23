@@ -142,6 +142,16 @@ def main() -> None:
                 "template changed. Please open an issue with the template revision."
             )
 
+    # The engine reads this file when it starts, and install.sh keeps a running engine only
+    # when nothing it reads was written after it started: an identical template is left as
+    # it is, mtime included, or every run would make the next one restart the engine.
+    try:
+        with open(out_path, encoding="utf-8") as f:
+            if f.read() == tpl:
+                print(f"patched template unchanged: {out_path}")
+                return
+    except OSError:
+        pass
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(tpl)
     print(f"patched template written to {out_path}")
