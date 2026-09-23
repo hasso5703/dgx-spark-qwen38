@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -90,11 +91,18 @@ def restart_agent() -> str:
 
 
 def engine_info(base: str) -> dict:
+    """/server_info, and the deprecated /get_server_info only on an engine that answers
+    404 to it: SGLang logs a warning for each call of the old route and says it will go."""
     key = (CONFIG_DIR / "api-key").read_text().strip()
-    req = urllib.request.Request(base + "/get_server_info",
-                                 headers={"Authorization": f"Bearer {key}"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read().decode())
+    for path in ("/server_info", "/get_server_info"):
+        req = urllib.request.Request(base + path, headers={"Authorization": f"Bearer {key}"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code != 404 or path == "/get_server_info":
+                raise
+    raise RuntimeError("unreachable")
 
 
 def fit(pool: int, ceiling: int = 0) -> tuple[int, int]:

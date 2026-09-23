@@ -32,7 +32,7 @@ image at mem fraction 0.70; v1.14 moved this lane to the official v0.5.19 image
 at 0.76 and re-ran this probe on both, clean on both. A negative result is not a proof of absence, so the probe ships
 and the numbers stay reproducible.
 """
-import json, random, time, urllib.request, threading, queue, argparse
+import json, random, time, urllib.error, urllib.request, threading, queue, argparse
 from pathlib import Path
 
 BASE = "http://127.0.0.1:30000"
@@ -141,8 +141,15 @@ if __name__ == "__main__":
     p.add_argument("--pad", type=int, default=0,
                    help="approximate filler tokens per request, unique to each request")
     a = p.parse_args()
-    model = json.loads(urllib.request.urlopen(urllib.request.Request(
-        BASE + "/get_model_info", headers={"Authorization": "Bearer " + KEY})).read())["model_path"]
+    model = None
+    for route in ("/model_info", "/get_model_info"):   # the old one is deprecated upstream
+        try:
+            model = json.loads(urllib.request.urlopen(urllib.request.Request(
+                BASE + route, headers={"Authorization": "Bearer " + KEY})).read())["model_path"]
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 404 or route == "/get_model_info":
+                raise
     print(f"modele: {model}\n")
     tag = f", {a.pad} tokens de contexte propre" if a.pad else ""
     b1, c1 = run(a.serial, 1, model, f"serie (c=1, n={a.serial}{tag})", a.pad)

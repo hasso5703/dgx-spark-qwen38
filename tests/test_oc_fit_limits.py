@@ -122,6 +122,40 @@ def main() -> None:
         assert len(restarts) == min(want, 1), (merge_said, restarts)
     m.subprocess.run = real_run
 
+    # 9. The pool is read from /server_info; the deprecated /get_server_info only on an
+    #    engine that answers 404 to it (SGLang warns on every call of the old route).
+    import http.server
+    import json
+    import threading
+    for routes, want_seen in (({"/server_info"}, ["/server_info"]),
+                              ({"/get_server_info"}, ["/server_info", "/get_server_info"])):
+        seen = []
+
+        class Engine(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen.append(self.path)
+                if self.path in routes:
+                    out = json.dumps({"max_total_num_tokens": 901109}).encode()
+                    self.send_response(200); self.send_header("Content-Length", str(len(out)))
+                    self.end_headers(); self.wfile.write(out); return
+                self.send_response(404); self.end_headers()
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Engine)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        fresh = load()                    # the sections above replaced engine_info on m
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                fresh.CONFIG_DIR = P(d)
+                (P(d) / "api-key").write_text("k\n")
+                info = fresh.engine_info(f"http://127.0.0.1:{srv.server_address[1]}")
+        finally:
+            srv.shutdown(); srv.server_close()
+        assert info["max_total_num_tokens"] == 901109, info
+        assert seen == want_seen, (routes, seen)
+
     print("test_oc_fit_limits: OK")
 
 

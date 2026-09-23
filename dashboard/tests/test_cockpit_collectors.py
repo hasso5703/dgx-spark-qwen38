@@ -478,5 +478,79 @@ class AStopTimeoutIsNotACrash(Base):
         self.assertIn("e.state === 'failed' && e.result === 'timeout'", js)
         self.assertIn("was killed while stopping.", js)
 
+
+class TheEngineIsAskedItsCurrentRoutes(Base):
+    """SGLang logs a deprecation warning for every call of /get_load and /get_server_info,
+    on the 27B image and the flash image alike, and says both will go. This cockpit asked
+    /get_load every second: 597 warnings in 10 minutes of the 27B's journal (2026-09-23).
+    It asks /v1/loads?include=core and /server_info, keeps handing the rest of the cockpit
+    and the page the /get_load shape, and falls back only on an engine that answers 404."""
+
+    def engine(self, routes):
+        import http.server
+        import threading
+        seen = []
+        load = {"loads": [{"dp_rank": 0, "num_running_reqs": 2, "num_waiting_reqs": 1,
+                           "num_total_tokens": 500, "num_used_tokens": 400}]}
+        legacy = [{"dp_rank": 0, "num_reqs": 7, "num_waiting_reqs": 0, "num_tokens": 9,
+                   "num_pending_tokens": 0, "ts_tic": 1.0}]
+        answers = {"/v1/loads?include=core": load, "/get_load": legacy,
+                   "/server_info": {"max_total_num_tokens": 900000},
+                   "/get_server_info": {"max_total_num_tokens": 800000}}
+
+        class Engine(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen.append(self.path)
+                if self.path in routes:
+                    out = json.dumps(answers[self.path]).encode()
+                    self.send_response(200); self.send_header("Content-Length", str(len(out)))
+                    self.end_headers(); self.wfile.write(out); return
+                self.send_response(404); self.end_headers()
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Engine)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        saved = self.cp.ENGINE_BASE
+        self.cp.ENGINE_BASE = f"http://127.0.0.1:{srv.server_address[1]}"
+        self.addCleanup(setattr, self.cp, "ENGINE_BASE", saved)
+        self.cp.ENGINE_ROUTES.update(self.cp.CURRENT_ROUTES)
+        self.addCleanup(self.cp.ENGINE_ROUTES.update, self.cp.CURRENT_ROUTES)
+        return seen
+
+    def test_a_current_engine_gives_the_old_shape_from_the_new_route(self):
+        seen = self.engine({"/v1/loads?include=core", "/server_info"})
+        self.assertEqual(self.cp.engine_load(), [{"dp_rank": 0, "num_reqs": 3, "num_waiting_reqs": 1,
+                                                  "num_tokens": 500, "num_pending_tokens": 100}])
+        self.assertEqual(self.cp.engine_server_info(timeout=3)["max_total_num_tokens"], 900000)
+        self.assertEqual(seen, ["/v1/loads?include=core", "/server_info"], "a deprecated route was asked")
+
+    def test_an_engine_without_the_new_routes_still_answers(self):
+        seen = self.engine({"/get_load", "/get_server_info"})
+        self.assertEqual(self.cp.engine_load()[0]["num_reqs"], 7)
+        self.assertEqual(self.cp.engine_server_info(timeout=3)["max_total_num_tokens"], 800000)
+        self.cp.engine_load()
+        self.assertEqual(seen, ["/v1/loads?include=core", "/get_load", "/server_info", "/get_server_info",
+                                "/get_load"], "the fallback is remembered for that engine")
+
+    def test_the_poll_reads_liveness_from_the_new_route(self):
+        self.engine({"/v1/loads?include=core", "/server_info"})
+        out = self.cp.collect_engine_fast()
+        self.assertTrue(out["healthy"], out)
+        self.assertEqual(out["load"][0]["num_reqs"], 3)
+
+    def test_a_port_with_no_engine_is_asked_the_new_route_again(self):
+        self.engine({"/get_load"})
+        self.cp.engine_load()
+        self.assertEqual(self.cp.ENGINE_ROUTES["load"], "/get_load")
+        self.cp.ENGINE_BASE = "http://127.0.0.1:1"          # the lane switched, nothing listens
+        with self.assertRaises(Exception):
+            self.cp.engine_load()
+        self.assertEqual(self.cp.ENGINE_ROUTES["load"], "/v1/loads?include=core")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

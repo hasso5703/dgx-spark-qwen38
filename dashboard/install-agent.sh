@@ -148,7 +148,7 @@ done
 echo "opencode-web.service: opencode ${OC_VERSION:-?} serving on 127.0.0.1:$OPENCODE_PORT (loopback only)"
 
 # ── the cockpit gets the relay; its own bind and port are kept ─────────────
-DASH_AGENT_PORT="$AGENT_PORT" DASH_AGENT_BIND="$AGENT_BIND" \
+DASH_AGENT_PORT="$AGENT_PORT" DASH_AGENT_BIND="$AGENT_BIND" DASH_QUIET=1 \
   DASH_AGENT_UPSTREAM="http://127.0.0.1:$OPENCODE_PORT" "$HERE/install-dashboard.sh"
 
 # ── the relay refuses a request without a session (that is the proof it is up)

@@ -98,7 +98,7 @@ class Engine(http.server.BaseHTTPRequestHandler):
                 self._send(503, {})
             else:
                 self._send(200, {"object": "list", "data": [{"id": Engine.model, "object": "model"}]})
-        elif self.path == "/get_server_info":
+        elif self.path in ("/server_info", "/get_server_info"):
             if Engine.server_info_fail:
                 self._send(503, {})
             else:

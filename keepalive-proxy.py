@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.22). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.23). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -28,6 +28,10 @@ Five roles, nothing else:
    yes/no probabilities from the model it already runs, with nothing generated and
    nothing parsed. The "System One endpoint" section below carries the design and
    its receipts.
+
+v6.23: the pool is read from /server_info, and from the deprecated /get_server_info only
+on an engine that answers 404 to the new route. SGLang logs a deprecation warning for each
+call of the old one, on the 27B image and the flash image alike, and says it will go.
 
 v6.22: an engine that is gone because the box switched to its image lane says so. The
 text engine is stopped on purpose by that switch and nothing brings it back until someone
@@ -795,15 +799,36 @@ def invalidate_pool():
     """
     _POOL.update(tokens=None, ts=0.0)
     _SERVED.update(names=(), ts=0.0)      # v6.19: the served model names are the same kind of fact
+    _INFO_ROUTE["path"] = "/server_info"  # v6.23: a new engine gets the current route first
+
+
+# v6.23: /server_info, and the deprecated /get_server_info only on an engine without it.
+# SGLang logs a deprecation warning for every call of the old route (v0.5.19 and the flash
+# image both: 20 lines in 10 minutes on the reference box from the cockpit, the fit and
+# this proxy together), and it says the route will go.
+_INFO_ROUTE = {"path": "/server_info"}
+
+
+def _server_info(key, timeout):
+    path = _INFO_ROUTE["path"]
+    for attempt in (path, "/get_server_info"):
+        req = urllib.request.Request(UPSTREAM + attempt, headers={"Authorization": f"Bearer {key}"})
+        try:
+            info = json.loads(urllib.request.urlopen(req, timeout=timeout).read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 404 and attempt != "/get_server_info":
+                continue
+            raise
+        _INFO_ROUTE["path"] = attempt
+        return info
+    raise RuntimeError("unreachable")
 
 
 def pool_tokens():
     if _POOL["tokens"] and time.time() - _POOL["ts"] < 600:
         return _POOL["tokens"]
     try:
-        key = _api_key()
-        req = urllib.request.Request(UPSTREAM + "/get_server_info", headers={"Authorization": f"Bearer {key}"})
-        info = json.loads(urllib.request.urlopen(req, timeout=4).read().decode())
+        info = _server_info(_api_key(), 4)
         n = int(info.get("max_total_num_tokens") or 0)
         if n > 0:
             _POOL.update(tokens=n, ts=time.time())
@@ -2741,7 +2766,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.22 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.23 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     if CLIENT_KEYS:
         log(f"client keys on: {len(CLIENT_KEYS)} identities ({CLIENT_KEYS_FILE})")
         if UPSTREAM_API_KEY:

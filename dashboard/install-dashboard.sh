@@ -78,9 +78,13 @@ for _ in $(seq 1 15); do
 done
 curl -s -m 2 "http://$PROBE:$PORT/api/health" >/dev/null 2>&1 \
   || die "cockpit did not come up (journalctl -u $UNIT -n 30)"
-echo "Spark Cockpit: http://$PROBE:$PORT (login = the API key)"
+# DASH_QUIET=1: install-agent.sh runs this again right after install.sh did, only to add
+# the relay, and the whole summary came out twice at the end of every install. The relay
+# line and the key warning are the news; the rest was just printed.
+QUIET="${DASH_QUIET:-0}"
+[ "$QUIET" = "1" ] || echo "Spark Cockpit: http://$PROBE:$PORT (login = the API key)"
 if [ "$BIND" != "127.0.0.1" ] && [ "$BIND" != "localhost" ] && [ "$BIND" != "::1" ]; then
-  echo "Bound to $BIND: reachable from other machines. The API key is the only gate."
+  [ "$QUIET" = "1" ] || echo "Bound to $BIND: reachable from other machines. The API key is the only gate."
   [ -s "$HOME/.config/qwen38/api-key" ] \
     || echo "WARNING: $HOME/.config/qwen38/api-key is missing or empty, so nobody can log in."
 fi
@@ -89,4 +93,4 @@ if [ "$AGENT_PORT" != "0" ]; then
 fi
 REMOVE="sudo systemctl disable --now $UNIT; sudo rm -f $INSTALLED /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler"
 [ -f /etc/systemd/system/opencode-web.service ] && REMOVE="$REMOVE; sudo systemctl disable --now opencode-web.service; sudo rm -f /etc/systemd/system/opencode-web.service"
-echo "Remove with: $REMOVE"
+[ "$QUIET" = "1" ] || echo "Remove with: $REMOVE"

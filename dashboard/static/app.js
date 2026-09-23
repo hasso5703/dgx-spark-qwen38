@@ -87,7 +87,7 @@ function laneLabel(unit){
   // engine is still loading; the live engine only confirms it once it answers
   const cfg = ((F.life || {}).engines || {})[unit] || {};
   const serving = servingEngine();
-  // F.target comes from the TEXT engine's /get_server_info and outlives it: a page left
+  // F.target comes from the TEXT engine's /server_info and outlives it: a page left
   // open across a switch to images kept "stock" there and labelled the lane "Qwen-Image
   // stock". The image lane's target is always its unit's.
   const target = (serving && serving[0] === unit && unit !== IMAGE_UNIT && F.target) || cfg.target;

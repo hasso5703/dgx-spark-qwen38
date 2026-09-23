@@ -208,6 +208,51 @@ def http_json(url: str, timeout: float = 4.0):
         return json.loads(r.read().decode())
 
 
+# The engine's current routes, and the deprecated ones only on an engine that answers 404 to
+# the current. SGLang logs a deprecation warning for every call of /get_load and
+# /get_server_info, on the 27B image and the flash image alike, and says both will go: this
+# cockpit asks /get_load every second, 597 warnings in 10 minutes of the 27B's journal on
+# the reference box (2026-09-23). A route that failed to connect is asked afresh, since
+# the engine behind the port may have changed with a lane switch.
+CURRENT_ROUTES = {"load": "/v1/loads?include=core", "info": "/server_info"}
+LEGACY_ROUTES = {"load": "/get_load", "info": "/get_server_info"}
+ENGINE_ROUTES = dict(CURRENT_ROUTES)
+
+
+def engine_json(kind: str, timeout: float):
+    path = ENGINE_ROUTES[kind]
+    try:
+        return path, http_json(ENGINE_BASE + path, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        if e.code != 404 or path == LEGACY_ROUTES[kind]:
+            raise
+    except urllib.error.URLError:
+        ENGINE_ROUTES[kind] = CURRENT_ROUTES[kind]
+        raise
+    ENGINE_ROUTES[kind] = LEGACY_ROUTES[kind]
+    return ENGINE_ROUTES[kind], http_json(ENGINE_BASE + ENGINE_ROUTES[kind], timeout=timeout)
+
+
+def engine_load(timeout: float = 3.0):
+    """The engine's load in the /get_load shape the rest of this cockpit and its page read,
+    projected from /v1/loads the way SGLang's own /get_load shim does it."""
+    path, d = engine_json("load", timeout)
+    if path == LEGACY_ROUTES["load"]:
+        return d
+    rows = []
+    for r in (d or {}).get("loads") or []:
+        running, waiting = int(r.get("num_running_reqs") or 0), int(r.get("num_waiting_reqs") or 0)
+        total, used = int(r.get("num_total_tokens") or 0), int(r.get("num_used_tokens") or 0)
+        rows.append({"dp_rank": r.get("dp_rank", 0), "num_reqs": running + waiting,
+                     "num_waiting_reqs": waiting, "num_tokens": total,
+                     "num_pending_tokens": total - used})
+    return rows
+
+
+def engine_server_info(timeout: float):
+    return engine_json("info", timeout)[1]
+
+
 # ── Collectors ───────────────────────────────────────────────────────────────
 # Each returns a plain dict and NEVER raises: failures become {"error": ...}
 # so one broken source never darkens the rest of the cockpit.
@@ -351,7 +396,7 @@ HEALTH_RECHECK_S = float(os.environ.get("COCKPIT_HEALTH_RECHECK_S", "30"))
 @guard
 def collect_engine_fast():
     try:
-        load = http_json(ENGINE_BASE + "/get_load", timeout=3)
+        load = engine_load(timeout=3)
     except Exception:  # noqa: BLE001
         load = None
     now = time.time()
@@ -429,7 +474,7 @@ def collect_engine_info():
     # 10 s, not 6: SGLang's event loop stalls under a long prefill and a late answer is
     # far better than none (measured 30/08: three timeouts in a row at 6 s while the same
     # endpoint answered in 0.19 s between two requests).
-    info = http_json(ENGINE_BASE + "/get_server_info", timeout=10)
+    info = engine_server_info(timeout=10)
     kept = ("model_path", "served_model_name", "revision", "quantization",
             "context_length", "mem_fraction_static", "max_running_requests",
             "chunked_prefill_size", "speculative_algorithm",
@@ -1284,7 +1329,7 @@ def collect_lifecycle():
                 # 2026-09-03) or the previous engine's facts (so the wrong pool would be).
                 served_pool = 0
                 try:
-                    served_pool = int((http_json(ENGINE_BASE + "/get_server_info", timeout=8)
+                    served_pool = int((engine_server_info(timeout=8)
                                        or {}).get("max_total_num_tokens") or 0)
                 except Exception:  # noqa: BLE001 (a slow first answer is not worth a crash here)
                     pass
@@ -2057,7 +2102,7 @@ def job_diag_bundle(job: Job):
         (tdp / "system.txt").write_text(run(["uname", "-a"]) + run(["free", "-g"]) + run(["df", "-h", str(Path.home())]) + run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}} {{.ID}}"], timeout=10))
         (tdp / "units.txt").write_text("".join(run(["systemctl", "show", u, "--no-pager"], timeout=5) + "\n" for u in JOURNAL_UNITS))
         try:
-            info = http_json(ENGINE_BASE + "/get_server_info", timeout=6)
+            info = engine_server_info(timeout=6)
             for f in MASKED_FIELDS:
                 info.pop(f, None)
             (tdp / "server-info.json").write_text(json.dumps(info, default=str, indent=1))

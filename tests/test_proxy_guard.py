@@ -290,7 +290,7 @@ class LoadingEngine(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path == "/get_server_info":
+        if self.path in ("/server_info", "/get_server_info"):
             out = json.dumps({"max_total_num_tokens": 200000}).encode()
             self.send_response(200); self.send_header("Content-Length", str(len(out)))
             self.end_headers(); self.wfile.write(out); return
@@ -427,7 +427,7 @@ class SmallPoolEngine(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path == "/get_server_info":
+        if self.path in ("/server_info", "/get_server_info"):
             out = json.dumps({"max_total_num_tokens": 20000}).encode()
             self.send_response(200); self.send_header("Content-Length", str(len(out)))
             self.end_headers(); self.wfile.write(out); return
@@ -532,6 +532,59 @@ class RefusalIsRecognisableAsOverflow(unittest.TestCase):
         _status, err = self._refusal()
         self.assertIn("prompt tokens", err["message"])
         self.assertIn("KV pool", err["message"])
+
+
+class ServerInfoRoute(unittest.TestCase):
+    """v6.23: the pool comes from /server_info. SGLang logs a deprecation warning for every
+    call of /get_server_info, on the 27B image and the flash image alike, and says the route
+    will go; the old one is asked only by an engine that answers 404 to the new one."""
+
+    def serve(self, routes):
+        seen = []
+
+        class Engine(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen.append(self.path)
+                if self.path in routes:
+                    out = json.dumps({"max_total_num_tokens": 123456}).encode()
+                    self.send_response(200); self.send_header("Content-Length", str(len(out)))
+                    self.end_headers(); self.wfile.write(out); return
+                self.send_response(404); self.end_headers()
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Engine)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        spec = importlib.util.spec_from_file_location("kproxy_route", HERE.parents[1] / "keepalive-proxy.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        m.UPSTREAM = f"http://127.0.0.1:{srv.server_address[1]}"
+        m._api_key = lambda: "k"
+        return m, seen
+
+    def test_a_current_engine_is_never_asked_the_deprecated_route(self):
+        m, seen = self.serve({"/server_info"})
+        self.assertEqual(m.pool_tokens(), 123456)
+        m.invalidate_pool()
+        self.assertEqual(m.pool_tokens(), 123456)
+        self.assertEqual(seen, ["/server_info", "/server_info"])
+
+    def test_an_engine_without_the_new_route_still_gives_its_pool(self):
+        m, seen = self.serve({"/get_server_info"})
+        self.assertEqual(m.pool_tokens(), 123456)
+        self.assertEqual(seen, ["/server_info", "/get_server_info"])
+        m._POOL.update(tokens=None, ts=0.0)           # expired, same engine
+        self.assertEqual(m.pool_tokens(), 123456)
+        self.assertEqual(seen[2:], ["/get_server_info"], "the fallback is remembered for that engine")
+
+    def test_a_new_engine_is_asked_the_new_route_again(self):
+        m, seen = self.serve({"/get_server_info"})
+        m.pool_tokens()
+        m.invalidate_pool()                            # the engine moved
+        self.assertEqual(m._INFO_ROUTE["path"], "/server_info")
 
 
 class PoolCacheInvalidation(unittest.TestCase):
@@ -738,7 +791,7 @@ class HardeningEngine(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path == "/get_server_info":
+        if self.path in ("/server_info", "/get_server_info"):
             self.send_response(500); self.end_headers(); return
         if self.path == "/hang":
             time.sleep(5)

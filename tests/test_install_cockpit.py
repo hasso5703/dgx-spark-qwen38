@@ -120,5 +120,40 @@ class TheWiring(unittest.TestCase):
                         self.src.index('step "10/10'))
 
 
+
+class TheSummaryComesOutOnce(unittest.TestCase):
+    """install-agent.sh runs install-dashboard.sh again right after install.sh did, only
+    to add the relay, and the cockpit's URL, "Bound to" and "Remove with" lines came out
+    twice at the end of every install (reference box, 2026-09-23). The nested run says
+    only what is new: the relay and, when it applies, the key warning."""
+
+    def summary(self, quiet):
+        text = (REPO / "dashboard" / "install-dashboard.sh").read_text()
+        start = text.index("# DASH_QUIET=1:")
+        body = text[start:]
+        home = tempfile.mkdtemp(prefix="dash-sum-")
+        script = ("set -euo pipefail\nPROBE=127.0.0.1; PORT=30090; BIND=0.0.0.0; AGENT_PORT=30091; "
+                  "AGENT_BIND=tailscale; AGENT_UPSTREAM=http://127.0.0.1:4096; UNIT=qwen38-dashboard.service; "
+                  f"INSTALLED=/etc/systemd/system/qwen38-dashboard.service; HOME={home}\n" + body)
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
+                           env={"PATH": "/usr/bin:/bin", "DASH_QUIET": quiet})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_the_first_run_prints_the_whole_summary(self):
+        out = self.summary("0")
+        for line in ("Spark Cockpit: http://127.0.0.1:30090", "Bound to 0.0.0.0", "Agent relay:", "Remove with:"):
+            self.assertIn(line, out)
+
+    def test_the_nested_run_prints_only_what_is_new(self):
+        out = self.summary("1")
+        self.assertIn("Agent relay: tailscale:30091", out)
+        self.assertIn("WARNING:", out, "a missing key still has to be said")
+        for line in ("Spark Cockpit:", "Bound to", "Remove with:"):
+            self.assertNotIn(line, out)
+
+    def test_the_agent_installer_asks_for_the_quiet_run(self):
+        self.assertIn("DASH_QUIET=1", (REPO / "dashboard" / "install-agent.sh").read_text())
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

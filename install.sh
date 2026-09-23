@@ -932,6 +932,27 @@ else
   docker pull "$PULL_TARGET" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:v0.5.19 ./install.sh, the moving tag of the same release"
   PULLED_IMAGE="$PULL_TARGET"
 fi
+# A digest pull leaves the image with no tag, and to Docker an image with no tag is
+# dangling: `docker image prune` or `docker system prune`, the usual way to win back room
+# on a full disk, deletes it, and the lane pulls 30 GB again at its next start (both
+# serving images of the reference box were listed dangling, 2026-09-23). A local tag takes
+# it out of that set, for both lanes' pins when they are here. uninstall.sh knows the name.
+pin_tag() {   # $1 lane, $2 image: a digest reference present on this box gets its local tag
+  local tag id
+  case "$2" in *@sha256:*) ;; *) return 0 ;; esac
+  id="$(docker image inspect "$2" --format '{{.Id}}' 2>/dev/null)" || return 0   # not on this box
+  tag="qwen38-pinned:$1-$(printf '%s' "${2##*@sha256:}" | cut -c1-12)"
+  if [ "$(docker image inspect "$tag" --format '{{.Id}}' 2>/dev/null || true)" = "$id" ]; then
+    return 0   # already tagged
+  fi
+  if docker tag "$2" "$tag"; then
+    echo "tagged $tag, so a docker image prune leaves it alone"
+  else
+    echo "NOTE: could not tag $2; a docker image prune would delete it"
+  fi
+}
+pin_tag "$LANE" "$PULLED_IMAGE"
+if [ "$LANE" = "flash" ]; then pin_tag 27b "$IMAGE"; else pin_tag flash "$FLASH_IMAGE"; fi
 
 step "3/10 Verifying the container can see the GPU"
 # --entrypoint: the image ships NVIDIA's own entrypoint script

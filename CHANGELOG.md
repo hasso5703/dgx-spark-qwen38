@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.18.6 (unreleased): the engine's journal stops filling with deprecation warnings, and a prune cannot take the serving images
+
+**Every call of `/get_load` and `/get_server_info` writes a deprecation warning** in both
+SGLang images this repo serves ("Endpoint '/get_load' is deprecated and will be removed in
+a future version"), and the cockpit asked `/get_load` every second: 597 warnings for it and
+20 for `/get_server_info` in ten minutes of the 27B's journal, about 86,000 lines a day, and
+the same rate on the flash lane. The cockpit now asks `/v1/loads?include=core` and projects
+it to the `/get_load` shape its page and its guards read, exactly as SGLang's own shim does;
+the cockpit, the keepalive proxy (v6.23) and `oc-fit-limits.py` ask `/server_info`, and
+`conc-check.py` `/model_info`. Each falls back to the old route only on an engine that
+answers 404 to the new one, and asks the new one again once the port stops answering (a lane
+switch). On the reference box, since the redeploy: `/v1/loads?include=core` once a second,
+`/server_info`, `/health`, and no deprecation warning at all; a real generation read as one
+running request.
+
+**Both serving images were one `docker image prune` away from deletion.** An image pulled
+by digest has no tag, and to Docker an image with no tag is dangling: `docker image prune` or
+`docker system prune`, the usual way to win back room on a full disk, deletes it, and the lane
+pulls 30 GB again at its next start. On the reference box, `docker images -f dangling=true`
+listed both. The installer now tags each pinned image present on the box
+(`qwen38-pinned:<lane>-<digest>`, both lanes, silently when already done); after one run,
+the dangling list is empty and the digest references the cockpit matches pins by are still
+there. `uninstall.sh` knows the name, removes an image by all its references (a tagged image
+keeps its digest reference, and removing one of the two only untags it), and keeps its
+prune warning for an image that really has no tag.
+
+**The cockpit's summary came out twice at the end of every install**: `install-agent.sh`
+runs `install-dashboard.sh` again right after `install.sh` did, only to add the relay. That
+nested run (`DASH_QUIET=1`) now prints only the relay and, when it applies, the key warning.
+
 ## v1.18.5 (2026-09-23): an update restarts the engine only when it has to
 
 **Every `./install.sh` restarted the engine**, even when it changed nothing the engine

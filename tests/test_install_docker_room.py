@@ -75,5 +75,58 @@ class TheDockerRoomFollowsWhatThereIsToPull(unittest.TestCase):
                       run("flash", 20, ["lmsysorg/sglang@sha256:overlaybase"], overlay="1"))
 
 
+
+PIN_DOCKER = """#!/bin/sh
+# image inspect REF [--format {{.Id}}] | tag SRC DST ; state in $FAKE_DIR
+if [ "$1 $2" = "image inspect" ]; then
+  f="$FAKE_DIR/$(printf '%s' "$3" | tr '/:@' '___')"
+  [ -f "$f" ] || exit 1
+  cat "$f"; exit 0
+fi
+if [ "$1" = tag ]; then
+  echo "tag $2 $3" >> "$FAKE_DIR/calls"
+  cp "$FAKE_DIR/$(printf '%s' "$2" | tr '/:@' '___')" "$FAKE_DIR/$(printf '%s' "$3" | tr '/:@' '___')"; exit 0
+fi
+exit 1
+"""
+
+
+class ThePinnedImagesAreTagged(unittest.TestCase):
+    """An image pulled by digest has no tag, and `docker image prune` deletes untagged
+    images: both serving images of the reference box were in that set (2026-09-23)."""
+
+    def run_pin(self, present, tagged=False, ref="lmsysorg/sglang@sha256:" + "d6e7288627be" + "0" * 52):
+        text = INSTALL.read_text()
+        start = text.index("pin_tag() {")
+        fn = text[start:text.index("\n}\n", start) + 3]
+        t = pathlib.Path(tempfile.mkdtemp(prefix="pin-"))
+        (t / "docker").write_text(PIN_DOCKER)
+        (t / "docker").chmod(0o755)
+        if present:
+            (t / ref.replace("/", "_").replace(":", "_").replace("@", "_")).write_text("sha256:img\n")
+        if tagged:
+            (t / "qwen38-pinned_27b-d6e7288627be").write_text("sha256:img\n")
+        r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + fn + f'pin_tag 27b "{ref}"\n'],
+                           capture_output=True, text=True, timeout=30,
+                           env={"PATH": f"{t}:/usr/bin:/bin", "FAKE_DIR": str(t)})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = (t / "calls").read_text() if (t / "calls").exists() else ""
+        return r.stdout, calls
+
+    def test_a_digest_pull_gets_its_tag(self):
+        out, calls = self.run_pin(present=True)
+        self.assertIn("tagged qwen38-pinned:27b-d6e7288627be", out)
+        self.assertIn("tag lmsysorg/sglang@sha256:d6e7288627be", calls)
+
+    def test_an_image_already_tagged_is_left_alone_and_quiet(self):
+        out, calls = self.run_pin(present=True, tagged=True)
+        self.assertEqual((out, calls), ("", ""))
+
+    def test_an_image_that_is_not_here_is_not_tagged(self):
+        self.assertEqual(self.run_pin(present=False), ("", ""))
+
+    def test_a_tag_reference_needs_no_tag(self):
+        self.assertEqual(self.run_pin(present=True, ref="lmsysorg/sglang:v0.5.19"), ("", ""))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
