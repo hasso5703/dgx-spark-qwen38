@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.18.6 (unreleased): the engine's journal stops filling with deprecation warnings, and a prune cannot take the serving images
+## v1.18.6 (2026-09-23): the engine's journal stops filling with deprecation warnings, and a prune cannot take the serving images
 
 **Every call of `/get_load` and `/get_server_info` writes a deprecation warning** in both
 SGLang images this repo serves ("Endpoint '/get_load' is deprecated and will be removed in
