@@ -284,7 +284,10 @@ own defaults with a **Reset settings** button, and ships prompts and sample imag
 requests do not queue, they each take a working set: measured, one generation holds 31.2 GB
 and eight in a row hold exactly the same, but two at once held 90.5 GB of this box's 121.6
 and the engine stopped answering. The cockpit refuses a second one in under a millisecond
-and says why.
+and says why, and it refuses a call whose images add up to more pixels than the largest
+call measured here (one 2752x1536 image): the images of a call are one batch. The runtime
+cannot abort a generation, so the Image tab's **Cancel** restarts the lane, in about a
+minute.
 
 Editing redraws the whole picture rather than patching it: the edit you ask for happens, and the
 rest comes back with about twice the fine detail of what you sent (2.16x, reproduced across every

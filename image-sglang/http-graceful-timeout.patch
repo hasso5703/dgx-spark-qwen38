@@ -1,0 +1,14 @@
+diff --git a/python/sglang/multimodal_gen/runtime/launch_server.py b/python/sglang/multimodal_gen/runtime/launch_server.py
+index d3fa0a1..9a10bb5 100644
+--- a/python/sglang/multimodal_gen/runtime/launch_server.py
++++ b/python/sglang/multimodal_gen/runtime/launch_server.py
+@@ -491,6 +491,9 @@ def launch_http_server_only(server_args):
+         port=server_args.port,
+         reload=False,
+         ws_per_message_deflate=False,
++        # Without a bound, shutdown waits for every open connection, and a generation
++        # holds one for as long as it runs; 5 s, then in-flight requests are cancelled.
++        timeout_graceful_shutdown=5,
+     )
+ 
+ 

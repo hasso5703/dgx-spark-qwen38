@@ -226,7 +226,9 @@ class TheInstaller(unittest.TestCase):
 
 PATCH = REPO / "image-sglang" / "scheduler-idle-poll.patch"
 PATCHED = "python/sglang/multimodal_gen/runtime/managers/scheduler.py"
-# The hunk's context as it stands at the pin, three lines either side of the insertion.
+HTTP_PATCH = REPO / "image-sglang" / "http-graceful-timeout.patch"
+HTTP_PATCHED = "python/sglang/multimodal_gen/runtime/launch_server.py"
+# Each hunk's context as it stands at the pin, three lines either side of the insertion.
 CONTEXT_AT_PIN = (
     "                        self._poller.poll(timeout=remaining_ms)\n"
     "                    elif remaining_ms > 0:\n"
@@ -235,31 +237,55 @@ CONTEXT_AT_PIN = (
     "\n"
     "            if self.metrics is not None:\n"
 )
+HTTP_CONTEXT_AT_PIN = (
+    "        port=server_args.port,\n"
+    "        reload=False,\n"
+    "        ws_per_message_deflate=False,\n"
+    "    )\n"
+    "\n"
+    "\n"
+)
 
 
-class TheIdleLoopFix(unittest.TestCase):
-    """The diffusion scheduler's loop never waits: recv_reqs() does not block and nothing
-    else in the loop sleeps, so an idle lane held one CPU core at 100% (1.047 cores
-    measured, against 0.029 for the 27B lane and 0.045 with this patch). Whether the
-    patch still applies to the pin is a CI step that fetches the real file; these hold
-    what it does and how the installer carries it."""
+def added_code(patch: pathlib.Path) -> list:
+    diff = patch.read_text()
+    return [ln[1:].strip() for ln in diff.splitlines()
+            if ln.startswith("+") and not ln.startswith("+++") and not ln[1:].strip().startswith("#")]
 
-    def test_it_only_adds_a_wait_on_the_request_socket_when_nothing_is_queued(self):
-        diff = PATCH.read_text()
-        self.assertEqual(re.findall(r"^\+\+\+ b/(.+)$", diff, re.M), [PATCHED])
-        removed = [ln for ln in diff.splitlines() if ln.startswith("-") and not ln.startswith("---")]
-        self.assertEqual(removed, [], "the patch changes upstream lines instead of adding one branch")
-        added = [ln[1:].strip() for ln in diff.splitlines()
-                 if ln.startswith("+") and not ln.startswith("+++")]
-        code = [ln for ln in added if not ln.startswith("#")]
-        self.assertEqual(code, ["elif not self.waiting_queue and self.receiver is not None:",
-                                "self._poller.poll(timeout=1000)"])
+
+class TheLocalPatches(unittest.TestCase):
+    """Two local changes to the pinned SGLang source, both measured on the reference box.
+    The idle loop: an idle lane held one CPU core at 100% (1.047 cores, against 0.029 for
+    the 27B lane and 0.045 with the patch). The HTTP shutdown: a Stop during a 2048x2048
+    request waited 60 s for its connection until systemd killed the lane and marked the
+    unit failed (2026-09-23); bounded at 5 s, an isolated uvicorn with a request in flight
+    stopped in 5.2 s with Result=success. Whether they still apply to the pin is a CI step
+    that fetches the real files; these hold what they do and how the installer carries them."""
+
+    def test_each_patch_touches_one_file_and_removes_nothing(self):
+        for patch, target in ((PATCH, PATCHED), (HTTP_PATCH, HTTP_PATCHED)):
+            diff = patch.read_text()
+            self.assertEqual(re.findall(r"^\+\+\+ b/(.+)$", diff, re.M), [target], patch.name)
+            removed = [ln for ln in diff.splitlines() if ln.startswith("-") and not ln.startswith("---")]
+            self.assertEqual(removed, [], f"{patch.name} changes upstream lines instead of adding")
+
+    def test_the_idle_patch_only_waits_on_the_socket_when_nothing_is_queued(self):
+        self.assertEqual(added_code(PATCH), ["elif not self.waiting_queue and self.receiver is not None:",
+                                             "self._poller.poll(timeout=1000)"])
+
+    def test_the_http_patch_only_bounds_the_graceful_shutdown(self):
+        self.assertEqual(added_code(HTTP_PATCH), ["timeout_graceful_shutdown=5,"])
+
+    def test_the_installer_applies_exactly_the_patches_in_the_repo(self):
+        listed = re.search(r"^PATCHES=\((.*)\)$", INSTALLER.read_text(), re.M).group(1).split()
+        on_disk = sorted(f.stem for f in (REPO / "image-sglang").glob("*.patch"))
+        self.assertEqual(sorted(listed), on_disk)
 
     def _block(self):
-        """The installer's own lines for the patch, run as they are written."""
+        """The installer's own lines for the patches, run as they are written."""
         t = INSTALLER.read_text()
-        end = 'serving as upstream wrote it."\nfi\n'
-        return t[t.index('IDLE_PATCH="$HERE/image-sglang/'):t.index(end) + len(end)]
+        end = 'that part runs as upstream wrote it."\n  fi\ndone\n'
+        return t[t.index("PATCHES=("):t.index(end) + len(end)]
 
     def _git(self, repo, *args):
         return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
@@ -267,11 +293,12 @@ class TheIdleLoopFix(unittest.TestCase):
                                               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                                               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
 
-    def _repo(self, text):
+    def _repo(self, sched=CONTEXT_AT_PIN, http=HTTP_CONTEXT_AT_PIN):
         d = pathlib.Path(tempfile.mkdtemp(prefix="img-src-"))
         self._git(d, "init", "-q")
-        (d / PATCHED).parent.mkdir(parents=True)
-        (d / PATCHED).write_text(text)
+        for rel, text in ((PATCHED, sched), (HTTP_PATCHED, http)):
+            (d / rel).parent.mkdir(parents=True, exist_ok=True)
+            (d / rel).write_text(text)
         self._git(d, "add", "-A")
         self._git(d, "commit", "-qm", "pin")
         self._git(d, "remote", "add", "origin", str(d))
@@ -284,26 +311,29 @@ class TheIdleLoopFix(unittest.TestCase):
         return r.returncode, r.stdout + r.stderr
 
     def test_applied_once_then_recognised(self):
-        src = self._repo(CONTEXT_AT_PIN)
+        src = self._repo()
         pin = self._git(src, "rev-parse", "HEAD")
         rc, out = self._install(src, pin)
         self.assertEqual(rc, 0, out)
-        self.assertIn("idle-loop fix applied", out)
-        self.assertIn("self._poller.poll(timeout=1000)", (src / PATCHED).read_text())
+        self.assertIn("scheduler-idle-poll: applied", out)
+        self.assertIn("http-graceful-timeout: applied", out)
         rc, out = self._install(src, pin)
         self.assertEqual(rc, 0, out)
-        self.assertIn("idle-loop fix already applied", out)
+        self.assertIn("scheduler-idle-poll: already applied", out)
+        self.assertIn("http-graceful-timeout: already applied", out)
         self.assertEqual((src / PATCHED).read_text().count("self._poller.poll(timeout=1000)"), 1)
+        self.assertEqual((src / HTTP_PATCHED).read_text().count("timeout_graceful_shutdown=5"), 1)
 
     def test_a_new_pin_checks_out_over_a_patched_tree(self):
-        """The patch is a local edit, and git refuses to check out over a local edit of a
-        file the new commit changes. Without taking it off first, the next pin bump would
+        """The patches are local edits, and git refuses to check out over a local edit of a
+        file the new commit changes. Without taking them off first, the next pin bump would
         die at the checkout on every box that ever installed the lane."""
-        src = self._repo(CONTEXT_AT_PIN)
+        src = self._repo()
         old = self._git(src, "rev-parse", "HEAD")
         self._install(src, old)                                  # a box patched at the old pin
         self._git(src, "stash", "-q")
         (src / PATCHED).write_text(CONTEXT_AT_PIN + "# a later upstream commit\n")
+        (src / HTTP_PATCHED).write_text(HTTP_CONTEXT_AT_PIN + "# a later upstream commit\n")
         self._git(src, "commit", "-qam", "new pin")
         new = self._git(src, "rev-parse", "HEAD")
         self._git(src, "checkout", "-q", old)
@@ -311,19 +341,21 @@ class TheIdleLoopFix(unittest.TestCase):
         rc, out = self._install(src, new)
         self.assertEqual(rc, 0, out)
         self.assertEqual(self._git(src, "rev-parse", "HEAD"), new)
-        self.assertIn("idle-loop fix applied", out)
+        self.assertIn("scheduler-idle-poll: applied", out)
+        self.assertIn("http-graceful-timeout: applied", out)
 
-    def test_a_pin_it_no_longer_fits_is_a_note_not_a_failure(self):
-        src = self._repo(CONTEXT_AT_PIN.replace("remaining_ms / 1000.0", "remaining_ms / 1e3"))
+    def test_a_pin_one_no_longer_fits_is_a_note_not_a_failure(self):
+        src = self._repo(http=HTTP_CONTEXT_AT_PIN.replace("reload=False", "reload=True"))
         rc, out = self._install(src, self._git(src, "rev-parse", "HEAD"))
         self.assertEqual(rc, 0, out)
-        self.assertIn("NOTE: the idle-loop fix does not apply", out)
+        self.assertIn("NOTE: http-graceful-timeout does not apply", out)
+        self.assertIn("scheduler-idle-poll: applied", out)       # the other one still goes in
 
-    def test_it_goes_in_before_the_runtime_is_checked(self):
+    def test_they_go_in_before_the_runtime_is_checked(self):
         text = INSTALLER.read_text()
         self.assertLess(text.index('git -C "$SRC" checkout --quiet "$PIN"'),
-                        text.index('git -C "$SRC" apply "$IDLE_PATCH"'))
-        self.assertLess(text.index('git -C "$SRC" apply "$IDLE_PATCH"'),
+                        text.index('git -C "$SRC" apply "$PF"'))
+        self.assertLess(text.index('git -C "$SRC" apply "$PF"'),
                         text.index("the runtime does not know Qwen-Image 2.1"))
 
 
@@ -473,6 +505,31 @@ class ThePageNeverShowsAStaleOrRacingState(unittest.TestCase):
         self.assertLess(render.index("if (!F.life){"), render.index("} else if (!e){"))
 
 
+class AGenerationCanBeCancelled(unittest.TestCase):
+    """SGLang Diffusion cannot abort a request, and nothing in the page could end one: a
+    47-minute call (ten 2048x2048 images at 60 steps) on 2026-09-23 had no way out but the
+    lane's Stop, which timed out. Cancel restarts the lane, and whatever cuts a request
+    this page is waiting on (Cancel, the lane's Stop, a restart from the Engines card)
+    makes that request read as cancelled, not as a lane that failed to answer."""
+
+    def setUp(self):
+        self.js = APP_JS.read_text()
+
+    def test_the_button_is_hidden_until_something_generates(self):
+        html = INDEX.read_text()
+        self.assertRegex(html, r'<button class="btn danger" id="imgcancel" hidden')
+        self.assertIn("$('imgcancel').addEventListener('click', imgCancel);", self.js)
+
+    def test_only_a_stop_or_restart_of_the_image_lane_marks_a_request_cancelled(self):
+        self.assertIn("if (name === 'unit' && params.unit === IMAGE_UNIT && params.verb !== 'start') "
+                      "IMG_INTERRUPTED = Date.now();", self.js)
+
+    def test_a_cut_request_reads_as_cancelled_before_it_reads_as_refused(self):
+        run = self.js[self.js.index("async function imgRun(){"):self.js.index("let imgPoll = null;")]
+        self.assertLess(run.index("if (!r.ok && IMG_INTERRUPTED > t0){"), run.index("if (!r.ok){"))
+        self.assertIn("setChip('imgtime', 'cancelled', 'warn')", run)
+
+
 class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
     """Switched to from the one switcher at the top, started and stopped by the action
     bar's lane button, gated by the same "never two engines at once" rule, drawn by the
@@ -520,7 +577,14 @@ class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
         behave differently from the two others in the first place."""
         js = APP_JS.read_text()
         tab = js[js.index("async function imgLane(){"):js.index("function imgInit(){")]
-        self.assertNotIn("askAction('unit'", tab)
+        # The one unit action the tab sends is the restart that cancels a generation:
+        # SGLang Diffusion cannot abort a request, so that is the only way to end one, and
+        # a 47-minute call (ten 2048x2048 images at 60 steps, 2026-09-23) had no way out
+        # but the lane's Stop. It starts and stops nothing: no Start, no Stop, here.
+        calls = re.findall(r"askAction\('unit', \{verb: '(\w+)'", tab)
+        self.assertEqual(calls, ["restart"], "the Image tab starts or stops a lane again")
+        cancel = tab[tab.index("function imgCancelSync(){"):tab.index("function imgCancel(){")]
+        self.assertIn("imgInflight || IMG_STATE.busy", cancel, "Cancel must only show while a generation runs")
         self.assertNotIn("function imgUnitButton", js)
         # and it points at the controls that do exist, named as they read on screen
         self.assertIn("Start Qwen-Image", tab)

@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import http.cookies
 import http.server
+import importlib.util
 import json
 import os
 import re
@@ -643,6 +644,64 @@ def fit_verdict(ctx: int, outp: int, usable: int, prompt_cap: int) -> dict:
     return {"ok": True, "why": "", "asked": ctx + outp, "limit": usable}
 
 
+# Fit opencode's limits once the serving engine has booted, when the ones declared do not
+# fit its pool (maybe_autofit). COCKPIT_AUTOFIT=0 leaves it to the Setup tab's button.
+AUTOFIT = os.environ.get("COCKPIT_AUTOFIT", "1") == "1"
+AUTOFIT_DONE: dict = {}          # text unit -> the activation its limits were fitted in
+_OC_FIT: dict = {}               # oc-fit-limits.py, loaded once for its fit() formula
+
+
+def _oc_fit_formula():
+    """The (context, output) formula of oc-fit-limits.py itself, so the check below and
+    the tool that writes the numbers cannot disagree about what fits."""
+    if "fit" not in _OC_FIT:
+        spec = importlib.util.spec_from_file_location("oc_fit_limits", REPO_DIR / "oc-fit-limits.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _OC_FIT["fit"] = mod.fit
+    return _OC_FIT["fit"]
+
+
+def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
+    """Fit opencode's limits to the pool of the engine that has just booted, when the ones
+    declared do not fit it, through the same action as the Setup tab's button.
+
+    A switch writes the target's nominal pair, because the pool is only known once the
+    engine is up, and on the 1M lanes that pair (900,000) is above every pool measured
+    (832,993 to 922,094 over sixteen 27B boots). install.sh fits after its own boot;
+    nothing did after a switch and a Start from this page, so every switch left the Agent
+    tab asking for more than the pool, under a warning that told the operator to press a
+    button (reference box, 2026-09-23, after a switch to the uncensored target).
+
+    Only when the declared limits do not fit, never when the fit would raise one of them
+    (a number somebody set lower stays theirs), once per activation of the serving unit,
+    and as a job, so it shows in the job strip and in the audit log like the button."""
+    if not AUTOFIT or not fit or fit.get("ok"):
+        return "not needed"
+    unit = next((u for u in lc.TEXT_UNITS if states.get(u) == "ready"), None)
+    if not unit:
+        return "no text engine is ready"
+    with LIFE_LOCK:
+        enter = (LIFE.get("enter") or {}).get(unit)
+    if not enter or enter == "0" or AUTOFIT_DONE.get(unit) == enter:
+        return "already handled in this activation"
+    try:
+        ctx, outp = _oc_fit_formula()(int(fit["pool"]), int(ceiling or 0))
+    except Exception:                               # noqa: BLE001 (the button still works)
+        return "the fit formula could not be loaded"
+    if ctx <= 0 or outp <= 0 or ctx > int(fit["context"]) or outp > int(fit["output"]):
+        AUTOFIT_DONE[unit] = enter
+        return "left alone: the fit would raise a declared limit"
+    code, _ = start_action("fit_opencode", {}, origin="autofit")
+    if code != 202:
+        return f"not started yet ({code}): another job runs, the next tick tries again"
+    AUTOFIT_DONE[unit] = enter
+    add_event("guard", f"opencode limits fitted to the {int(fit['pool']):,}-token pool this boot got: "
+                       f"{ctx:,} + {outp:,}, where they asked for {int(fit['worst']):,}; "
+                       f"the Agent tab's server restarts to read them")
+    return "started"
+
+
 def collect_opencode():
     """What the installer and the switch act on: the --no-opencode marker, the config
     opencode really reads (default model, per-lane limits), the launcher and its cap."""
@@ -703,6 +762,7 @@ def collect_opencode():
             verdict = fit_verdict(ctx, outp, usable, prompt_cap)
             out["fit"] = {"pool": pool, "worst": ctx + outp, "usable": usable, "served": served,
                           "prompt_cap": prompt_cap, "context": ctx, "output": outp, **verdict}
+            out["fit"]["autofit"] = maybe_autofit(out["fit"], states, ceiling)
     return out
 
 
@@ -964,7 +1024,7 @@ def collect_lifecycle():
     for unit in lc.ENGINE_UNITS + ("qwen38-keepalive.service",):
         raw = run(["systemctl", "show", unit, "-p",
                    "ActiveState,SubState,ActiveEnterTimestampMonotonic,StateChangeTimestampMonotonic,"
-                   "InvocationID"])
+                   "InvocationID,Result"])
         d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
         active = d.get("ActiveState", "?")
         if unit not in lc.ENGINE_UNITS:
@@ -1168,6 +1228,9 @@ def collect_lifecycle():
                          "stages": list(lc.IMAGE_STAGES if is_image else lc.STAGES),
                          "detail": boot.get("detail", ""),
                          "kind": "image" if is_image else "text",
+                         # systemd's own word for how the last run ended: "timeout" is a
+                         # unit killed because it did not stop in time, not one that crashed
+                         "result": d.get("Result", ""),
                          "elapsed": round(elapsed, 1) if elapsed else None,
                          "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,
                          "eta": eta, "overdue": overdue,
@@ -1582,6 +1645,12 @@ IMAGE_TIMEOUT = 1800.0          # 2048x2048 at 60 steps is minutes, and it is a 
 # and a script, are enough to do that. The refusal below is instant and says why, which
 # beats a queued request holding one of the browser's six connections to this origin.
 IMAGE_LOCK = threading.Lock()
+# The images of one call go through the pipeline as one batch: ten 2048x2048 images took
+# 42 s per denoising step on 2026-09-23 where one takes 4.6, and the memory a batch needs
+# grows with it. On this box's unified memory running out hangs the machine rather than
+# failing the request, so a call may not ask for more pixels, all its images together,
+# than the largest call measured here: one 2752x1536 image, 44.8 GB at its peak.
+IMAGE_MAX_PIXELS = 2752 * 1536
 
 
 IMAGE_UNIT_CACHE: dict = {}
@@ -1803,6 +1872,22 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         if v is not None and (not isinstance(v, int) or v < 32 or v % 32):
             return 400, {"error": f"{axis} must be a positive multiple of 32 "
                                   f"(the engine answers a bare HTTP 500 otherwise)"}
+    n = fields.get("n", 1)
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 10:
+        return 400, {"error": "n is how many images the call makes, from 1 to 10"}
+    w, h = fields.get("width"), fields.get("height")
+    if not (w and h):
+        # generations default to 1024x1024 (the API's own default); a size string wins
+        m = re.fullmatch(r"(\d{2,5})x(\d{2,5})", str(fields.get("size") or "1024x1024"))
+        w, h = (int(m.group(1)), int(m.group(2))) if m else (1024, 1024)
+    if n * w * h > IMAGE_MAX_PIXELS:
+        return 400, {"error": f"{n} image{'s' if n > 1 else ''} of {w}x{h} in one call is "
+                              f"{n * w * h / 1e6:.1f} megapixels, and the largest call measured on this "
+                              f"box is {IMAGE_MAX_PIXELS / 1e6:.1f}: one 2752x1536 image, 44.8 GB at its "
+                              f"peak. The images of a call are generated as one batch, so its memory grows "
+                              f"with their total size, and on unified memory running out hangs the machine "
+                              f"instead of failing the request. Ask for fewer or smaller images, or make "
+                              f"several calls."}
     if str(fields.get("output_format", "")).lower() in ("jpeg", "jpg"):
         return 400, {"error": "this model returns RGBA for everything it makes and JPEG "
                               "cannot hold an alpha channel, so the engine fails the "

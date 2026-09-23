@@ -1301,20 +1301,28 @@ jobs:
           print(f"cockpit unit actions: all {len(cockpit.SERVING_UNITS) * len(cockpit.UNIT_VERBS)} covered")
           PY
 
-      - name: The image lane's one SGLang patch applies to its pinned commit
+      - name: Every SGLang patch of the image lane applies to its pinned commit
         # install-image.sh only notes a patch that no longer applies (the lane serves
-        # either way), so a pin moved without the patch would ship a lane that holds a
-        # CPU core at rest. This fetches the one file at the pin and checks the hunk.
+        # either way), so a pin moved without them would ship a lane that holds a CPU
+        # core at rest and times out on a Stop during a generation. This fetches each
+        # patched file at the pin and checks the hunk against it.
         run: |
           pin=$(grep -oE 'SGLANG_DIFFUSION_PIN:-[0-9a-f]{40}' install-image.sh | cut -d- -f2)
-          patch="$PWD/image-sglang/scheduler-idle-poll.patch"
-          f=python/sglang/multimodal_gen/runtime/managers/scheduler.py
-          test "$(grep -c '^+++ ' "$patch")" = 1 || { echo "the patch touches more than one file"; exit 1; }
-          grep -q "^+++ b/$f\$" "$patch" || { echo "the patch is not against $f"; exit 1; }
-          d=$(mktemp -d); mkdir -p "$d/$(dirname "$f")"
-          curl -fsSL --retry 3 "https://raw.githubusercontent.com/sgl-project/sglang/$pin/$f" -o "$d/$f"
-          (cd "$d" && git init -q && git apply --check "$patch")
-          echo "applies to ${pin:0:12}"
+          listed=$(grep -oE '^PATCHES=\(.*\)' install-image.sh | tr -d '()' | cut -d= -f2)
+          for name in $listed; do
+            patch="$PWD/image-sglang/$name.patch"
+            test -f "$patch" || { echo "install-image.sh lists $name, and image-sglang/$name.patch does not exist"; exit 1; }
+            test "$(grep -c '^+++ ' "$patch")" = 1 || { echo "$name touches more than one file"; exit 1; }
+            f=$(grep -m1 '^+++ b/' "$patch" | cut -c7-)
+            d=$(mktemp -d); mkdir -p "$d/$(dirname "$f")"
+            curl -fsSL --retry 3 "https://raw.githubusercontent.com/sgl-project/sglang/$pin/$f" -o "$d/$f"
+            (cd "$d" && git init -q && git apply --check "$patch")
+            echo "$name applies to ${pin:0:12} ($f)"
+          done
+          for f in image-sglang/*.patch; do
+            name=$(basename "$f" .patch)
+            echo " $listed " | grep -q " $name " || { echo "$f is in the repo and install-image.sh never applies it"; exit 1; }
+          done
 
       - name: House typography (no em/en dashes in tracked files)
         run: |

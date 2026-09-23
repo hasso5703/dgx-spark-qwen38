@@ -125,19 +125,29 @@ fi
 if [ ! -d "$SRC/.git" ]; then
   git clone --quiet https://github.com/sgl-project/sglang "$SRC" || die "could not clone SGLang."
 fi
-# The one local change to the pinned source, and it is not about images: the diffusion
-# scheduler's loop never waits. recv_reqs() polls its socket without blocking and nothing
-# else in the loop sleeps, so a lane with nothing to do held one CPU core at 100% for as
-# long as it served (measured on the reference box: 1.047 cores, one thread at 101.5 %,
-# against 0.029 for the 27B lane, which parks itself with --sleep-on-idle; the diffusion
-# runtime has no such flag). The patch waits on the request socket for up to a second, the
-# way the LLM scheduler's own IdleSleeper does, and wakes the moment a request lands. The
-# same seed gives the same pixels, byte for byte, with and without it.
-IDLE_PATCH="$HERE/image-sglang/scheduler-idle-poll.patch"
+# Two local changes to the pinned source, neither about images, both measured on the
+# reference box (docs/image-lane.md, "The local changes to the pinned source"):
+#   scheduler-idle-poll: the diffusion scheduler's loop never waits. recv_reqs() polls its
+#     socket without blocking and nothing else in the loop sleeps, so a lane with nothing
+#     to do held one CPU core at 100% (1.047 cores, against 0.029 for the 27B lane, which
+#     parks itself with --sleep-on-idle; this runtime has no such flag). The patch waits on
+#     the request socket for up to a second, as the LLM scheduler's own IdleSleeper does.
+#     The same seed gives the same pixels, byte for byte, with and without it.
+#   http-graceful-timeout: on shutdown its HTTP server waited for every open connection,
+#     and a generation holds one for as long as it runs. A Stop during a 2048x2048 request
+#     sat 60 s in "stopping" until systemd killed the lane and marked the unit failed
+#     (2026-09-23). Now 5 s, then the requests in flight are cancelled and it stops clean.
+PATCHES=(scheduler-idle-poll http-graceful-timeout)
+declare -A PATCH_FIXES=(
+  [scheduler-idle-poll]="an idle lane no longer holds a CPU core"
+  [http-graceful-timeout]="a stop during a generation takes 5 s instead of timing out"
+)
 CURRENT="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
 if [ "$CURRENT" != "$PIN" ]; then
-  # it is the only local edit in this tree: take it off, or the checkout trips on it
-  git -C "$SRC" apply --reverse "$IDLE_PATCH" >/dev/null 2>&1 || true
+  # they are the only local edits in this tree: take them off, or the checkout trips on them
+  for P in "${PATCHES[@]}"; do
+    git -C "$SRC" apply --reverse "$HERE/image-sglang/$P.patch" >/dev/null 2>&1 || true
+  done
   git -C "$SRC" fetch --quiet origin "$PIN" 2>/dev/null || git -C "$SRC" fetch --quiet origin
   git -C "$SRC" checkout --quiet "$PIN" \
     || die "could not check out $PIN: not in the SGLang repository, or local edits in $SRC block it (git -C $SRC status says which)."
@@ -145,16 +155,19 @@ if [ "$CURRENT" != "$PIN" ]; then
 else
   echo "source already at ${PIN:0:12}"
 fi
-if git -C "$SRC" apply --reverse --check "$IDLE_PATCH" >/dev/null 2>&1; then
-  echo "idle-loop fix already applied"
-elif git -C "$SRC" apply --check "$IDLE_PATCH" >/dev/null 2>&1; then
-  git -C "$SRC" apply "$IDLE_PATCH" || die "the idle-loop fix passed its check and then failed to apply to $SRC."
-  echo "idle-loop fix applied: an idle lane no longer holds a CPU core (effective at its next start)"
-else
-  # A newer pin may have changed that loop, or fixed it upstream. The lane works either
-  # way; the smoke test below measures what it costs at rest and says so.
-  echo "NOTE: the idle-loop fix does not apply to ${PIN:0:12}; serving as upstream wrote it."
-fi
+for P in "${PATCHES[@]}"; do
+  PF="$HERE/image-sglang/$P.patch"
+  if git -C "$SRC" apply --reverse --check "$PF" >/dev/null 2>&1; then
+    echo "$P: already applied"
+  elif git -C "$SRC" apply --check "$PF" >/dev/null 2>&1; then
+    git -C "$SRC" apply "$PF" || die "$P passed its check and then failed to apply to $SRC."
+    echo "$P: applied, ${PATCH_FIXES[$P]} (effective at the lane's next start)"
+  else
+    # A newer pin may have changed that code, or fixed it upstream. The lane works either
+    # way; the smoke test below measures what an idle lane costs and says so.
+    echo "NOTE: $P does not apply to ${PIN:0:12}; that part runs as upstream wrote it."
+  fi
+done
 # --no-deps: the wheel above already resolved them, and letting the source tree resolve
 # again pulls a transformers that breaks the encoder this model needs.
 if ! "$VENV/bin/python" -c 'import sglang, pathlib, sys; sys.exit(0 if str(pathlib.Path(sglang.__file__).parent).startswith("'"$SRC"'") else 1)' 2>/dev/null; then

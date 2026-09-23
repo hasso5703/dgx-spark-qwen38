@@ -1,5 +1,49 @@
 # Changelog
 
+## v1.18.2 (unreleased): a generation can be cancelled, and a Stop during one is clean
+
+**What happened on the reference box, 2026-09-23.** A call for ten 2048x2048 images at 60
+steps (about 47 minutes of work) was running when the image lane was stopped to switch to a
+text lane. The runtime's HTTP server waits, on shutdown, for every open connection, and a
+generation holds one for as long as it runs: the lane sat in "stopping" for the unit's
+60 s, systemd killed it, and the unit ended **failed** (`Result=timeout`). The page then
+said "Qwen-Image failed, read its journal" about a lane nothing had gone wrong with. There
+was no other way out: SGLang Diffusion cannot abort a request, and the page had no Cancel.
+
+**A Stop during a generation now takes 5 s and ends clean.** A second local change to the
+pinned source, `image-sglang/http-graceful-timeout.patch`, passes
+`timeout_graceful_shutdown=5` to uvicorn: five seconds for a request about to finish, then
+the requests in flight are cancelled. In a transient systemd unit holding a ten-minute
+request: without it, `Result=timeout` after the stop timeout; with it, stopped in 5.2 s,
+`Result=success`. `install-image.sh` applies both local patches from one list, recognises
+them on a re-run and takes them off before a new pin; CI checks each against the real
+upstream file at the pin.
+
+**Cancel.** The Image tab shows a Cancel button while a generation runs, this page's or
+another tab's. Since the runtime has no abort, it restarts the lane (about a minute),
+through the same action API, gates and confirmation as the Engines card; it starts and
+stops nothing else. A request cut by Cancel, by the lane's Stop or by a restart reads as
+**cancelled** instead of "the image lane did not answer".
+
+**One call may not ask for more pixels than the largest call measured.** The images of a
+call run as one batch: those ten 2048x2048 images took 42 s per step where one takes 4.6,
+and where their memory would have ended was never measured, on a box where running out of
+unified memory hangs the machine. The cockpit refuses a call whose images add up to more
+than one 2752x1536 image (44.8 GB at its peak), in the tab and on the server.
+
+**A unit killed at stop is not a crash.** The lifecycle carries systemd's `Result`, and a
+unit that ended `timeout` reads "was killed while stopping, nothing broke while it was
+serving" instead of "failed".
+
+**opencode's limits follow the boot after a switch too.** A switch writes the target's
+nominal pair (900,000 on the 1M lanes, above every pool measured) because the pool is only
+known once the engine is up, and nothing fitted it after a switch and a Start from the
+page: after the switch to the uncensored target that morning, the Agent tab asked for
+900,000 against the 809,983 its 880,417-token pool could serve. The cockpit now runs the
+Setup tab's fit itself once the engine is ready: once per activation, only when the
+declared limits do not fit, never to raise one, and as a job that shows in the strip and
+the audit log. `COCKPIT_AUTOFIT=0` turns it off.
+
 ## v1.18.1 (2026-09-22): the Agent tab runs the limits that were fitted
 
 **opencode-web reads its config once, at startup, and both paths that fit its limits to

@@ -62,6 +62,14 @@ const IMG_STATE = {port: 30020, host: '127.0.0.1', available: false, busy: false
 let imgInflight = null;    // when this page's own request started, or null
 let IMG_RUN = null;        // the shape of that request: {w, h, steps, n, editing}
 let IMG_RUNPROG = null;    // the run bar, held by reference (it moves into the frame)
+// When a stop or a restart of the image lane was last accepted from this page. SGLang
+// Diffusion cannot abort a request, so that is the only way a generation ends early, and
+// the request it cut must read as cancelled, not as a lane that failed to answer.
+let IMG_INTERRUPTED = 0;
+// The most pixels one call may ask for, all its images together: the largest call measured
+// on this box (one 2752x1536 image, 44.8 GB at its peak). The images of a call run as one
+// batch, and on unified memory running out hangs the machine. cockpit.py refuses the same.
+const IMG_MAX_PIXELS = 2752 * 1536;
 function imgRunProg(){ return IMG_RUNPROG || (IMG_RUNPROG = $('imgrunprog')); }
 const AGENT_UNIT = 'opencode-web.service';
 // Both lanes have several targets sharing one unit, so the lane name alone ("27B",
@@ -1170,7 +1178,9 @@ function banners(state, errors){
   const eng = (F.life && F.life.engines) || {};
   Object.entries(eng).forEach(([n, e]) => {
     if (e.state === 'wedged') add('err', `${LANE_NAME[n] || n} is wedged.`, 'It answers health checks but generates nothing. The autoheal belt restarts it after its grace period; the Logs tab has the scheduler forensics.');
-    if (e.state === 'failed') add('err', `${LANE_NAME[n] || n} failed.`, 'systemd reports the unit failed. Read its journal in the Logs tab, then start it again from the action bar.');
+    if (e.state === 'failed' && e.result === 'timeout') add('warn', `${LANE_NAME[n] || n} was killed while stopping.`,
+      'It did not exit within its stop timeout, so systemd killed it and marks the unit failed. Nothing broke while it was serving: start it again from the action bar when you need it.');
+    else if (e.state === 'failed') add('err', `${LANE_NAME[n] || n} failed.`, 'systemd reports the unit failed. Read its journal in the Logs tab, then start it again from the action bar.');
     if (e.state === 'degraded') add('warn', `${LANE_NAME[n] || n} stopped answering.`, 'It was serving; health probes retry every 2 s. If it stays here, the Logs tab tells why.');
   });
   if (F.memFloor && F.memFloor.aborts && F.memFloor.last_abort && Date.now() / 1000 - F.memFloor.last_abort < 600)
@@ -1190,7 +1200,8 @@ function banners(state, errors){
   if (ocf && !ocf.ok) add('warn', 'opencode asks for more than this engine can hold.',
     `${ocf.why}: opencode declares ${fmtN(ocf.asked)} tokens, and ${ocf.served} can serve ${fmtN(ocf.limit)}`
     + (ocf.pool && ocf.limit === ocf.usable ? ` (the ${fmtN(ocf.pool)}-token pool this boot got, less the 8% the proxy keeps back)` : '')
-    + `. The session would break mid-conversation when the proxy refuses the prompt. Setup tab, "Fit the limits to this engine".`);
+    + `. The session would break mid-conversation when the proxy refuses the prompt. `
+    + (ocf.autofit === 'started' ? 'The cockpit is fitting them to this boot\u2019s pool now.' : 'Setup tab, "Fit the limits to this engine".'));
   ((F.life || {}).orphans || []).forEach(o => add('warn',
     `${LANE_NAME[o.unit] || o.unit} is running outside systemd.`,
     `The container ${o.container} is serving${o.image ? ` from ${o.image}` : ''}, but its unit is stopped, so the buttons here cannot manage it and a reboot will not bring it back. Stop it from a terminal (docker rm -f ${o.container}) and start the unit instead.`));
@@ -1330,7 +1341,10 @@ $('mgo').addEventListener('click', async () => {
     const r = await fetch('/api/action', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name, params, csrf: tok})});
     if (r.status === 401) return login();
     const out = await r.json();
-    if (r.status === 202){ closeModal(); toast(`${name} started` + (out.dry_run ? ' (dry run)' : '') + '. Follow it in the strip under the top bar.', 'ok'); stripPinned = false; return; }
+    if (r.status === 202){
+      if (name === 'unit' && params.unit === IMAGE_UNIT && params.verb !== 'start') IMG_INTERRUPTED = Date.now();
+      closeModal(); toast(`${name} started` + (out.dry_run ? ' (dry run)' : '') + '. Follow it in the strip under the top bar.', 'ok'); stripPinned = false; return;
+    }
     if (r.status === 409 && out.reasons){ $('mstatus').textContent = 'blocked: ' + out.reasons.join('; '); return; }
     if (r.status === 409){ closeModal(); toast(out.message || 'Another action is already running.', 'warn'); return; }
     $('mstatus').textContent = `refused (${r.status}): ` + (out.error || JSON.stringify(out));
@@ -1812,6 +1826,11 @@ function imgProblem(){
   if (!(steps >= 1 && steps <= 100)) return 'Steps run from 1 to 100. The model default is 40.';
   const n = Number($('imgn').value);
   if (!(n >= 1 && n <= 10)) return 'Between 1 and 10 images per call.';
+  if (n * w * h > IMG_MAX_PIXELS) return `${n} image${n > 1 ? 's' : ''} of ${w}x${h} is `
+    + `${(n * w * h / 1e6).toFixed(1)} megapixels in one call, and the largest call measured on this box is `
+    + `${(IMG_MAX_PIXELS / 1e6).toFixed(1)}: one 2752x1536 image, 44.8 GB at its peak. The images of a call `
+    + 'run as one batch, so its memory grows with their total size, and on this box running out hangs the '
+    + 'machine. Ask for fewer or smaller images, or make several calls.';
   const cfg = Number(imgVal('imgcfg') || 1);
   if (cfg > 1 && !imgVal('imgneg')) return 'A CFG scale above 1 does nothing without a negative prompt: '
     + 'the engine needs both, and ignores the scale alone byte for byte.';
@@ -1915,6 +1934,7 @@ function imgSync(){
   // prompt re-enabled the button on a lane that is not serving, and so did the finally
   // of a failed run.
   $('imgrun').disabled = !IMG_STATE.available || IMG_STATE.busy || !!imgInflight || !!problem || !imgVal('imgprompt');
+  imgCancelSync();
   imgCost(); imgCurl();
 }
 
@@ -2080,7 +2100,7 @@ async function imgRun(){
   setText('imgstatus', editing ? 'editing...' : 'generating...');
   setChip('imgtime', est ? '~' + fmtDur(est) : '');
   const t0 = Date.now();
-  imgInflight = t0; IMG_RUN = imgFormRequest();
+  imgInflight = t0; IMG_RUN = imgFormRequest(); imgCancelSync();
   imgFrame(Number($('imgn').value) || 1);
   clear($('imgmeta'));
   imgStageAt = {stage: '', at: 0};
@@ -2099,6 +2119,13 @@ async function imgRun(){
                            body: JSON.stringify(body)});
     if (r.status === 401) return login();
     const out = await r.json();
+    if (!r.ok && IMG_INTERRUPTED > t0){
+      imgParkBar(); clear($('imgout'));
+      $('imgout').append(el('p', 'note', 'Cancelled: the lane was stopped or restarted while this image was '
+        + 'being made, which is the only way this runtime can end a generation early. Nothing was kept.'));
+      setChip('imgtime', 'cancelled', 'warn');
+      return;
+    }
     if (!r.ok){
       const why = out.error || (out.refused ? JSON.stringify(out.refused).slice(0, 300) : 'HTTP ' + r.status);
       if (r.status === 409){ toast(why, 'warn', 7000); setChip('imgtime', 'lane busy', 'warn'); return; }
@@ -2109,8 +2136,8 @@ async function imgRun(){
     imgDraw(out.image || out, body.output_format);
     setChip('imgtime', (out.seconds != null ? out.seconds.toFixed(1) + ' s' : 'done'), 'ok');
   } catch (e){
-    toast('The cockpit could not reach the image lane: ' + e.message, 'err');
-    setChip('imgtime', 'failed', 'err');
+    if (IMG_INTERRUPTED > t0){ setChip('imgtime', 'cancelled', 'warn'); }
+    else { toast('The cockpit could not reach the image lane: ' + e.message, 'err'); setChip('imgtime', 'failed', 'err'); }
   } finally {
     clearInterval(tick); imgInflight = null; IMG_RUN = null;
     imgParkBar();
@@ -2257,6 +2284,19 @@ function imgRenderLane(){
   // SOMEONE ELSE's request, so without imgInflight here every two-second lifecycle tick
   // turned Generate back on mid-run, and a second click raced the first to a 409.
   $('imgrun').disabled = !ready || IMG_STATE.busy || !!imgInflight || !!imgProblem() || !imgVal('imgprompt');
+  imgCancelSync();
+}
+
+// Cancel is there whenever a generation runs, this page's or another tab's: the runtime
+// cannot abort a request, so the only way to end one is to restart the lane, and a
+// 47-minute call (ten 2048x2048 images at 60 steps) had no way out but the lane's Stop.
+function imgCancelSync(){
+  const b = $('imgcancel'); if (b) b.hidden = !(imgInflight || IMG_STATE.busy);
+}
+function imgCancel(){
+  askAction('unit', {verb: 'restart', unit: IMAGE_UNIT}, ['sudo', '-n', '/usr/bin/systemctl', 'restart', IMAGE_UNIT],
+    ['SGLang Diffusion cannot abort a request, so cancelling restarts the lane: the image being made is lost, '
+     + `and the lane answers again in ${readyIn(IMAGE_UNIT)}.`]);
 }
 
 function imgInit(){
@@ -2292,7 +2332,7 @@ function imgInit(){
     if (imgInflight || IMG_STATE.busy) return toast('The lane is already generating; one image at a time.', 'warn');
     const btns = [$('imgrefsample'), $('imgrun')];
     btns.forEach(b => { b.disabled = true; });
-    const t0 = Date.now(); imgInflight = t0;
+    const t0 = Date.now(); imgInflight = t0; imgCancelSync();
     IMG_RUN = {w: 1024, h: 1024, steps: 20, n: 1, editing: false};   // what the sample asks for
     setText('imgstatus', 'making a sample reference: a red teapot by a window');
     imgFrame(1); imgStageAt = {stage: '', at: 0};
@@ -2306,6 +2346,7 @@ function imgInit(){
           + 'next to a window, even natural light', width: 1024, height: 1024, num_inference_steps: 20, n: 1,
           output_format: 'png', response_format: 'b64_json', generator_device: 'cpu', seed: 42})});
       const out = await r.json();
+      if (!r.ok && IMG_INTERRUPTED > t0) return toast('Sample cancelled: the lane was stopped or restarted.', 'warn');
       if (!r.ok) return toast(r.status === 409 ? out.error : 'Could not make a sample: ' + (out.error || r.status),
                               r.status === 409 ? 'warn' : 'err', 7000);
       const first = ((out.image || out).data || [])[0];
@@ -2324,6 +2365,7 @@ function imgInit(){
     }
   });
   $('imgrun').addEventListener('click', imgRun);
+  $('imgcancel').addEventListener('click', imgCancel);
   $('imgcopy').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText($('imgcurl').textContent); toast('Copied.', 'ok', 1800); }
     catch (e) { toast('The browser refused the clipboard; select the text instead.', 'warn'); }

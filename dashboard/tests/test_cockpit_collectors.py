@@ -458,5 +458,25 @@ class TheBootBarNeverGoesBack(Base):
         self.assertEqual(out.get("data", out)["engines"][self.U]["state"], "degraded")
 
 
+
+class AStopTimeoutIsNotACrash(Base):
+    """A unit systemd killed because it did not stop in time ends "failed" with
+    Result=timeout: that is how a Stop during a generation looked on 2026-09-23, and the
+    page said "failed, read its journal" about a lane nothing had gone wrong with. The
+    lifecycle carries systemd's own word for how the run ended, and the page reads it."""
+    U = "qwen38-sglang.service"
+
+    def test_the_result_travels_with_the_engine(self):
+        self.box({f"systemctl show {self.U}": "ActiveState=failed\nSubState=failed\nResult=timeout\n"
+                                              "ActiveEnterTimestampMonotonic=1000\n"})
+        out = self.cp.collect_lifecycle()
+        e = out.get("data", out)["engines"][self.U]
+        self.assertEqual((e["state"], e["result"]), ("failed", "timeout"))
+
+    def test_the_page_tells_a_stop_timeout_from_a_crash(self):
+        js = (REPO / "dashboard" / "static" / "app.js").read_text()
+        self.assertIn("e.state === 'failed' && e.result === 'timeout'", js)
+        self.assertIn("was killed while stopping.", js)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -69,7 +69,13 @@ pulls a `transformers` that breaks the encoder this model needs.
 > not to this one: SGLang has its own native encoder, and the cookbook says to keep its
 > installed dependencies. The lane runs 5.12.1 and is right to.
 
-### The one change to the pinned source: an idle lane no longer holds a CPU core
+### The local changes to the pinned source
+
+Two, neither about images, both applied by `install-image.sh` from `image-sglang/`, both
+checked against the real upstream files at the pin by a CI step, and both skipped with a
+note if a future pin no longer fits them (the lane serves either way).
+
+#### An idle lane no longer holds a CPU core
 
 The diffusion scheduler's loop never waits. `recv_reqs()` reads its socket with
 `zmq.NOBLOCK`, and when the queue is empty the loop goes straight round again, so a lane
@@ -97,6 +103,22 @@ file the new commit changes. If a future pin changes that loop, the patch is ski
 note and the smoke test prints what the lane costs at rest, so nothing is hidden either way;
 CI fetches the scheduler at the pin and fails when the patch no longer applies, which is
 the signal to drop it (upstream fixed it) or refresh it.
+
+#### A Stop during a generation stops in 5 s, not in a failed unit
+
+The diffusion runtime starts its HTTP server with `uvicorn.run()` and no
+`timeout_graceful_shutdown`, so on shutdown uvicorn waits for every open connection to
+close, and a generation holds one for as long as it runs. On 2026-09-23 a Stop sent during
+a call for ten 2048x2048 images at 60 steps (about 47 minutes of work) logged "Waiting for
+connections to close", sat in "stopping" for the unit's 60 s, and systemd then killed it and
+marked the unit failed (`Result=timeout`). Nothing was wrong with the lane; the page still
+said "failed, read its journal".
+
+`image-sglang/http-graceful-timeout.patch` passes `timeout_graceful_shutdown=5`: five
+seconds for a request about to finish, then the requests in flight are cancelled and the
+server exits. Measured with uvicorn 0.53 (the runtime's own) in a transient systemd unit
+holding a ten-minute request: without the setting, "stop-sigterm timed out, Killing",
+`Result=timeout`; with it, stopped in 5.2 s, `Result=success`.
 
 ## What it serves
 
@@ -193,13 +215,36 @@ its current stage in its log.
 Nothing enforces this below the cockpit. A script that posts twice to port 30020 will
 still do what the numbers above describe.
 
+**The images of one call are one batch.** Ten 2048x2048 images in one call took 42 s per
+denoising step on 2026-09-23, where one image takes 4.6: the pipeline runs them together,
+and the memory that needs grows with them. Where it ends for a call that size has not been
+measured, and on this box running out of unified memory hangs the machine instead of
+failing the request. So the cockpit refuses a call whose images add up to more pixels than
+the largest call measured here: one 2752x1536 image (4.2 megapixels, 44.8 GB at its peak).
+Four 1024x1024 images fit under it, ten 512x512 too; two 2048x2048 do not. The Image tab
+says so before sending, and the server refuses the same with the numbers.
+
 **What is not detected.** When the engine wedged that afternoon, its `/health` kept
 answering `200` the whole time, while a generation request timed out and nothing reached
 its log. The lifecycle derives "ready" from `/health`, so a wedge like that one would read
 as ready. The text lanes have a generation canary for exactly this (health fine, nothing
 generated); this lane does not yet. The one-at-a-time rule removes the one cause that was
 measured. If the Image tab ever waits far past its estimate on a lane that reads ready,
-stop and start it from the action bar.
+press **Cancel** (below).
+
+## Cancelling a generation
+
+SGLang Diffusion cannot abort a request: its own video API carries "TODO: support aborting
+a job", the image API has nothing, and a client that disconnects leaves the GPU working on
+the call to the end. The only way to end a generation early is to restart the lane.
+
+So that is what the Image tab's **Cancel** does. It shows only while a generation runs,
+this page's or another tab's, asks first like every action, and restarts the lane through
+the same action API, gates and sudoers line as the Engines card: the image being made is
+lost, and the lane answers again in about a minute. It starts and stops nothing else; the
+lane's own Start and Stop stay in the action bar. A request cut this way, or by the lane's
+Stop, or by a restart from the Engines card, reads as **cancelled** in the tab rather than
+as a lane that failed to answer.
 
 ## Three refusals worth knowing before a client hits them
 

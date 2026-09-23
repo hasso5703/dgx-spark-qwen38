@@ -316,6 +316,101 @@ class OneAtATime(Base):
         self.assertFalse(self.ck.IMAGE_LOCK.locked())
 
 
+class ThePixelBudget(Base):
+    """The images of one call run as one batch: ten 2048x2048 images took 42 s per step on
+    2026-09-23, ten times one image's 4.6, and nobody has measured where that batch's
+    memory ends. On unified memory running out hangs the machine, so a call may not ask
+    for more pixels, all its images together, than the largest call measured here: one
+    2752x1536 image, 44.8 GB at its peak. Nothing past it reaches the lane."""
+
+    def ask(self, **fields):
+        return self.call({"prompt": "p", "output_format": "png", **fields})
+
+    def test_the_call_that_started_this_is_refused_before_the_lane_sees_it(self):
+        code, out = self.ask(width=2048, height=2048, n=10, num_inference_steps=60)
+        self.assertEqual(code, 400)
+        self.assertIn("41.9 megapixels", out["error"])
+        self.assertIn("one 2752x1536 image, 44.8 GB", out["error"])
+        self.assertIsNone(self.spy.body, "a refused call reached the lane")
+
+    def test_the_largest_measured_call_still_goes_through(self):
+        code, _ = self.ask(width=2752, height=1536, n=1)
+        self.assertEqual(code, 200)
+        self.assertIsNotNone(self.spy.body)
+
+    def test_the_budget_is_the_total_of_the_call_not_the_size_of_one_image(self):
+        self.assertEqual(self.ask(width=1024, height=1024, n=4)[0], 200)     # 4.2 MP, under
+        self.spy.body = None
+        self.assertEqual(self.ask(width=2048, height=2048, n=2)[0], 400)     # 8.4 MP, over
+        self.assertIsNone(self.spy.body)
+
+    def test_a_size_string_counts_too(self):
+        code, out = self.ask(size="2048x2048", n=2)
+        self.assertEqual(code, 400, out)
+
+    def test_the_count_is_a_number_from_1_to_10(self):
+        for bad in (0, 11, -1, "3", 2.0, True, [2]):
+            code, out = self.ask(width=512, height=512, n=bad)
+            self.assertEqual(code, 400, (bad, out))
+
+    def test_the_page_and_the_server_hold_the_same_number(self):
+        js = (REPO / "dashboard" / "static" / "app.js").read_text()
+        self.assertEqual(self.ck.IMAGE_MAX_PIXELS, 2752 * 1536)
+        self.assertIn("const IMG_MAX_PIXELS = 2752 * 1536;", js)
+        problem = js[js.index("function imgProblem(){"):js.index("function imgEstimate(")]
+        self.assertIn("n * w * h > IMG_MAX_PIXELS", problem)
+
+
+class TheAgentLimitsFollowABoot(Base):
+    """A switch writes the target's nominal opencode pair (900,000 on the 1M lanes), since
+    the pool is only known once the engine is up, and nothing fitted it after a switch
+    and a Start from the page: the Agent tab asked for more than the 880,417-token pool
+    it got on 2026-09-23 until someone pressed the button. The cockpit now does it once
+    the engine is ready, once per activation, and never to raise a number."""
+    U = "qwen38-sglang.service"
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        self.ck.start_action = lambda name, params, origin="ui": (self.calls.append((name, origin)) or (202, {}))
+        self.ck.AUTOFIT_DONE.clear()
+        with self.ck.LIFE_LOCK:
+            self.ck.LIFE["enter"] = {self.U: "100"}
+
+    def fit(self, ctx=700_000, out=200_000, pool=880_417, ok=False):
+        return {"pool": pool, "context": ctx, "output": out, "worst": ctx + out, "ok": ok}
+
+    def test_a_nominal_pair_over_the_pool_is_fitted_once_per_boot(self):
+        ready = {self.U: "ready"}
+        self.assertEqual(self.ck.maybe_autofit(self.fit(), ready, 0), "started")
+        self.assertEqual(self.ck.maybe_autofit(self.fit(), ready, 0), "already handled in this activation")
+        self.assertEqual(self.calls, [("fit_opencode", "autofit")])
+        with self.ck.LIFE_LOCK:
+            self.ck.LIFE["enter"] = {self.U: "200"}                   # the next boot
+        self.assertEqual(self.ck.maybe_autofit(self.fit(), ready, 0), "started")
+        self.assertEqual(len(self.calls), 2)
+
+    def test_limits_that_fit_are_left_alone(self):
+        self.assertEqual(self.ck.maybe_autofit(self.fit(ok=True), {self.U: "ready"}, 0), "not needed")
+        self.assertEqual(self.calls, [])
+
+    def test_nothing_is_fitted_while_no_text_engine_is_ready(self):
+        states = {self.U: "capturing-graphs", "qwen38-image.service": "ready"}
+        self.assertEqual(self.ck.maybe_autofit(self.fit(), states, 0), "no text engine is ready")
+        self.assertEqual(self.calls, [])
+
+    def test_a_number_somebody_set_lower_is_never_raised(self):
+        # a context below what the pool fits, with an output that makes the pair too big
+        out = self.ck.maybe_autofit(self.fit(ctx=300_000, out=600_000), {self.U: "ready"}, 0)
+        self.assertEqual(out, "left alone: the fit would raise a declared limit")
+        self.assertEqual(self.calls, [])
+
+    def test_a_busy_job_lock_is_retried_on_the_next_tick(self):
+        self.ck.start_action = lambda name, params, origin="ui": (409, {"error": "busy"})
+        self.assertIn("not started yet", self.ck.maybe_autofit(self.fit(), {self.U: "ready"}, 0))
+        self.assertNotIn(self.U, self.ck.AUTOFIT_DONE)
+
+
 class TheImageLaneStateHoldsWhileItServes(Base):
     """A lane that has served in this activation does not go back to "starting" on one
     slow probe: its boot lines leave the 300-line journal tail within minutes (the
