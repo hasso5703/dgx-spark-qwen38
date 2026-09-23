@@ -1163,14 +1163,14 @@
           <p class="warn" id="imgwarn" hidden></p>
           <div style="display:flex; gap:8px; align-items:center; margin-top:12px">
             <button class="btn" id="imgrun">Generate</button>
-            <button class="btn danger" id="imgcancel" hidden title="SGLang Diffusion cannot abort a request, so cancelling restarts the lane">Cancel</button>
             <span class="follow" id="imgstatus"></span>
           </div>
           <p class="cost" id="imgcost"></p>
         </section>
 
         <section class="panel">
-          <h3>The image <span class="right"><span class="chip" id="imgtime"></span></span></h3>
+          <h3>The image <span class="right"><span class="chip" id="imgtime"></span>
+            <button class="btn mini danger" id="imgcancel" hidden title="SGLang Diffusion cannot abort a request, so cancelling restarts the lane">Cancel</button></span></h3>
           <div id="imgout"><p class="note" style="margin:0">Pick an example or write your own, then generate.
             The preview sits on a checkerboard because this model returns RGBA for everything it makes,
             and a transparent cutout on a white card is indistinguishable from an opaque one.</p></div>
@@ -1182,9 +1182,9 @@
         </section>
 
         <section class="panel s1wide">
-          <h3>The same call, from anywhere <span class="right"><button class="btn mini ghost" id="imgcopy">Copy</button></span></h3>
-          <p class="note" style="margin:0 0 9px">Exactly what the button above sends, with the serving key read from your own machine.
-            Any OpenAI images client works against it by changing one base URL.</p>
+          <h3>The same call, from a terminal on the box <span class="right"><button class="btn mini ghost" id="imgcopy">Copy</button></span></h3>
+          <p class="note" style="margin:0 0 9px">Exactly what the button above sends. The lane listens on loopback and checks no key,
+            so this runs on the box itself; any OpenAI images client there works against it by changing one base URL.</p>
           <div class="cmd" id="imgcurl"></div>
         </section>
 

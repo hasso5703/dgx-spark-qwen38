@@ -361,6 +361,49 @@ class ThePixelBudget(Base):
         self.assertIn("n * w * h > IMG_MAX_PIXELS", problem)
 
 
+class ARequestCutByAStopSaysSo(Base):
+    """A Stop or a restart cancels the request in flight after 5 s (the shutdown patch), and
+    uvicorn answers that with a bare HTTP 500, which the page showed as "Refused with HTTP
+    500" unless the page itself had sent the stop. Whoever sent it, the cockpit checks, on
+    the error path only, whether the lane is still the one the request started on."""
+
+    def fail_with(self, exc):
+        def boom(req, timeout=None):
+            raise exc
+        self.ck.urllib.request.urlopen = boom
+
+    def lives(self, *seq):
+        it = iter(seq)
+        self.ck._image_life = lambda: next(it)
+
+    def test_a_500_from_a_lane_that_changed_is_an_interruption(self):
+        self.fail_with(self.ck.urllib.error.HTTPError("http://x", 500, "Internal Server Error", {}, None))
+        self.lives(("active", "run-1"), ("deactivating", "run-1"))
+        code, out = self.call({"prompt": "p", "width": 512, "height": 512})
+        self.assertEqual((code, out.get("interrupted")), (503, True))
+        self.assertIn("stopped or restarted", out["error"])
+
+    def test_a_500_from_the_same_lane_is_the_engine_refusing(self):
+        self.fail_with(self.ck.urllib.error.HTTPError("http://x", 500, "Internal Server Error", {}, None))
+        self.lives(("active", "run-1"), ("active", "run-1"))
+        code, out = self.call({"prompt": "p", "width": 512, "height": 512})
+        self.assertEqual(code, 500)
+        self.assertNotIn("interrupted", out)
+
+    def test_a_dropped_connection_across_a_restart_is_an_interruption(self):
+        self.fail_with(ConnectionResetError("reset"))
+        self.lives(("active", "run-1"), ("active", "run-2"))          # a restart: a new invocation
+        code, out = self.call({"prompt": "p", "width": 512, "height": 512})
+        self.assertEqual((code, out.get("interrupted")), (503, True))
+
+    def test_a_lane_that_was_never_there_still_says_to_start_it(self):
+        self.fail_with(ConnectionRefusedError("refused"))
+        self.lives(("inactive", ""), ("inactive", ""))
+        code, out = self.call({"prompt": "p", "width": 512, "height": 512})
+        self.assertEqual(code, 502)
+        self.assertIn("start it", out["error"])
+
+
 class TheAgentLimitsFollowABoot(Base):
     """A switch writes the target's nominal opencode pair (900,000 on the 1M lanes), since
     the pool is only known once the engine is up, and nothing fitted it after a switch

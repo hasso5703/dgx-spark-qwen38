@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.18.2 (unreleased): a generation can be cancelled, and a Stop during one is clean
+## v1.18.2 (2026-09-23): a generation can be cancelled, and a Stop during one is clean
 
 **What happened on the reference box, 2026-09-23.** A call for ten 2048x2048 images at 60
 steps (about 47 minutes of work) was running when the image lane was stopped to switch to a
@@ -19,11 +19,20 @@ request: without it, `Result=timeout` after the stop timeout; with it, stopped i
 them on a re-run and takes them off before a new pin; CI checks each against the real
 upstream file at the pin.
 
-**Cancel.** The Image tab shows a Cancel button while a generation runs, this page's or
-another tab's. Since the runtime has no abort, it restarts the lane (about a minute),
-through the same action API, gates and confirmation as the Engines card; it starts and
-stops nothing else. A request cut by Cancel, by the lane's Stop or by a restart reads as
-**cancelled** instead of "the image lane did not answer".
+**Cancel.** The Image tab shows a Cancel button beside the run's clock while a generation
+runs, this page's or another tab's. Since the runtime has no abort, it restarts the lane
+(about a minute), through the same action API, gates and confirmation as the Engines card;
+it starts and stops nothing else. A request cut by Cancel, by the lane's Stop, by a restart
+or by a `systemctl stop` typed at a terminal reads as **cancelled**: the cockpit checks, on
+the error path only, whether the lane is still the one the request started on, and answers
+`interrupted` instead of the bare 500 uvicorn sends for a cancelled request.
+
+**Measured on the reference box, the same day, through a real browser and the action
+API.** Cancel during a 2048x2048, 60-step generation: "cancelled" in the tab 5.5 s after
+the confirmation, systemd "Stopping" to "Deactivated successfully" in 5 s, the lane ready
+again 56 s later. The lane's Stop during another one: 5 s, `Result=success`, read as
+stopped, not failed. Ten 2048x2048 images in one call: HTTP 400 from the cockpit, and no
+request reached the lane.
 
 **One call may not ask for more pixels than the largest call measured.** The images of a
 call run as one batch: those ten 2048x2048 images took 42 s per step where one takes 4.6,
@@ -42,7 +51,14 @@ page: after the switch to the uncensored target that morning, the Agent tab aske
 900,000 against the 809,983 its 880,417-token pool could serve. The cockpit now runs the
 Setup tab's fit itself once the engine is ready: once per activation, only when the
 declared limits do not fit, never to raise one, and as a job that shows in the strip and
-the audit log. `COCKPIT_AUTOFIT=0` turns it off.
+the audit log. `COCKPIT_AUTOFIT=0` turns it off. Measured: after a switch to the
+uncensored target and a Start, the fit ran 16 s after the engine was ready, and the running
+opencode server's `/config` read 548,000 / 182,000 for its 883,728-token pool.
+
+**Smaller facts put right.** The stopping bar said "systemd stops the container" for the
+image lane, which has none. The image tab's curl panel said "from anywhere" and "with the
+serving key": the lane listens on loopback and checks no key, and its own command says to
+run it on the box.
 
 ## v1.18.1 (2026-09-22): the Agent tab runs the limits that were fitted
 

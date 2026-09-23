@@ -646,7 +646,9 @@ function stoppingBlock(e){
   const bar = el('div', 'bbar'); bar.append(el('div', 'bfill indet')); boot.append(bar);
   const lab = el('div', 'blab');
   lab.append(el('span', null, `stopping · ${e.state_elapsed != null ? fmtDur(e.state_elapsed) : '…'} elapsed`));
-  lab.append(el('span', null, 'systemd stops the container (SIGTERM, usually under 30 s)'));
+  lab.append(el('span', null, e.kind === 'image'
+    ? 'systemd stops the process (SIGTERM; a generation in flight is cut after 5 s)'
+    : 'systemd stops the container (SIGTERM, usually under 30 s)'));
   boot.append(lab); return boot;
 }
 function engineCard(name){
@@ -2119,7 +2121,7 @@ async function imgRun(){
                            body: JSON.stringify(body)});
     if (r.status === 401) return login();
     const out = await r.json();
-    if (!r.ok && IMG_INTERRUPTED > t0){
+    if (!r.ok && (IMG_INTERRUPTED > t0 || out.interrupted)){
       imgParkBar(); clear($('imgout'));
       $('imgout').append(el('p', 'note', 'Cancelled: the lane was stopped or restarted while this image was '
         + 'being made, which is the only way this runtime can end a generation early. Nothing was kept.'));
@@ -2346,7 +2348,7 @@ function imgInit(){
           + 'next to a window, even natural light', width: 1024, height: 1024, num_inference_steps: 20, n: 1,
           output_format: 'png', response_format: 'b64_json', generator_device: 'cpu', seed: 42})});
       const out = await r.json();
-      if (!r.ok && IMG_INTERRUPTED > t0) return toast('Sample cancelled: the lane was stopped or restarted.', 'warn');
+      if (!r.ok && (IMG_INTERRUPTED > t0 || out.interrupted)) return toast('Sample cancelled: the lane was stopped or restarted.', 'warn');
       if (!r.ok) return toast(r.status === 409 ? out.error : 'Could not make a sample: ' + (out.error || r.status),
                               r.status === 409 ? 'warn' : 'err', 7000);
       const first = ((out.image || out).data || [])[0];

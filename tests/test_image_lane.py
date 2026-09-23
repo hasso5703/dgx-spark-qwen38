@@ -517,7 +517,11 @@ class AGenerationCanBeCancelled(unittest.TestCase):
 
     def test_the_button_is_hidden_until_something_generates(self):
         html = INDEX.read_text()
-        self.assertRegex(html, r'<button class="btn danger" id="imgcancel" hidden')
+        self.assertRegex(html, r'<button class="btn mini danger" id="imgcancel" hidden')
+        # beside the run's clock, where the eye is while it waits, not under the settings
+        head = html[html.index("<h3>The image "):]
+        self.assertLess(head.index('id="imgtime"'), head.index('id="imgcancel"'))
+        self.assertLess(head.index('id="imgcancel"'), head.index("</h3>"))
         self.assertIn("$('imgcancel').addEventListener('click', imgCancel);", self.js)
 
     def test_only_a_stop_or_restart_of_the_image_lane_marks_a_request_cancelled(self):
@@ -526,7 +530,7 @@ class AGenerationCanBeCancelled(unittest.TestCase):
 
     def test_a_cut_request_reads_as_cancelled_before_it_reads_as_refused(self):
         run = self.js[self.js.index("async function imgRun(){"):self.js.index("let imgPoll = null;")]
-        self.assertLess(run.index("if (!r.ok && IMG_INTERRUPTED > t0){"), run.index("if (!r.ok){"))
+        self.assertLess(run.index("if (!r.ok && (IMG_INTERRUPTED > t0 || out.interrupted)){"), run.index("if (!r.ok){"))
         self.assertIn("setChip('imgtime', 'cancelled', 'warn')", run)
 
 

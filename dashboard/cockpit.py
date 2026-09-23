@@ -1860,6 +1860,18 @@ IMAGE_ALLOWED = {"prompt", "width", "height", "num_inference_steps", "n", "outpu
                  "size", "max_sequence_length"}
 
 
+def _image_life() -> tuple:
+    """(ActiveState, InvocationID) of the image unit, asked of systemd directly: the
+    lifecycle ticks every 2 s, and the question is whether THIS request outlived its lane."""
+    raw = run(["systemctl", "show", IMAGE_UNIT, "-p", "ActiveState,InvocationID"], timeout=5)
+    d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
+    return d.get("ActiveState", ""), d.get("InvocationID", "")
+
+
+IMAGE_INTERRUPTED = ("the image lane was stopped or restarted while this image was being made, which is "
+                     "the only way this runtime can end a generation early (it has no abort); nothing was kept")
+
+
 def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
     """One image request, forwarded to the lane on loopback. This process is the gate:
     the route checked the session before the body was read."""
@@ -1910,6 +1922,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
                               "box's 122 and wedged the engine. Wait for the current one "
                               "to finish."}
     t0 = time.time()
+    life0 = _image_life()
     try:
         if editing:
             refs, why = _image_decoded_refs(payload)
@@ -1927,12 +1940,19 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
                          "seconds": round(time.time() - t0, 2)}
     except urllib.error.HTTPError as e:
         raw = e.read()
+        # A Stop or a restart cancels the request in flight after 5 s, and uvicorn answers
+        # that with a bare 500. Whoever sent the stop (this page, another tab, a terminal),
+        # the answer is the same fact, so it is told here and not guessed by one client.
+        if e.code >= 500 and _image_life() != life0:
+            return 503, {"error": IMAGE_INTERRUPTED, "interrupted": True, "seconds": round(time.time() - t0, 2)}
         try:
             detail = json.loads(raw.decode())
         except Exception:                               # noqa: BLE001
             detail = raw[:400].decode("utf-8", "replace")
         return e.code, {"refused": detail, "seconds": round(time.time() - t0, 2)}
     except Exception as e:                              # noqa: BLE001 (isolated route)
+        if _image_life() != life0:
+            return 503, {"error": IMAGE_INTERRUPTED, "interrupted": True, "seconds": round(time.time() - t0, 2)}
         return 502, {"error": f"the image lane did not answer ({type(e).__name__}). "
                               f"Switch to Qwen-Image 2.1 in the action bar and start it "
                               f"(or ./switch-model.sh image)",
