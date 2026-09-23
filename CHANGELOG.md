@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.18.5 (unreleased): an update restarts the engine only when it has to
+## v1.18.5 (2026-09-23): an update restarts the engine only when it has to
 
 **Every `./install.sh` restarted the engine**, even when it changed nothing the engine
 reads: a full boot per update, about 8 minutes on the 27B and 12 on flash, for an update
@@ -16,7 +16,9 @@ keeps it ("Keeping the running engine: nothing it reads changed since it started
 still runs the real generation smoke test against it. Otherwise it says why it restarts
 (a file changed after the start, this run changed what it reads, the engine is stopped,
 or `RESTART_ENGINE=1`). On the reference box, a plain `./install.sh` on the serving 27B went
-from 7 to 8 minutes to 28 s, twice in a row, with the engine's start time unchanged.
+from 7 to 8 minutes to 28 s, twice in a row, with the engine's start time unchanged; on
+flash, `MODEL_CHOICE=flash ./install.sh` started the lane ("why: qwen38-flash.service is
+inactive") and the two plain runs after it kept it, in 29 s and 28 s.
 
 The second run is what showed the trap: the first kept the engine but rewrote its unit and
 chat template identically, which dated them after its start, so the next run would have
