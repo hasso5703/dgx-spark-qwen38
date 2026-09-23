@@ -1,5 +1,52 @@
 # Changelog
 
+## v1.18.4 (unreleased): a fresh box's opencode knows the box's model, and says so when it cannot
+
+**The case v1.18.3 missed, a DGX Spark with no opencode and no opencode config.** The
+installer generates its opencode config under `~/.config/qwen38/` and nothing points
+opencode there: no `OPENCODE_CONFIG`, not in `oc`, not in the Agent tab's unit. A box with
+no `~/.config/opencode/opencode.json` got a printed `cp` command, so v1.18.3 installed
+opencode on it and left it with no provider for the model the box serves. Reproduced in a
+throwaway HOME: "Error: Provider not found: qwen38". The installer now installs its config
+when the box has none; a config you already have is still never overwritten, and when it
+has none of this repo's providers the installer says so. The same throwaway HOME after the
+fix, with the installer's own lines and the real download: opencode 1.18.32 installed and
+checked, the config in place, `qwen38/qwen3.8-27b` listed, and a real turn answered "OK"
+in 7 s through the proxy, with no model named on the command line.
+
+**The same box, one lane later.** That copy lists the lanes the box had at its first
+install. Installing the flash lane afterwards (`MODEL_CHOICE=flash ./install.sh`) left it as
+it was, with no `flashnext` provider: the limits merge found nothing to merge, the default
+model stayed on the 27B, and the NOTE printed said to re-run `./install.sh`, which did the
+same again. The served model answers under any name, so nothing failed at first: opencode
+sent the 27B's limits (700,000 on a 1M install) to a lane whose proxy refuses a prompt past
+250,000 tokens, and a long session would be refused well before opencode compacted it. A
+config that already has one of this repo's providers now gains the provider of each lane
+installed since, by the same kind of targeted edit as the other merges (a backup first, the
+file read back and compared, restored if anything else moved). A config with none of them is
+still the user's own and still only gets the message. Replayed with the installer's own
+lines in a throwaway HOME, the 27B then flash: before, `qwen38/qwen3.8-27b` at 700000/200000
+while flash served; after, the default on `flashnext/qwen3.8-flash-next` at 225000/32000, and
+the real opencode 1.18.32 listing both and answering a turn.
+
+**What a missing opencode says, everywhere a first-time user meets it**:
+- `install.sh` says it is installing opencode rather than naming a version, and when the
+  download fails, that opencode is still not installed and what to run, instead of
+  "opencode left as it was"; its last lines say whether opencode is there and which one.
+- Those last lines name what starts it from the user's own shell: `oc`, or its full path
+  when `~/.local/bin` is new and not yet in that shell's PATH, or the plain opencode command
+  when another program owns `oc` (the launcher is not installed then, and `oc` would run that
+  program). The config they name is the one opencode reads, not the generated copy.
+- `oc` with no opencode says so and names the command, instead of a shell error on a
+  path.
+- The cockpit's Agent tab tells a box with no opencode (re-run `./install.sh`, which
+  installs the pinned one and the tab) from a box where only the tab is missing
+  (`dashboard/install-agent.sh`).
+
+**CI**: the step that runs every unittest suite of `tests/` in one process printed only
+their names when one of them failed, because `bash -e` ended it on the assignment that
+captured the run. It now prints the end of the run and names the failing tests.
+
 ## v1.18.3 (2026-09-23): the same opencode on every box
 
 **Until now the repo installed no opencode at all**: it took whatever was on `PATH`, and

@@ -5,6 +5,7 @@ Usage: oc-merge-limits.py <target opencode.json> <provider> <model id> <context>
        oc-merge-limits.py <target opencode.json> --compaction <preserve_recent_tokens>
        oc-merge-limits.py <target opencode.json> <provider> <model id> --add-variant <level>
        oc-merge-limits.py <target opencode.json> --autoupdate notify
+       oc-merge-limits.py <target opencode.json> --add-providers <generated opencode.json>
 
 Only the "limit" object of the named provider/model is rewritten, in place,
 by targeted text substitution: comments, ordering and the user's other
@@ -225,11 +226,90 @@ def add_variant(path: str, provider: str, model: str, level: str) -> int:
     return 0
 
 
+OURS = ("qwen38", "flashnext")
+
+
+def _added_ok(text: str, before: dict, blocks: dict) -> str:
+    """'' when text is the document `before` plus exactly `blocks` in its provider object."""
+    try:
+        doc = json.loads(re.sub(r"^\s*//.*$", "", text, flags=re.M))
+    except json.JSONDecodeError as e:
+        return f"file no longer parses: {e}"
+    prov = doc.get("provider")
+    if not isinstance(prov, dict):
+        return "provider object vanished"
+    for name, block in blocks.items():
+        if prov.get(name) != block:
+            return f"provider {name} reads back differently"
+    rest = dict(doc, provider={k: v for k, v in prov.items() if k not in blocks})
+    return "" if rest == before else "something else in the file changed"
+
+
+def add_providers(path: str, source: str) -> int:
+    """Add this repo's providers that `source` has and the config at `path` lacks.
+
+    install.sh gives a box with no opencode config its own, and never overwrites one
+    that exists. A box that installed the 27B first and the flash lane later kept the
+    first install's copy, with no flashnext provider: the limits merge found nothing
+    to merge and the default model could not follow the lane. The served model answers
+    under any name, so nothing failed; opencode sent the 27B's limits and label to the
+    flash lane. Only a config that already has one of this repo's providers gains the
+    others: a config with none is the user's own, and install.sh says what to merge.
+    """
+    try:
+        text = open(path).read()
+    except OSError as e:
+        print(f"cannot read {path}: {e}")
+        return 1
+    try:
+        doc = json.loads(re.sub(r"^\s*//.*$", "", text, flags=re.M))
+        src = json.loads(open(source).read())
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"{path} or {source} is not valid JSON(C): {e}")
+        return 1
+    have = doc.get("provider") if isinstance(doc.get("provider"), dict) else {}
+    if not any(p in have for p in OURS):
+        print(f"none of this repo's providers in {path}: nothing to add to")
+        return 3
+    blocks = {p: b for p, b in (src.get("provider") or {}).items() if p in OURS and p not in have}
+    if not blocks:
+        print(f"{path} already lists this box's providers: unchanged")
+        return 0
+    entry = "".join(f"\n    {json.dumps(p)}: " + json.dumps(b, indent=2).replace("\n", "\n    ") + ","
+                    for p, b in blocks.items())
+    # The provider object's opening brace is the first candidate that yields exactly
+    # the intended document: a commented-out line or a nested key cannot take it.
+    new_text = None
+    for m in re.finditer(r'"provider"\s*:\s*\{', text):
+        tail = text[m.end():]
+        cand = text[:m.end()] + entry + ("" if tail[:1].isspace() else "\n    ") + tail
+        if not _added_ok(cand, doc, blocks):
+            new_text = cand
+            break
+    if new_text is None:
+        print(f"{path}: refused, found no place for the {', '.join(blocks)} provider; "
+              f"copy it by hand from {source}")
+        return 1
+    backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(path, backup)
+    with open(path, "w") as f:
+        f.write(new_text)
+    bad = _added_ok(open(path).read(), doc, blocks)
+    if bad:
+        shutil.copy2(backup, path)
+        print(f"{path}: refused, {bad}; restored from {backup}.")
+        return 1
+    print(f"{', '.join(blocks)} provider added to {path}, for the lane installed since (backup {backup})")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 4 and argv[2] == "--compaction":
         return merge_compaction(argv[1], int(argv[3]))
     if len(argv) == 4 and argv[2] == "--autoupdate":
         return merge_autoupdate(argv[1], argv[3])
+    if len(argv) == 4 and argv[2] == "--add-providers":
+        return add_providers(argv[1], argv[3])
     if len(argv) == 6 and argv[4] == "--add-variant":
         return add_variant(argv[1], argv[2], argv[3], argv[5])
     if len(argv) != 6:

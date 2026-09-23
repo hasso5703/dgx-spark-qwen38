@@ -987,8 +987,15 @@ function rAgent(d){
     setText('agline', 'one install on the box adds opencode here, behind this login');
     ['agopen', 'agreload', 'agrestart'].forEach(id => { $(id).hidden = true; });
     $('agnote').hidden = true;
-    agentMessage('The Agent tab is not installed on this cockpit. On the box, with opencode on your PATH, run:',
-                 ((F.config || {}).terminal_only || {}).install_agent || 'dashboard/install-agent.sh');
+    // No opencode at all is the first-time case: install.sh installs the pinned one and
+    // then this tab. With opencode there, only the tab is missing.
+    if (d.opencode_found === null)
+      agentMessage(`opencode is not installed on this box, and this tab runs it. On the box, re-run the installer: `
+                   + `it installs the opencode this repo tests${d.pinned ? ` (${d.pinned})` : ''}, then this tab.`,
+                   'cd ~/dgx-spark-qwen38 && ./install.sh');
+    else
+      agentMessage('The Agent tab is not installed on this cockpit. opencode is on the box; to add the tab, run on the box:',
+                   ((F.config || {}).terminal_only || {}).install_agent || 'dashboard/install-agent.sh');
     badge('agent', '', ''); return;
   }
   const r = d.relay || {}, sv = d.server || {}, u = d.unit || {};

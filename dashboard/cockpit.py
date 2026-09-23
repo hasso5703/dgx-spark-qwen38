@@ -824,8 +824,14 @@ def opencode_pinned() -> str | None:
 def collect_agent():
     out = {"node_id": "local", "enabled": AGENT_PORT > 0, "relay": dict(AGENT),
            "upstream": AGENT_UPSTREAM, "unit": None, "server": None, "binary": None,
-           "credentials": AGENT_ENV_FILE.is_file(), "unit_installed": AGENT_UNIT_PATH.is_file()}
+           "credentials": AGENT_ENV_FILE.is_file(), "unit_installed": AGENT_UNIT_PATH.is_file(),
+           "pinned": opencode_pinned()}
     if AGENT_PORT <= 0:
+        # Not installed: is it because this box has no opencode at all? That changes what
+        # to run (install.sh installs the pinned one; install-agent.sh only wires it up).
+        # This service's own PATH may lack ~/.opencode/bin, which is where install.sh puts it.
+        home_bin = Path.home() / ".opencode" / "bin" / "opencode"
+        out["opencode_found"] = shutil.which("opencode") or (str(home_bin) if home_bin.is_file() else None)
         return out
     raw = run(["systemctl", "show", AGENT_UNIT, "-p", "ActiveState,SubState,UnitFileState,ExecMainStartTimestamp"])
     d = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)

@@ -1001,7 +1001,12 @@ jobs:
           mods=$(for f in $files; do printf 'tests.%s ' "${f%.py}"; done)
           echo "unittest suites: $mods"
           declared=$(cd tests && cat $files | grep -c 'def test_')
-          out=$(python3 -m unittest $mods 2>&1)
+          # Under bash -e a failing run used to end the step right here, having
+          # printed nothing but the list above (2026-09-23): say what failed.
+          out=$(python3 -m unittest $mods 2>&1) || {
+            echo "$out" | grep -vF ResourceWarning | tail -80
+            echo "the unittest suites failed:"; echo "$out" | grep -E '^(FAIL|ERROR):' || true
+            exit 1; }
           echo "$out" | grep -vF ResourceWarning | tail -5
           ran=$(echo "$out" | grep -oE '^Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
           echo "declared $declared, ran $ran"

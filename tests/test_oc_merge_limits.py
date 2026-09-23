@@ -139,6 +139,49 @@ def main() -> None:
     assert m._verify_compaction(p, 50000) == ""
     assert "expected 7" in m._verify_compaction(p, 7)
 
+    # 7. --add-providers: the config a box's first install wrote gains the provider of a
+    #    lane installed since, and nothing else in it moves. The 27B first and the flash
+    #    lane later left the copy with no flashnext: the served model answers under any
+    #    name, so opencode sent the 27B's limits and label to the flash lane.
+    def add(path, source):
+        r = subprocess.run([sys.executable, SCRIPT, path, "--add-providers", source],
+                           capture_output=True, text=True)
+        return r.returncode, (r.stdout + r.stderr).strip()
+
+    flash = {"npm": "@ai-sdk/openai-compatible", "name": "Qwen3.8-Flash-Next (DGX Spark)",
+             "options": {"baseURL": "http://127.0.0.1:30001/v1", "apiKey": "{file:/k}"},
+             "models": {"qwen3.8-flash-next": {"limit": {"context": 1, "input": 1, "output": 1}}}}
+    gen = os.path.join(tmp, "generated.json")
+    with open(gen, "w") as f:
+        json.dump({"provider": {"qwen38": {"models": {"qwen3.8-27b": {}}}, "flashnext": flash}}, f, indent=2)
+    # a commented-out "provider" line and a nested "provider" key come before the real one
+    p = write(tmp, '{\n  // "provider": { a line the user commented out\n'
+                   '  "agent": {"a": {"provider": {"z": 1}}},\n'
+                   '  "provider": {\n    // mine\n'
+                   '    "qwen38": {"models": {"qwen3.8-27b": {"limit": {"context": 5}}}},\n'
+                   '    "other": {}\n  }\n}\n')
+    before = doc_of(p)
+    rc, out = add(p, gen)
+    assert rc == 0 and "flashnext provider added" in out, out
+    after = doc_of(p)
+    assert after["provider"].pop("flashnext") == flash, "the provider was not copied as generated"
+    assert after == before, "adding a provider moved something else"
+    assert "// mine" in open(p).read() and "commented out" in open(p).read(), "a comment was dropped"
+    rc, out = add(p, gen)
+    assert rc == 0 and "unchanged" in out, out
+
+    # A config with none of this repo's providers is the user's own: exit 3, untouched.
+    for body in ('{"provider": {"anthropic": {}}}\n', '{"model": "x"}\n'):
+        p = write(tmp, body)
+        rc, out = add(p, gen)
+        assert rc == 3 and open(p).read() == body, f"{body!r}: rc={rc} {out}"
+
+    # The check that picks the insertion point refuses anything else that moved.
+    base, blk = {"provider": {"qwen38": {}}, "x": 1}, {"flashnext": {"a": 1}}
+    assert m._added_ok('{"provider": {"flashnext": {"a": 1}, "qwen38": {}}, "x": 1}', base, blk) == ""
+    assert "changed" in m._added_ok('{"provider": {"flashnext": {"a": 1}, "qwen38": {}}, "x": 2}', base, blk)
+    assert "differently" in m._added_ok('{"provider": {"flashnext": {"a": 2}, "qwen38": {}}, "x": 1}', base, blk)
+
     print("test_oc_merge_limits: OK")
 
 

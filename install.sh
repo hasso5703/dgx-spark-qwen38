@@ -1179,17 +1179,17 @@ OC_HOME_BIN="$HOME/.opencode/bin/opencode"
 OC_HOME_DIR="${OC_HOME_BIN%/opencode}"
 oc_version(){ { "$1" --version 2>/dev/null || true; } | tail -1 | tr -d 'v[:space:]'; }
 ver_lt(){ [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
-oc_fetch_pinned(){
+oc_fetch_pinned(){   # prints the cause of a failure; the caller says what it leaves behind
   local tmp url="https://github.com/anomalyco/opencode/releases/download/v$OPENCODE_VERSION/opencode-linux-arm64.tar.gz"
   tmp="$(mktemp -d)"
   if ! curl -fsSL --retry 3 -m 600 -o "$tmp/oc.tar.gz" "$url"; then
-    rm -rf "$tmp"; echo "NOTE: could not download opencode $OPENCODE_VERSION ($url); opencode left as it was"; return 1
+    rm -rf "$tmp"; echo "NOTE: could not download opencode $OPENCODE_VERSION ($url)"; return 1
   fi
   if ! printf '%s  %s\n' "$OPENCODE_SHA256" "$tmp/oc.tar.gz" | sha256sum -c --quiet - >/dev/null 2>&1; then
-    rm -rf "$tmp"; echo "NOTE: the opencode $OPENCODE_VERSION download does not match its pinned sha256; nothing was installed"; return 1
+    rm -rf "$tmp"; echo "NOTE: the opencode $OPENCODE_VERSION download does not match its pinned sha256, so it was not installed"; return 1
   fi
   if ! tar -xzf "$tmp/oc.tar.gz" -C "$tmp" opencode; then
-    rm -rf "$tmp"; echo "NOTE: the opencode archive did not unpack; opencode left as it was"; return 1
+    rm -rf "$tmp"; echo "NOTE: the opencode $OPENCODE_VERSION archive did not unpack"; return 1
   fi
   mkdir -p "$OC_HOME_DIR"
   # a new file renamed over the old one: a server still running the old binary keeps it
@@ -1208,8 +1208,20 @@ if [ "$OPENCODE_PIN" != "1" ]; then
 elif [ "$OC_HAVE" = "$OPENCODE_VERSION" ]; then
   echo "opencode $OC_HAVE: the version this repo tests"
 elif [ -z "$OC_FOUND" ] || { [ "$OC_FOUND" -ef "$OC_HOME_BIN" ] && ver_lt "$OC_HAVE" "$OPENCODE_VERSION"; }; then
-  echo "opencode ${OC_HAVE:+$OC_HAVE -> }$OPENCODE_VERSION: the release asset, checked against its pinned sha256"
-  if oc_fetch_pinned; then OC_FOUND="$OC_HOME_BIN"; OC_HAVE="$(oc_version "$OC_HOME_BIN")"; fi
+  if [ -z "$OC_FOUND" ]; then
+    echo "opencode is not installed: installing $OPENCODE_VERSION (the release asset, checked against its pinned sha256)"
+  else
+    echo "opencode $OC_HAVE -> $OPENCODE_VERSION: replacing it with the release asset, checked against its pinned sha256"
+  fi
+  if oc_fetch_pinned; then
+    OC_FOUND="$OC_HOME_BIN"; OC_HAVE="$(oc_version "$OC_HOME_BIN")"
+    echo "opencode $OC_HAVE installed at $OC_HOME_BIN"
+  elif [ -z "$OC_FOUND" ]; then
+    echo "      opencode is still not installed, and the Agent tab and the oc launcher need it. Re-run ./install.sh"
+    echo "      once GitHub is reachable, or install it from https://opencode.ai (this repo tests $OPENCODE_VERSION)."
+  else
+    echo "      opencode stays at $OC_HAVE."
+  fi
 elif ver_lt "$OC_HAVE" "$OPENCODE_VERSION"; then
   echo "opencode $OC_HAVE -> $OPENCODE_VERSION through opencode's own upgrader ($OC_FOUND)"
   "$OC_FOUND" upgrade "$OPENCODE_VERSION" </dev/null >/dev/null 2>&1 \
@@ -1357,12 +1369,29 @@ print(f"wrote {cfg_dir}/opencode.json (default {default}, "
 PYEOF
 echo "opencode limits: context $OC_CTX, output $OC_OUT, port $OC_PORT"
 echo "  compaction fires at $((OC_CTX - 20000)) tokens and keeps $OC_KEEP verbatim"
-echo "  no opencode config yet:  mkdir -p ~/.config/opencode && cp $CONFIG_DIR/opencode.json ~/.config/opencode/opencode.json"
-echo "  existing config:         merge the \"qwen38\" provider block into it (README, \"opencode integration\")"
+OC_USER_CFG="$HOME/.config/opencode/opencode.json"
+# A box with no opencode config of its own gets this one. There is nothing to merge
+# into and nothing of the user's to keep, and nothing else points opencode at the file
+# above: without this, a first install left opencode, oc and the Agent tab with no
+# provider for the model the box serves, and a printed cp command to find.
+if [ ! -e "$OC_USER_CFG" ]; then
+  mkdir -p "$HOME/.config/opencode"
+  install -m 644 "$CONFIG_DIR/opencode.json" "$OC_USER_CFG"
+  echo "  no opencode config yet: installed this repo's at $OC_USER_CFG"
+elif ! grep -qsE '"(qwen38|flashnext)"' "$OC_USER_CFG"; then
+  # the user's own config, with none of this repo's providers in it: theirs to merge
+  echo "  your $OC_USER_CFG has no provider for this box: merge the \"qwen38\" (or \"flashnext\")"
+  echo "  block from $CONFIG_DIR/opencode.json into it (docs/opencode.md)"
+else
+  # A config set up for this box, by the copy above or by hand, lists the lanes the
+  # box had then. A lane installed since (the 27B first, the flash lane later) brings
+  # its provider in: without it the merges below find nothing to merge, and opencode
+  # sends the other lane's limits and label to the one that serves.
+  python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" --add-providers "$CONFIG_DIR/opencode.json" || true
+fi
 # An existing opencode.json keeps the user's other providers, but its limits for
 # THIS lane must follow the served engine (v1.5.2: a flash conversation allowed
 # to grow to 226000 tokens outgrew the 159k KV pool and wedged the scheduler).
-OC_USER_CFG="$HOME/.config/opencode/opencode.json"
 if [ -f "$OC_USER_CFG" ] && [ "$OPENCODE_PIN" = "1" ]; then
   python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" --autoupdate notify || true
 fi
@@ -1438,6 +1467,10 @@ else
 export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX="\${OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX:-$OC_OUT_CAP}"
 OPENCODE_BIN="\$(command -v opencode || true)"
 [ -n "\$OPENCODE_BIN" ] || OPENCODE_BIN="\$HOME/.opencode/bin/opencode"
+if [ ! -x "\$OPENCODE_BIN" ]; then
+  echo "oc: opencode is not installed. Re-run ./install.sh in $REPO_DIR: it installs the opencode this repo tests ($OPENCODE_VERSION)." >&2
+  exit 127
+fi
 # --yolo goes LAST: opencode's parser rejects global flags before a
 # subcommand (opencode --yolo run ... prints the help instead of running)
 exec "\$OPENCODE_BIN" "\$@" --yolo
@@ -1446,7 +1479,8 @@ OCWRAP
   echo "installed the oc launcher at $OC_BIN (output ceiling $OC_OUT_CAP, this target's limit $OC_OUT)"
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
-    *) echo "NOTE: $HOME/.local/bin is not in your PATH; add it or call $OC_BIN directly." ;;
+    *) echo "NOTE: $HOME/.local/bin is not in this shell's PATH: a new login has it (Ubuntu's ~/.profile"
+       echo "      adds it once the folder exists), or call $OC_BIN directly." ;;
   esac
 fi
 fi
@@ -1866,7 +1900,24 @@ except Exception as e:
     echo "  Anthropic  : http://<host>:$PORT/v1/messages   (Bearer auth only)"
     echo "  API key    : $CONFIG_DIR/api-key"
     if [ "$OPENCODE" -eq 1 ]; then
-      echo "  opencode   : provider config ready at $CONFIG_DIR/opencode.json (README, \"opencode integration\")"
+      OC_NOW="$( { opencode --version 2>/dev/null || true; } | tail -1 | tr -d 'v[:space:]')"
+      # What starts it from the user's own shell: this script's PATH is not theirs, the
+      # launcher is skipped when another oc exists, and ~/.local/bin may be new.
+      OC_START="oc"
+      if ! grep -qs 'dgx-spark-qwen38' "$HOME/.local/bin/oc"; then
+        OC_START="${OC_OUT_CAP:+OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=$OC_OUT_CAP }opencode --yolo"
+      elif [ "$(command -v oc || true)" != "$HOME/.local/bin/oc" ]; then
+        OC_START="$HOME/.local/bin/oc"
+      fi
+      OC_READS="${OC_USER_CFG:-$HOME/.config/opencode/opencode.json}"
+      if [ -z "$OC_NOW" ]; then
+        echo "  opencode   : NOT installed (see step 7). Its config is ready at $OC_READS;"
+        echo "               re-run ./install.sh to install it, or get it from https://opencode.ai"
+      elif [ "$OC_NOW" = "$OPENCODE_VERSION" ]; then
+        echo "  opencode   : $OC_NOW, the version this repo tests; start it with: $OC_START   (config: $OC_READS)"
+      else
+        echo "  opencode   : $OC_NOW (this repo tests $OPENCODE_VERSION); start it with: $OC_START   (config: $OC_READS)"
+      fi
     else
       echo "  opencode   : integration off (--no-opencode); ./install.sh --with-opencode turns it on"
     fi

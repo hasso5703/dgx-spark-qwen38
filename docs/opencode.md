@@ -4,11 +4,17 @@ What the installer writes for [opencode](https://opencode.ai), why each piece is
 
 The installer writes a complete, ready-to-use [opencode](https://opencode.ai) config at `~/.config/qwen38/opencode.json` (the API key is referenced via `{file:...}`, no secret inside). It contains one provider per installed engine (`qwen38` for the 27B pair, `flashnext` for flash), each with `low` / `medium` / `xhigh` reasoning-effort variants (no variant = the template's own default, xhigh), and its default model follows the installed target (`./switch-model.sh` re-points it on every switch):
 
+A box with no opencode config of its own gets this one as `~/.config/opencode/opencode.json`
+(since v1.18.4: before, it was printed as a `cp` command, and a first install left opencode,
+`oc` and the Agent tab with no provider for the box's own model, "Provider not found: qwen38").
+A config you already have is kept: the installer merges the served lane's limits into it,
+and adds the provider of a lane installed since (the 27B first, the flash lane later) when
+it already has one of this repo's providers. When it has none of them, the installer says
+so and leaves it alone: merge the `qwen38` (and/or `flashnext`) block from
+`~/.config/qwen38/opencode.json` into it yourself.
+
 ```bash
-# no opencode config yet? use it as-is:
-mkdir -p ~/.config/opencode && cp ~/.config/qwen38/opencode.json ~/.config/opencode/opencode.json
-# already have one? merge the "qwen38" (and/or "flashnext") provider block into it
-opencode
+oc        # opencode on this box's model, with the output cap lifted (see below)
 ```
 
 ## Which opencode: one pinned version, on every box
@@ -50,7 +56,7 @@ install.
 
 ## Opting out
 
-Do not want any of it? `./install.sh --no-opencode` (one-liner: `| bash -s -- --no-opencode`) installs the API only: no generated config, no `oc` launcher, and `switch-model.sh` never touches your opencode default model. The choice is remembered by later runs (marker `~/.config/qwen38/opencode.off`); `./install.sh --with-opencode` turns it back on. Your own `~/.config/opencode/opencode.json` is never rewritten in either mode: when the integration is on, the installer only merges into it the served lane's limits, its compaction block and, with the version pinned, `"autoupdate": "notify"`, each by a targeted edit that keeps your comments and your other providers, with a dated backup first.
+Do not want any of it? `./install.sh --no-opencode` (one-liner: `| bash -s -- --no-opencode`) installs the API only: no generated config, no `oc` launcher, and `switch-model.sh` never touches your opencode default model. The choice is remembered by later runs (marker `~/.config/qwen38/opencode.off`); `./install.sh --with-opencode` turns it back on. Your own `~/.config/opencode/opencode.json` is never rewritten in either mode: when the integration is on, the installer only merges into it the served lane's limits, its compaction block, the provider of a lane installed since and, with the version pinned, `"autoupdate": "notify"`, each by a targeted edit that keeps your comments and your other providers, with a dated backup first.
 
 What the shipped config gets right for you:
 
