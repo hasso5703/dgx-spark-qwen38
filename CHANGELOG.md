@@ -1,10 +1,10 @@
 # Changelog
 
-## v1.18.4 (unreleased): a fresh box's opencode knows the box's model, and says so when it cannot
+## v1.18.4 (2026-09-23): a fresh box's opencode stays on the box, and the image lane installs without Rust
 
 **The case v1.18.3 missed, a DGX Spark with no opencode and no opencode config.** The
-installer generates its opencode config under `~/.config/qwen38/` and nothing points
-opencode there: no `OPENCODE_CONFIG`, not in `oc`, not in the Agent tab's unit. A box with
+installer generates its opencode config under `~/.config/qwen38/`, and in v1.18.3 nothing
+pointed opencode there: no `OPENCODE_CONFIG`, not in `oc`, not in the Agent tab's unit. A box with
 no `~/.config/opencode/opencode.json` got a printed `cp` command, so v1.18.3 installed
 opencode on it and left it with no provider for the model the box serves. Reproduced in a
 throwaway HOME: "Error: Provider not found: qwen38". The installer now installs its config
@@ -71,7 +71,7 @@ this repo removed with `./uninstall.sh`, the box emptied of opencode, its config
   DGX Spark: DGX OS ships no `cargo`, and the editable overlay of the pinned SGLang source
   stopped on "cargo is required to discover the Rust extension modules", so
   `./install.sh --with-image` ended in "the image lane did not install". It had passed on
-  the reference box only because Hasan's own login puts `~/.cargo/bin` on the PATH; a clean
+  the reference box only because its owner's login puts `~/.cargo/bin` on the PATH; a clean
   login showed it. The five extensions (gRPC, the Rust server, the radix tree, two
   multimodal processors) are all the LLM runtime's and none is imported by the diffusion
   server: the overlay is built without them (`SGLANG_BUILD_RUST_EXTS=none`).
