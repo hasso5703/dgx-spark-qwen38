@@ -20,7 +20,8 @@
 # to 127.0.0.1 only gets a loopback relay, usable on the box itself.
 #
 # Requires: the cockpit installed (dashboard/install-dashboard.sh, or any plain
-# install.sh run) and opencode 1.18 or newer on your PATH (https://opencode.ai). Re-run after `opencode
+# install.sh run) and opencode on your PATH: install.sh puts the pinned one there when there is none
+# (docs/opencode.md), or install it from https://opencode.ai. Re-run after `opencode
 # upgrade` is not needed: the unit points at the opencode command as found on
 # your PATH (a symlink stays a symlink), the cockpit's Restart button serves the
 # new version. Variables: OPENCODE_PORT, AGENT_PORT, AGENT_BIND (an address, or

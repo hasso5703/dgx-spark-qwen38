@@ -802,6 +802,24 @@ def agent_binary_version() -> str | None:
     return AGENT_BINARY["version"]
 
 
+_OC_PIN_CACHE: dict = {}
+
+
+def opencode_pinned() -> str | None:
+    """The opencode version install.sh pins (OPENCODE_VERSION), read from that file, so
+    the page and the installer cannot name two different versions."""
+    path = REPO_DIR / "install.sh"
+    try:
+        key = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    if _OC_PIN_CACHE.get("key") != key:
+        m = re.search(r'^OPENCODE_VERSION="\$\{OPENCODE_VERSION:-([0-9.]+)\}"',
+                      path.read_text(errors="replace"), re.M)
+        _OC_PIN_CACHE.update(key=key, version=m.group(1) if m else None)
+    return _OC_PIN_CACHE.get("version")
+
+
 @guard
 def collect_agent():
     out = {"node_id": "local", "enabled": AGENT_PORT > 0, "relay": dict(AGENT),
@@ -816,6 +834,7 @@ def collect_agent():
     cfg = agent_config()
     out["server"] = ar.health(cfg)
     out["binary"] = agent_binary_version()
+    out["pinned"] = opencode_pinned()
     # permission mode: what the unit file says (applies at the next start) and what
     # the running server actually serves; they differ until a restart
     try:

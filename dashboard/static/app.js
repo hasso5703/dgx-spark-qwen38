@@ -932,6 +932,12 @@ const AG = {mounted: false, wasReady: null};
 // device; with no choice stored, a hand-held viewport gets fullscreen, because
 // there the head above the frame is a third of the screen and the tab IS the
 // frame. Exiting is one tap on the corner chip, and that choice is remembered.
+// dotted versions, numerically: "1.18.9" < "1.18.27"
+function verCmp(a, b){
+  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++){ const d = (x[i] || 0) - (y[i] || 0); if (d) return d; }
+  return 0;
+}
 function agentMaxDefault(){
   let pref = null;
   try { pref = localStorage.getItem('cockpit.agent.max'); } catch { /* storage may be unavailable */ }
@@ -994,6 +1000,10 @@ function rAgent(d){
   if (sv.version) parts.push('opencode ' + sv.version);
   if (r.listening) parts.push(`relay ${r.bind}:${r.port}`); else if (r.error) parts.push(r.error);
   if (d.binary && sv.version && d.binary !== sv.version) parts.push(`binary ${d.binary} installed, restart to serve it`);
+  // install.sh pins the version the repo's opencode tuning was measured on; say when this one is another
+  if (d.pinned && sv.version && sv.version !== d.pinned)
+    parts.push(verCmp(sv.version, d.pinned) < 0 ? `this repo tests ${d.pinned}: ./install.sh brings it in line`
+                                                : `newer than the ${d.pinned} this repo tests`);
   else if (unitOn && u.enabled) parts.push(u.enabled === 'enabled' ? 'starts at boot' : u.enabled);
   if (d.auto_live != null) parts.push(d.auto_live ? 'auto-approve: every tool call runs' : 'asks before risky tool calls');
   if (d.auto != null && d.auto_live != null && d.auto !== d.auto_live) parts.push('permission mode changed in the unit, restart to apply');

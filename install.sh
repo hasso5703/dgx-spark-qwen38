@@ -384,6 +384,22 @@ FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-$FLASH_IMAGE}"
 if [ -z "$_ENV_FLASH_SERVE_IMAGE" ] && [ "$OVERLAY_FLASH" = "1" ]; then
   FLASH_SERVE_IMAGE="$OVERLAY_FLASH_SERVE_IMAGE"
 fi
+# opencode, the client this repo configures and serves in the cockpit's Agent tab, is
+# pinned like everything else. Four things the repo does were read out of this
+# version's own binary and checked against its behaviour: the compaction threshold
+# oc-fit-limits.py sizes the limits for, the hidden 32,000-token output cap the oc
+# launcher lifts (182,000 sent with the variable, 32,000 without, measured on a fake
+# endpoint), the overflow phrases the proxy answers with so a refusal triggers a
+# compaction (21 of 21 present), and --yolo / OPENCODE_PERMISSION for the Agent tab.
+# 1.18.32 passed all of it against the 1.18.27 the repo was measured on (2026-09-23).
+# Left alone, opencode installs its own patch releases, so two boxes installed a
+# week apart run two versions. The sha256 is GitHub's own digest of the release asset
+# opencode-linux-arm64.tar.gz. OPENCODE_PIN=0 keeps whatever opencode you have.
+_ENV_OPENCODE_VERSION="${OPENCODE_VERSION:-}"
+_ENV_OPENCODE_SHA256="${OPENCODE_SHA256:-}"
+OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.32}"
+OPENCODE_SHA256="${OPENCODE_SHA256:-568461b7d4d8c19865c97e9a1102e613049c6039d01fe772154de873c1865840}"
+OPENCODE_PIN="${OPENCODE_PIN:-1}"
 PORT="${PORT:-30000}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 CONFIG_DIR="$HOME/.config/qwen38"
@@ -1153,6 +1169,68 @@ if [ "$OPENCODE" -eq 0 ]; then
 else
 rm -f "$OC_OFF_MARK"
 step "7/10 opencode provider config + oc launcher"
+# ── opencode itself, at the pinned version (see the OPENCODE_VERSION pin) ─────────
+# Absent: the release asset is downloaded, checked against its pinned sha256 and put
+# where opencode's own installer puts it. Older in that place: replaced the same way.
+# Older elsewhere (npm, brew, bun): opencode's own upgrader, which knows its method.
+# Newer: kept, and said so, because going back a version can leave sessions a newer
+# opencode wrote unreadable. None of it fails the install: opencode is one integration.
+OC_HOME_BIN="$HOME/.opencode/bin/opencode"
+OC_HOME_DIR="${OC_HOME_BIN%/opencode}"
+oc_version(){ { "$1" --version 2>/dev/null || true; } | tail -1 | tr -d 'v[:space:]'; }
+ver_lt(){ [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
+oc_fetch_pinned(){
+  local tmp url="https://github.com/anomalyco/opencode/releases/download/v$OPENCODE_VERSION/opencode-linux-arm64.tar.gz"
+  tmp="$(mktemp -d)"
+  if ! curl -fsSL --retry 3 -m 600 -o "$tmp/oc.tar.gz" "$url"; then
+    rm -rf "$tmp"; echo "NOTE: could not download opencode $OPENCODE_VERSION ($url); opencode left as it was"; return 1
+  fi
+  if ! printf '%s  %s\n' "$OPENCODE_SHA256" "$tmp/oc.tar.gz" | sha256sum -c --quiet - >/dev/null 2>&1; then
+    rm -rf "$tmp"; echo "NOTE: the opencode $OPENCODE_VERSION download does not match its pinned sha256; nothing was installed"; return 1
+  fi
+  if ! tar -xzf "$tmp/oc.tar.gz" -C "$tmp" opencode; then
+    rm -rf "$tmp"; echo "NOTE: the opencode archive did not unpack; opencode left as it was"; return 1
+  fi
+  mkdir -p "$OC_HOME_DIR"
+  # a new file renamed over the old one: a server still running the old binary keeps it
+  install -m 755 "$tmp/opencode" "$OC_HOME_BIN.new" && mv -f "$OC_HOME_BIN.new" "$OC_HOME_BIN"
+  rm -rf "$tmp"
+}
+if [ -n "$_ENV_OPENCODE_VERSION" ] && [ -z "$_ENV_OPENCODE_SHA256" ]; then
+  die "OPENCODE_VERSION=$OPENCODE_VERSION needs OPENCODE_SHA256 too (GitHub's digest of opencode-linux-arm64.tar.gz for that release): a version with no checksum is not a pin"
+fi
+OC_FOUND="$(command -v opencode || true)"
+[ -z "$OC_FOUND" ] && [ -x "$OC_HOME_BIN" ] && OC_FOUND="$OC_HOME_BIN"
+OC_WAS_ABSENT=0; [ -z "$OC_FOUND" ] && OC_WAS_ABSENT=1
+OC_HAVE=""; [ -n "$OC_FOUND" ] && OC_HAVE="$(oc_version "$OC_FOUND")"
+if [ "$OPENCODE_PIN" != "1" ]; then
+  echo "opencode ${OC_HAVE:-not installed}: kept as it is (OPENCODE_PIN=$OPENCODE_PIN)"
+elif [ "$OC_HAVE" = "$OPENCODE_VERSION" ]; then
+  echo "opencode $OC_HAVE: the version this repo tests"
+elif [ -z "$OC_FOUND" ] || { [ "$OC_FOUND" -ef "$OC_HOME_BIN" ] && ver_lt "$OC_HAVE" "$OPENCODE_VERSION"; }; then
+  echo "opencode ${OC_HAVE:+$OC_HAVE -> }$OPENCODE_VERSION: the release asset, checked against its pinned sha256"
+  if oc_fetch_pinned; then OC_FOUND="$OC_HOME_BIN"; OC_HAVE="$(oc_version "$OC_HOME_BIN")"; fi
+elif ver_lt "$OC_HAVE" "$OPENCODE_VERSION"; then
+  echo "opencode $OC_HAVE -> $OPENCODE_VERSION through opencode's own upgrader ($OC_FOUND)"
+  "$OC_FOUND" upgrade "$OPENCODE_VERSION" </dev/null >/dev/null 2>&1 \
+    || echo "NOTE: opencode upgrade $OPENCODE_VERSION failed; run it yourself"
+  OC_HAVE="$(oc_version "$OC_FOUND")"
+else
+  echo "NOTE: opencode $OC_HAVE is newer than the $OPENCODE_VERSION this repo tests. Kept: going back"
+  echo "      a version can leave sessions a newer opencode wrote unreadable. OPENCODE_PIN=0 silences this."
+fi
+if [ "$OPENCODE_PIN" = "1" ] && [ -n "$OC_HAVE" ] && ver_lt "$OC_HAVE" "$OPENCODE_VERSION"; then
+  echo "NOTE: opencode is still $OC_HAVE after the step above; oc and the Agent tab keep running it"
+fi
+# The rest of this run (the Agent tab's unit, the oc launcher) finds opencode on PATH, and
+# a first install puts it in the shell's PATH the way opencode's own installer does.
+if [ -n "$OC_FOUND" ] && [ "$OC_FOUND" -ef "$OC_HOME_BIN" ]; then
+  case ":$PATH:" in *":$OC_HOME_DIR:"*) ;; *) export PATH="$OC_HOME_DIR:$PATH" ;; esac
+  if [ "$OC_WAS_ABSENT" -eq 1 ] && ! grep -qs '\.opencode/bin' "$HOME/.bashrc"; then
+    printf '\n# opencode, installed by dgx-spark-qwen38 (%s)\nexport PATH="$HOME/.opencode/bin:$PATH"\n' "$OPENCODE_VERSION" >> "$HOME/.bashrc"
+    echo "added ~/.opencode/bin to your PATH in ~/.bashrc (open a new shell, or: export PATH=\"\$HOME/.opencode/bin:\$PATH\")"
+  fi
+fi
 # A complete, ready-to-use opencode config (https://opencode.ai). The limits
 # satisfy the serving window with margin in BOTH modes, including when
 # opencode's hidden 32000 output cap is lifted by the oc launcher below:
@@ -1209,7 +1287,7 @@ OC_KEEP="$("$REPO_DIR/oc-limits.sh" --preserve "$OC_CTX")" \
 # keeps its context-mode limits, flash always serves its native window.
 OC_LANE="$LANE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
 OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$CONTEXT_MODE" \
-OC_KEEP="$OC_KEEP" \
+OC_KEEP="$OC_KEEP" OC_PIN="$OPENCODE_PIN" \
 OC_CONFIG_DIR="$CONFIG_DIR" python3 - <<'PYEOF' || die "could not write the opencode provider config"
 import json
 import os
@@ -1267,6 +1345,10 @@ default = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8
 doc = {"$schema": "https://opencode.ai/config.json", "provider": providers,
        "compaction": {"preserve_recent_tokens": int(os.environ["OC_KEEP"]), "prune": True},
        "model": default, "small_model": default}
+# With the version pinned, opencode announces a release instead of installing it itself
+# (unset, it installs its own patch releases; see the OPENCODE_VERSION pin).
+if os.environ.get("OC_PIN") == "1":
+    doc["autoupdate"] = "notify"
 with open(f"{cfg_dir}/opencode.json", "w") as f:
     json.dump(doc, f, indent=2)
     f.write("\n")
@@ -1281,6 +1363,9 @@ echo "  existing config:         merge the \"qwen38\" provider block into it (RE
 # THIS lane must follow the served engine (v1.5.2: a flash conversation allowed
 # to grow to 226000 tokens outgrew the 159k KV pool and wedged the scheduler).
 OC_USER_CFG="$HOME/.config/opencode/opencode.json"
+if [ -f "$OC_USER_CFG" ] && [ "$OPENCODE_PIN" = "1" ]; then
+  python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" --autoupdate notify || true
+fi
 if [ -f "$OC_USER_CFG" ]; then
   if [ "${LANE:-27b}" = "flash" ]; then
     python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" flashnext qwen3.8-flash-next "$OC_CTX" "$OC_OUT" || true
@@ -1709,8 +1794,8 @@ except Exception as e:
           "$REPO_DIR/dashboard/install-agent.sh" \
             || echo "NOTE: the Agent tab did not install; the rest of the cockpit is up (retry: ./dashboard/install-agent.sh)"
         elif [ "$OPENCODE" -eq 1 ]; then
-          echo "NOTE: opencode is not on your PATH, so the Agent tab is not installed."
-          echo "      install it (https://opencode.ai), then run: ./dashboard/install-agent.sh"
+          echo "NOTE: opencode is not on your PATH (step 7 did not install it: see its NOTE, or OPENCODE_PIN=0),"
+          echo "      so the Agent tab is not installed. Re-run ./install.sh, or install it and run ./dashboard/install-agent.sh"
         fi
         # The URL to print is the installed unit's own bind and port, read back
         # rather than assumed: install-agent.sh re-renders that unit, and a

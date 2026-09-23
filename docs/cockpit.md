@@ -221,7 +221,8 @@ Since v1.7.0 the cockpit can hold opencode's own web interface, so a session on 
 box runs from the laptop without a terminal: sessions, the project picker, file
 diffs, the terminal panel, the same config, plugins, skills and MCP servers as the
 `oc` command. Since v1.12 `install.sh` installs it with the cockpit whenever
-opencode 1.18 or newer is on your PATH; when it is not, the installer says so
+opencode is on your PATH, and since v1.18.3 the installer puts the pinned opencode there
+when there is none (docs/opencode.md); when it still is not, the installer says so
 and skips that one tab rather than failing an install that is otherwise up. Run
 it by hand after installing opencode, or to retune it:
 

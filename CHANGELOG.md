@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.18.3 (2026-09-23): the same opencode on every box
+
+**Until now the repo installed no opencode at all**: it took whatever was on `PATH`, and
+opencode installs its own patch releases, so two boxes installed a week apart ran two
+versions (the reference box sat on 1.18.27 while 1.18.32 was out). Four things this repo
+does depend on opencode's own behaviour and were read out of one version's binary: the
+compaction threshold `oc-fit-limits.py` sizes the limits for, the hidden 32,000-token
+output cap the `oc` launcher lifts, the overflow phrases the proxy answers with so that a
+refusal makes opencode compact, and `--yolo` / `OPENCODE_PERMISSION` for the Agent tab.
+
+**opencode is pinned now, version and checksum**: `OPENCODE_VERSION=1.18.32` and the
+sha256 GitHub publishes for `opencode-linux-arm64.tar.gz`. It was checked against 1.18.27
+before being pinned: the same 21 overflow phrases and 3 exclusions verbatim, `max_tokens`
+182,000 with the launcher's variable and 32,000 without on both (recorded on a fake
+endpoint), the same compaction and permission code once the bundler's chunk names are set
+aside, `serve --hostname` and the hidden `--yolo` on both.
+
+`install.sh` installs it when a box has none (the checked release asset, where opencode's
+own installer puts it, and on `PATH`), replaces an older one there the same way, moves an
+older one installed by npm, brew or bun with opencode's own `upgrade`, and keeps a newer
+one, saying so, because going back a version can leave sessions a newer opencode wrote
+unreadable. The generated config and yours get `"autoupdate": "notify"`, so opencode
+announces a release instead of installing it itself (a `false` you set is kept). The
+Agent tab says when the opencode it serves is not the pinned one. `OPENCODE_PIN=0` keeps
+whatever you have; a download that does not match its sha256 is not installed, and
+nothing about opencode fails the rest of the install. CI downloads the pinned asset and
+checks its sha256 on every run. `uninstall.sh` lists an opencode this repo installed, and
+leaves it.
+
+**A claim put right**: `docs/opencode.md` said the 1M starting pair (700,000 + 200,000)
+sits under the worst measured pool. It does not (832,993 to 922,094 over sixteen boots),
+which is why the installer, and since v1.18.2 the cockpit, fit it to the pool each boot
+gets.
+
 ## v1.18.2 (2026-09-23): a generation can be cancelled, and a Stop during one is clean
 
 **What happened on the reference box, 2026-09-23.** A call for ten 2048x2048 images at 60

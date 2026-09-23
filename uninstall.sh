@@ -90,6 +90,12 @@ fi
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
   echo "  launcher  $HOME/.local/bin/oc (this repo's opencode launcher)"
 fi
+# install.sh installs opencode itself only when a box had none; it marks that in the
+# PATH line it adds to ~/.bashrc. Listed, never removed: from then on it is the user's
+# opencode as much as this repo's, with its own sessions under ~/.local/share/opencode.
+if [ -x "$HOME/.opencode/bin/opencode" ] && grep -qs 'opencode, installed by dgx-spark-qwen38' "$HOME/.bashrc"; then
+  echo "  opencode  $HOME/.opencode (installed by this repo; kept. Yours to remove: rm -rf ~/.opencode, and its PATH line in ~/.bashrc)"
+fi
 inventory_images
 for entry in ${FOUND_IMAGES[@]+"${FOUND_IMAGES[@]}"}; do
   echo "  image     ${entry%%|*} (${entry##*|})"

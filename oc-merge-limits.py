@@ -4,6 +4,7 @@
 Usage: oc-merge-limits.py <target opencode.json> <provider> <model id> <context> <output>
        oc-merge-limits.py <target opencode.json> --compaction <preserve_recent_tokens>
        oc-merge-limits.py <target opencode.json> <provider> <model id> --add-variant <level>
+       oc-merge-limits.py <target opencode.json> --autoupdate notify
 
 Only the "limit" object of the named provider/model is rewritten, in place,
 by targeted text substitution: comments, ordering and the user's other
@@ -20,6 +21,12 @@ from this repo's table instead. `prune` goes with it: opencode then clears stale
 tool output (beyond the most recent 40,000 tokens of it, and never in the last
 two turns) instead of summarising the whole conversation, which is the cheaper
 way to stay under the ceiling.
+
+--autoupdate writes the top-level "autoupdate" key. Left unset, opencode installs its
+own patch releases (read out of its 1.18.27 binary: only `false`, `"notify"` or a
+minor/major release stop it), so the version install.sh pins drifts on its own.
+"notify" keeps the announcement and drops the self-install. A user's explicit
+`false` is stricter and is kept.
 """
 import json
 import re
@@ -114,6 +121,50 @@ def merge_compaction(path: str, keep: int) -> int:
     return 0
 
 
+def merge_autoupdate(path: str, value: str) -> int:
+    """Write the top-level autoupdate key, keeping everything else byte for byte."""
+    try:
+        text = open(path).read()
+    except OSError as e:
+        print(f"cannot read {path}: {e}")
+        return 1
+    try:
+        doc = json.loads(re.sub(r"^\s*//.*$", "", text, flags=re.M))
+    except json.JSONDecodeError as e:
+        print(f"{path} is not valid JSON(C): {e}")
+        return 1
+    cur = doc.get("autoupdate", None)
+    if cur == value:
+        print(f"autoupdate already {value!r}: unchanged")
+        return 0
+    if cur is False:
+        print("autoupdate is false (no update at all), which already holds the pin: unchanged")
+        return 0
+    if "autoupdate" in doc:
+        new_text, n = re.subn(r'"autoupdate"\s*:\s*(true|false|"[^"]*")', f'"autoupdate": {json.dumps(value)}',
+                              text, count=1)
+        if n != 1:
+            print(f"{path}: autoupdate is set in a form this script does not rewrite; unchanged")
+            return 1
+    else:
+        i = text.index("{")          # the document's own opening brace
+        new_text = text[:i + 1] + f'\n  "autoupdate": {json.dumps(value)},' + text[i + 1:]
+    backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(path, backup)
+    with open(path, "w") as f:
+        f.write(new_text)
+    try:
+        ok = json.loads(re.sub(r"^\s*//.*$", "", open(path).read(), flags=re.M)).get("autoupdate") == value
+    except (OSError, json.JSONDecodeError):
+        ok = False
+    if not ok:
+        shutil.copy2(backup, path)
+        print(f"{path}: refused, autoupdate was not written as intended; restored from {backup}.")
+        return 1
+    print(f"autoupdate: {value!r}, was {cur!r} (backup {backup})")
+    return 0
+
+
 def _verify_variant(path, provider, model, level) -> str:
     try:
         doc = json.loads(re.sub(r"^\s*//.*$", "", open(path).read(), flags=re.M))
@@ -177,6 +228,8 @@ def add_variant(path: str, provider: str, model: str, level: str) -> int:
 def main(argv: list[str]) -> int:
     if len(argv) == 4 and argv[2] == "--compaction":
         return merge_compaction(argv[1], int(argv[3]))
+    if len(argv) == 4 and argv[2] == "--autoupdate":
+        return merge_autoupdate(argv[1], argv[3])
     if len(argv) == 6 and argv[4] == "--add-variant":
         return add_variant(argv[1], argv[2], argv[3], argv[5])
     if len(argv) != 6:

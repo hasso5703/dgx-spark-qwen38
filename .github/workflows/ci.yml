@@ -1324,6 +1324,21 @@ jobs:
             echo " $listed " | grep -q " $name " || { echo "$f is in the repo and install-image.sh never applies it"; exit 1; }
           done
 
+      - name: The pinned opencode release is the one its sha256 names
+        # install.sh installs this exact asset on every box that has no opencode or an
+        # older one, and refuses a download that does not match. A pin bumped without
+        # its checksum, or a release asset replaced upstream, fails here instead of on a
+        # user's box. The asset itself is checked, not the API's word for it.
+        run: |
+          v=$(grep -oE '^OPENCODE_VERSION="\$\{OPENCODE_VERSION:-[0-9.]+\}"' install.sh | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          sha=$(grep -oE '^OPENCODE_SHA256="\$\{OPENCODE_SHA256:-[0-9a-f]{64}\}"' install.sh | grep -oE '[0-9a-f]{64}')
+          test -n "$v" && test -n "$sha" || { echo "install.sh no longer declares OPENCODE_VERSION and OPENCODE_SHA256 the way this step reads them"; exit 1; }
+          d=$(mktemp -d)
+          curl -fsSL --retry 3 -o "$d/oc.tar.gz" "https://github.com/anomalyco/opencode/releases/download/v$v/opencode-linux-arm64.tar.gz"
+          echo "$sha  $d/oc.tar.gz" | sha256sum -c --quiet -
+          tar -tzf "$d/oc.tar.gz" | grep -qx opencode || { echo "the asset no longer holds an opencode binary at its top"; exit 1; }
+          echo "opencode $v: the release asset matches its pinned sha256"
+
       - name: House typography (no em/en dashes in tracked files)
         run: |
           if git ls-files -z | xargs -0 grep -nP '[\x{2014}\x{2013}\x{2212}]' 2>/dev/null; then
