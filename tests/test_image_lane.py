@@ -137,6 +137,15 @@ class TheInstaller(unittest.TestCase):
         way; this one is reachable on its own, so it refuses on its own."""
         self.assertIn("not as root", INSTALLER.read_text())
 
+    def test_the_source_overlay_needs_no_rust_toolchain(self):
+        """DGX OS ships no cargo, and the pinned source declares Rust extensions that
+        only the LLM runtime uses: built with them, the overlay failed on every box
+        without a Rust toolchain (reference box in a clean login, 2026-09-23)."""
+        text = INSTALLER.read_text()
+        pip = [ln for ln in text.splitlines() if '"$VENV/bin/pip" install' in ln and '-e "$SRC/python"' in ln]
+        self.assertEqual(len(pip), 1, pip)
+        self.assertIn("SGLANG_BUILD_RUST_EXTS=none", pip[0])
+
     def test_the_runtime_pin_is_a_full_commit(self):
         """Qwen-Image 2.1 is in no SGLang release, so the lane runs a source checkout. A
         branch name would make two boxes install two different runtimes from one command."""

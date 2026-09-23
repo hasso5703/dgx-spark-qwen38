@@ -43,6 +43,67 @@ the real opencode 1.18.32 listing both and answering a turn.
   installs the pinned one and the tab) from a box where only the tab is missing
   (`dashboard/install-agent.sh`).
 
+**Found by a real uninstall and a real first install on the reference box** (everything of
+this repo removed with `./uninstall.sh`, the box emptied of opencode, its configs and the
+27B checkpoints, then the published one-liner run as a new user would):
+- **On a fresh box, `oc` and the Agent tab answered with a cloud model.** The published
+  v1.18.3 installed cleanly (exit 0, 11 min 46 s, engine, proxy, cockpit and Agent tab up),
+  and then `oc run "Reply with exactly: OK"` printed `build · big-pickle`: opencode's own
+  hosted free model. The Agent tab's opencode listed one provider, `opencode`, default
+  `big-pickle`. With no provider for this box in the config it reads, opencode picks its
+  free cloud model (`zai-org/GLM-5.3-Flash` on another run), so the prompts meant for the
+  model this box serves left the box, and nothing said so. The config copy above fixes a
+  fresh box; `oc` and the Agent tab now also load the box's generated config through
+  `OPENCODE_CONFIG`, which opencode reads over the global one (measured on 1.18.32: the
+  box's model wins even over a `model` set in the global config), so neither can fall back
+  to a cloud model whatever the user's own opencode config says. A user's own
+  `OPENCODE_CONFIG` is kept, and plain `opencode` stays the user's.
+- `./uninstall.sh --yes` left opencode unable to start. It deletes the API key, the providers
+  install.sh writes read it through a `{file:}` reference, and opencode 1.18.32 then refuses
+  to start at all, every provider included: "Configuration is invalid ... bad file
+  reference". Since this release every fresh box gets such a config. The providers that read
+  the key now go first (`oc-merge-limits.py --remove-providers`, same targeted edit as the
+  merges, comments and the user's other providers kept), with `model` and `small_model` when
+  they name one; a file holding nothing else of the user's is moved to a backup. Without
+  `--yes` the key stays, and the uninstaller says the providers answer again after a
+  reinstall. Proven with the real opencode: it starts after the purge.
+- **The image lane did not install on a box without a Rust toolchain**, which is every fresh
+  DGX Spark: DGX OS ships no `cargo`, and the editable overlay of the pinned SGLang source
+  stopped on "cargo is required to discover the Rust extension modules", so
+  `./install.sh --with-image` ended in "the image lane did not install". It had passed on
+  the reference box only because Hasan's own login puts `~/.cargo/bin` on the PATH; a clean
+  login showed it. The five extensions (gRPC, the Rust server, the radix tree, two
+  multimodal processors) are all the LLM runtime's and none is imported by the diffusion
+  server: the overlay is built without them (`SGLANG_BUILD_RUST_EXTS=none`).
+- `./uninstall.sh --yes` died halfway on every box that had served the 27B: the engine
+  container runs as root and writes its compile cache under `~/.config/qwen38`, in
+  directories that are root's, so the plain `rm -rf` stopped the script (`set -e`) after
+  995 "Permission denied" lines, with the cache left behind and the reclaim commands never
+  printed. What the user's `rm` cannot remove now goes through `sudo`, quietly.
+- The uninstall inventory did not know the image lane's checkpoint (`Qwen/Qwen-Image-2.1`,
+  31 GB): not listed, no reclaim command, while a comment in the script said it was reported.
+  It is, and the CI gate on inventory pins now reads `install-image.sh` too.
+- An update on a nearly full disk was refused: the preflight asked for 40 GB free on the
+  docker root whatever was there, and the box, with the pinned image in place and nothing to
+  download, answered "Need ~40 GB free ... found 36 GB". An image already here now needs
+  only the container's room (5 GB); a first pull still needs the full amount.
+- A commented-out opencode PATH line in `~/.bashrc` counted as one, so the opencode the
+  installer had just put in `~/.opencode/bin` stayed off the PATH of every new shell, and
+  since the line was written only by the run that installed opencode, no update ever wrote
+  it after. An opencode in `~/.opencode/bin` that the installing shell cannot find now gets
+  its line (marked as installed by this repo only when this run installed it).
+- A flash install on a box whose 27B serves 1M gave the 27B block of the generated config
+  the native 194048/64000: the flash install runs in native mode and used it for both
+  lanes. Harmless while only the user's config was read; not once `oc` and the Agent tab
+  load the generated one first. The 27B's mode now comes from its own unit.
+- While the flash lane boots, the installer said "first boot compiles kernels" for 13
+  minutes of a load that compiles nothing: every flash boot rewrites its 47.7 GiB PLE table.
+- The reclaim commands `./uninstall.sh` prints were a plain `rm -rf` even for checkpoints in
+  which engine containers of past versions, running as root on the mounted HF cache, had left
+  root-owned `.no_exist` and `refs` entries (three on the reference box): pasted, they stopped
+  on "Permission denied". A directory the user cannot empty now gets `sudo rm -rf`.
+- `./uninstall.sh` on a box with nothing of this repo installed said "services removed.".
+
 **CI**: the step that runs every unittest suite of `tests/` in one process printed only
 their names when one of them failed, because `bash -e` ended it on the assignment that
 captured the run. It now prints the end of the run and names the failing tests.

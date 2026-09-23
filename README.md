@@ -538,6 +538,7 @@ journalctl -u qwen38-keepalive -f       # one line per proxied request (bytes, f
 ./bench-matrix.sh                       # per-workload profile, works on any engine
 ./uninstall.sh --list                   # inventory: everything any version of this repo left here, with sizes
 ./uninstall.sh                          # removes services + config; prints reclaim commands for data it found
+./uninstall.sh --yes                    # same, and deletes ~/.config/qwen38 (API key) without asking; opencode's config loses this box's providers
 
 Killing an abandoned generation, reading a dead decode from both sides of the wire, the opt-in
 extras, and what an upgrade from an earlier version actually does:

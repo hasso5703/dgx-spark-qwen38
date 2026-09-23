@@ -17,6 +17,13 @@ so and leaves it alone: merge the `qwen38` (and/or `flashnext`) block from
 oc        # opencode on this box's model, with the output cap lifted (see below)
 ```
 
+`oc` and the cockpit's Agent tab also load that generated config through
+`OPENCODE_CONFIG`, which opencode reads over your global one: their default is the model
+this box serves even when your own config names another, and opencode can never fall back
+to its free hosted model there. That fallback is what a fresh box got before v1.18.4 (with
+no provider for the box, opencode answered with `big-pickle`, a cloud model). Plain
+`opencode` reads only your own config.
+
 ## Which opencode: one pinned version, on every box
 
 Four things this repo does were read out of one opencode binary and checked against its

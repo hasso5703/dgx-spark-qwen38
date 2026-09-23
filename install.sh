@@ -886,6 +886,21 @@ fi
 [ -n "$FREE_DISK_GB" ] && [ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free for the checkpoints and caches under $HF_CACHE; found ${FREE_DISK_GB:-unknown} GB. Free some space or set HF_CACHE to another disk."
 DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
 DOCKER_FREE_GB=$(df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')
+# What step 2 pulls, decided here because the room it needs depends on it. An
+# OVERLAY_FLASH=1 install builds on the 2026-08-26 base, not on the image the lane
+# serves by default, so it is that one that has to be here.
+if [ "$LANE" = "flash" ]; then
+  PULL_TARGET="$FLASH_IMAGE"
+  [ "$OVERLAY_FLASH" = "1" ] && PULL_TARGET="$OVERLAY_FLASH_BASE_IMAGE"
+else
+  PULL_TARGET="$IMAGE"
+fi
+# An image already here needs no room for itself, only the container's: an update
+# on a box with 36 GB free was refused for want of 40, with the image in place and
+# nothing to download (reference box, 2026-09-23).
+if docker image inspect "$PULL_TARGET" >/dev/null 2>&1; then
+  DOCKER_NEED_GB=5; IMG_LABEL="container (its image is already here)"
+fi
 [ "${DOCKER_FREE_GB:-0}" -ge "$DOCKER_NEED_GB" ] || die "Need ~${DOCKER_NEED_GB} GB free on $DOCKER_ROOT for the $IMG_LABEL; found ${DOCKER_FREE_GB:-?} GB (docker images live there, not under \$HOME)."
 if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   # The port may be held by either of OUR engines: same-engine reinstall
@@ -910,16 +925,12 @@ echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
 
 if [ "$LANE" = "flash" ]; then
   step "2/10 Pulling the official SGLang Flash-Next image (~30 GB, one-time, resumable)"
-  # An OVERLAY_FLASH=1 install builds on the 2026-08-26 base, not on the image
-  # the lane serves by default, so it is that one that has to be here.
-  PULL_TARGET="$FLASH_IMAGE"
-  [ "$OVERLAY_FLASH" = "1" ] && PULL_TARGET="$OVERLAY_FLASH_BASE_IMAGE"
   docker pull "$PULL_TARGET" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try FLASH_IMAGE=lmsysorg/sglang:dev-qwen38-next-local ./install.sh"
   PULLED_IMAGE="$PULL_TARGET"
 else
   step "2/10 Pulling the SGLang image (~39 GB, one-time, resumable)"
-  docker pull "$IMAGE" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:v0.5.19 ./install.sh, the moving tag of the same release"
-  PULLED_IMAGE="$IMAGE"
+  docker pull "$PULL_TARGET" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:v0.5.19 ./install.sh, the moving tag of the same release"
+  PULLED_IMAGE="$PULL_TARGET"
 fi
 
 step "3/10 Verifying the container can see the GPU"
@@ -1200,6 +1211,7 @@ if [ -n "$_ENV_OPENCODE_VERSION" ] && [ -z "$_ENV_OPENCODE_SHA256" ]; then
   die "OPENCODE_VERSION=$OPENCODE_VERSION needs OPENCODE_SHA256 too (GitHub's digest of opencode-linux-arm64.tar.gz for that release): a version with no checksum is not a pin"
 fi
 OC_FOUND="$(command -v opencode || true)"
+OC_ON_PATH="$OC_FOUND"   # what a shell of the user's finds, before the fallback below
 [ -z "$OC_FOUND" ] && [ -x "$OC_HOME_BIN" ] && OC_FOUND="$OC_HOME_BIN"
 OC_WAS_ABSENT=0; [ -z "$OC_FOUND" ] && OC_WAS_ABSENT=1
 OC_HAVE=""; [ -n "$OC_FOUND" ] && OC_HAVE="$(oc_version "$OC_FOUND")"
@@ -1238,8 +1250,15 @@ fi
 # a first install puts it in the shell's PATH the way opencode's own installer does.
 if [ -n "$OC_FOUND" ] && [ "$OC_FOUND" -ef "$OC_HOME_BIN" ]; then
   case ":$PATH:" in *":$OC_HOME_DIR:"*) ;; *) export PATH="$OC_HOME_DIR:$PATH" ;; esac
-  if [ "$OC_WAS_ABSENT" -eq 1 ] && ! grep -qs '\.opencode/bin' "$HOME/.bashrc"; then
-    printf '\n# opencode, installed by dgx-spark-qwen38 (%s)\nexport PATH="$HOME/.opencode/bin:$PATH"\n' "$OPENCODE_VERSION" >> "$HOME/.bashrc"
+  # A shell the user opens later finds it only through a line: one this run installs,
+  # and one already here that is on no PATH (a v1.18.3 install skipped the line for a
+  # commented-out one, and an update never wrote it after). A commented-out line is no PATH.
+  if [ -z "$OC_ON_PATH" ] && ! grep -qsE '^[^#]*\.opencode/bin' "$HOME/.bashrc"; then
+    if [ "$OC_WAS_ABSENT" -eq 1 ]; then
+      printf '\n# opencode, installed by dgx-spark-qwen38 (%s)\nexport PATH="$HOME/.opencode/bin:$PATH"\n' "$OPENCODE_VERSION" >> "$HOME/.bashrc"
+    else
+      printf '\n# opencode, put on the PATH by dgx-spark-qwen38\nexport PATH="$HOME/.opencode/bin:$PATH"\n' >> "$HOME/.bashrc"
+    fi
     echo "added ~/.opencode/bin to your PATH in ~/.bashrc (open a new shell, or: export PATH=\"\$HOME/.opencode/bin:\$PATH\")"
   fi
 fi
@@ -1296,9 +1315,17 @@ OC_27B=0; OC_FLASH=0
 OC_KEEP="$("$REPO_DIR/oc-limits.sh" --preserve "$OC_CTX")" \
   || die "oc-limits.sh --preserve failed for $OC_CTX (repo bug: please open an issue)"
 # The other engine's limits, for when both providers are present: the 27B block
-# keeps its context-mode limits, flash always serves its native window.
+# keeps its context-mode limits, flash always serves its native window. A flash install
+# runs in native mode, so the 27B's own mode comes from its unit: taken from this run, a
+# 1M 27B got the native 194048/64000, which oc and the Agent tab read first since they
+# load this file over the user's (reference box, 2026-09-23).
+OC_27B_MODE="$CONTEXT_MODE"
+if [ "$LANE" = "flash" ]; then
+  OC_27B_MODE=native
+  if grep -qs -- '--context-length 1010000' "$SGL_UNIT_PATH"; then OC_27B_MODE=1m; fi
+fi
 OC_LANE="$LANE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
-OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$CONTEXT_MODE" \
+OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$OC_27B_MODE" \
 OC_KEEP="$OC_KEEP" OC_PIN="$OPENCODE_PIN" \
 OC_CONFIG_DIR="$CONFIG_DIR" python3 - <<'PYEOF' || die "could not write the opencode provider config"
 import json
@@ -1465,6 +1492,10 @@ else
 # --yolo auto-approves permissions (the reference box runs this way; remove it
 # below if you prefer per-action prompts).
 export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX="\${OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX:-$OC_OUT_CAP}"
+# The box's providers and default model, over whatever the global opencode config
+# says (opencode loads OPENCODE_CONFIG after it). Without this, a config with no
+# provider for this box sent oc's prompts to opencode's own hosted model (2026-09-23).
+[ -f "$CONFIG_DIR/opencode.json" ] && export OPENCODE_CONFIG="\${OPENCODE_CONFIG:-$CONFIG_DIR/opencode.json}"
 OPENCODE_BIN="\$(command -v opencode || true)"
 [ -n "\$OPENCODE_BIN" ] || OPENCODE_BIN="\$HOME/.opencode/bin/opencode"
 if [ ! -x "\$OPENCODE_BIN" ]; then
@@ -1734,6 +1765,10 @@ fi
 SMOKE_MODEL="qwen3.8-27b"
 [ "$LANE" = "flash" ] && SMOKE_MODEL="qwen3.8-flash-next"
 sudo systemctl restart "$UNIT_NAME"
+# what the wait is made of: the flash lane rewrites its PLE table on every boot, and said
+# "first boot compiles kernels" through a 13-minute load that compiled nothing
+LOAD_WHY="first boot compiles kernels, be patient"
+[ "$LANE" = "flash" ] && LOAD_WHY="every boot writes the 47.7 GiB PLE table, be patient"
 for i in $(seq 1 150); do
   if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     echo "health OK, running a real generation smoke test..."
@@ -1932,7 +1967,7 @@ except Exception as e:
   fi
   ST="$(systemctl is-active "$UNIT_NAME" || true)"
   [ "$ST" = "failed" ] && { journalctl -u "$UNIT_NAME" --no-pager | tail -25; die "Service failed during startup, logs above. Common cause: another process eating GPU/unified memory (this config needs the machine to itself)."; }
-  [ $((i % 15)) -eq 0 ] && echo "  still loading... ($((i*8))s; first boot compiles kernels, be patient)"
+  [ $((i % 15)) -eq 0 ] && echo "  still loading... ($((i*8))s; $LOAD_WHY)"
   sleep 8
 done
 die "Server did not come up within 20 min. Watch: journalctl -u $UNIT_NAME -f"

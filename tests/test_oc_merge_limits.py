@@ -182,6 +182,69 @@ def main() -> None:
     assert "changed" in m._added_ok('{"provider": {"flashnext": {"a": 1}, "qwen38": {}}, "x": 2}', base, blk)
     assert "differently" in m._added_ok('{"provider": {"flashnext": {"a": 2}, "qwen38": {}}, "x": 1}', base, blk)
 
+    # 8. --remove-providers: uninstall.sh --yes deletes the API key file, and opencode
+    #    then refuses to start at all while a {file:} reference points at it ("bad file
+    #    reference", opencode 1.18.32, every provider included). The providers that read
+    #    it go first; a file with nothing else of the user's goes to a backup.
+    key = os.path.join(tmp, ".config", "qwen38", "api-key")
+
+    def remove(path):
+        r = subprocess.run([sys.executable, SCRIPT, path, "--remove-providers", key],
+                           capture_output=True, text=True)
+        return r.returncode, (r.stdout + r.stderr).strip()
+
+    def box(ref=None):
+        return {"npm": "@ai-sdk/openai-compatible",
+                "options": {"baseURL": "http://127.0.0.1:30001/v1", "apiKey": ref or "{file:" + key + "}"},
+                "models": {"qwen3.8-27b": {"limit": {"context": 1, "input": 1, "output": 1}}}}
+
+    # install.sh's own copy: nothing of the user's in it, so it is moved aside whole
+    p = write(tmp, json.dumps({"$schema": "https://opencode.ai/config.json", "autoupdate": "notify",
+                               "provider": {"qwen38": box(), "flashnext": box()},
+                               "compaction": {"preserve_recent_tokens": 1, "prune": True},
+                               "model": "qwen38/qwen3.8-27b", "small_model": "qwen38/qwen3.8-27b"}, indent=2))
+    rc, out = remove(p)
+    assert rc == 0 and "moved to" in out and not os.path.exists(p), out
+
+    # a user's own config: the box's provider and the model naming it go, nothing else
+    body = ('{\n  // mine\n  "$schema": "https://opencode.ai/config.json",\n  "model": "qwen38/qwen3.8-27b",\n'
+            '  "plugin": ["auto-continue.js"],\n  "provider": {\n    // the box\n'
+            '    "qwen38": ' + json.dumps(box()) + ',\n'
+            '    "anthropic": {"options": {"apiKey": "{env:ANTHROPIC_API_KEY}"}}\n  },\n'
+            '  "agent": {"build": {"model": "anthropic/claude"}}\n}\n')
+    p = write(tmp, body)
+    want = doc_of(p)
+    del want["provider"]["qwen38"], want["model"]
+    rc, out = remove(p)
+    assert rc == 0 and "removed the qwen38 provider" in out, out
+    assert doc_of(p) == want, doc_of(p)
+    assert "// mine" in open(p).read() and "// the box" in open(p).read(), "a comment was dropped"
+    rc, out = remove(p)
+    assert rc == 0 and "unchanged" in out, out
+
+    # the first "model" in the file is an agent's, not the one that names the default:
+    # the edit that goes is the one that leaves exactly the intended document
+    p = write(tmp, '{\n  "agent": {"build": {"model": "qwen38/qwen3.8-27b"}},\n'
+                   '  "model": "qwen38/qwen3.8-27b",\n'
+                   '  "provider": {"qwen38": ' + json.dumps(box()) + ', "x": {}}\n}\n')
+    rc, out = remove(p)
+    assert rc == 0, out
+    assert doc_of(p) == {"agent": {"build": {"model": "qwen38/qwen3.8-27b"}}, "provider": {"x": {}}}, open(p).read()
+
+    # the ~ spelling of the same file is the same reference
+    home = os.path.expanduser("~")
+    p = write(tmp, json.dumps({"provider": {"qwen38": box("{file:~/.config/qwen38/api-key}"), "x": {}}}))
+    r = subprocess.run([sys.executable, SCRIPT, p, "--remove-providers", home + "/.config/qwen38/api-key"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and doc_of(p) == {"provider": {"x": {}}}, r.stdout
+
+    # first and last member of the provider object both leave valid JSON
+    for body in ('{"provider": {"x": {}, "qwen38": ' + json.dumps(box()) + '}, "y": 1}',
+                 '{"provider": {"qwen38": ' + json.dumps(box()) + ', "x": {}}, "y": 1}'):
+        p = write(tmp, body)
+        rc, out = remove(p)
+        assert rc == 0 and doc_of(p) == {"provider": {"x": {}}, "y": 1}, open(p).read()
+
     print("test_oc_merge_limits: OK")
 
 

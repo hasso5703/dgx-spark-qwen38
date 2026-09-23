@@ -13,6 +13,10 @@
 set -euo pipefail
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 CONFIG_DIR="$HOME/.config/qwen38"
+# opencode reads all three global names, and creates opencode.jsonc itself on its first
+# start: a provider block pasted into any of them reads the key as much as ours does.
+OC_USER_CFGS=("$HOME/.config/opencode/config.json" "$HOME/.config/opencode/opencode.json" "$HOME/.config/opencode/opencode.jsonc")
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LIST_ONLY=0
 PURGE_CONFIG=0
@@ -32,7 +36,7 @@ done
 # digest: a digest pull leaves no tag behind.
 LOCAL_IMAGE_REPOS="qwen38-dflash2 qwen38-flash"  # qwen38-dflash2 is the pre-v1.14 27B overlay, retired but still deletable
 BASE_IMAGES="lmsysorg/sglang:v0.5.19 lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9 lmsysorg/sglang:qwen38-27b lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1 lmsysorg/sglang:qwen38flashnext lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1 lmsysorg/sglang@sha256:9d2a843c706c74bc259c0d9abf360551eb2734e1e7d255ab012a6965f10480b6 lmsysorg/sglang@sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe vllm/vllm-openai:qwen38-flash-next vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8"
-HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 Qwen/Qwen3.8-27B-FP8 edp1096/Huihui-Qwen3.8-27B-abliterated-FP8 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal RadixArk/Qwen3.8-Flash-Next-NVFP4 nvidia/Qwen3.8-Flash-Next-NVFP4 dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4"
+HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 Qwen/Qwen3.8-27B-FP8 edp1096/Huihui-Qwen3.8-27B-abliterated-FP8 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal RadixArk/Qwen3.8-Flash-Next-NVFP4 nvidia/Qwen3.8-Flash-Next-NVFP4 dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4 Qwen/Qwen-Image-2.1"
 
 FOUND_IMAGES=()   # "ref|size", deduplicated by image ID (a tag and its digest are one image)
 inventory_images() {
@@ -59,6 +63,13 @@ inventory_images() {
 }
 
 dir_size() { du -sh "$1" 2>/dev/null | cut -f1; }
+# The reclaim command for a directory: the user's rm, or sudo when a directory in it is not
+# theirs to empty. Engine containers of past versions ran as root on the mounted HF cache
+# and left root-owned .no_exist and refs entries behind (reference box: three checkpoints,
+# 2026-08-28 to 2026-09-12), and a plain rm -rf printed for them stopped on "Permission denied".
+rm_cmd() {
+  if [ -n "$(find "$1" -type d ! -writable -print -quit 2>/dev/null)" ]; then echo "sudo rm -rf"; else echo "rm -rf"; fi
+}
 
 echo "── Inventory (everything any version of this repo may have left here) ──"
 for u in qwen38-sglang.service qwen38-flash.service qwen38-keepalive.service qwen38-dashboard.service qwen38-image.service opencode-web.service; do
@@ -96,6 +107,11 @@ fi
 if [ -x "$HOME/.opencode/bin/opencode" ] && grep -qs 'opencode, installed by dgx-spark-qwen38' "$HOME/.bashrc"; then
   echo "  opencode  $HOME/.opencode (installed by this repo; kept. Yours to remove: rm -rf ~/.opencode, and its PATH line in ~/.bashrc)"
 fi
+for f in "${OC_USER_CFGS[@]}"; do
+  if grep -qsF '.config/qwen38/api-key' "$f"; then
+    echo "  opencode  $f (opencode's own config: lists providers that read this box's API key)"
+  fi
+done
 inventory_images
 for entry in ${FOUND_IMAGES[@]+"${FOUND_IMAGES[@]}"}; do
   echo "  image     ${entry%%|*} (${entry##*|})"
@@ -115,6 +131,14 @@ if [ "$LIST_ONLY" -eq 1 ]; then
   exit 0
 fi
 
+FOUND_ANY=0
+for f in /etc/systemd/system/qwen38-sglang.service /etc/systemd/system/qwen38-flash.service \
+         /etc/systemd/system/qwen38-keepalive.service /etc/systemd/system/qwen38-dashboard.service \
+         /etc/systemd/system/qwen38-image.service /etc/systemd/system/opencode-web.service \
+         /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler "$IMAGE_LANE_DIR"; do
+  [ -e "$f" ] && FOUND_ANY=1
+done
+grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null && FOUND_ANY=1
 sudo systemctl disable --now qwen38-sglang.service 2>/dev/null || true
 sudo systemctl disable --now qwen38-flash.service 2>/dev/null || true
 sudo systemctl disable --now qwen38-keepalive.service 2>/dev/null || true
@@ -135,17 +159,39 @@ sudo systemctl daemon-reload
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
   rm -f "$HOME/.local/bin/oc"
 fi
-echo "services removed."
+if [ "$FOUND_ANY" -eq 1 ]; then
+  echo "services removed."
+else
+  echo "no service of this repo was installed: nothing to stop or remove."
+fi
 
 if [ "$PURGE_CONFIG" -eq 0 ] && [ -t 0 ]; then
-  read -r -p "Also delete ~/.config/qwen38 (API key, patched templates, compile cache)? [y/N] " ans
+  read -r -p "Also delete ~/.config/qwen38 (API key, patched templates, compile cache)? opencode's config then loses this box's providers. [y/N] " ans
   { [ "${ans:-n}" = "y" ] || [ "${ans:-n}" = "Y" ]; } && PURGE_CONFIG=1 || true
 fi
 if [ "$PURGE_CONFIG" -eq 1 ]; then
-  rm -rf "$CONFIG_DIR"
+  # opencode refuses to start at all, every provider included, while a {file:} reference
+  # points at a file that is gone, and the providers install.sh writes read the API key
+  # this deletes (reference box, 2026-09-23: "bad file reference"). They go first.
+  for f in "${OC_USER_CFGS[@]}"; do
+    if ! grep -qsF '.config/qwen38/api-key' "$f"; then continue; fi
+    python3 "$REPO_DIR/oc-merge-limits.py" "$f" --remove-providers "$CONFIG_DIR/api-key" \
+      || echo "NOTE: $f still reads $CONFIG_DIR/api-key: remove those providers by hand, or opencode will not start."
+  done
+  # The engine container runs as root and writes its compile cache here (the
+  # .../sglang-cache:/cache mount), in directories that are root's: a plain rm died on
+  # the first of them under set -e, a thousand "Permission denied" lines in, before
+  # the reclaim commands (reference box, 2026-09-23). What it cannot remove, sudo does.
+  case "$CONFIG_DIR" in */.config/qwen38) ;; *) echo "refusing to delete $CONFIG_DIR" >&2; exit 1 ;; esac
+  rm -rf "$CONFIG_DIR" 2>/dev/null || sudo rm -rf --one-file-system "$CONFIG_DIR"
   echo "config removed."
 else
   echo "config kept at ~/.config/qwen38 (delete manually or re-run with --yes)."
+  for f in "${OC_USER_CFGS[@]}"; do
+    if grep -qsF '.config/qwen38/api-key' "$f"; then
+      echo "opencode's config ($f) still lists this box's providers: they answer again after ./install.sh."
+    fi
+  done
 fi
 
 echo
@@ -159,8 +205,8 @@ if printf '%s\n' ${FOUND_IMAGES[@]+"${FOUND_IMAGES[@]}"} | grep -q '@sha256:'; t
 fi
 for repo in $HF_REPOS; do
   d="$HF_CACHE/hub/models--${repo//\//--}"
-  [ -d "$d" ] && echo "  rm -rf '$d'    # $(dir_size "$d")"
+  [ -d "$d" ] && echo "  $(rm_cmd "$d") '$d'    # $(dir_size "$d")"
 done
 for p in "${PLE_DIR:-}" "$HOME/flashnext-ple"; do
-  [ -n "$p" ] && [ -d "$p" ] && { echo "  rm -rf '$p'    # $(dir_size "$p"), flash PLE backing file"; break; }
+  [ -n "$p" ] && [ -d "$p" ] && { echo "  $(rm_cmd "$p") '$p'    # $(dir_size "$p"), flash PLE backing file"; break; }
 done

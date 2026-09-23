@@ -170,9 +170,14 @@ for P in "${PATCHES[@]}"; do
 done
 # --no-deps: the wheel above already resolved them, and letting the source tree resolve
 # again pulls a transformers that breaks the encoder this model needs.
+# SGLANG_BUILD_RUST_EXTS=none: the pinned source declares five Rust extensions (gRPC, the
+# Rust server, the radix tree, two multimodal processors), all of the LLM runtime; none
+# is imported by the diffusion server. Building them needs cargo, which DGX OS does not
+# ship: a box without a Rust toolchain failed here ("cargo is required ...", reference
+# box in a clean login, 2026-09-23), and one with it spent the build on unused code.
 if ! "$VENV/bin/python" -c 'import sglang, pathlib, sys; sys.exit(0 if str(pathlib.Path(sglang.__file__).parent).startswith("'"$SRC"'") else 1)' 2>/dev/null; then
-  echo "overlaying the pinned source (editable, no dependency resolution)"
-  "$VENV/bin/pip" install --quiet --no-deps -e "$SRC/python" \
+  echo "overlaying the pinned source (editable, no dependency resolution, no Rust extensions)"
+  SGLANG_BUILD_RUST_EXTS=none "$VENV/bin/pip" install --quiet --no-deps -e "$SRC/python" \
     || die "the editable overlay failed. The venv still holds the released wheel; re-run to retry."
 fi
 "$VENV/bin/python" - <<'PY' || die "the runtime does not know Qwen-Image 2.1. The pin may be wrong for this checkout."

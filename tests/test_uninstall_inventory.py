@@ -48,6 +48,13 @@ class UninstallKnowsEveryResidue(unittest.TestCase):
                    if k.endswith("_REPO") and "/" in v and v not in self.hf_repos]
         self.assertEqual(missing, [])
 
+    def test_the_image_lanes_checkpoint_is_in_the_weights_inventory(self):
+        # install-image.sh pins it, not install.sh, and it was the one missing: 31 GB
+        # that uninstall.sh neither listed nor offered to reclaim (2026-09-23).
+        m = re.search(r'\bMODEL="\$\{MODEL:-([^}]+)\}"', open(REPO / "install-image.sh").read())
+        self.assertIsNotNone(m)
+        self.assertIn(m.group(1), self.hf_repos)
+
     def test_every_pinned_image_is_inventoried_by_repo_or_digest(self):
         known = " ".join(self.local_images) + " " + " ".join(self.base_images)
         missing = []

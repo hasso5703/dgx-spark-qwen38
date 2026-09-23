@@ -112,6 +112,30 @@ class TheOpencodePin(unittest.TestCase):
         self.assertIn(".opencode/bin", (self.home / ".bashrc").read_text())
         self.assertIn(f"{self.home}/.opencode/bin", out.split("PATH_AFTER=")[1])
 
+    def test_one_already_here_but_on_no_path_gets_its_line(self):
+        # The same box one update later: opencode in ~/.opencode/bin, no line, and the
+        # update never wrote one because opencode was no longer "absent".
+        self.opencode_at(self.home / ".opencode" / "bin", PINNED)
+        rc, out, _ = self.run_block()
+        self.assertEqual(rc, 0, out)
+        bashrc = (self.home / ".bashrc").read_text()
+        self.assertIn("put on the PATH by dgx-spark-qwen38", bashrc)
+        self.assertNotIn("installed by dgx-spark-qwen38", bashrc, "this run did not install it")
+
+    def test_one_already_on_the_path_gets_no_line(self):
+        home_bin = self.opencode_at(self.home / ".opencode" / "bin", PINNED)
+        rc, out, _ = self.run_block(path_extra=[home_bin.parent])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.home / ".bashrc").read_text(), "# a user's bashrc\n")
+
+    def test_a_commented_out_path_line_is_not_a_path(self):
+        # The reference box, 2026-09-23: a .bashrc whose opencode line was commented
+        # out counted as having one, and the opencode just installed stayed off the PATH.
+        (self.home / ".bashrc").write_text("# export PATH=$HOME/.opencode/bin:$PATH\n")
+        rc, out, _ = self.run_block()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("installed by dgx-spark-qwen38", (self.home / ".bashrc").read_text())
+
     def test_the_pinned_version_is_left_alone(self):
         self.opencode_at(self.home / ".opencode" / "bin", PINNED)
         rc, out, calls = self.run_block()
@@ -121,6 +145,7 @@ class TheOpencodePin(unittest.TestCase):
 
     def test_an_older_one_where_the_installer_puts_it_is_replaced_the_same_way(self):
         self.opencode_at(self.home / ".opencode" / "bin", "1.18.27")
+        (self.home / ".bashrc").write_text('export PATH="$HOME/.opencode/bin:$PATH"\n')
         rc, out, calls = self.run_block()
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.version_of(self.home_bin), PINNED)
@@ -229,7 +254,8 @@ class AMissingOpencodeIsSaidPlainly(unittest.TestCase):
         body = text[start:text.index("\nOCWRAP\n", start) + len("\nOCWRAP\n")]
         t = pathlib.Path(tempfile.mkdtemp(prefix="oc-launch-"))
         (t / "home").mkdir()
-        render = f'OC_BIN="{t}/oc"; OC_OUT_CAP=200000; REPO_DIR=/opt/repo; OPENCODE_VERSION={PINNED}\n' + body
+        render = (f'OC_BIN="{t}/oc"; OC_OUT_CAP=200000; REPO_DIR=/opt/repo; OPENCODE_VERSION={PINNED}; '
+                  f'CONFIG_DIR="{t}/cfg"\n' + body)
         subprocess.run(["bash", "-c", render], check=True)
         r = subprocess.run(["bash", str(t / "oc"), "--version"], capture_output=True, text=True,
                            env={"HOME": str(t / "home"), "PATH": "/usr/bin:/bin"})
@@ -293,6 +319,48 @@ class AMissingOpencodeIsSaidPlainly(unittest.TestCase):
         self.assertIn("if (d.opencode_found === null)", js)
         self.assertIn("opencode is not installed on this box, and this tab runs it", js)
         self.assertIn("'cd ~/dgx-spark-qwen38 && ./install.sh'", js)
+
+
+class TheBoxsModelIsWhatOcAndTheAgentTabUse(unittest.TestCase):
+    """The reference box, 2026-09-23, after the published one-liner on an empty box: oc
+    answered with "big-pickle" and the Agent tab's opencode listed one provider,
+    opencode's own hosted one. Both run opencode, and opencode with no provider for
+    this box picks its free cloud model: prompts meant for the local model left the
+    box. Both now load the box's config through OPENCODE_CONFIG, which opencode reads
+    over the global one (checked on 1.18.32: it wins even over a global "model")."""
+
+    def launcher(self, t):
+        text = INSTALL.read_text()
+        start = text.index('cat > "$OC_BIN" <<OCWRAP')
+        body = text[start:text.index("\nOCWRAP\n", start) + len("\nOCWRAP\n")]
+        (t / "bin").mkdir()
+        (t / "bin" / "opencode").write_text('#!/bin/sh\necho "OPENCODE_CONFIG=${OPENCODE_CONFIG:-unset}"\n')
+        (t / "bin" / "opencode").chmod(0o755)
+        subprocess.run(["bash", "-c", f'OC_BIN="{t}/oc"; OC_OUT_CAP=200000; REPO_DIR=/opt/repo; '
+                        f'OPENCODE_VERSION={PINNED}; CONFIG_DIR="{t}/cfg"\n' + body], check=True)
+
+    def oc(self, t, **env):
+        r = subprocess.run(["bash", str(t / "oc"), "run", "x"], capture_output=True, text=True,
+                           env={"HOME": str(t), "PATH": f"{t}/bin:/usr/bin:/bin", **env})
+        return r.stdout.strip()
+
+    def test_oc_loads_the_boxs_config_over_the_users(self):
+        t = pathlib.Path(tempfile.mkdtemp(prefix="oc-cfg-"))
+        self.launcher(t)
+        (t / "cfg").mkdir()
+        (t / "cfg" / "opencode.json").write_text("{}\n")
+        self.assertEqual(self.oc(t), f"OPENCODE_CONFIG={t}/cfg/opencode.json")
+        # one the user set themselves is theirs
+        self.assertEqual(self.oc(t, OPENCODE_CONFIG="/mine.json"), "OPENCODE_CONFIG=/mine.json")
+
+    def test_with_no_generated_config_oc_points_at_nothing(self):
+        t = pathlib.Path(tempfile.mkdtemp(prefix="oc-cfg-"))
+        self.launcher(t)
+        self.assertEqual(self.oc(t), "OPENCODE_CONFIG=unset")
+
+    def test_the_agent_tab_loads_the_boxs_config(self):
+        unit = (REPO / "dashboard" / "opencode-web.service.template").read_text()
+        self.assertIn("\nEnvironment=OPENCODE_CONFIG=__HOME__/.config/qwen38/opencode.json\n", unit)
 
 
 class AFreshBoxGetsAConfigOpencodeCanUse(unittest.TestCase):

@@ -6,6 +6,7 @@ Usage: oc-merge-limits.py <target opencode.json> <provider> <model id> <context>
        oc-merge-limits.py <target opencode.json> <provider> <model id> --add-variant <level>
        oc-merge-limits.py <target opencode.json> --autoupdate notify
        oc-merge-limits.py <target opencode.json> --add-providers <generated opencode.json>
+       oc-merge-limits.py <target opencode.json> --remove-providers <API key file>
 
 Only the "limit" object of the named provider/model is rewritten, in place,
 by targeted text substitution: comments, ordering and the user's other
@@ -30,6 +31,7 @@ minor/major release stop it), so the version install.sh pins drifts on its own.
 `false` is stricter and is kept.
 """
 import json
+import os
 import re
 import shutil
 import sys
@@ -303,6 +305,167 @@ def add_providers(path: str, source: str) -> int:
     return 0
 
 
+def _skip_ws(text: str, i: int) -> int:
+    """Index of the next character that is neither whitespace nor in a // comment."""
+    while i < len(text):
+        if text[i].isspace():
+            i += 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = len(text) if j < 0 else j + 1
+        else:
+            break
+    return i
+
+
+def _string_end(text: str, i: int) -> int:
+    """Index after the JSON string whose opening quote is at i."""
+    i += 1
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+        elif text[i] == '"':
+            return i + 1
+        else:
+            i += 1
+    raise ValueError("unterminated string")
+
+
+def _value_end(text: str, i: int) -> int:
+    """Index after the JSON value that starts at i."""
+    if text[i] == '"':
+        return _string_end(text, i)
+    if text[i] not in "{[":
+        return re.compile(r"[^,}\]\s]+").match(text, i).end()
+    depth = 0
+    while i < len(text):
+        if text[i] == '"':
+            i = _string_end(text, i)
+            continue
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = len(text) if j < 0 else j + 1
+            continue
+        if text[i] in "{[":
+            depth += 1
+        elif text[i] in "}]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise ValueError("unbalanced brackets")
+
+
+def _member_span(text: str, key_at: int):
+    """(start, end) of the member whose key opens at key_at, with one separating comma,
+    so that text[:start] + text[end:] is still JSON(C); a member alone on its lines
+    takes those lines with it."""
+    try:
+        i = _skip_ws(text, _string_end(text, key_at))
+        if text[i] != ":":
+            return None
+        end = _value_end(text, _skip_ws(text, i + 1))
+    except (ValueError, IndexError, AttributeError):
+        return None
+    start = key_at
+    j = _skip_ws(text, end)
+    if j < len(text) and text[j] == ",":
+        end = j + 1
+    else:
+        k = key_at - 1
+        while k >= 0 and text[k].isspace():
+            k -= 1
+        if k >= 0 and text[k] == ",":
+            start = k
+    s = start
+    while s > 0 and text[s - 1] in " \t":
+        s -= 1
+    if (s == 0 or text[s - 1] == "\n") and text[end:end + 1] == "\n":
+        start, end = s, end + 1
+    return start, end
+
+
+def _without(text: str, key: str, want: dict):
+    """text without the member `key`: the first candidate whose removal parses to want."""
+    for m in re.finditer(re.escape(json.dumps(key)) + r"\s*:", text):
+        span = _member_span(text, m.start())
+        if span is None:
+            continue
+        cand = text[:span[0]] + text[span[1]:]
+        try:
+            if json.loads(re.sub(r"^\s*//.*$", "", cand, flags=re.M)) == want:
+                return cand
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def remove_providers(path: str, key_file: str) -> int:
+    """Take out of an opencode.json the providers that read this box's API key file.
+
+    uninstall.sh --yes deletes that file, and opencode then refuses to start at all,
+    every provider included, while a {file:} reference points at a file that is gone
+    ("bad file reference", opencode 1.18.32). So the providers that read it go first,
+    with model and small_model when they name one of them. A file left with nothing
+    but what install.sh writes ($schema, autoupdate, compaction, no provider) was this
+    repo's, and is moved to a backup instead of being kept empty.
+    """
+    try:
+        text = open(path).read()
+    except OSError as e:
+        print(f"cannot read {path}: {e}")
+        return 1
+    try:
+        doc = json.loads(re.sub(r"^\s*//.*$", "", text, flags=re.M))
+    except json.JSONDecodeError as e:
+        print(f"{path} is not valid JSON(C): {e}")
+        return 1
+    refs = {f"{{file:{key_file}}}"}
+    home = os.path.expanduser("~")
+    if key_file.startswith(home + "/"):
+        refs.add("{file:~" + key_file[len(home):] + "}")
+    prov = doc.get("provider") if isinstance(doc.get("provider"), dict) else {}
+    gone = [p for p, b in prov.items()
+            if isinstance(b, dict) and (b.get("options") or {}).get("apiKey") in refs]
+    if not gone:
+        print(f"no provider in {path} reads {key_file}: unchanged")
+        return 0
+    steps = []                      # (key, the document once it is gone), in order
+    cur = json.loads(json.dumps(doc))
+    for p in gone:
+        del cur["provider"][p]
+        steps.append((p, json.loads(json.dumps(cur))))
+    for k in ("model", "small_model"):
+        if isinstance(cur.get(k), str) and cur[k].split("/", 1)[0] in gone:
+            del cur[k]
+            steps.append((k, json.loads(json.dumps(cur))))
+    backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    if set(cur) <= {"$schema", "autoupdate", "compaction", "provider"} and not cur.get("provider"):
+        shutil.move(path, backup)
+        print(f"{path} held only this box's providers ({', '.join(gone)}): moved to {backup}")
+        return 0
+    new_text = text
+    for key, want in steps:
+        new_text = _without(new_text, key, want)
+        if new_text is None:
+            print(f"{path}: refused, could not take {key!r} out by an edit that leaves the rest "
+                  f"as it is; remove the {', '.join(gone)} provider by hand")
+            return 1
+    shutil.copy2(path, backup)
+    with open(path, "w") as f:
+        f.write(new_text)
+    try:
+        ok = json.loads(re.sub(r"^\s*//.*$", "", open(path).read(), flags=re.M)) == cur
+    except (OSError, json.JSONDecodeError):
+        ok = False
+    if not ok:
+        shutil.copy2(backup, path)
+        print(f"{path}: refused, the file did not read back as intended; restored from {backup}.")
+        return 1
+    print(f"removed the {', '.join(gone)} provider from {path}: it read {key_file} (backup {backup})")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 4 and argv[2] == "--compaction":
         return merge_compaction(argv[1], int(argv[3]))
@@ -310,6 +473,8 @@ def main(argv: list[str]) -> int:
         return merge_autoupdate(argv[1], argv[3])
     if len(argv) == 4 and argv[2] == "--add-providers":
         return add_providers(argv[1], argv[3])
+    if len(argv) == 4 and argv[2] == "--remove-providers":
+        return remove_providers(argv[1], argv[3])
     if len(argv) == 6 and argv[4] == "--add-variant":
         return add_variant(argv[1], argv[2], argv[3], argv[5])
     if len(argv) != 6:
