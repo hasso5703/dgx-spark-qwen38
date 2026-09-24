@@ -632,6 +632,10 @@ class ActionRegistry(Base):
     def test_no_action_interpolates_a_parameter_into_one_argument(self):
         """A parameter must BE an argument, never a piece of one: that is what
         makes the closed enum a real boundary."""
+        # The checkout's own path is not a parameter: a clone under a folder named like a
+        # target (~/image-lab/...) failed here on unchanged code (found in review,
+        # 2026-09-24). What follows it is still checked.
+        repo = str(self.cp.REPO_DIR)
         for name, spec in self.cp.ACTIONS.items():
             if not spec["argv"]:
                 continue
@@ -641,7 +645,8 @@ class ActionRegistry(Base):
                     if not isinstance(val, str):
                         continue
                     for a in argv:
-                        if val in a:
+                        rest = a[len(repo):] if a.startswith(repo + "/") else a
+                        if val in rest:
                             self.assertEqual(a, val,
                                              f"{name}: {val!r} is embedded inside {a!r}")
 
