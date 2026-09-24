@@ -253,9 +253,20 @@ class NonStreamedAndCutStreams(Base):
 
     def test_a_non_streamed_wall_of_markers_is_named_in_the_answer_path(self):
         """The corruption guard: a non-streamed answer cannot be withheld, so what
-        the proxy can do is see it. This asserts the answer still arrives."""
-        got = self.ask("nonsse bangs")
+        the proxy can do is see it: the answer still arrives, and the journal names the
+        corruption. Only the first half was asserted, so a proxy that saw nothing passed
+        (found in review, 2026-09-24)."""
+        logged = []
+        real_log, self.mod.log = self.mod.log, logged.append
+        try:
+            got = self.ask("nonsse bangs")
+            end = time.time() + 3
+            while time.time() < end and not any("corrupted output" in m for m in logged):
+                time.sleep(0.02)
+        finally:
+            self.mod.log = real_log
         self.assertIn(b"!" * 100, got)
+        self.assertTrue(any("corrupted output in a non-streamed answer" in m for m in logged), logged)
 
     def test_an_engine_that_closes_without_done_still_ends_the_body_cleanly(self):
         """A clean close with no [DONE] is end of stream, not an error: the proxy
