@@ -947,6 +947,9 @@
               <select id="logsel" aria-label="Log source">
                 <option value="qwen38-sglang">qwen38-sglang (container)</option>
                 <option value="qwen38-flash">qwen38-flash (container)</option>
+                <option value="qwen38-sglang.service">27B lane (journal: why it stopped or failed)</option>
+                <option value="qwen38-flash.service">flash lane (journal: why it stopped or failed)</option>
+                <option value="qwen38-image.service">image lane (journal)</option>
                 <option value="qwen38-keepalive.service">keepalive proxy (journal)</option>
                 <option value="opencode-web.service" id="logopt-agent" hidden>opencode web server (journal)</option>
               </select>
@@ -1257,7 +1260,7 @@
             <dt>Limits 27B</dt><dd class="num" id="oclim27">...</dd>
             <dt>Limits flash</dt><dd class="num" id="oclimflash">...</dd>
             <dt>Launcher</dt><dd id="oclauncher">...</dd>
-            <dt>Limits vs the pool</dt><dd id="ocfit">...</dd>
+            <dt>Limits vs this lane</dt><dd id="ocfit">...</dd>
           </dl>
           <div style="margin-top:10px"><button class="btn mini" data-act="fit_opencode">Fit the limits to this engine</button></div>
           <pre id="occmd" class="cmd" style="margin-top:10px">oc</pre>
