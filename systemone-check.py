@@ -268,6 +268,46 @@ def spawn_proxy(port, env_extra, upstream, key):
     raise SystemExit(f"the proxy on :{port} never answered in 60s")
 
 
+def chat_answer_problem(text, stream):
+    """None when a chat completion is a whole answer, else what is wrong with it. A stream
+    counted as whole once it held "data:", and the proxy's keepalive frames carry that,
+    as do a stream the engine cut mid-answer and the abort for corrupted output (found in
+    review, 2026-09-24): whole means text, a finish_reason, the [DONE] terminator, and no
+    error event on the way."""
+    if not stream:
+        try:
+            message = json.loads(text)["choices"][0]["message"]
+            said = message.get("content") or message.get("reasoning_content") or message.get("tool_calls")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            return f"not a chat completion: {text[:120]!r}"
+        return None if said else "an empty message"
+    got_text = finished = done = False
+    for line in text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            done = True
+            continue
+        try:
+            event = json.loads(payload)
+        except ValueError:
+            return f"a frame that is not JSON: {payload[:120]!r}"
+        if not isinstance(event, dict):
+            return f"a frame that is not a JSON object: {payload[:120]!r}"
+        if event.get("error"):
+            return f"an error event: {json.dumps(event['error'])[:160]}"
+        for choice in event.get("choices") or []:
+            delta = choice.get("delta") or {}
+            got_text = got_text or bool(delta.get("content") or delta.get("reasoning_content"))
+            finished = finished or bool(choice.get("finish_reason"))
+    if not got_text:
+        return "a stream with no text in it"
+    if not finished or not done:
+        return "a stream that ended without its finish_reason and [DONE]: cut short"
+    return None
+
+
 def classic_load(base, key, stop, stats, stream):
     """Ordinary chat traffic, the kind the lane exists for, while the crowd runs."""
     while not stop.is_set():
@@ -282,9 +322,10 @@ def classic_load(base, key, stop, stats, stream):
                                                   "Authorization": f"Bearer {key}"})
             with urllib.request.urlopen(req, timeout=300) as r:
                 raw = r.read()
-            text = raw.decode("utf-8", "replace")
-            ok = ("data:" in text) if stream else bool(json.loads(text)["choices"][0]["message"])
-            stats["ok" if ok else "bad"] += 1
+            why = chat_answer_problem(raw.decode("utf-8", "replace"), stream)
+            stats["bad" if why else "ok"] += 1
+            if why:
+                stats.setdefault("errors", []).append(why)
             stats["lat"].append(time.time() - t0)
         except Exception as e:
             stats["bad"] += 1
