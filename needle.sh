@@ -28,10 +28,12 @@ done
 KEY="$(cat "${HOME}/.config/qwen38/api-key")"
 BASE="http://127.0.0.1:${PORT}"
 if [ -z "$MODEL" ]; then
+  # || true: under pipefail a curl that cannot connect (exit 7) ended the script right
+  # here, with its status and nothing on screen, before the line that explains it
   MODEL="$(curl -s -m 5 -H "Authorization: Bearer $KEY" "$BASE/v1/models" \
     | python3 -c 'import json,sys
 try: print(json.load(sys.stdin)["data"][0]["id"])
-except Exception: pass' 2>/dev/null)"
+except Exception: pass' 2>/dev/null || true)"
   [ -n "$MODEL" ] || { echo "needle: no model served at $BASE (engine down or booting); pass --model or retry" >&2; exit 2; }
 fi
 echo "needle probe: model=$MODEL endpoint=$BASE depths=[$DEPTHS] trials=$TRIALS"
@@ -49,11 +51,12 @@ class Refused(Exception):
     """The lane refused this prompt by policy, which is not a retrieval result.
 
     Running through the keepalive proxy (the default port) means the oversize
-    guard and the lane's PROMPT_CEILING_TOKENS apply. A depth above the ceiling
-    comes back as 400 context_too_long, and counting that as a missed needle
-    reported a correctness failure where the box had simply protected itself:
-    ./needle.sh with its default depths does exactly that on the flash lane,
-    whose ceiling is 128000."""
+    guard and the lane's ceiling apply (the flash lane's one-prompt ceiling,
+    FLASH_PROMPT_CEILING_TOKENS, is 250000 by default, and any lane refuses what
+    its KV pool cannot hold). A depth above it comes back as 400 context_too_long,
+    and counting that as a missed needle reported a correctness failure where the
+    box had simply protected itself: the default depths did exactly that on the
+    flash lane when its ceiling was 128000."""
 
 
 def chat(messages, max_tokens=40):
