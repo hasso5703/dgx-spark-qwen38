@@ -40,6 +40,7 @@ def generate(lane, mode, unit_ctx=None, flash_unit=False, model="RadixArk/Qwen3.
     ctx, out = ("205000", "32000") if lane == "flash" else ("700000", "200000")
     script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n" + PINS + "\n"
               f'LANE={lane}; CONTEXT_MODE={mode}; SGL_UNIT_PATH="{sgl}"; FLASH_UNIT_PATH="{flash}"\n'
+              f'MODEL_CHOICE={"flash" if lane == "flash" else "stock"}\n'
               f'REPO_DIR="{REPO}"; CONFIG_DIR="{t}"; OC_PORT=30001; OC_CTX={ctx}; OC_OUT={out}\n'
               'OC_LABEL=local; OPENCODE_PIN=1\n' + block())
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60,

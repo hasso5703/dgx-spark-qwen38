@@ -1484,9 +1484,15 @@ esac
 OC_27B_PAIR="$("$REPO_DIR/oc-limits.sh" "$OC_27B_CHOICE" "$OC_27B_MODE")" \
   || die "oc-limits.sh refused $OC_27B_CHOICE/$OC_27B_MODE (repo bug: please open an issue)"
 OC_27B_CTX="${OC_27B_PAIR%% *}"; OC_27B_OUT="$(echo "$OC_27B_PAIR" | cut -d' ' -f2)"
+# The served entry's name comes from the table oc-point-default.py applies below. The
+# generator wrote a generic one that the call below then renamed, so the file was written
+# twice at every run, and the rename now leaves a backup (found in review, 2026-09-24).
+OC_WINDOW=262144; [ "$CONTEXT_MODE" = "1m" ] && OC_WINDOW=1010000
+OC_SERVED_NAME="$(python3 "$REPO_DIR/oc-point-default.py" --label "$MODEL_CHOICE" "$OC_WINDOW")" \
+  || die "oc-point-default.py --label failed (repo bug: please open an issue)"
 OC_LANE="$LANE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
 OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$OC_27B_MODE" \
-OC_27B_CTX="$OC_27B_CTX" OC_27B_OUT="$OC_27B_OUT" \
+OC_27B_CTX="$OC_27B_CTX" OC_27B_OUT="$OC_27B_OUT" OC_SERVED_NAME="$OC_SERVED_NAME" \
 OC_KEEP="$OC_KEEP" OC_PIN="$OPENCODE_PIN" \
 OC_CONFIG_DIR="$CONFIG_DIR" python3 - <<'PYEOF' || die "could not write the opencode provider config"
 import json
@@ -1501,6 +1507,8 @@ variants = {lvl: {"chat_template_kwargs": {"reasoning_effort": lvl}}
             for lvl in ("lean", "low", "medium", "xhigh")}
 key_ref = f"{{file:{cfg_dir}/api-key}}"
 base_url = f"http://127.0.0.1:{os.environ['OC_PORT']}/v1"
+# the name oc-point-default.py gives the served lane's entry, empty for a target it has none for
+served_name = os.environ.get("OC_SERVED_NAME", "")
 
 def prov(name, model_id, model_name, ctx, out):
     return {
@@ -1540,13 +1548,15 @@ if os.environ["OC_27B"] == "1":
     if os.environ["OC_CONTEXT_MODE"] == "1m":
         ctx, out = fitted("qwen38", "qwen3.8-27b", ctx, out) or (ctx, out)
     providers["qwen38"] = prov("Qwen3.8-27B (DGX Spark)", "qwen3.8-27b",
-                               f"Qwen3.8-27B NVFP4+DFlash2 ({label})", ctx, out)
+                               lane == "27b" and served_name or f"Qwen3.8-27B NVFP4+DFlash2 ({label})",
+                               ctx, out)
 if os.environ["OC_FLASH"] == "1":
     # the flash lane's limits follow the pool math above (OC_CTX/OC_OUT); a 27B
     # install that also lists flash gets the same pool-safe constants
     fctx, fout = (int(os.environ["OC_CTX"]), int(os.environ["OC_OUT"])) if lane == "flash" else (110000, 32000)
     providers["flashnext"] = prov("Qwen3.8-Flash-Next (DGX Spark)", "qwen3.8-flash-next",
-                                  "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)", fctx, fout)
+                                  lane == "flash" and served_name or "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)",
+                                  fctx, fout)
 
 default = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8-27b"
 # Compaction is global in opencode.json, not per-model, so it is sized from the
@@ -1644,8 +1654,8 @@ fi
 # The default model and the served entry's picker name follow the install, not
 # just the limits: an install that changes lane left opencode offering and
 # defaulting to the previous lane (reference box 2026-09-11: flash selected
-# while stock 1M served). Same helper as switch-model.sh, one label table.
-OC_WINDOW=262144; [ "$CONTEXT_MODE" = "1m" ] && OC_WINDOW=1010000
+# while stock 1M served). Same helper as switch-model.sh, one label table; it moves
+# the user's default only when that one is unset or already this box's.
 python3 "$REPO_DIR/oc-point-default.py" "$CONFIG_DIR/opencode.json" "$LANE" "$MODEL_CHOICE" "$OC_WINDOW" \
   || die "could not point the generated opencode config at the installed lane"
 if [ -f "$OC_USER_CFG" ]; then
