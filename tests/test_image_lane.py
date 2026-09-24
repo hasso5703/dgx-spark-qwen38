@@ -51,8 +51,8 @@ class TheUnit(unittest.TestCase):
         unit fails to start minutes later, on a box whose engine has just been stopped.
         This is the same gate the engine templates have, for the same reason."""
         tpl = UNIT_TPL.read_text()
-        used = set(re.findall(r"__[A-Z_]+__", tpl))
-        sub = set(re.findall(r'-e "s\|(__[A-Z_]+__)\|', INSTALLER.read_text()))
+        used = set(re.findall(r"__[A-Z][A-Z0-9_]*__", tpl))
+        sub = set(re.findall(r'-e "s\|(__[A-Z][A-Z0-9_]*__)\|', INSTALLER.read_text()))
         self.assertEqual(used - sub, set(), "the installer does not substitute these")
 
     def test_one_engine_at_a_time_is_declared_not_documented(self):

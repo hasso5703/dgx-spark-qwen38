@@ -70,7 +70,7 @@ sed -e "s|__PORT__|$PORT|g" -e "s|__BIND__|$BIND|g" -e "s|__USER__|$(id -un)|g" 
     -e "s|__AGENT_PORT__|$AGENT_PORT|g" -e "s|__AGENT_BIND__|$AGENT_BIND|g" \
     -e "s|__AGENT_UPSTREAM__|$AGENT_UPSTREAM|g" \
     "$HERE/qwen38-dashboard.service.template" > "$TMP_UNIT"
-grep -q '__[A-Z_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in unit"
+grep -q '__[A-Z][A-Z0-9_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in unit"
 DASH_CHANGED=0
 cmp -s "$TMP_UNIT" "$INSTALLED" || { sudo install -m 644 "$TMP_UNIT" "$INSTALLED"; DASH_CHANGED=1; }
 rm -f "$TMP_UNIT"

@@ -386,8 +386,8 @@ jobs:
           }
           for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template qwen38-flash.service.template qwen38-keepalive.service.template; do
             render "$t" > /tmp/unit.rendered
-            if grep -q '__[A-Z_]*__' /tmp/unit.rendered; then
-              echo "unsubstituted placeholder in $t:"; grep '__[A-Z_]*__' /tmp/unit.rendered; exit 1
+            if grep -q '__[A-Z][A-Z0-9_]*__' /tmp/unit.rendered; then
+              echo "unsubstituted placeholder in $t:"; grep '__[A-Z][A-Z0-9_]*__' /tmp/unit.rendered; exit 1
             fi
           done
       - name: No document ships a placeholder nobody filled in
@@ -455,7 +455,7 @@ jobs:
           grep -q 'Restart=always' /tmp/flash-unit.rendered
           grep -q 'launch-flash.sh' /tmp/flash-unit.rendered
           render qwen38-flash-launch.sh.template > /tmp/flash.rendered
-          if grep -q '__[A-Z_]*__' /tmp/flash.rendered; then echo "unsubstituted placeholder in the flash launcher:"; grep '__[A-Z_]*__' /tmp/flash.rendered; exit 1; fi
+          if grep -q '__[A-Z][A-Z0-9_]*__' /tmp/flash.rendered; then echo "unsubstituted placeholder in the flash launcher:"; grep '__[A-Z][A-Z0-9_]*__' /tmp/flash.rendered; exit 1; fi
           bash -n /tmp/flash.rendered
           # The table must be file-backed: pinned host RAM is the upstream default and
           # frees nothing on unified memory, so a launcher that lost this pair does not
@@ -1352,7 +1352,7 @@ jobs:
                     -e "s|__AUTO_LINE__|Environment='OPENCODE_PERMISSION={\"*\":\"allow\"}'|g" "$1"; }
           for t in dashboard/qwen38-dashboard.service.template dashboard/opencode-web.service.template; do
             r "$t" > /tmp/u.rendered
-            if grep -q '__[A-Z_]*__' /tmp/u.rendered; then echo "unsubstituted placeholder in $t:"; grep '__[A-Z_]*__' /tmp/u.rendered; exit 1; fi
+            if grep -q '__[A-Z][A-Z0-9_]*__' /tmp/u.rendered; then echo "unsubstituted placeholder in $t:"; grep '__[A-Z][A-Z0-9_]*__' /tmp/u.rendered; exit 1; fi
           done
           # opencode stays on loopback: the relay is the one way in
           r dashboard/opencode-web.service.template | grep -q -- 'serve --hostname 127.0.0.1 --port 4096'
@@ -1361,10 +1361,10 @@ jobs:
           # AGENT_AUTO=1 renders a single-quoted assignment so the JSON's double quotes survive systemd's parser
           r dashboard/opencode-web.service.template | grep -qF "Environment='OPENCODE_PERMISSION={\"*\":\"allow\"}'"
           r dashboard/qwen38-dashboard.service.template | grep -q 'COCKPIT_AGENT_PORT=30091'
-          for ph in $(grep -ohE '__[A-Z_]+__' dashboard/qwen38-dashboard.service.template | sort -u); do
+          for ph in $(grep -ohE '__[A-Z][A-Z0-9_]*__' dashboard/qwen38-dashboard.service.template | sort -u); do
             grep -q "$ph" dashboard/install-dashboard.sh || { echo "install-dashboard.sh does not render $ph"; exit 1; }
           done
-          for ph in $(grep -ohE '__[A-Z_]+__' dashboard/opencode-web.service.template | sort -u); do
+          for ph in $(grep -ohE '__[A-Z][A-Z0-9_]*__' dashboard/opencode-web.service.template | sort -u); do
             grep -q "$ph" dashboard/install-agent.sh || { echo "install-agent.sh does not render $ph"; exit 1; }
           done
 
