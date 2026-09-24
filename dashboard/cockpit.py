@@ -479,9 +479,16 @@ def collect_kernel():
     lines = [ln for ln in out.splitlines() if "NV_ERR_NO_MEMORY" in ln]
     last = lines[-1].split()[0] if lines else None
     count = len(lines)
-    if KERNEL_LAST["count"] is not None and count > KERNEL_LAST["count"]:
-        add_event("kernel", f"GPU driver refused {count - KERNEL_LAST['count']} allocation(s): memory edge during a prefill")
+    # New lines, not a bigger count: over a window that slides, as many old refusals left
+    # it as new ones came in and the count stood still, with the event unsaid (found in
+    # review, 2026-09-24). The lines seen last time are what "new" is measured against.
+    seen = KERNEL_LAST.get("lines")
+    if KERNEL_LAST["count"] is not None and seen is not None:
+        fresh = [ln for ln in lines if ln not in seen]
+        if fresh:
+            add_event("kernel", f"GPU driver refused {len(fresh)} allocation(s): memory edge during a prefill")
     KERNEL_LAST["count"] = count
+    KERNEL_LAST["lines"] = set(lines)
     return {"node_id": "local", "nvrm_oom_1h": count, "nvrm_last": last}
 
 

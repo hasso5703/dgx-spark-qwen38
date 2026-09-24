@@ -212,6 +212,15 @@ class Validate(unittest.TestCase):
         errs = rc.validate(r, reserved_ids=rc.BUILTIN_IDS)
         self.assertTrue(any(needle in e for e in errs), (needle, errs))
 
+    def test_no_context_length_is_a_native_window(self):
+        """A native unit carries no --context-length, and the rule that required one
+        refused every native 27B builtin (found in review, 2026-09-24)."""
+        r = good()
+        r["serve"].pop("context_length", None)
+        self.assertEqual(rc.validate(r), [])
+        for rid in rc.BUILTIN_IDS:
+            self.assertEqual(rc.validate(rc.builtin(rid, ASSIGNS, TEMPLATES, "native")), [], rid)
+
     def test_rejections(self):
         self.check(lambda r: r.update(id="Flash!"), "id:")
         self.check(lambda r: r.update(id="flash"), "reserved")
@@ -228,7 +237,6 @@ class Validate(unittest.TestCase):
         self.check(lambda r: r["serve"].update(mem_fraction=0.99), "0.3 to 0.95")
         self.check(lambda r: r["serve"].update(mem_fraction=True), "number expected")
         self.check(lambda r: r["serve"].update(extra_flag=1), "unknown key")
-        self.check(lambda r: r["serve"].pop("context_length"), "serve.context_length")
         self.check(lambda r: r["serve"].update(attention_backend="magic"), "serve.attention_backend")
         self.check(lambda r: r.update(env={"lower": "1"}), "NAME must be")
         self.check(lambda r: r.update(env={"X": "a b"}), "without whitespace")
