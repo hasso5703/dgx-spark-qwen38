@@ -97,6 +97,10 @@ class Base(unittest.TestCase):
         cls.tmp = Path(tempfile.mkdtemp(prefix="cockpit-image-"))
         (cls.tmp / "api-key").write_text("test-key-not-a-real-one\n")
         cls.ck = load_cockpit(cls.tmp)
+        # The box is read through run(); left real, this suite asked the reference box's
+        # systemd about its image unit 36 times (found in review, 2026-09-24). A test that
+        # needs an answer puts its own run() in place.
+        cls.ck.run = lambda argv, timeout=5.0, merge_err=False: ""
         # Kept in a dict, not as a class attribute: a plain function assigned to a class
         # becomes a bound method and would be handed self. Two tests below call the real
         # one to check it reads the installed unit.
