@@ -146,8 +146,9 @@ the claims below about the engine side are the ones this repo has verified:
 - **Open WebUI**: `OPENAI_API_BASE_URL=http://<host>:30001/v1`, key as
   above; model discovery via `GET /v1/models` answers through the proxy.
 - **Cursor / Continue / Zed assistant**: OpenAI provider, same base and
-  key. Vision requests pass the proxy's media pricing (image parts cost a
-  declared token count each, see BENCHMARKS.md "What an image costs").
+  key. Vision requests pass the proxy's media pricing (each image is priced
+  from its own header with the vision tower's geometry, measured at twelve sizes: CHANGELOG
+  v1.10.1, "an image costs what it costs").
 
 If you run one of these in anger and it disagrees with something here, a
 box-report issue with the client's exact request body is the contribution

@@ -75,7 +75,7 @@ the receipts are line numbers in `keepalive-proxy.py`'s "System One endpoint" se
 
 **Measured on the reference box** (`./bench-systemone.py`, byte-identical payloads to this box
 and to the hosted Jev, public datasets at pinned revisions; the full protocol and every table
-are in [BENCHMARKS.md](BENCHMARKS.md#typed-decisions-v115-the-system-one-endpoint-against-the-hosted-jev)):
+are in [BENCHMARKS.md](../BENCHMARKS.md#typed-decisions-v115-the-system-one-endpoint-against-the-hosted-jev)):
 
 | task (public data, pinned revision) | hosted Jev (`jev-1.13.0`), accuracy [95% CI] | this lane, raw readout | this lane, two option orders (`SYSTEMONE_PERMUTATIONS=2`) | Jev minus raw, paired | ECE: Jev / raw / raw after a fitted temperature | p50 latency: Jev from this box / raw on loopback, 4 concurrent clients |
 |---|---:|---:|---:|---:|---:|---:|
@@ -105,10 +105,16 @@ above billed 3.5 million input tokens, about 15 cents; the local runs billed not
 
 
 Two more measurements decided two defaults. The thinking budget: `SYSTEMONE_THINK_TOKENS=1024`
-on the first 200 MMLU-Pro rows scores **80.0% [74.0, 85.5]** against the hosted model's 84.0%
-[78.5, 89.0] on the same rows (an interval that holds zero) and the raw readout's 57.5%, at 8.8 s
-a question (p95 31 s); 27 of the 200 thoughts hit the cap and those score 63%, so the budget is
-what they need. The warm-first send this proxy shipped with in draft lost every cold and warm
+on the first 200 MMLU-Pro rows scores **84.5%** against the hosted model's 84.0% [78.5, 89.0]
+on the same rows and the raw readout's 57.5%, at a p50 of 12.5 s a question, with the thought
+asked at `xhigh`, which `SYSTEMONE_THINK_EFFORT` names and defaults to. Inheriting the lane's own
+default instead, `lean` on this repo's template, which tells the model not to reason, scored
+80.5% at 9.15 s on the same rows, one run after the other (2026-09-21), and every calibration
+measure moved the same way (ECE 0.155 against 0.120), though at 200 rows the accuracy gap alone
+is not significant (McNemar p = 0.12); `SYSTEMONE_THINK_EFFORT=lane` sends no effort and lets
+the template decide. The first run of the budget, on the lane's default, scored 80.0% [74.0,
+85.5] at 8.8 s (p95 31 s), and 27 of its 200 thoughts hit the cap and scored 63%, so the budget
+is what they need. The warm-first send this proxy shipped with in draft lost every cold and warm
 comparison (13 questions on a never-seen 10,800-token state: 14.9 s with it, 5.4 s without) and
 is off by default. And on repeatability: five identical 13-question calls at concurrency 1
 moved an uncertain yes/no probability by a standard deviation of up to 0.11 and a settled one by

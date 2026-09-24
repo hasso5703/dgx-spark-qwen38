@@ -51,9 +51,13 @@ whole thing before pushing.
 
 ## What CI holds, so you know where you will be caught
 
-- `bash -n` and `shellcheck -S warning` on every shell script; `node --check`
-  on the opencode plugin; `ruff --select F,E9` and `py_compile` on every
-  Python file (new files under `tests/` are picked up automatically).
+- `bash -n` and `shellcheck -S warning` on every tracked shell script (found
+  by extension and shebang, so a new one is picked up); `node --check` on the
+  opencode plugin; `ruff --select F,E9` on the Python files its step lists,
+  which takes everything under `tests/` and `dashboard/` by glob while a new
+  script at the root has to be added by hand (at v1.18.7 `engine-inputs.py` and
+  `oc-merge-limits.py` are only byte-compiled), and `py_compile` on the root
+  scripts and the vendored overlay.
 - Every `tests/test_*.py` must run standalone (`__main__` block) and CI
   counts what ran against what the files declare: a suite with tests that
   never ran once exited 0, so silence is not a pass.
