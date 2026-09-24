@@ -83,7 +83,13 @@ if [ "$ACTION" = uninstall ]; then
     sudo rm -f "$INSTALLED"; sudo systemctl daemon-reload
     echo "unit removed"
   fi
-  [ -d "$LANE_DIR" ] && { rm -rf "$LANE_DIR"; echo "runtime removed: $LANE_DIR"; }
+  # Only what this script put there: LANE_DIR can be a directory shared with other work,
+  # and removing it whole took the rest with it (found in review, 2026-09-24).
+  if [ -d "$LANE_DIR" ]; then
+    rm -rf "$VENV" "$SRC"
+    echo "runtime removed: $VENV and $SRC"
+    rmdir "$LANE_DIR" 2>/dev/null || echo "kept $LANE_DIR: it holds files the image lane did not put there"
+  fi
   echo "the 31 GB checkpoint is left in $HF_CACHE; delete it yourself if you want the space:"
   echo "  rm -rf $HF_CACHE/hub/models--${MODEL//\//--}"
   exit 0

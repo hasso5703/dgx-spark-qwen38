@@ -33,10 +33,14 @@ const STATE_LABEL = {
   stopped: 'stopped', failed: 'failed', starting: 'starting', 'loading-weights': 'loading weights',
   'loading-draft': 'loading the draft head', 'allocating-kv': 'allocating the KV pool',
   'capturing-graphs': 'capturing CUDA graphs', 'warming-up': 'warming up', ready: 'ready',
-  degraded: 'ready but not answering', stopping: 'stopping', wedged: 'wedged: no generation'};
-const STATE_CHIP = {ready: 'ok', degraded: 'warn', failed: 'err', stopped: '', stopping: 'warn', wedged: 'err'};
+  degraded: 'ready but not answering', stopping: 'stopping', wedged: 'wedged: no generation',
+  orphan: 'running outside systemd'};
+const STATE_CHIP = {ready: 'ok', degraded: 'warn', failed: 'err', stopped: '', stopping: 'warn', wedged: 'err', orphan: 'err'};
 // The rail badge sits next to a nav label in 236 px: one short word, never a state sentence.
-const STATE_BADGE = {failed: 'failed', degraded: 'degraded', wedged: 'wedged', stopping: 'stopping'};
+const STATE_BADGE = {failed: 'failed', degraded: 'degraded', wedged: 'wedged', stopping: 'stopping', orphan: 'orphan'};
+// A unit that is not running, whatever its container does: its button offers Start, and for
+// an orphan that is the recovery (ExecStartPre removes the stray container first).
+const UNIT_DOWN = new Set(['stopped', 'failed', 'orphan']);
 const TRANSITIONAL = new Set(['starting', 'loading-weights', 'loading-draft', 'allocating-kv', 'capturing-graphs', 'warming-up']);
 const STAGE_LABEL = {'init': 'init', 'loading-weights': 'weights', 'loading-draft': 'draft', 'allocating-kv': 'KV', 'capturing-graphs': 'graphs', 'warming-up': 'warmup'};
 const ALL_STAGES = Object.keys(STAGE_LABEL);
@@ -579,7 +583,7 @@ function rConfig(d){
 const CARDS = new Map();
 function servingEngine(){
   const eng = (F.life && F.life.engines) || {};
-  return Object.entries(eng).find(([n, e]) => e.state !== 'stopped' && e.state !== 'failed') || null;
+  return Object.entries(eng).find(([n, e]) => !UNIT_DOWN.has(e.state)) || null;
 }
 function enabledUnit(){
   const e = Object.entries(F.units).find(([n, u]) => n !== 'qwen38-keepalive.service' && u.enabled === 'enabled');
@@ -665,7 +669,7 @@ function engineCard(name){
   c = {root, chip, nameEl, enabled, since, btn, why, hist, extra, sig: ''};
   btn.addEventListener('click', () => {
     const e = ((F.life || {}).engines || {})[name]; if (!e) return;
-    const on = e.state !== 'stopped' && e.state !== 'failed';
+    const on = !UNIT_DOWN.has(e.state);
     const warns = [];
     if (on && TRANSITIONAL.has(e.state) && name.includes('flash')) warns.push('stopping the flash lane mid-boot marks the PLE table dirty: the NEXT boot rebuilds it (about 12 min)');
     if (on && e.state === 'ready') warns.push(name === IMAGE_UNIT
@@ -696,15 +700,17 @@ function rLifecycle(d){
     const en = (units[name] || {}).enabled;
     c.enabled.textContent = en === 'enabled' ? 'starts at boot' : en === 'disabled' ? 'manual start only' : en || '';
     c.since.textContent = e.state === 'ready' && e.elapsed ? 'up ' + fmtDur(e.elapsed) : '';
-    const on = e.state !== 'stopped' && e.state !== 'failed';
+    const on = !UNIT_DOWN.has(e.state);
     const blocked = !on && (d.blocked || {})[`unit:start:${name}`];
     c.btn.textContent = on ? (e.state === 'stopping' ? 'stopping…' : 'stop') : 'start';
     c.btn.className = 'btn mini ' + (on ? 'danger' : 'low');
     c.btn.dataset.verb = on ? 'stop' : 'start';
     c.btn.dataset.blocked = blocked ? blocked[0] : '';
     c.btn.disabled = e.state === 'stopping' || !!blocked;
-    c.why.textContent = blocked ? 'start blocked: ' + blocked[0] : (e.state === 'failed' ? 'the unit failed: read its journal in the Logs tab, then start it again' : '');
-    c.why.className = 'why' + (blocked || e.state === 'failed' ? ' warn' : '');
+    c.why.textContent = blocked ? 'start blocked: ' + blocked[0]
+      : e.state === 'orphan' ? 'its container runs outside systemd: start replaces it with the unit\u2019s own'
+      : e.state === 'failed' ? 'the unit failed: read its journal in the Logs tab, then start it again' : '';
+    c.why.className = 'why' + (blocked || e.state === 'failed' || e.state === 'orphan' ? ' warn' : '');
     const boots = (e.boots || []).slice().reverse().map(fmtDur).join(', ');
     let hist = !TRANSITIONAL.has(e.state) && boots ? 'last boots: ' + boots + ((e.boots_rebuild || []).length ? ` (with table rebuild: ${e.boots_rebuild.slice().reverse().map(fmtDur).join(', ')})` : '') : '';
     // The KV pool this target won, boot after boot. It is a lottery and it sets
@@ -752,7 +758,7 @@ function rLifecycle(d){
   });
   // badges: what needs eyes
   const states = Object.values(d.engines || {}).map(e => e.state);
-  const bad = states.find(st => st === 'wedged' || st === 'failed' || st === 'degraded');
+  const bad = states.find(st => st === 'wedged' || st === 'failed' || st === 'degraded' || st === 'orphan');
   const trans = states.find(st => TRANSITIONAL.has(st) || st === 'stopping');
   badge('engines', bad ? (STATE_BADGE[bad] || 'check') : trans ? 'booting' : '', bad ? 'err' : trans ? 'warn' : '');
   applyBusy();
@@ -1223,7 +1229,7 @@ function banners(state, errors){
     + (ocf.autofit === 'started' ? 'The cockpit is fitting them to this boot\u2019s pool now.' : 'Setup tab, "Fit the limits to this engine".'));
   ((F.life || {}).orphans || []).forEach(o => add('warn',
     `${LANE_NAME[o.unit] || o.unit} is running outside systemd.`,
-    `The container ${o.container} is serving${o.image ? ` from ${o.image}` : ''}, but its unit is stopped, so the buttons here cannot manage it and a reboot will not bring it back. Stop it from a terminal (docker rm -f ${o.container}) and start the unit instead.`));
+    `The container ${o.container} is serving${o.image ? ` from ${o.image}` : ''}, but its unit is not running, so no other engine may start and a reboot will not bring it back. Start ${LANE_NAME[o.unit] || o.unit} to replace it with the unit\u2019s own, or remove it from a terminal (docker rm -f ${o.container}).`));
   if (errors.lifecycle) add('warn', 'Engine state unknown.', 'The lifecycle collector failed: ' + errors.lifecycle.slice(0, 120));
 }
 // offline watch: client clock, one second
@@ -1310,7 +1316,8 @@ function askAction(name, params, argv, warns){
        + 'a pinned MoE runner, which switch-model.sh handles. The first switch downloads about 124 GB.'};
   const TITLES = {unit: p => `${p.verb} ${laneLabel(p.unit)}`,
                   switch: p => `switch the target model to ${TARGET_NAME[p.target] || p.target}`,
-                  flush_cache: () => 'flush the engine cache', abort_all: () => 'abort every in-flight generation', smoke: () => 'run a smoke generation through the proxy', diag_bundle: () => 'write a diagnostics bundle'};
+                  flush_cache: () => 'flush the engine cache', abort_all: () => 'abort every in-flight generation', smoke: () => 'run a smoke generation through the proxy', diag_bundle: () => 'write a diagnostics bundle',
+                  fit_opencode: () => 'fit the opencode limits to this engine'};
   const IMAGE_EXPLAIN = {
     start: `systemd starts the image lane: it loads 31 GB (the Qwen3-VL encoder, the DiT, the VAE) and answers in ${readyIn(IMAGE_UNIT)}. `
          + 'Like every lane it takes the box alone, so this is only offered once no other engine is running.',
@@ -1378,6 +1385,11 @@ document.querySelectorAll('.actbar [data-act]').forEach(b => {
     else askAction(act, {}, ['cockpit', act], []);
   });
 });
+// The Setup tab's own button sits outside the action bar, and the loop above only binds
+// the bar: it had no listener at all since 5d08667, while the banner sends people to it
+// when the limits do not fit (found in review, 2026-09-24).
+document.querySelectorAll('#tab-setup [data-act="fit_opencode"]').forEach(b =>
+  b.addEventListener('click', () => askAction('fit_opencode', {}, ['cockpit', 'fit_opencode'], [])));
 
 // ── on-demand loaders (buttons say what happened) ─────────────────────────────
 function chip(text, cls){ return el('span', 'chip' + (cls ? ' ' + cls : ''), text); }

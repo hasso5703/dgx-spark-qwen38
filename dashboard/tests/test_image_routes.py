@@ -448,6 +448,18 @@ class TheAgentLimitsFollowABoot(Base):
         self.assertEqual(out, "left alone: the fit would raise a declared limit")
         self.assertEqual(self.calls, [])
 
+    def test_a_flash_boot_is_fitted_to_its_window_and_its_own_pair(self):
+        """A big flash pool used to fit to 225,000/116,000: an output above the declared
+        32,000, so the rule above left the lane on limits its engine refuses. The fit now
+        holds the 262,144 window and never goes past the lane's own pair."""
+        fit = {"pool": 564_352, "context": 225_000, "output": 32_000, "worst": 257_000, "ok": False,
+               "window": 262_144, "served": "qwen3.8-flash-next"}
+        states = {"qwen38-flash.service": "ready"}
+        with self.ck.LIFE_LOCK:
+            self.ck.LIFE["enter"] = {"qwen38-flash.service": "100"}
+        self.assertEqual(self.ck.maybe_autofit(fit, states, 250_000), "started")
+        self.assertEqual(self.calls, [("fit_opencode", "autofit")])
+
     def test_a_busy_job_lock_is_retried_on_the_next_tick(self):
         self.ck.start_action = lambda name, params, origin="ui": (409, {"error": "busy"})
         self.assertIn("not started yet", self.ck.maybe_autofit(self.fit(), {self.U: "ready"}, 0))

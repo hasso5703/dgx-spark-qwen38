@@ -159,7 +159,13 @@ sudo rm -rf /etc/systemd/system/qwen38-sglang.service.d /etc/systemd/system/qwen
 sudo rm -f /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler
 # The image lane's runtime is the user's, not root's: no sudo, and the 31 GB checkpoint
 # stays in the HF cache with every other checkpoint, which this script reports separately.
-[ -d "$IMAGE_LANE_DIR" ] && rm -rf "$IMAGE_LANE_DIR"
+# Only what install-image.sh put there (venv/ and sglang/): IMAGE_LANE_DIR can be a
+# directory shared with other work, and removing it whole took the rest with it (found in
+# review, 2026-09-24). The directory itself goes only once it is empty.
+if [ -d "$IMAGE_LANE_DIR" ]; then
+  rm -rf "$IMAGE_LANE_DIR/venv" "$IMAGE_LANE_DIR/sglang"
+  rmdir "$IMAGE_LANE_DIR" 2>/dev/null || echo "kept $IMAGE_LANE_DIR: it holds files the image lane did not put there"
+fi
 sudo systemctl daemon-reload
 # The oc launcher, only if it is ours (never a foreign oc binary)
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then

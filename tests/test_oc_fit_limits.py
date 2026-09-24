@@ -156,6 +156,67 @@ def main() -> None:
         assert info["max_total_num_tokens"] == 901109, info
         assert seen == want_seen, (routes, seen)
 
+    # 10. The engine's window holds the prompt AND the answer. SGLang refuses any request
+    #     where input + max_new_tokens passes context_length (validate_total_tokens, on in
+    #     both images), opencode asks for max_tokens = limit.output, and the prompt that
+    #     reaches it is opencode's threshold (limit.input - min(20,000, output)) plus one
+    #     worst step. fit() used to see only the pool: 225,000/116,000 on a big flash pool,
+    #     refused from a 146,144-token prompt on (found in review, 2026-09-24).
+    fresh = load()
+    W = 262_144
+
+    def worst(ctx, out):
+        return ctx - min(fresh.COMPACTION_RESERVE, out) + fresh.WORST_STEP + out
+
+    tbl = {}
+    for choice, sel in (("flash", "context"), ("flash", "concurrency"), ("flash", "throughput"),
+                        ("stock", "native"), ("fp8", "native")):
+        o = sp.run(["bash", os.path.join(REPO_DIR, "oc-limits.sh"), choice, sel],
+                   capture_output=True, text=True).stdout.split()
+        tbl[(choice, sel)] = (int(o[0]), int(o[1]))
+        assert worst(*tbl[(choice, sel)]) <= W, (choice, sel, tbl[(choice, sel)], worst(*tbl[(choice, sel)]))
+    for pool in (189_056, 249_408, 280_000, 459_000, 468_480, 564_352, 900_000):
+        ctx, out = fresh.fit(pool, 250_000, W, tbl[("flash", "context")])
+        assert ctx > 0 and worst(ctx, out) <= W, (pool, ctx, out, worst(ctx, out))
+        assert (ctx, out) <= tbl[("flash", "context")] and out <= 32_000, (pool, ctx, out)
+    assert fresh.fit(564_352, 250_000, W, tbl[("flash", "context")]) == tbl[("flash", "context")], \
+        "a pool bigger than the window gets the lane's own pair, not more"
+    for pool in (357_706, 600_000, 900_000):
+        ctx, out = fresh.fit(pool, 0, W, tbl[("stock", "native")])
+        assert worst(ctx, out) <= W and out <= 64_000, (pool, ctx, out)
+    # the 1M lane is bounded by its pool, and nothing about it moves
+    for pool in (832_993, 887_797, 922_094):
+        assert fresh.fit(pool, 0, 1_010_000) == fresh.fit(pool), pool
+        assert worst(*fresh.fit(pool)) <= 1_010_000
+
+    # and main() reads the window and the lane's pair itself: a flash engine that booted a
+    # big pool, a launcher on the context tier, the proxy's 250,000 ceiling
+    merged = []
+    fresh.engine_info = lambda base: {"max_total_num_tokens": 564_352, "context_length": W,
+                                      "served_model_name": "qwen3.8-flash-next", "model_path": "x"}
+
+    def fake_run(argv, **kw):
+        joined = " ".join(map(str, argv))
+        if "systemctl show" in joined:
+            return sp.CompletedProcess(argv, 0, stdout="Environment=PROMPT_CEILING_TOKENS=250000\n", stderr="")
+        if "oc-merge-limits.py" in joined:
+            merged.append(list(map(str, argv)))
+            return sp.CompletedProcess(argv, 0, stdout="limits written", stderr="")
+        return real_run(argv, **kw)       # oc-limits.sh runs for real
+    fresh.subprocess.run = fake_run
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            fresh.CONFIG_DIR = P(d)
+            (P(d) / "opencode.json").write_text("{}")
+            (P(d) / "launch-flash.sh").write_text("docker run x python3 -m sglang.launch_server --model-path y\n")
+            assert fresh.main([]) == 0
+    finally:
+        fresh.subprocess.run = real_run
+    assert merged, "nothing was merged"
+    ctx, out = int(merged[0][-2]), int(merged[0][-1])
+    assert worst(ctx, out) <= W, (ctx, out, worst(ctx, out))
+    assert (ctx, out) == tbl[("flash", "context")], (ctx, out)
+
     print("test_oc_fit_limits: OK")
 
 

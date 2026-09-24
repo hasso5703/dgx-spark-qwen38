@@ -81,8 +81,23 @@ class Engine(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    do_PUT = do_POST
+
     def do_GET(self):
         if not self._admit():
+            return
+        if self.path.split("?")[0] in ("/server_info", "/get_server_info"):
+            # What the real engine answers (checked on the reference box, 2026-09-24):
+            # its own serving key in clear, at the top and in every internal state.
+            body = json.dumps({"api_key": "engine-K", "admin_api_key": "admin-K",
+                               "max_total_num_tokens": 1000, "served_model_name": "m",
+                               "internal_states": [{"api_key": "engine-K",
+                                                    "admin_api_key": "admin-K"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
@@ -145,6 +160,21 @@ def get(port, path):
             return r.status
     except urllib.error.HTTPError as e:
         return e.code
+
+
+def call(port, method, path, token=None):
+    """(status, body) of any method, with or without a bearer."""
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    data = BODY if method != "GET" else None
+    req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=data,
+                                 headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
 
 
 class ClientKeys(unittest.TestCase):
@@ -247,6 +277,68 @@ class ClientKeys(unittest.TestCase):
         port = self.live(self.keys_file('{"tok-alice":"alice"}'))
         self.assertEqual(get(port, "/health"), 200)
 
+    # Every route the engine serves, not only POSTs under /v1/. Until v1.18.7 the wall
+    # only looked at POST /v1/..., while the proxy attached the engine's own key to
+    # everything it relayed: with no key at all, GET /server_info, POST /generate,
+    # /flush_cache and /abort_request all reached the engine as the engine (found in
+    # review, 2026-09-24).
+    ROUTES = (("GET", "/v1/models"), ("GET", "/server_info"), ("GET", "/get_server_info"),
+              ("GET", "/metrics"), ("POST", "/generate"), ("POST", "/flush_cache"),
+              ("POST", "/abort_request"), ("POST", "/invocations"), ("PUT", "/v1/chat/completions"))
+
+    def test_every_route_but_health_needs_a_listed_key(self):
+        Engine.require_key = "engine-K"
+        port = self.live(self.keys_file('{"tok-alice":"alice"}'), upstream_key="engine-K")
+        for method, path in self.ROUTES:
+            for tok in (None, "wrong", "engine-K"):
+                with self.subTest(method=method, path=path, token=tok):
+                    Engine.last_auth = None
+                    status, body = call(port, method, path, tok)
+                    self.assertEqual(status, 401, body)
+                    self.assertIn("client key", body.decode())
+                    self.assertIsNone(Engine.last_auth, "the engine was never reached")
+
+    def test_a_listed_key_still_reaches_every_route(self):
+        Engine.require_key = "engine-K"
+        port = self.live(self.keys_file('{"tok-alice":"alice"}'), upstream_key="engine-K")
+        for method, path in self.ROUTES:
+            with self.subTest(method=method, path=path):
+                status, _ = call(port, method, path, "tok-alice")
+                self.assertEqual(status, 200)
+                self.assertEqual(Engine.last_auth, "Bearer engine-K")
+
+    def test_server_info_never_carries_the_engine_key_through_the_proxy(self):
+        """/server_info returns the engine's serving key in clear. Behind the wall that key
+        is exactly what a named client must not learn; without the wall the caller already
+        holds it. Either way the relayed answer has no reason to carry it."""
+        Engine.require_key = "engine-K"
+        walled = self.live(self.keys_file('{"tok-alice":"alice"}'), upstream_key="engine-K")
+        open_ = self.live()
+        for port, tok in ((walled, "tok-alice"), (open_, "engine-K")):
+            for path in ("/server_info", "/get_server_info"):
+                with self.subTest(port=port, path=path):
+                    status, body = call(port, "GET", path, tok)
+                    self.assertEqual(status, 200)
+                    self.assertNotIn(b"engine-K", body)
+                    self.assertNotIn(b"admin-K", body)
+                    doc = json.loads(body)
+                    self.assertEqual(doc["max_total_num_tokens"], 1000, "the rest is intact")
+
+    def test_a_doubly_encoded_path_is_refused_in_both_modes(self):
+        """canonical_path decodes once and SGLang decodes again, so /%2576%2531/... became
+        /%76%31/... here (not /v1/, so no wall and no guard) and /v1/... in the engine."""
+        Engine.require_key = "engine-K"
+        walled = self.live(self.keys_file('{"tok-alice":"alice"}'), upstream_key="engine-K")
+        open_ = self.live(upstream_key="engine-K")
+        for port, tok in ((walled, None), (walled, "tok-alice"), (open_, "engine-K")):
+            for path in ("/%2576%2531/chat/completions", "/v1/%2563hat/completions",
+                         "/%252576%252531/models"):
+                with self.subTest(port=port, token=tok, path=path):
+                    Engine.last_auth = None
+                    status, body = call(port, "POST", path, tok)
+                    self.assertEqual(status, 400, body)
+                    self.assertIsNone(Engine.last_auth, "the engine was never reached")
+
     def test_upstream_key_admits_named_client_as_engine_key(self):
         Engine.require_key = "engine-K"
         port = self.live(self.keys_file('{"tok-alice":"alice"}'), upstream_key="engine-K")
@@ -268,6 +360,22 @@ class ClientKeys(unittest.TestCase):
         status, _ = post(port, "/v1/chat/completions", "engine-K")
         self.assertEqual(status, 200)
         self.assertEqual(Engine.last_auth, "Bearer engine-K")
+
+    def test_an_unreadable_keys_file_says_so(self):
+        """docs/clients.md installed the file owned by root until v1.18.7; the proxy runs as
+        the user and reads it itself, so it refused to start saying "missing, malformed or
+        empty" about a file that was there and well formed."""
+        path = self.keys_file('{"tok-alice":"alice"}')
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, 0o600)
+        err = io.StringIO()
+        real, sys.stderr = sys.stderr, err
+        try:
+            with self.assertRaises(SystemExit):
+                fresh_proxy_module(self.eport, path)
+        finally:
+            sys.stderr = real
+        self.assertIn("not readable by this user", err.getvalue())
 
     def test_missing_empty_broken_keys_files_refuse_to_be_imported(self):
         for path, text in ((None, "/nonexistent/keys.json"), ("{}", "{}"), ("{not json", "{not json")):

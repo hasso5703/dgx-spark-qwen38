@@ -159,6 +159,12 @@ def derive_state(*, unit_active: str, unit_sub: str, container_running: bool,
                  healthy: bool, boot: dict, rebuild: bool = False) -> dict:
     """The single source of truth the UI renders. Pure function of facts."""
     flags = {"rebuild": bool(rebuild)}
+    if container_running and unit_active in ("failed", "inactive", "dead", "?", ""):
+        # The unit is down and its container is not: a stop past its timeout (systemd
+        # kills the docker client and marks the unit failed, while the container belongs
+        # to the docker daemon and keeps its pool), or one started by hand. It read
+        # "failed" or "stopped", and neither was busy for the one-engine gate.
+        return {"state": "orphan", **flags}
     if unit_active == "failed":
         return {"state": "failed", **flags}
     if unit_active == "deactivating":
@@ -187,8 +193,9 @@ def derive_state(*, unit_active: str, unit_sub: str, container_running: bool,
 # States during which an engine occupies (or is about to occupy) the GPU pool.
 BUSY_STATES = {"starting", "loading-weights", "loading-draft", "allocating-kv",
                "capturing-graphs", "warming-up", "ready", "degraded",
-               "stopping", "wedged"}
-TRANSITIONAL = BUSY_STATES - {"ready", "degraded"}
+               "stopping", "wedged", "orphan"}
+# An orphan does not settle by waiting, so it does not hold a switch back either.
+TRANSITIONAL = BUSY_STATES - {"ready", "degraded", "orphan"}
 # Every unit that holds the GPU pool while it runs. The image lane is one of them:
 # 31 GB of weights, and two engines at once on 121.6 GB of unified memory is the
 # livelock this whole module exists to prevent.
@@ -216,7 +223,11 @@ def blocked_reasons(action: str, params: dict, states: dict) -> list[str]:
             # Every other engine, not "the other one": with three lanes, picking [0]
             # checked one of two neighbours and let the third through.
             for other in ENGINE_UNITS:
-                if other != unit and st(other) in BUSY_STATES:
+                if other != unit and st(other) == "orphan":
+                    reasons.append(
+                        f"{other}'s container still runs outside systemd: two engines never "
+                        f"run at once on unified memory (remove it first, see the banner)")
+                elif other != unit and st(other) in BUSY_STATES:
                     reasons.append(
                         f"{other} is {st(other)}: two engines never run at once "
                         f"on unified memory (stop it first)")

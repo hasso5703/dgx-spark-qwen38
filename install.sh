@@ -730,7 +730,12 @@ if [ -n "$INSTALLED_CHOICE" ]; then
   # localhost must not be reopened by a plain update. An installed choice wins over a
   # default, both ways.
   if [ -z "${_ENV_ENGINE_BIND:-}" ]; then
-    CUR_BIND="$(grep -oE -- '--host [0-9.]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+    # Read where the engine's --host really is: the 27B unit, or the flash launcher (its
+    # unit only points at the script). This read $UNIT_PATH, which only the 27B branch
+    # sets, so every re-run of a flash box printed "UNIT_PATH: unbound variable" and put
+    # the engine back on 127.0.0.1 over the box's own choice (found in review, 2026-09-24).
+    if [ "$INSTALLED_CHOICE" = "flash" ]; then BIND_FROM="$FLASH_LAUNCH"; else BIND_FROM="$UNIT_PATH"; fi
+    CUR_BIND="$(grep -oE -- '--host [0-9.]+' "$BIND_FROM" 2>/dev/null | head -1 | cut -d' ' -f2 || true)"
     if [ -n "$CUR_BIND" ] && [ "$CUR_BIND" != "$ENGINE_BIND" ]; then
       ENGINE_BIND="$CUR_BIND"
       echo "Keeping the installed engine bind: $ENGINE_BIND. Pass ENGINE_BIND= to change."
@@ -794,6 +799,15 @@ if [ "$NO_OPENCODE" -eq 1 ]; then
 elif [ "$WITH_OPENCODE" -eq 0 ] && [ -f "$OC_OFF_MARK" ]; then
   OPENCODE=0
   echo "Keeping the opencode integration off (your earlier --no-opencode). Pass --with-opencode to re-enable."
+fi
+# The same refusal as the one near the top, once the lane is final: without
+# MODEL_CHOICE that one reads LANE before the convergence has moved it to the
+# installed flash lane, and step 6 then patched YaRN into the flash checkpoint's
+# config.json in the shared HF cache (found in review, 2026-09-24).
+if [ "$LANE" = "flash" ] && [ "$CONTEXT_MODE" = "1m" ]; then
+  printf 'ERROR: CONTEXT_MODE=1m is a 27B mode, and this box serves the flash lane. Flash-Next serves\n' >&2
+  printf '       its full native 262144 window. Drop CONTEXT_MODE, or pass a 27B MODEL_CHOICE with it.\n' >&2
+  exit 1
 fi
 # The default context mode, resolved here because everything it depends on (the
 # lane, --no-service, and what the installed unit already says) is only known
@@ -920,6 +934,15 @@ if [ "$NO_SERVICE" -eq 0 ] && ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q 
   else
     die "Port $PROXY_PORT (keepalive proxy) is already in use by another program. Free it, or install with PROXY_PORT=<other>"
   fi
+fi
+# sudo is needed from step 8 on, and it is asked for here, before the downloads rather
+# than after them: `sudo -n` alone never prompts, and a fresh box where sudo wants a
+# password (DGX OS does) died at step 8 after ~20 min of pulls (found in review,
+# 2026-09-24). With a terminal sudo asks now; without one (a background run) `sudo -v`
+# fails at once, and refusing now costs nothing where refusing at step 8 cost the pulls.
+if [ "$NO_SERVICE" -eq 0 ] && ! sudo -n true 2>/dev/null; then
+  echo "sudo is needed from step 8 on (systemd units); it asks for your password now, before the downloads."
+  sudo -v || die "sudo could not be used here: run 'sudo -v' in this terminal, then re-run ./install.sh"
 fi
 echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
 
@@ -1297,9 +1320,11 @@ if [ -n "$OC_FOUND" ] && [ "$OC_FOUND" -ef "$OC_HOME_BIN" ]; then
   fi
 fi
 # A complete, ready-to-use opencode config (https://opencode.ai). The limits
-# satisfy the serving window with margin in BOTH modes, including when
-# opencode's hidden 32000 output cap is lifted by the oc launcher below:
-#   native: 194048 + 64000 = 258048 <= 262144 - 4096
+# satisfy the serving window in BOTH modes, including when opencode's hidden
+# 32000 output cap is lifted by the oc launcher below. The engine refuses any
+# request whose prompt + max_tokens passes its window, and the prompt opencode
+# sends can reach its compaction threshold plus one worst step (oc-limits.sh):
+#   native: 173000 - 20000 + 43863 + 64000 = 260863 <= 262144
 #   1m:     700000 (compaction at 680000) + 200000 = 880000, against the four
 #           pools measured on the official image at 0.76 (2026-09-17 and 18:
 #           902,398 / 889,131 / 889,722 / 887,797). The margin over the worst of
@@ -1358,8 +1383,19 @@ if [ "$LANE" = "flash" ]; then
   OC_27B_MODE=native
   if grep -qs -- '--context-length 1010000' "$SGL_UNIT_PATH"; then OC_27B_MODE=1m; fi
 fi
+# Its pair comes from the same table, for the checkpoint that unit serves: FP8 has its
+# own 1M pair, and a copy of the numbers here had drifted from the table (it gave an FP8
+# box 700000/200000; found in review, 2026-09-24).
+OC_27B_CHOICE=stock
+case "$(grep -oE -- '--model-path [^ ]+' "$SGL_UNIT_PATH" 2>/dev/null | head -1 | cut -d' ' -f2 || true)" in
+  "$FP8_REPO"|"$UNCFP8_REPO") OC_27B_CHOICE=fp8 ;;
+esac
+OC_27B_PAIR="$("$REPO_DIR/oc-limits.sh" "$OC_27B_CHOICE" "$OC_27B_MODE")" \
+  || die "oc-limits.sh refused $OC_27B_CHOICE/$OC_27B_MODE (repo bug: please open an issue)"
+OC_27B_CTX="${OC_27B_PAIR%% *}"; OC_27B_OUT="$(echo "$OC_27B_PAIR" | cut -d' ' -f2)"
 OC_LANE="$LANE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
 OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$OC_27B_MODE" \
+OC_27B_CTX="$OC_27B_CTX" OC_27B_OUT="$OC_27B_OUT" \
 OC_KEEP="$OC_KEEP" OC_PIN="$OPENCODE_PIN" \
 OC_CONFIG_DIR="$CONFIG_DIR" python3 - <<'PYEOF' || die "could not write the opencode provider config"
 import json
@@ -1395,7 +1431,8 @@ if os.environ["OC_27B"] == "1":
         ctx, out, label = int(os.environ["OC_CTX"]), int(os.environ["OC_OUT"]), os.environ["OC_LABEL"]
     else:  # flash install on a box that also has the 27B unit: keep its own limits
         one_m = os.environ["OC_CONTEXT_MODE"] == "1m"
-        ctx, out, label = (700000, 200000, "local, 1M") if one_m else (194048, 64000, "local")
+        ctx, out = int(os.environ["OC_27B_CTX"]), int(os.environ["OC_27B_OUT"])
+        label = "local, 1M" if one_m else "local"
     providers["qwen38"] = prov("Qwen3.8-27B (DGX Spark)", "qwen3.8-27b",
                                f"Qwen3.8-27B NVFP4+DFlash2 ({label})", ctx, out)
 if os.environ["OC_FLASH"] == "1":
@@ -1560,11 +1597,14 @@ if [ "$NO_SERVICE" -eq 1 ]; then
 fi
 
 step "8/10 Installing the systemd service (sudo needed)"
-# The step below is the first of 24 sudo calls, and a dead timestamp used to
-# kill the install here with no message at all (set -e on a bare `sudo cp`,
-# reference box 2026-09-13, three times in one afternoon: background runs and
-# passwordless contexts have no tty for sudo to ask on). Refuse by name first.
-sudo -n true 2>/dev/null || die "sudo needs a fresh timestamp before the systemd step: run 'sudo -v', then re-run ./install.sh (completed steps are skipped)"
+# The steps below make most of this script's sudo calls, and a dead timestamp used to
+# kill the install here with no message at all (set -e on a bare `sudo cp`, reference
+# box 2026-09-13, three times in one afternoon: background runs and passwordless
+# contexts have no tty for sudo to ask on). The ticket asked for at step 1 can have
+# expired during the downloads (sudo keeps one 15 min), so it is renewed here: with a
+# terminal sudo asks again, without one `sudo -v` fails at once and the refusal names
+# the fix. `sudo -n` alone never asked, and a fresh one-liner died here after ~20 min.
+sudo -n true 2>/dev/null || sudo -v || die "sudo needs a fresh timestamp before the systemd step: run 'sudo -v', then re-run ./install.sh (completed steps are skipped)"
 UNIT_PATH="/etc/systemd/system/$UNIT_NAME"
 if [ -f "$UNIT_PATH" ]; then
   # Safety net for hand-tuned units: the previous unit stays recoverable.

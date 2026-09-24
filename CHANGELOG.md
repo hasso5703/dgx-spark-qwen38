@@ -1,5 +1,89 @@
 # Changelog
 
+## v1.18.7 (2026-09-24): a full review of v1.18.6, and the defects it found fixed with a test each
+
+A line-by-line review of the whole repo at v1.18.6 (code, templates, tests, CI and docs)
+found these, and each fix below comes with a test that fails on v1.18.6 and passes here,
+checked by running it against both.
+
+**The cockpit read an unlimited request body before any login.** `Content-Length: -1` passed
+the size cap (`-1 > cap` is false) and `rfile.read(-1)` read until the client hung up: 256 MiB
+sent with no session took the process from 22 to 281 MiB on the reference box, which serves
+the cockpit on 0.0.0.0, and running out of unified memory is a power cycle there. A length
+that is not plain digits is now a 400 before anything is read, and a value `int()` refused
+no longer drops the connection without an answer.
+
+**Proxy v6.24: the per-client identity wall covers every route.** It looked at POST requests
+under `/v1/` only, while the proxy attached the engine's own key to everything it relayed, so
+with no key at all `GET /server_info` (which carries the engine key in clear), `/generate`,
+`/flush_cache` and `/abort_request` reached the engine as the engine. Every route and method
+but `/health` now needs a listed key, a path still escaped after one decode is refused (SGLang
+decodes again before it routes), relayed `/server_info` answers lose the key fields in both
+modes, and an unreadable keys file says so. `docs/clients.md` installed that file owned by
+root, which the proxy (it runs as the user) cannot read, and put the engine key on an
+`Environment=` line `systemctl show` prints to anyone: both commands are fixed.
+
+**One engine at a time, for real.** The image unit had `Conflicts=` and no `After=`, and
+`Conflicts=` orders nothing: the box's journal shows the image lane and the 27B running side by
+side for 5, 6.7 and 60 s on 2026-09-23. With the text units in `After=`, systemd finishes the
+stop before the start, both ways (measured with two throwaway units on the box's systemd 255:
+3.0 s of overlap without, 0.02 s after the stop with). And a text unit that is failed or
+inactive while its container still runs (a stop past its timeout) is now an `orphan`, busy for
+the gate that refuses a second engine, instead of a "failed" that let the other lane start.
+
+**The cockpit's generation canary never ran.** Its own `/health` probe, a one-token
+generation every 30 s in these builds, counted as client activity, and the canary waits for a
+quiet minute: 0 canaries in the reference box's audit log. The probe's prefill line is now
+recognised and ignored, which also stops it writing its idle 0.00 over the pool guard's last
+real reading.
+
+**A fresh one-liner died at step 8 on DGX OS.** `sudo -n` never prompts, and nothing before
+step 8 called sudo, so a box where sudo wants a password stopped there after the downloads.
+sudo is now asked for at the end of step 1, before any pull, and renewed at step 8 with a
+prompt when the ticket expired meanwhile; without a terminal both fail at once and name the fix.
+
+**Two installer conversions went wrong on a flash box.** `CONTEXT_MODE=1m ./install.sh` got
+past its refusal (it read the lane before the convergence moved it to flash) and patched YaRN
+into the flash checkpoint's config; it is refused once the lane is final. And a plain re-run
+printed "UNIT_PATH: unbound variable" and put the engine back on 127.0.0.1 over the box's own
+bind, which lives in the flash launcher: it is read from there.
+
+**`switch-model.sh` downloads into the cache the engine mounts.** It took `HF_CACHE` from the
+environment or the default, so on a box installed with `HF_CACHE=/data/hf` the cockpit's
+Switch fetched and patched into `~/.cache/huggingface` while the unit kept mounting
+`/data/hf`, and the next start found no checkpoint. It reads the mount back, as install.sh does.
+
+**Removing the image lane removes only the image lane.** Both uninstall paths ran `rm -rf` on
+the whole `IMAGE_LANE_DIR`; a lane installed at `IMAGE_LANE_DIR=/mnt/data` took everything else
+in `/mnt/data` with it. They remove `venv/` and `sglang/`, and the directory once it is empty.
+
+**opencode's limits fit the engine's window, not just its pool.** SGLang refuses any request
+whose input + max_tokens passes its window, opencode asks for max_tokens = limit.output, and
+the prompt it sends reaches its compaction point plus one agent step (read in the 1.18.32
+binary and checked live). On a 262,144 window the flash pair 225,000/32,000 and the native pair
+194,048/64,000 fitted a prompt of exactly `context` and not that one, and `oc-fit-limits.py`,
+which only knew the pool, wrote 225,000/116,000 on a big flash pool, refused from a 146,144-token
+prompt on. The table is now 205,000/32,000 (flash) and 173,000/64,000 (27B native), the fit
+holds the window and on a native window never goes past the lane's pair, and the cockpit's
+verdict and autofit use the same rule. A flash install on an FP8 box also gave its 27B entry the
+NVFP4 1M pair: that entry is read from the table now. The collector that reports all this had
+lost its `@guard` to a function inserted above it, so one malformed opencode.json stopped a
+whole tier of the cockpit's sampler: it is back where it belongs.
+
+**Setup's "Fit the limits to this engine" button had no click handler** since 5d08667, while
+the banner sent people to it. A test now asks app.js for a handler of every action button
+outside the action bar.
+
+**`bench-agent.py` printed its TTFT slope 1,000 times too small** (seconds per 1k shown as ms),
+so a cache that is never hit read as one reused. The figures published from it are replaced by
+the bound the measured TTFT ranges set.
+
+**CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
+and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
+never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash
+flags step checked literals it had written itself instead of what install.sh renders. Each is
+fixed and was checked against the mutant that used to pass.
+
 ## v1.18.6 (2026-09-23): the engine's journal stops filling with deprecation warnings, and a prune cannot take the serving images
 
 **Every call of `/get_load` and `/get_server_info` writes a deprecation warning** in both

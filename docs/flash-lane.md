@@ -96,7 +96,7 @@ Measured on the reference box at the `context` tier, image
 | **prefix caching, 27K re-serve** | **12.0 s cold, 2.5 s cached (x4.8)**, 27,008 of 27,026 tokens from the cache |
 | decode, single stream | **47.9 on code, 47.1 on math, 30.9 on prose FR, 29.3 on prose EN** (median of three repeats after a discarded warm-up; 38.8 / 36.7 / 26.5 on the v1.6 overlay) |
 | decode, 4 streams | **71.6 tok/s aggregate**, 17.9-18.7 per stream |
-| **agent loop** (`./bench-agent.py`, 8 turns on an 8K prefix, work pinned at 130 tokens) | **27.0 ms/tok** median, TTFT flat at 0.31-0.34 s, **-1 ms of TTFT per 1,000 added prompt tokens**: the prefix cache is being reused, with speculation on |
+| **agent loop** (`./bench-agent.py`, 8 turns on an 8K prefix, work pinned at 130 tokens) | **27.0 ms/tok** median, TTFT flat at 0.31-0.34 s, **within ±35 ms of TTFT per 1,000 added prompt tokens** (where a cache that is not reused reads about 580): the prefix cache is being reused, with speculation on |
 | **long-context retrieval** | **3/3 exact at ~120K** and **1/1 exact at 200,058 tokens** (`./needle.sh --mem`, fresh passphrase each), no run of token id 0 anywhere |
 | quality canaries | 4/4 (merge, logic, French, primes) |
 | prefill, cold | ~2,250 tok/s at 27K, ~1,960 tok/s at 200K |

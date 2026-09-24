@@ -168,8 +168,19 @@ case "$CHOICE" in
     # drift: the proxy was charging every image a flat 4,096 tokens where the engine
     # charges 880 to 1,562 for an agent screenshot, so a session holding 24 of them
     # was refused ~61,000 tokens early. Fixed in the proxy (v6.15).
+    #
+    # And the answer has to fit beside that prompt: the engine refuses any request whose
+    # input + max_tokens passes its 262,144 window (validate_total_tokens, on in the
+    # flash image; checked 2026-09-24), and opencode asks for max_tokens = OUT. So the
+    # same threshold + worst step, with the answer on top, must fit the window:
+    #
+    #     205,000 - 20,000 + 43,863 + 32,000 = 260,863  <=  262,144
+    #
+    # 225,000 met the ceiling and not this: a prompt past 230,144 was refused by the
+    # engine, in the band one large step reaches after the threshold (found in review,
+    # 2026-09-24). oc-fit-limits.py applies the same rule after each boot.
     case "$TIER" in
-      context)     CTX=225000; OUT=32000 ;;   # 257,000 <= the pool; keeps one whole agent step between compaction and the 250,000 ceiling (see above)
+      context)     CTX=205000; OUT=32000 ;;   # threshold + one worst step + the answer fits the 262,144 window, and stays under the 250,000 ceiling (see above)
       concurrency) CTX=100000; OUT=16000 ;;   # 116,000 worst case. Measured 2026-09-12
       # with replayssm-spec the 8-request pool came out at 468,480 (not 129,792),
       # so these limits are conservative on this box; they stay until concurrent-
@@ -206,7 +217,11 @@ case "$CHOICE" in
         esac
         LABEL="local, 1M"
         ;;
-      native) CTX=194048; OUT=64000; LABEL="local" ;;
+      # 262,144 window: threshold + one worst step + the answer must fit it, the rule the
+      # flash context tier explains above (173,000 - 20,000 + 43,863 + 64,000 = 260,863).
+      # 194,048 fitted 64,000 beside a prompt of exactly 194,048, not beside the one a
+      # large step brings past compaction (found in review, 2026-09-24).
+      native) CTX=173000; OUT=64000; LABEL="local" ;;
       *) printf 'oc-limits: unknown context mode "%s"\n' "$MODE" >&2; exit 2 ;;
     esac
     ;;

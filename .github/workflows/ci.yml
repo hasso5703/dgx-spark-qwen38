@@ -16,12 +16,27 @@ jobs:
 
       - name: Shell syntax
         run: |
-          for f in get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/install-agent.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh; do
-            bash -n "$f"
-          done
+          # Every tracked shell script, found rather than listed: the hand-kept list left
+          # out seven, install-image.sh among them, which ./install.sh --with-image runs and
+          # whose tests stop before its end (found in review, 2026-09-24).
+          files=$(git ls-files | while read -r f; do case "$f" in
+                    *.sh) echo "$f" ;;
+                    *.template|*.md|*.py|*.js|*.json|*.html|*.css|*.txt) ;;
+                    *) [ -f "$f" ] && head -1 "$f" | grep -qE '^#!.*\b(ba)?sh\b' && echo "$f" ;;
+                  esac; done)
+          [ "$(echo "$files" | wc -l)" -ge 21 ] || { echo "found only: $files"; exit 1; }
+          for f in $files; do bash -n "$f"; done
+          echo "$(echo "$files" | wc -l) scripts parse"
 
       - name: shellcheck (warning severity)
-        run: shellcheck -S warning get.sh install.sh run.sh switch-model.sh uninstall.sh bench.sh bench-matrix.sh flash-sglang/build-image.sh extras/cake-ingress/cake-ingress extras/cake-ingress/setup.sh dashboard/install-dashboard.sh dashboard/install-agent.sh dashboard/pyspy-scheduler.sh dashboard/tests/smoke-http.sh
+        run: |
+          files=$(git ls-files | while read -r f; do case "$f" in
+                    *.sh) echo "$f" ;;
+                    *.template|*.md|*.py|*.js|*.json|*.html|*.css|*.txt) ;;
+                    *) [ -f "$f" ] && head -1 "$f" | grep -qE '^#!.*\b(ba)?sh\b' && echo "$f" ;;
+                  esac; done)
+          [ "$(echo "$files" | wc -l)" -ge 21 ] || { echo "found only: $files"; exit 1; }
+          shellcheck -S warning $files
 
       - name: opencode plugin syntax (node)
         run: node --check extras/opencode/auto-continue.js
@@ -395,11 +410,24 @@ jobs:
                 -e "s|__ENGINE_BIND__|0.0.0.0|g" -e "s|__PROXY_BIND__|0.0.0.0|g" \
                 -e "s|__HF_CACHE__|/hf|g" -e "s|__DRAFT2_REV__|deadbeef|g" -e "s|__DRAFT2_REPO__|org/draft|g" -e "s|__DRAFT2_QUANT__|modelopt_fp4|g" -e "s|__DRAFT2_TOKENS__|16|g" -e "s|__PLE_DIR__|/ple|g" -e "s|__PROMPT_CEILING__|0|g" \
                 -e "s|__KV_CACHE_ARGS__||g" -e "s|__MODEL_REV_ARGS__|--revision cafe|g" -e "s|__MODEL_REV__|cafe|g" -e "s|__MODEL__|org/repo|g" \
-              -e "s|__FLASH_QUANT_ARGS__|--quantization modelopt_fp4 --speculative-draft-model-quantization unquant |g" \
-              -e "s|__FLASH_MEM_FRACTION__|0.85|g" -e "s|__PLE_RSS_BUDGET_GB__|8|g" \
-              -e "s|__SPEC_TOKEN_MAP_LINE__|TIER+=(--speculative-token-map /out/token-map-65536.pt)|g" \
-              -e "s|__FLASH_TIER_ARGS__|--max-running-requests 4 --max-mamba-cache-size 20 --mamba-radix-cache-strategy extra_buffer --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4|g" "$1"
+              -e "s|__FLASH_QUANT_ARGS__|$FLASH_QUANT_ARGS|g" \
+              -e "s|__FLASH_MEM_FRACTION__|$FLASH_MEM_FRACTION|g" -e "s|__PLE_RSS_BUDGET_GB__|8|g" \
+              -e "s|__SPEC_TOKEN_MAP_LINE__|$SPEC_TOKEN_MAP_LINE|g" \
+              -e "s|__FLASH_TIER_ARGS__|$FLASH_TIER_ARGS|g" "$1"
           }
+          # The flash values the installer really renders, read from install.sh itself.
+          # They were literals written here, so the greps below checked this step's own
+          # strings: a 0.95 fraction, a tier that truncates, or one without
+          # --speculative-eagle-topk 1 in install.sh all stayed green (found in review,
+          # 2026-09-24).
+          eval "$(sed -n '/^resolve_flash_checkpoint_args() {/,/^}/p' install.sh)"
+          eval "$(sed -n '/^resolve_flash_tier_args() {/,/^}/p' install.sh)"
+          eval "$(grep -E '^(FLASH_MEM_FRACTION|FLASH_REPLAYSSM_SPEC|SPEC_TOKEN_MAP_SIZE|TOKEN_MAP_NAME)=' install.sh)"
+          eval "$(grep -oE 'SPEC_TOKEN_MAP_LINE="TIER\+=\(--speculative-token-map /out/\$TOKEN_MAP_NAME\)"' install.sh)"
+          MODEL_CHOICE=flash; resolve_flash_checkpoint_args
+          FLASH_TIER=context; resolve_flash_tier_args >/dev/null
+          [ -n "$FLASH_TIER_ARGS" ] && [ -n "$FLASH_QUANT_ARGS" ] && [ -n "$SPEC_TOKEN_MAP_LINE" ] \
+            || { echo "could not read the flash values out of install.sh"; exit 1; }
           render qwen38-sglang-1m.service.template | grep -q -- '--context-length 1010000'
           render qwen38-sglang-1m.service.template | grep -q 'HF_HUB_OFFLINE=1'
           render qwen38-sglang.service.template | grep -q 'Restart=always'
@@ -454,6 +482,12 @@ jobs:
             # comments are allowed to name the flag; a live line is not
             ! grep -v '^[[:space:]]*#' "$f" | grep -q -- '--allow-auto-truncate' \
               || { echo "$f truncates an over-long prompt silently instead of refusing it"; exit 1; }
+          done
+          # and none of the tiers install.sh renders into the launcher carries it either
+          for tier in context concurrency throughput; do
+            ( FLASH_TIER=$tier; resolve_flash_tier_args >/dev/null
+              ! render qwen38-flash-launch.sh.template | grep -v '^[[:space:]]*#' | grep -q -- '--allow-auto-truncate' ) \
+              || { echo "the $tier tier renders --allow-auto-truncate into the launcher"; exit 1; }
           done
           grep -q -- '--speculative-draft-model-quantization unquant' /tmp/flash.rendered
           grep -q -- '--api-key' /tmp/flash.rendered
@@ -645,16 +679,16 @@ jobs:
           # use it: install.sh at install time, switch-model.sh at switch time. The
           # switch did not write them at all until 2026-09-08.
           l() { ./oc-limits.sh "$@"; }
-          [ "$(l stock native)" = "194048 64000 local" ] || { echo "27B native limits drifted"; exit 1; }
+          [ "$(l stock native)" = "173000 64000 local" ] || { echo "27B native limits drifted"; exit 1; }
           [ "$(l stock 1m)" = "700000 200000 local, 1M" ] || { echo "27B 1m limits drifted"; exit 1; }
           [ "$(l uncensored 1m)" = "700000 200000 local, 1M" ] || { echo "uncensored 1m drifted"; exit 1; }
           [ "$(l fp8 1m)" = "480000 160000 local, 1M" ] || { echo "fp8 1m limits drifted"; exit 1; }
           [ "$(l uncensored-fp8 1m)" = "480000 160000 local, 1M" ] || { echo "uncensored-fp8 1m drifted"; exit 1; }
-          [ "$(l fp8 native)" = "194048 64000 local" ] || { echo "fp8 native drifted"; exit 1; }
+          [ "$(l fp8 native)" = "173000 64000 local" ] || { echo "fp8 native drifted"; exit 1; }
           # Every flash target, every tier: the default tier was never asserted
           # before (the old gate fell through to the throughput arm).
           for t in flash flash-uncensored flash-nvda; do
-            [ "$(l "$t" context)" = "225000 32000 local" ] || { echo "$t/context drifted"; exit 1; }
+            [ "$(l "$t" context)" = "205000 32000 local" ] || { echo "$t/context drifted"; exit 1; }
             [ "$(l "$t" concurrency)" = "100000 16000 local" ] || { echo "$t/concurrency drifted"; exit 1; }
             [ "$(l "$t" throughput)" = "110000 32000 local" ] || { echo "$t/throughput drifted"; exit 1; }
           done
@@ -673,8 +707,8 @@ jobs:
           [ "$(l flash --from "$tmp/l8.sh")" = "100000 16000 local" ] || { echo "derived tier (8) wrong"; exit 1; }
           [ "$(l flash --from "$tmp/l24.sh")" = "110000 32000 local" ] || { echo "derived tier (24) wrong"; exit 1; }
           [ "$(l stock --from "$tmp/u1m.service")" = "700000 200000 local, 1M" ] || { echo "derived 1m wrong"; exit 1; }
-          [ "$(l stock --from "$tmp/unat.service")" = "194048 64000 local" ] || { echo "derived native wrong"; exit 1; }
-          [ "$(l flash --from /nonexistent)" = "225000 32000 local" ] || { echo "a missing invocation must fall back to the default tier"; exit 1; }
+          [ "$(l stock --from "$tmp/unat.service")" = "173000 64000 local" ] || { echo "derived native wrong"; exit 1; }
+          [ "$(l flash --from /nonexistent)" = "205000 32000 local" ] || { echo "a missing invocation must fall back to the default tier"; exit 1; }
           out="$(l flash --from /nonexistent 2>/tmp/oclim.err)"; rc=$?
           [ "$rc" = "0" ] || { echo "a missing invocation must not fail the switch"; exit 1; }
           grep -q "not a file" /tmp/oclim.err || { echo "a missing invocation must say so on stderr"; exit 1; }
@@ -705,9 +739,21 @@ jobs:
           # (2,156 steps, opencode's session store, 2026-09). 190,000 did not
           # leave it and sessions died mid-conversation with a proxy 400.
           CEILING=250000; RESERVE=20000; WORST_STEP=43863
-          read -r FCTX _ _ <<<"$(l flash context)"
+          read -r FCTX FOUT _ <<<"$(l flash context)"
           [ $(( FCTX - RESERVE + WORST_STEP )) -le "$CEILING" ] \
             || { echo "flash/context $FCTX leaves no room for one agent step under the $CEILING ceiling"; exit 1; }
+          # The engine's own window holds that same prompt plus the answer: SGLang refuses
+          # any request whose input + max_tokens passes context_length, and opencode asks
+          # for max_tokens = limit.output. 225,000/32,000 met the ceiling and not this, so a
+          # prompt past 230,144 was refused (found in review, 2026-09-24). Every pair served
+          # on a 262,144 window has to hold it.
+          WINDOW=262144
+          for pair in "flash context" "flash concurrency" "flash throughput" "stock native" "fp8 native"; do
+            read -r C O _ <<<"$(l $pair)"
+            R=$(( O < RESERVE ? O : RESERVE ))
+            [ $(( C - R + WORST_STEP + O )) -le "$WINDOW" ] \
+              || { echo "$pair: $C/$O puts $(( C - R + WORST_STEP + O )) in front of the $WINDOW window"; exit 1; }
+          done
           # And the number the installer and the switch actually write must be that
           # same ceiling, or the table is sized against a ceiling nothing enforces.
           for f in install.sh switch-model.sh; do
@@ -738,7 +784,7 @@ jobs:
           done
           # The fit tool must land on the same number as the table, or one click
           # of the cockpit's fit button quietly restores the bug.
-          FIT=$(python3 -c "import importlib.util as i; s = i.spec_from_file_location('f', 'oc-fit-limits.py'); m = i.module_from_spec(s); s.loader.exec_module(m); print(m.fit(564352, 250000)[0])")
+          FIT=$(python3 -c "import importlib.util as i; s = i.spec_from_file_location('f', 'oc-fit-limits.py'); m = i.module_from_spec(s); s.loader.exec_module(m); print(m.fit(564352, 250000, 262144, ($FCTX, $FOUT))[0])")
           [ "$FIT" = "$FCTX" ] \
             || { echo "oc-fit-limits fits $FIT where the table says $FCTX"; exit 1; }
           # And both callers go through it, rather than carrying a second copy.
@@ -803,10 +849,11 @@ jobs:
             rm -f /tmp/octest/opencode.json; mkdir -p /tmp/octest
             OC_LANE="$1" OC_27B="$2" OC_FLASH="$3" OC_PORT=30001 OC_CTX="$4" OC_OUT="$5" \
             OC_LABEL=local OC_CONTEXT_MODE="$6" OC_CONFIG_DIR=/tmp/octest \
+            OC_27B_CTX="$(./oc-limits.sh stock "$6" | cut -d' ' -f1)" OC_27B_OUT="$(./oc-limits.sh stock "$6" | cut -d' ' -f2)" \
             OC_KEEP="$(./oc-limits.sh --preserve "$4")" \
             python3 <(sed -n '/^OC_LANE=/,/^PYEOF$/p' install.sh | sed -n '/^import json$/,/^PYEOF$/p' | sed '$d')
           }
-          gen 27b 1 0 194048 64000 native
+          gen 27b 1 0 173000 64000 native
           python3 - <<'PY'
           import json
           c = json.load(open("/tmp/octest/opencode.json"))
@@ -816,7 +863,7 @@ jobs:
           assert c["model"] == "qwen38/qwen3.8-27b"
           # the compaction block is sized from the installed target, never left to
           # opencode's 15,000 default (which would summarise most of this window)
-          assert c["compaction"] == {"preserve_recent_tokens": 43000, "prune": True}, c["compaction"]
+          assert c["compaction"] == {"preserve_recent_tokens": 38000, "prune": True}, c["compaction"]
           PY
           gen flash 0 1 110000 32000 native
           python3 - <<'PY'
@@ -1127,7 +1174,10 @@ jobs:
         run: |
           cd flash-sglang && sha256sum -c MANIFEST.sha256
           # the two upstream-fix edits can never silently vanish
-          ! grep -q 'is_sm100_supported() or is_sm120_supported()' qwen_sparse_attn_backend.py
+          # `! cmd` alone never fails a step under bash -e (the shell ignores a negated
+          # status), so this line checked nothing until v1.18.7 (found in review, 2026-09-24)
+          ! grep -q 'is_sm100_supported() or is_sm120_supported()' qwen_sparse_attn_backend.py \
+            || { echo "the widened sm120 condition is back in qwen_sparse_attn_backend.py"; exit 1; }
           grep -q 'qsa.sm121_varlen' qwen_sparse_attn_backend.py
           grep -q 'kda_kernels.qwen38_qsa_sm121' qwen_sparse_attn_backend.py
           test -f sm121_varlen.py
@@ -1141,34 +1191,58 @@ jobs:
 
       - name: Every privileged call of switch-model.sh is in the cockpit allowlist
         run: |
-          # The cockpit runs switch-model.sh under an exact-argv sudoers allowlist.
-          # "qwen38-sglang" is not "qwen38-sglang.service" to sudo, and a blanket
-          # NOPASSWD hid that mismatch until the allowlist was tightened. Cross-check
-          # the two files instead of finding out from a failed switch.
+          # The cockpit runs switch-model.sh under an exact-argv sudoers allowlist, so a
+          # call that differs by one character stops the Switch at a password prompt.
+          # Every sudo command of the script is rendered to the argv sudo will match,
+          # its variables substituted, and must be a line of the allowlist, character for
+          # character. The regexes this replaces never saw `daemon-reload` and only looked
+          # for the staging paths as substrings (found in review, 2026-09-24).
           python3 - <<'PY'
-          import re, sys, pathlib
+          import re, shlex, sys, pathlib
           script = pathlib.Path("switch-model.sh").read_text()
           alw = pathlib.Path("dashboard/sudoers-cockpit.template").read_text()
-          allowed = set(re.findall(r"NOPASSWD:\s*(/usr/bin/systemctl \S+ \S+)", alw))
-          names = dict(re.findall(r'(TARGET_UNIT_NAME|OTHER_UNIT_NAME)="([^"]+)"', script))
-          units = set(re.findall(r'UNIT_NAME="([^"]+)"', script))
-          bad = []
-          for verb, var in re.findall(r"sudo systemctl (\w+) \"\$(\w+)\"", script):
-              if var.endswith("UNIT_NAME"):
-                  for unit in units:
-                      want = f"/usr/bin/systemctl {verb} {unit}"
+          allowed = {m.strip() for m in re.findall(r"NOPASSWD:\s*(.+)$", alw, re.M)}
+          stage = dict(re.findall(r'^(STAGE_UNIT|STAGE_CEIL)="\$CONFIG_DIR/([^"]+)"', script, re.M))
+          units = {"qwen38-sglang.service", "qwen38-flash.service"}
+          values = {
+              "TEXT_UNIT_NAME": units, "TARGET_UNIT_NAME": units, "OTHER_UNIT_NAME": units,
+              "IMAGE_UNIT_NAME": {"qwen38-image.service"},
+              "TARGET_UNIT": {re.search(r'^SGL_UNIT="([^"]+)"', script, re.M).group(1)},
+              "STAGE_UNIT": {"__HOME__/.config/qwen38/" + stage["STAGE_UNIT"]},
+              "STAGE_CEIL": {"__HOME__/.config/qwen38/" + stage["STAGE_CEIL"]},
+          }
+          seen, bad = 0, []
+          for raw in script.splitlines():
+              line = raw.split(" #", 1)[0].strip()
+              if not line or line.startswith(("#", "echo ")):
+                  continue
+              for part in re.split(r"\|\||&&|\|", line):
+                  part = part.strip().rstrip("\\").strip()
+                  if not part.startswith("sudo "):
+                      continue
+                  words = [w for w in shlex.split(part)[1:] if not re.fullmatch(r"\d?>(&\d|/dev/null)", w)]
+                  names = sorted({v for w in words for v in re.findall(r"\$\{?(\w+)\}?", w)})
+                  unknown = [n for n in names if n not in values]
+                  if unknown:
+                      bad.append(f"{part}  (no known value for {', '.join(unknown)}: add it to this gate)")
+                      continue
+                  combos = [dict()]
+                  for n in names:
+                      combos = [{**c, n: v} for c in combos for v in sorted(values[n])]
+                  for c in combos:
+                      argv = [re.sub(r"\$\{?(\w+)\}?", lambda m: c[m.group(1)], w) for w in words]
+                      want = " ".join(["/usr/bin/" + argv[0]] + argv[1:])
+                      seen += 1
                       if want not in allowed:
                           bad.append(want)
-          for line in re.findall(r"sudo systemctl (\w+) (qwen38-[\w.-]+)", script):
-              want = f"/usr/bin/systemctl {line[0]} {line[1]}"
-              if want not in allowed:
-                  bad.append(want)
+          if not seen:
+              print("found no sudo call in switch-model.sh: the parser is broken"); sys.exit(1)
           if bad:
-              print("not in dashboard/sudoers-cockpit.template:")
+              print("not in dashboard/sudoers-cockpit.template, character for character:")
               for b in sorted(set(bad)):
                   print("  " + b)
               sys.exit(1)
-          print(f"switch-model.sh privileged calls: all covered ({len(allowed)} allowlist entries)")
+          print(f"switch-model.sh: {seen} privileged argv, every one an allowlist line")
           PY
 
       - name: Sudoers allowlist has no wildcards and matches its callers

@@ -330,7 +330,12 @@ none of this repo's other numbers measure.
 | cold turn | 63.4 ms/tok, TTFT 4.65 s | 354.6 ms/tok, TTFT 8.70 s |
 | **loop median** | **27.0 ms/tok** | **40.6** (unpinned run) |
 | TTFT in the loop | 0.31-0.34 s | 0.30-0.35 s |
-| **TTFT per 1,000 added prompt tokens** | **-1 ms** | **+0 ms** |
+| **TTFT per 1,000 added prompt tokens** | **within ±35 ms** | **within ±85 ms** |
+
+bench-agent.py printed this row 1,000 times too small until v1.18.7 (seconds per 1k shown
+as milliseconds), so the -1 ms and +0 ms first published here are replaced by the bound
+the TTFT ranges above set over the loop's prompt growth. A cache that is not reused would
+read about 580 ms per 1k on this lane, the cold turn's own prefill rate (4.65 s for 8K).
 
 The last row is the one that matters. A prefix cache that is being reused keeps
 it near zero: the added tokens are the only ones prefilled. On vLLM a third
@@ -358,7 +363,7 @@ unit and measured with the same probes:
 | quality canaries | 4/4 |
 | needle at ~120K | **1/1 exact**, host memory floor 14.7 GiB |
 | prefix caching, 27K re-serve | 13.0 s cold, 2.2 s cached (x5.9) |
-| agent loop, 6 turns on 8K | median 55.1 ms/tok unpinned, TTFT flat (-2 ms per 1k) |
+| agent loop, 6 turns on 8K | median 55.1 ms/tok unpinned, TTFT flat (the per-1k slope printed then is not quoted: the tool showed it 1,000 times too small until v1.18.7) |
 
 ### Open: code decode reads 41-44 on a lane that has been up half a day (2026-09-10)
 

@@ -171,13 +171,23 @@ One key, one trust realm is the default, and it is fine for one operator.
 To know which client sent what (and to stop sharing a single secret):
 
 ```bash
-sudo mkdir -p /etc/qwen38 && sudo install -m 0600 keys.json /etc/qwen38/client-keys.json
+sudo mkdir -p /etc/qwen38
+# the proxy runs as you and reads this file itself: it must be yours
+sudo install -m 0600 -o "$(id -un)" -g "$(id -gn)" keys.json /etc/qwen38/client-keys.json
+# the engine key goes in a file systemd reads, never in a unit line anyone can list
+printf 'QWEN38_UPSTREAM_API_KEY=%s\n' "$(cat ~/.config/qwen38/api-key)" \
+  | sudo install -m 0600 /dev/stdin /etc/qwen38/upstream.env
 sudo systemctl edit qwen38-keepalive
 [Service]
 Environment=QWEN38_CLIENT_KEYS_FILE=/etc/qwen38/client-keys.json
-Environment=QWEN38_UPSTREAM_API_KEY=<the engine key from ~/.config/qwen38/api-key>
+EnvironmentFile=/etc/qwen38/upstream.env
 sudo systemctl restart qwen38-keepalive
 ```
+
+Until v1.18.7 this page installed the keys file owned by root, which the proxy (it runs
+as your user) cannot read: it refused to start and every client of :30001 lost it. It
+also put the engine key on an `Environment=` line, which `systemctl show` prints to any
+local user; an `EnvironmentFile=` is read by systemd as root and is not printed.
 
 `keys.json` is `{"<bearer-token>": "<label>", ...}`; each client sends its
 own token as the Bearer value. Identity is two keys, not one, and the two
@@ -188,12 +198,19 @@ upstream on relays and abort calls alike). Without the upstream key the
 client's token goes through verbatim and meets the engine's own key check
 there, which is correct only for an engine with no check of its own: the
 proxy warns about the combination at startup. A request whose token is not
-listed gets a 401 in its own dialect and never reaches the engine; the label
-appears on every journal line of the request (`journalctl -u
-qwen38-keepalive`), so per-client throughput and refusals become readable
-without a telemetry component. `/health` stays open for monitoring. A
-missing, empty or malformed keys file stops the unit at start: the wall is
-present or the unit is down, never silently absent.
+listed gets a 401 in its own dialect and never reaches the engine, on every
+route and every method; `/health` alone stays open, for monitoring. Until
+v1.18.7 the wall only looked at POST requests under `/v1/`, while the proxy
+attached the engine's key to everything it relayed: GET `/server_info` (which
+carries the engine key in clear), `/generate`, `/flush_cache` and
+`/abort_request` went through with no key at all, and so did a path escaped
+twice (`/%2576%2531/...`), which SGLang decodes once more before routing. Since
+v1.18.7 a path still escaped after one decode is refused, and `/server_info` is
+relayed without the engine's key fields in either mode. The label appears on
+every journal line of the request (`journalctl -u qwen38-keepalive`), so
+per-client throughput and refusals become readable without a telemetry
+component. A missing, empty, malformed or unreadable keys file stops the unit
+at start: the wall is present or the unit is down, never silently absent.
 
 ## Typed decisions: TypeSafe SDK and HTTP (v6.19)
 

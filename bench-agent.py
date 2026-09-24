@@ -250,7 +250,11 @@ def main() -> None:
     # A prefix cache that works keeps TTFT flat while the prompt grows. One that
     # is bypassed makes TTFT track the prompt, which is the failure this measures.
     if loop[-1]["prompt"] > loop[0]["prompt"]:
-        per_1k = 1000.0 * growth / (loop[-1]["prompt"] - loop[0]["prompt"])
+        # growth is in seconds: 1,000 for the milliseconds, 1,000 for the thousand
+        # tokens. It was 1,000 alone until v1.18.7, which printed seconds per 1k as
+        # milliseconds, so a cache that was never hit read as one reused (found in
+        # review, 2026-09-24; tests/test_bench_agent_slope.py).
+        per_1k = 1_000_000.0 * growth / (loop[-1]["prompt"] - loop[0]["prompt"])
         print(f"TTFT per 1k added prompt tokens  {per_1k:+.0f} ms")
         print("A prefix cache that is being reused keeps this near zero: the added "
               "tokens are\nthe only ones prefilled. A number that tracks the full "

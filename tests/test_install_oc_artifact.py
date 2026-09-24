@@ -4,8 +4,10 @@
 oc and the Agent tab load this file over the user's own (OPENCODE_CONFIG), so its
 numbers are the ones they run on. A flash install runs in native mode and used that mode
 for the 27B block too: on a box whose 27B serves 1M, the block came out at the native
-194048/64000 (reference box, 2026-09-23). These run the installer's own lines, as
-written, in a throwaway config dir."""
+pair (reference box, 2026-09-23). The 27B block now comes from oc-limits.sh, for the
+checkpoint and mode its unit serves: a copy of the numbers here had drifted from the
+table and gave an FP8 box the NVFP4 1M pair (found in review, 2026-09-24). These run the
+installer's own lines, as written, in a throwaway config dir.""" 
 import json
 import pathlib
 import subprocess
@@ -23,16 +25,20 @@ def block() -> str:
     return text[start:end]
 
 
-def generate(lane, mode, unit_ctx=None, flash_unit=False):
+PINS = "\n".join(line for line in INSTALL.read_text().splitlines()
+                 if line.startswith(("FP8_REPO=", "UNCFP8_REPO=")))
+
+
+def generate(lane, mode, unit_ctx=None, flash_unit=False, model="RadixArk/Qwen3.8-27B-NVFP4"):
     t = pathlib.Path(tempfile.mkdtemp(prefix="oc-art-"))
     sgl = t / "qwen38-sglang.service"
     if unit_ctx:
-        sgl.write_text(f"ExecStart=... --context-length {unit_ctx} ...\n")
+        sgl.write_text(f"ExecStart=... --model-path {model} --context-length {unit_ctx} ...\n")
     flash = t / "qwen38-flash.service"
     if flash_unit:
         flash.write_text("x\n")
-    ctx, out = ("225000", "32000") if lane == "flash" else ("700000", "200000")
-    script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
+    ctx, out = ("205000", "32000") if lane == "flash" else ("700000", "200000")
+    script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n" + PINS + "\n"
               f'LANE={lane}; CONTEXT_MODE={mode}; SGL_UNIT_PATH="{sgl}"; FLASH_UNIT_PATH="{flash}"\n'
               f'REPO_DIR="{REPO}"; CONFIG_DIR="{t}"; OC_PORT=30001; OC_CTX={ctx}; OC_OUT={out}\n'
               'OC_LABEL=local; OPENCODE_PIN=1\n' + block())
@@ -47,11 +53,20 @@ class EachLaneKeepsItsOwnLimits(unittest.TestCase):
     def test_a_flash_install_keeps_a_1m_27b_at_its_1m_limits(self):
         lim = generate("flash", "native", unit_ctx=1010000)
         self.assertEqual(lim["qwen38"], {"context": 700000, "input": 700000, "output": 200000})
-        self.assertEqual(lim["flashnext"]["context"], 225000)
+        self.assertEqual(lim["flashnext"]["context"], 205000)
 
     def test_a_flash_install_keeps_a_native_27b_native(self):
         lim = generate("flash", "native", unit_ctx=262144)
-        self.assertEqual(lim["qwen38"], {"context": 194048, "input": 194048, "output": 64000})
+        self.assertEqual(lim["qwen38"], {"context": 173000, "input": 173000, "output": 64000})
+
+    def test_a_flash_install_keeps_an_fp8_27b_at_the_fp8_pair(self):
+        lim = generate("flash", "native", unit_ctx=1010000, model="Qwen/Qwen3.8-27B-FP8")
+        self.assertEqual(lim["qwen38"], {"context": 480000, "input": 480000, "output": 160000})
+
+    def test_the_27b_block_is_read_from_the_table(self):
+        # the numbers themselves live in oc-limits.sh, once
+        self.assertNotIn("(194048, 64000", INSTALL.read_text())
+        self.assertNotIn("(700000, 200000", INSTALL.read_text())
 
     def test_a_flash_only_box_lists_no_27b(self):
         self.assertNotIn("qwen38", generate("flash", "native"))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.23). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.24). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -28,6 +28,13 @@ Five roles, nothing else:
    yes/no probabilities from the model it already runs, with nothing generated and
    nothing parsed. The "System One endpoint" section below carries the design and
    its receipts.
+
+v6.24: the identity wall covers every route and every method but /health (it looked at
+POST /v1/... only, while the engine's key went upstream on everything relayed, so GET
+/server_info, /generate, /flush_cache and /abort_request needed no listed key); a path still
+escaped after one decode is refused, since SGLang decodes again before it routes; relayed
+/server_info answers lose the engine's key fields in both modes; and an unreadable keys file
+says so instead of "missing, malformed or empty". Found in review, 2026-09-24.
 
 v6.23: the pool is read from /server_info, and from the deprecated /get_server_info only
 on an engine that answers 404 to the new route. SGLang logs a deprecation warning for each
@@ -281,6 +288,14 @@ if CLIENT_KEYS_FILE:
     try:
         with open(CLIENT_KEYS_FILE) as _kf:
             CLIENT_KEYS = json.load(_kf)
+    except PermissionError:
+        # The proxy runs as the box's user and reads this file itself: one installed
+        # owned by root (as docs/clients.md said to until v1.18.7) stops the unit here.
+        sys.stderr.write(f"[proxy] QWEN38_CLIENT_KEYS_FILE={CLIENT_KEYS_FILE} is not readable "
+                         f"by this user; install it owned by them (sudo install -m 0600 -o "
+                         f"$(id -un) -g $(id -gn) ...). Refusing to start with the identity "
+                         f"wall silently off\n")
+        sys.exit(1)
     except Exception:
         CLIENT_KEYS = None
     if not isinstance(CLIENT_KEYS, dict) or not CLIENT_KEYS:
@@ -303,6 +318,33 @@ def _upstream_auth(handler):
     if CLIENT_KEYS and UPSTREAM_API_KEY:
         return "Bearer " + UPSTREAM_API_KEY
     return handler.headers.get("Authorization")
+
+
+# The one route the identity wall leaves open: monitoring. Every other route needs a
+# listed key, whatever its method or prefix (v6.24). The wall used to look at POST
+# /v1/... only, while _upstream_auth attaches the engine's key to everything relayed.
+OPEN_ROUTES = frozenset({"/health"})
+SERVER_INFO_ROUTES = frozenset({"/server_info", "/get_server_info"})
+KEY_FIELDS = ("api_key", "admin_api_key")
+
+
+def strip_key_fields(data):
+    """A server-info answer without the engine's own key fields. SGLang returns its
+    serving key in clear there, at the top level and in every internal state (seen on
+    the reference box, 2026-09-24). A caller of this proxy has no use for it: behind
+    the wall it is the one secret a named client must not learn, and without the wall
+    the caller already holds it. Anything that is not a JSON object is left as it is."""
+    try:
+        doc = json.loads(data)
+    except Exception:
+        return data
+    if not isinstance(doc, dict):
+        return data
+    holders = [doc] + [s for s in doc.get("internal_states") or [] if isinstance(s, dict)]
+    for holder in holders:
+        for field in KEY_FIELDS:
+            holder.pop(field, None)
+    return json.dumps(doc).encode()
 
 
 # Tool-schema guard (v6.13): SGLang validates every tool's parameter schema with
@@ -1220,6 +1262,11 @@ def canonical_path(path):
     except UnicodeDecodeError:
         return path, True
     if "?" in head or "#" in head:
+        return path, True
+    if "%" in head:
+        # Still escaped after one decode: SGLang decodes again before it routes, so the
+        # path checked here would not be the path served (v6.24). No route this proxy
+        # serves or relays has a literal "%" in it.
         return path, True
     if any(c <= " " or c >= "\x7f" for c in head):
         # Three bugs at once, all found by review after the decode landed. A decoded space
@@ -2437,19 +2484,8 @@ class H(BaseHTTPRequestHandler):
                                               "fragment or control character and is refused"}}).encode())
             self._done("400 suspect path"); return
         log(f"{self._peer} -> {self.command} {self.path.split('?')[0]} body={n0}b")
-        if CLIENT_KEYS and self.path.split('?')[0].startswith("/v1/"):
-            auth = (self.headers.get("Authorization") or "").strip()
-            label = CLIENT_KEYS.get(auth[7:].strip()) if auth.startswith("Bearer ") else None
-            if label is None:
-                log(f"{self._peer} REFUSED unknown client key on {self.path.split('?')[0]}")
-                err = ({"type": "error", "error": {"type": "authentication_error",
-                               "message": "keepalive-proxy: missing or unknown client key"}}
-                       if self.path.startswith("/v1/messages") else
-                       {"error": {"type": "invalid_request",
-                                 "message": "keepalive-proxy: missing or unknown client key"}})
-                self._plain(401, {"Content-Type": "application/json"}, json.dumps(err).encode())
-                self._done("401 unknown client key"); return
-            self._peer = f"{self._peer} key={label}"
+        if self._wall_refused():
+            return
         n = parse_body_length(self.headers.get("Content-Length"))
         if n is None:
             self._plain(400, {"Content-Type": "application/json"},
@@ -2752,6 +2788,8 @@ class H(BaseHTTPRequestHandler):
                                               "keepalive-proxy: this path carries an encoded query, "
                                               "fragment or control character and is refused"}}).encode())
             self._done("400 suspect path"); return
+        if self._wall_refused():
+            return
         resp, herr, cerr = self._open(None)
         if cerr is not None:
             invalidate_pool()           # same: the next pool must be read fresh
@@ -2761,12 +2799,35 @@ class H(BaseHTTPRequestHandler):
         finally:
             try: resp.close()
             except Exception: pass
+        if resp.status == 200 and self.path.split("?")[0] in SERVER_INFO_ROUTES:
+            data = strip_key_fields(data)
         self._plain(resp.status, dict(resp.headers), data)
         self._done("ok get")
 
+    def _wall_refused(self):
+        """True when the identity wall answered this request with a 401. Every route but
+        OPEN_ROUTES needs a listed key when the wall is on, whatever the method."""
+        route = self.path.split("?")[0]
+        if not CLIENT_KEYS or route in OPEN_ROUTES:
+            return False
+        auth = (self.headers.get("Authorization") or "").strip()
+        label = CLIENT_KEYS.get(auth[7:].strip()) if auth.startswith("Bearer ") else None
+        if label is not None:
+            self._peer = f"{self._peer} key={label}"
+            return False
+        log(f"{self._peer} REFUSED unknown client key on {route}")
+        err = ({"type": "error", "error": {"type": "authentication_error",
+                       "message": "keepalive-proxy: missing or unknown client key"}}
+               if route.startswith("/v1/messages") else
+               {"error": {"type": "invalid_request",
+                         "message": "keepalive-proxy: missing or unknown client key"}})
+        self._plain(401, {"Content-Type": "application/json"}, json.dumps(err).encode())
+        self._done("401 unknown client key")
+        return True
+
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.23 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.24 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     if CLIENT_KEYS:
         log(f"client keys on: {len(CLIENT_KEYS)} identities ({CLIENT_KEYS_FILE})")
         if UPSTREAM_API_KEY:

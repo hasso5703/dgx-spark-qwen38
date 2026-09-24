@@ -87,9 +87,18 @@ class DeriveState(unittest.TestCase):
         return lc.derive_state(**base)
 
     def test_stopped_failed_stopping(self):
-        self.assertEqual(self.s(unit_active="inactive")["state"], "stopped")
-        self.assertEqual(self.s(unit_active="failed")["state"], "failed")
+        self.assertEqual(self.s(unit_active="inactive", container_running=False)["state"], "stopped")
+        self.assertEqual(self.s(unit_active="failed", container_running=False)["state"], "failed")
         self.assertEqual(self.s(unit_active="deactivating")["state"], "stopping")
+
+    def test_a_container_that_outlives_its_unit_is_an_orphan(self):
+        """A stop past its timeout: systemd kills the docker client and marks the unit
+        failed (app.js already tells that case apart), while the container, which the
+        docker daemon owns, keeps its whole pool. Also a container started by hand. It
+        read "failed" or "stopped", and neither was busy for the gate."""
+        for active in ("failed", "inactive", "dead"):
+            with self.subTest(active=active):
+                self.assertEqual(self.s(unit_active=active, container_running=True)["state"], "orphan")
 
     def test_starting_before_container(self):
         self.assertEqual(self.s(container_running=False)["state"], "starting")
@@ -147,6 +156,24 @@ class BlockedReasons(unittest.TestCase):
         states["qwen38-flash.service"] = "ready"
         self.assertEqual(lc.blocked_reasons("switch", {"target": "stock"},
                                             states), [])
+
+    def test_an_orphan_container_blocks_every_other_engine(self):
+        # the pool is held whatever systemd says about the unit
+        states = {"qwen38-sglang.service": "orphan", "qwen38-flash.service": "stopped"}
+        for other in ("qwen38-flash.service", "qwen38-image.service"):
+            with self.subTest(start=other):
+                r = lc.blocked_reasons("unit", {"unit": other, "verb": "start"}, states)
+                self.assertEqual(len(r), 1)
+                self.assertIn("outside systemd", r[0])
+
+    def test_an_orphan_can_be_replaced_by_its_own_unit_and_switched(self):
+        # ExecStartPre=-docker rm -f removes the orphan before the unit's own container
+        # starts, which is how the page's banner tells the operator to recover; and a
+        # switch only rewrites files, so it waits for nothing an orphan could settle.
+        states = {"qwen38-sglang.service": "orphan", "qwen38-flash.service": "stopped"}
+        self.assertEqual(lc.blocked_reasons("unit", {"unit": "qwen38-sglang.service", "verb": "start"},
+                                            states), [])
+        self.assertEqual(lc.blocked_reasons("switch", {"target": "stock"}, states), [])
 
     def test_stop_is_never_blocked(self):
         states = {"qwen38-flash.service": "loading-weights",

@@ -318,6 +318,37 @@ class BodyLimits(Base):
                             headers={"Content-Type": "application/json"})
         self.assertEqual(st, 413)
 
+    def raw_post(self, length_header, body=b"", close_write=False):
+        """A POST whose Content-Length http.client would never write for us."""
+        import socket
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            s.sendall(b"POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                      b"Content-Length: " + length_header + b"\r\n\r\n" + body)
+            if close_write:
+                s.shutdown(socket.SHUT_WR)
+            return s.recv(200).split(b"\r\n")[0]
+        finally:
+            s.close()
+
+    def test_a_negative_length_is_refused_without_reading_the_body(self):
+        # int() accepts "-1", `-1 > cap` is false, and rfile.read(-1) reads until the
+        # client hangs up: with no session at all, a client could make the cockpit
+        # hold as much memory as it cared to send (256 MiB took it from 22 to 281 MiB
+        # on the reference box, 2026-09-24). The answer must come while the client is
+        # still connected, not when it gives up.
+        first = self.raw_post(b"-1", b"x" * 65536)
+        self.assertTrue(first.startswith(b"HTTP/1."), first)
+        self.assertIn(b" 400 ", first + b" ")
+
+    def test_a_length_that_is_not_a_number_is_a_400_not_a_dropped_connection(self):
+        # int() also takes "+5", which RFC 9110 does not (Content-Length = 1*DIGIT)
+        for bad in (b"abc", b"1e3", b"+5", b"\xb2", b"0x10", b"5 5"):
+            with self.subTest(length=bad):
+                self.assertIn(b" 400 ", self.raw_post(bad, close_write=True) + b" ")
+        st, _, _ = self.req("GET", "/api/health")
+        self.assertEqual(st, 200)
+
 
 class StaticFiles(Base):
     ESCAPES = [

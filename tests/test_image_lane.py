@@ -62,6 +62,21 @@ class TheUnit(unittest.TestCase):
         self.assertRegex(tpl, r"(?m)^Conflicts=.*qwen38-sglang\.service")
         self.assertRegex(tpl, r"(?m)^Conflicts=.*qwen38-flash\.service")
 
+    def test_the_other_lane_is_stopped_before_this_one_starts(self):
+        """Conflicts= orders nothing (systemd.unit(5)): the stop of the other lane and the
+        start of this one ran side by side, 5 s, 6.7 s and 60 s on the reference box on
+        2026-09-23. Measured with two throwaway units on its systemd 255 on 2026-09-24:
+        without After= the new lane started 3.0 s before the old one had stopped, in both
+        directions; with After= on this unit only, 0.02 s after, in both directions. So
+        every unit this one conflicts with must also be one it is ordered after."""
+        tpl = UNIT_TPL.read_text()
+        unit = tpl.split("[Service]")[0]
+        def listed(key):
+            return {u for line in re.findall(rf"(?m)^{key}=(.*)$", unit) for u in line.split()}
+        self.assertTrue(listed("Conflicts"), "the template still declares its conflicts")
+        self.assertEqual(listed("Conflicts") - listed("After"), set(),
+                         "conflicting units this lane is not ordered after")
+
     def test_it_serves_the_cookbook_recipe_and_does_not_force_what_the_runtime_picks(self):
         """--performance-mode speed is the DGX Spark recipe. The attention backend is NOT
         forced: the runtime logs "Defaulting to Torch SDPA backend on SM12.x" on its own,

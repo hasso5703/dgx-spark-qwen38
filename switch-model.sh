@@ -31,6 +31,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+_ENV_HF_CACHE="${HF_CACHE:-}"      # before the pins below give it install.sh's default
 CHOICE="${1:-${MODEL_CHOICE:-stock}}"
 case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image) ;; *) die "usage: ./switch-model.sh [stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image]" ;; esac
 
@@ -146,6 +147,23 @@ else
   OTHER_UNIT="$SGL_UNIT"; OTHER_UNIT_NAME="qwen38-sglang.service"
   INVOCATION="$CONFIG_DIR/launch-flash.sh"
   PIN_IMAGE="$FLASH_SERVE_IMAGE"
+fi
+# The cache the installed engine mounts, read back the way install.sh does (CUR_HF),
+# not the default: a box installed with HF_CACHE=/data/hf and switched from the cockpit,
+# which passes no HF_CACHE, downloaded and patched into ~/.cache/huggingface while its
+# unit kept mounting /data/hf, and the next start found no checkpoint (found in review,
+# 2026-09-24). Both text lanes mount the same cache; an explicit HF_CACHE still wins.
+if [ -z "$_ENV_HF_CACHE" ]; then
+  for _inv in "$INVOCATION" "$SGL_UNIT" "$CONFIG_DIR/launch-flash.sh"; do
+    _hf="$(grep -oE -- '-v [^ :]+:/root/\.cache/huggingface' "$_inv" 2>/dev/null | head -1 \
+           | sed -e 's/^-v //' -e 's|:/root/\.cache/huggingface$||' || true)"
+    if [ -n "$_hf" ]; then
+      [ "$_hf" != "$HF_CACHE" ] && echo "using the HF cache the installed engine mounts: $_hf"
+      HF_CACHE="$_hf"
+      break
+    fi
+  done
+  unset _inv _hf
 fi
 # The image whose presence decides a switch is the one the installed invocation
 # will actually run, not the base it may have been built from. Since v1.8 a box

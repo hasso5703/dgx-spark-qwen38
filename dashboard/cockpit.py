@@ -535,6 +535,19 @@ POOL_GUARD_STATE: dict = {"flushes": 0, "last": None, "fails": 0, "last_err": ""
 PROGRESS_RE = re.compile(r"(Prefill|Decode) batch")
 USAGE_RE = re.compile(r"token usage: ([\d.]+)")
 MAMBA_RE = re.compile(r"mamba usage: ([\d.]+)")
+# This cockpit's own GET /health: in these builds it runs a one-token generation
+# (input_ids=[0], max_new_tokens=1), which the scheduler logs like any prefill. It is
+# not a client. Counted as one, every 30 s, it kept the canary waiting for a quiet
+# minute that never came (0 canaries in the reference box's audit log, 334 probe
+# lines in 3 h, 2026-09-24), and it wrote its idle 0.00 over the last real pool
+# reading the pool guard acts on. A client never sends a one-token prompt with
+# nothing cached and nothing else running: the chat template alone is longer. The
+# decode line the scheduler writes every 40 steps still lands on a probe now and
+# then (about every 20 min on the 27B lane), and it is left as activity: its content
+# cannot tell it from a client's (two real generations on 2026-09-23 also read
+# "#full token: 0"), and all it costs is one skipped canary.
+PROBE_LINE_RE = re.compile(r"Prefill batch[^,]*, #new-seq: 1, #new-token: 1, #cached-token: 0, "
+                           r".*#running-req: 0,")
 
 
 @guard
@@ -591,6 +604,8 @@ def collect_decode_telemetry():
                merge_err=True)[-8000:]
     last = None
     for line in tail.splitlines():
+        if PROBE_LINE_RE.search(line):
+            continue
         if PROGRESS_RE.search(line):
             LAST_PROGRESS["ts"] = time.time()
         um = USAGE_RE.search(line)
@@ -665,13 +680,14 @@ def collect_guard():
             "state": state, "verdict": verdict}
 
 
-@guard
-def fit_verdict(ctx: int, outp: int, usable: int, prompt_cap: int) -> dict:
+def fit_verdict(ctx: int, outp: int, usable: int, prompt_cap: int, window: int = 0) -> dict:
     """Do these declared limits fit, and if not, which pair failed?
 
-    Two independent constraints: the prompt alone must pass the proxy, which
-    also applies the lane's absolute ceiling, and prompt plus answer must fit
-    the pool. The flash lane fails only the first, the FP8 lane only the second.
+    Three independent constraints: the prompt alone must pass the proxy, which
+    also applies the lane's absolute ceiling; the request that reaches the engine
+    (opencode's compaction point plus one worst step, plus the answer it asks for)
+    must fit the engine's window, which SGLang checks as input + max_tokens; and
+    prompt plus answer must fit the pool.
 
     `asked` and `limit` are the pair that failed, because that is the pair the
     banner shows. Showing the worst case against the pool while the reason was
@@ -683,6 +699,12 @@ def fit_verdict(ctx: int, outp: int, usable: int, prompt_cap: int) -> dict:
     if ctx > prompt_cap:
         return {"ok": False, "why": "the prompt alone exceeds what the proxy relays",
                 "asked": ctx, "limit": prompt_cap}
+    if window:
+        reach = ctx + _oc_fit().step_margin(outp) + outp
+        if reach > window:
+            return {"ok": False, "why": "the prompt at opencode's compaction point plus the answer "
+                                        "exceeds the engine's window",
+                    "asked": reach, "limit": window}
     if ctx + outp > usable:
         return {"ok": False, "why": "prompt plus answer exceeds the pool",
                 "asked": ctx + outp, "limit": usable}
@@ -696,15 +718,16 @@ AUTOFIT_DONE: dict = {}          # text unit -> the activation its limits were f
 _OC_FIT: dict = {}               # oc-fit-limits.py, loaded once for its fit() formula
 
 
-def _oc_fit_formula():
-    """The (context, output) formula of oc-fit-limits.py itself, so the check below and
-    the tool that writes the numbers cannot disagree about what fits."""
-    if "fit" not in _OC_FIT:
+def _oc_fit():
+    """oc-fit-limits.py itself, for its fit() formula, its step margin and its lane pair, so
+    the check below and the tool that writes the numbers cannot disagree about what fits."""
+    if "mod" not in _OC_FIT:
         spec = importlib.util.spec_from_file_location("oc_fit_limits", REPO_DIR / "oc-fit-limits.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        _OC_FIT["fit"] = mod.fit
-    return _OC_FIT["fit"]
+        mod.CONFIG_DIR = CONFIG_DIR          # the lane pair is read from this box's launcher
+        _OC_FIT["mod"] = mod
+    return _OC_FIT["mod"]
 
 
 def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
@@ -731,7 +754,10 @@ def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
     if not enter or enter == "0" or AUTOFIT_DONE.get(unit) == enter:
         return "already handled in this activation"
     try:
-        ctx, outp = _oc_fit_formula()(int(fit["pool"]), int(ceiling or 0))
+        mod = _oc_fit()
+        window = int(fit.get("window") or 0)
+        cap = mod.lane_cap(fit.get("served") or "") if 0 < window <= mod.NATIVE_WINDOW else None
+        ctx, outp = mod.fit(int(fit["pool"]), int(ceiling or 0), window, cap)
     except Exception:                               # noqa: BLE001 (the button still works)
         return "the fit formula could not be loaded"
     if ctx <= 0 or outp <= 0 or ctx > int(fit["context"]) or outp > int(fit["output"]):
@@ -747,6 +773,7 @@ def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
     return "started"
 
 
+@guard
 def collect_opencode():
     """What the installer and the switch act on: the --no-opencode marker, the config
     opencode really reads (default model, per-lane limits), the launcher and its cap."""
@@ -804,9 +831,11 @@ def collect_opencode():
             # the pool. The flash lane fails only the first, the FP8 lane only the second.
             ceiling = ((STATE.get("engine_info") or {}).get("data") or {}).get("prompt_ceiling_tokens") or 0
             prompt_cap = min(usable, ceiling) if ceiling else usable
-            verdict = fit_verdict(ctx, outp, usable, prompt_cap)
+            window = int(info.get("context_length") or 0)
+            verdict = fit_verdict(ctx, outp, usable, prompt_cap, window)
             out["fit"] = {"pool": pool, "worst": ctx + outp, "usable": usable, "served": served,
-                          "prompt_cap": prompt_cap, "context": ctx, "output": outp, **verdict}
+                          "prompt_cap": prompt_cap, "window": window, "context": ctx, "output": outp,
+                          **verdict}
             out["fit"]["autofit"] = maybe_autofit(out["fit"], states, ceiling)
     return out
 
@@ -1358,7 +1387,7 @@ def collect_lifecycle():
     # unit, so it must say so instead of reporting "no engine" over a live engine.
     orphans = []
     for unit, cont in UNIT2CONT.items():
-        if states.get(unit) == "stopped" and run(["docker", "ps", "-q", "-f", f"name=^{cont}$"]).strip():
+        if states.get(unit) == "orphan":
             orphans.append({"unit": unit, "container": cont,
                             "image": (containers_now().get(cont) or {}).get("image")})
     return {"node_id": "local", "engines": engines, "orphans": orphans,
@@ -2503,7 +2532,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?", 1)[0]
-        length = int(self.headers.get("Content-Length", "0") or 0)
+        # Digits only, as RFC 9110 has it, and checked before anything is read. int()
+        # took "-1", `-1 > cap` was false, and rfile.read(-1) reads until the client
+        # hangs up: with no session at all, a client could make this process hold as
+        # much memory as it cared to send (256 MiB took it from 22 to 281 MiB on the
+        # reference box, 2026-09-24), and running out of unified memory is a power
+        # cycle on this machine. A value int() refused killed the handler thread with
+        # no answer at all.
+        declared = (self.headers.get("Content-Length") or "0").strip()
+        if not (declared.isascii() and declared.isdigit()):
+            self.close_connection = True
+            return self.send_json({"error": "bad Content-Length"}, 400)
+        length = int(declared)
         # Ten reference images do not fit in 64 KiB and never will. The cap is raised for
         # the two image routes and for nothing else.
         raised = path in ("/api/image/edit", "/api/image/generate")

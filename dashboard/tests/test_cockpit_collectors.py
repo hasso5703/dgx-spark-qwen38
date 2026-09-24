@@ -364,19 +364,37 @@ class FitVerdict(Base):
         self.assertTrue(v["ok"])
         self.assertEqual(v["why"], "")
 
+    def test_the_window_case_shows_the_request_against_the_window(self):
+        """The flash pair of v1.18.6: it passes the proxy and the pool, and the engine still
+        refuses it, because it takes input + max_tokens against its 262,144 window and the
+        prompt reaches opencode's compaction point plus one step (found in review,
+        2026-09-24). The ask shown is that request, against the window."""
+        v = self.cp.fit_verdict(ctx=225_000, outp=32_000, usable=519_203, prompt_cap=250_000,
+                                window=262_144)
+        self.assertFalse(v["ok"])
+        self.assertIn("window", v["why"])
+        self.assertEqual((v["asked"], v["limit"]), (225_000 + 25_000 + 32_000, 262_144))
+        ok = self.cp.fit_verdict(ctx=205_000, outp=32_000, usable=519_203, prompt_cap=250_000,
+                                 window=262_144)
+        self.assertTrue(ok["ok"], ok)
+        # the 1M lane is far from its window: nothing about it changes
+        self.assertTrue(self.cp.fit_verdict(ctx=558_000, outp=186_000, usable=827_968,
+                                            prompt_cap=827_968, window=1_010_000)["ok"])
+
     def test_a_warning_never_shows_an_ask_below_its_limit(self):
         """The invariant the screenshot broke, over the whole grid."""
         for ctx in (1, 100_000, 250_000, 548_000, 700_000, 900_000):
             for outp in (0, 32_000, 186_000, 200_000):
                 for usable in (250_000, 827_968, 900_000):
                     for cap in (200_000, 250_000, usable):
-                        v = self.cp.fit_verdict(ctx=ctx, outp=outp, usable=usable,
-                                                prompt_cap=min(cap, usable))
-                        with self.subTest(ctx=ctx, outp=outp, usable=usable, cap=cap):
-                            if v["ok"]:
-                                self.assertLessEqual(v["asked"], v["limit"])
-                            else:
-                                self.assertGreater(v["asked"], v["limit"])
+                        for window in (0, 262_144, 1_010_000):
+                            v = self.cp.fit_verdict(ctx=ctx, outp=outp, usable=usable,
+                                                    prompt_cap=min(cap, usable), window=window)
+                            with self.subTest(ctx=ctx, outp=outp, usable=usable, cap=cap, window=window):
+                                if v["ok"]:
+                                    self.assertLessEqual(v["asked"], v["limit"])
+                                else:
+                                    self.assertGreater(v["asked"], v["limit"])
 
 
 class TheBootBarNeverGoesBack(Base):
@@ -477,6 +495,76 @@ class AStopTimeoutIsNotACrash(Base):
         js = (REPO / "dashboard" / "static" / "app.js").read_text()
         self.assertIn("e.state === 'failed' && e.result === 'timeout'", js)
         self.assertIn("was killed while stopping.", js)
+
+
+class TheCockpitsOwnProbeIsNotAClient(Base):
+    """GET /health runs a one-token generation in these builds (input_ids=[0],
+    max_new_tokens=1, SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION on), and the cockpit sends
+    it every 30 s while the engine is idle. Its prefill line counted as client activity:
+    the canary, which waits for 60 s without any, never ran once (0 in the audit log of
+    the reference box, 2026-09-24, 334 probe lines in 3 h), and the pool guard read the
+    probe's 0.00 over the last real usage. The lines are the live ones, verbatim."""
+    PROBE = ("[2026-09-24 09:44:53] Prefill batch, #new-seq: 1, #new-token: 1, #cached-token: 0, "
+             "full token usage: 0.00, mamba usage: 0.00, #running-req: 0, #queue-req: 0, "
+             "#pending-token: 0, cuda graph: False, input throughput (token/s): 0.03\n")
+    REAL = ("[2026-09-24 09:45:10] Prefill batch, #new-seq: 1, #new-token: 8192, #cached-token: 40960, "
+            "full token usage: 0.71, mamba usage: 0.12, #running-req: 0, #queue-req: 0, "
+            "#pending-token: 0, cuda graph: False, input throughput (token/s): 5210.40\n")
+
+    def setUp(self):
+        self.cp.LAST_PROGRESS["ts"] = None
+        self.cp.LAST_USAGE.update(value=0.93, mamba=0.2, ts=1.0)
+
+    def read(self, logs):
+        self.box({"docker ps -q -f name=^qwen38-sglang$": "c0ffee\n",
+                  "docker logs --since 30s qwen38-sglang": logs})
+        self.cp.collect_decode_telemetry()
+
+    def test_probe_lines_are_neither_activity_nor_a_pool_reading(self):
+        self.read(self.PROBE * 3)
+        self.assertIsNone(self.cp.LAST_PROGRESS["ts"])
+        self.assertEqual(self.cp.LAST_USAGE["value"], 0.93, "the last real reading is kept")
+
+    def test_a_client_line_still_is(self):
+        self.read(self.PROBE + self.REAL)
+        self.assertIsNotNone(self.cp.LAST_PROGRESS["ts"])
+        self.assertEqual(self.cp.LAST_USAGE["value"], 0.71)
+
+    def test_the_canary_runs_on_an_engine_that_only_answered_probes(self):
+        self.read(self.PROBE * 3)
+        saved = (self.cp.DRY_RUN, self.cp.ENGINE_BASE, dict(self.cp.CANARY))
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"] = {"qwen38-sglang.service": "ready"}
+        with self.cp.STATE_LOCK:
+            self.cp.STATE["engine_fast"] = {"data": {"load": [{"num_reqs": 0, "num_waiting_reqs": 0}]}}
+        self.cp.DRY_RUN, self.cp.ENGINE_BASE = False, "http://127.0.0.1:9"   # closed: it fails fast
+        try:
+            out = self.cp.collect_canary()
+        finally:
+            self.cp.DRY_RUN, self.cp.ENGINE_BASE = saved[0], saved[1]
+            self.cp.CANARY.clear(); self.cp.CANARY.update(saved[2])
+        self.assertFalse(out.get("skipped"), "it was attempted, not skipped as 'engine busy'")
+
+
+class AnOrphanContainerHoldsTheBox(Base):
+    """The same stop timeout with the container still up: systemd killed the docker client,
+    the daemon kept the container and its pool. The lifecycle said "failed", which no gate
+    counts as busy, so Start on the other lane was allowed next to a live ~100 GB engine.
+    The orphan banner only covered a "stopped" unit."""
+    U = "qwen38-sglang.service"
+
+    def test_it_is_an_orphan_the_gate_counts_and_the_banner_names(self):
+        self.box({f"systemctl show {self.U}": "ActiveState=failed\nSubState=failed\nResult=timeout\n"
+                                              "ActiveEnterTimestampMonotonic=1000\n",
+                  "docker ps -q -f name=^qwen38-sglang$": "c0ffee\n"})
+        out = self.cp.collect_lifecycle()
+        d = out.get("data", out)
+        self.assertEqual(d["engines"][self.U]["state"], "orphan")
+        self.assertEqual([o["unit"] for o in d["orphans"]], [self.U])
+        blocked = d["blocked"].get("unit:start:qwen38-flash.service") or []
+        self.assertTrue(blocked and "outside systemd" in blocked[0], blocked)
+        self.assertNotIn(f"unit:start:{self.U}", d["blocked"],
+                         "its own unit may start: ExecStartPre removes the orphan first")
 
 
 class TheEngineIsAskedItsCurrentRoutes(Base):

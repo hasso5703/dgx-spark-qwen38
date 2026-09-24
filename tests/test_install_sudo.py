@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Step 8/10 died silent without a sudo ticket, three times in one afternoon.
+"""An install that cannot use sudo refuses by name, before it downloads anything.
 
-Background runs and passwordless contexts give sudo no tty to ask on, and the
-first of the 24 sudo calls was a bare `sudo cp` under set -e: the install died
-with no message at the exact line where the real work starts. The fix refuses
-by name before anything privileged is touched. This test stages that exact
-situation (a sudo that always fails, everything else real and cached) and
-asserts the refusal names sudo, happens at step 8/10, and never reaches the
-unit backup. Skipped off the reference class of machine: it replays install
-steps 1-7 for real, which needs aarch64, docker and the cached pins.
+Step 8/10 died silent without a sudo ticket, three times in one afternoon: background
+runs and passwordless contexts give sudo no tty to ask on, and the first sudo call was a
+bare `sudo cp` under set -e. The refusal by name came first; since v1.18.7 sudo is also
+asked for at the end of step 1, so a box where it cannot be used learns it before the
+pulls instead of after them (tests/test_install_sudo_prompt.py holds the prompt itself).
+This test stages the failing case on the real installer (a sudo that always fails,
+everything else real) and asserts the refusal names sudo -v, comes at step 1, before
+step 2, and never reaches the unit backup. Skipped off the reference class of machine:
+step 1 checks the GPU, docker and the disk for real.
 """
 import os
 import platform
@@ -72,10 +73,10 @@ class SudoTicketRefusal(unittest.TestCase):
         cls.rc = proc.returncode
         cls.out = proc.stdout + proc.stderr
 
-    def test_the_refusal_names_sudo_at_step_8(self):
+    def test_the_refusal_names_sudo_before_anything_is_pulled(self):
         self.assertEqual(self.rc, 1)
-        self.assertIn("8/10", self.out)
-        self.assertIn("sudo", self.out)
+        self.assertIn("1/10", self.out)
+        self.assertNotIn("2/10", self.out, "nothing is pulled before sudo is known to work")
         self.assertIn("sudo -v", self.out)
 
     def test_nothing_privileged_was_touched_first(self):

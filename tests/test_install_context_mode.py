@@ -139,6 +139,34 @@ class TheExplicitRefusalsSurvive(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("is a 27B mode", out)
 
+    def test_explicit_1m_on_a_box_that_serves_flash_is_refused_too(self):
+        """Without MODEL_CHOICE the refusal above read LANE while it still said 27b; the
+        convergence then moved it to flash and nothing looked again, so step 6 patched
+        YaRN into the flash checkpoint's config.json in the shared cache and the lane
+        restarted on it (found in review, 2026-09-24)."""
+        d = pathlib.Path(tempfile.mkdtemp(prefix="ctxmode-flash-"))
+        cfg = d / "home/.config/qwen38"
+        cfg.mkdir(parents=True)
+        (cfg / "launch-flash.sh").write_text(
+            "exec docker run --name qwen38-flash lmsysorg/sglang@sha256:" + "a" * 64 +
+            " python3 -m sglang.launch_server --model-path RadixArk/Qwen3.8-Flash-Next-NVFP4"
+            " --host 127.0.0.1 --port 30000\n")
+        (d / "qwen38-flash.service").write_text(f"[Service]\nExecStart=/bin/bash {cfg}/launch-flash.sh\n")
+        text = pathlib.Path(INSTALL).read_text()
+        for var, unit in (("SGL_UNIT_PATH", "qwen38-sglang.service"),
+                          ("FLASH_UNIT_PATH", "qwen38-flash.service")):
+            text = text.replace('%s="/etc/systemd/system/%s"' % (var, unit), '%s="%s/%s"' % (var, d, unit))
+        (d / "install.sh").write_text(text)
+        (d / "install.sh").chmod(0o755)
+        (d / "bin").mkdir()
+        (d / "bin/systemctl").write_text("#!/bin/sh\nexit 1\n")      # nothing enabled here
+        (d / "bin/systemctl").chmod(0o755)
+        rc, out = run(STOP, script=str(d / "install.sh"), CONTEXT_MODE="1m",
+                      HOME=str(d / "home"), PATH=f"{d}/bin:/usr/local/bin:/usr/bin:/bin")
+        self.assertIn("Keeping the installed target model: flash", out, "the fixture is a flash box")
+        self.assertEqual(rc, 1)
+        self.assertIn("is a 27B mode", out)
+
     def test_explicit_1m_with_no_service_is_still_refused_by_name(self):
         # No STOP here: the cockpit contradiction sits above this refusal and
         # would shadow it.

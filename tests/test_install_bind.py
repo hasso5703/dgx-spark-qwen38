@@ -73,6 +73,33 @@ def box_with_units(engine_host="127.0.0.1", proxy_bind=None):
     return str(copy)
 
 
+def flash_box(engine_host):
+    """A flash box: its unit only points at the launcher, where the engine flags live, so
+    the bind to keep is read from launch-flash.sh. Returns (install.sh copy, HOME, PATH)."""
+    d = pathlib.Path(tempfile.mkdtemp(prefix="bind-flash-"))
+    home = d / "home"
+    cfg = home / ".config/qwen38"
+    cfg.mkdir(parents=True)
+    (cfg / "launch-flash.sh").write_text(
+        "#!/bin/bash\nexec docker run --rm --name qwen38-flash lmsysorg/sglang@sha256:" + "a" * 64 +
+        " python3 -m sglang.launch_server --model-path RadixArk/Qwen3.8-Flash-Next-NVFP4 \\\n"
+        f"    --host {engine_host} --port 30000\n")
+    (d / "qwen38-flash.service").write_text(f"[Service]\nExecStart=/bin/bash {cfg}/launch-flash.sh\n")
+    text = pathlib.Path(INSTALL).read_text()
+    for var, unit in (("SGL_UNIT_PATH", "qwen38-sglang.service"),
+                      ("FLASH_UNIT_PATH", "qwen38-flash.service")):
+        text = text.replace('%s="/etc/systemd/system/%s"' % (var, unit), '%s="%s/%s"' % (var, d, unit))
+    copy = d / "install.sh"
+    copy.write_text(text)
+    copy.chmod(0o755)
+    # no lane is enabled on this fixture, whatever the host running the test has
+    bin_ = d / "bin"
+    bin_.mkdir()
+    (bin_ / "systemctl").write_text("#!/bin/sh\nexit 1\n")
+    (bin_ / "systemctl").chmod(0o755)
+    return str(copy), str(home), f"{bin_}:/usr/local/bin:/usr/bin:/bin"
+
+
 def fresh_box():
     """No units anywhere: the default is what answers."""
     empty = tempfile.mkdtemp(prefix="bind-none-")
@@ -148,6 +175,21 @@ class AnInstalledChoiceWins(unittest.TestCase):
 
     def test_a_box_already_closed_says_nothing_because_nothing_changed(self):
         _, out = run(STOP, script=box_with_units(engine_host="127.0.0.1"), **STOCK)
+        self.assertNotIn(KEPT_ENGINE, out)
+
+    def test_a_flash_box_keeps_its_engine_bind_too(self):
+        """On flash the bind is in launch-flash.sh, and the convergence read $UNIT_PATH,
+        which only the 27B branch sets: every plain re-run printed "UNIT_PATH: unbound
+        variable", carried on, and rendered the launcher with 127.0.0.1 over the box's
+        0.0.0.0 (found in review, 2026-09-24)."""
+        script, home, path = flash_box("0.0.0.0")
+        _, out = run(STOP, script=script, HOME=home, PATH=path)
+        self.assertNotIn("unbound variable", out)
+        self.assertIn("Keeping the installed target model: flash", out, "the fixture is a flash box")
+        self.assertIn(KEPT_ENGINE + " 0.0.0.0", out)
+        script, home, path = flash_box("127.0.0.1")
+        _, out = run(STOP, script=script, HOME=home, PATH=path)
+        self.assertNotIn("unbound variable", out)
         self.assertNotIn(KEPT_ENGINE, out)
 
 

@@ -68,6 +68,47 @@ CEILING_MARGIN = int(os.environ.get("OC_CEILING_MARGIN") or
                      -(-_MARGIN_FLOOR // 5000) * 5000)
 LANE_MODEL = {"qwen3.8-27b": "qwen38", "qwen3.8-flash-next": "flashnext"}
 AGENT_UNIT = "opencode-web.service"
+# The engine's window is the third bound, and it holds the prompt PLUS the answer:
+# SGLang refuses any request where input + max_new_tokens exceeds its context_length
+# (validate_total_tokens, set on in both serving images; checked live on the 27B lane,
+# 2026-09-24), and opencode asks for max_tokens = min(limit.output, its output cap),
+# a cap the oc launcher and the Agent tab lift to 200,000. The prompt that reaches it is
+# the threshold + one worst step derived above, so on top of the answer:
+#
+#     context - min(COMPACTION_RESERVE, output) + WORST_STEP + output <= window
+#
+# The pool was the only bound here until v1.18.7: on a 262,144 window a big flash pool
+# came out at 225,000/116,000, and every prompt past 146,144 got a 400 that opencode
+# reads as an overflow and compacts on (found in review, 2026-09-24).
+NATIVE_WINDOW = 262_144
+SGL_UNIT = Path(os.environ.get("OC_SGL_UNIT", "/etc/systemd/system/qwen38-sglang.service"))
+
+
+def step_margin(output: int) -> int:
+    """How far past limit.context one request can reach before opencode compacts: its
+    threshold is limit.input - min(COMPACTION_RESERVE, output), and one worst step comes
+    after the check. Rounded up to 5,000 like CEILING_MARGIN, which it equals for every
+    output of 20,000 or more."""
+    floor = max(0, WORST_STEP - min(COMPACTION_RESERVE, output))
+    return -(-floor // 5000) * 5000
+
+
+def lane_cap(served: str) -> tuple[int, int] | None:
+    """The static pair oc-limits.sh gives the lane that serves, read from its installed
+    invocation (the flash tier from the launcher, the 27B mode from the unit). A lane on
+    a native window keeps that pair as a ceiling: its answer budget is chosen per lane
+    (32,000 on flash, 64,000 on the 27B), and a pool bigger than the window is no reason
+    to grow it."""
+    choice, invocation = {"qwen3.8-27b": ("stock", SGL_UNIT),
+                          "qwen3.8-flash-next": ("flash", CONFIG_DIR / "launch-flash.sh")}.get(served, (None, None))
+    if not choice:
+        return None
+    r = subprocess.run(["bash", str(REPO_DIR / "oc-limits.sh"), choice, "--from", str(invocation)],
+                       capture_output=True, text=True)
+    parts = r.stdout.split()
+    if r.returncode != 0 or len(parts) < 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    return int(parts[0]), int(parts[1])
 
 
 def restart_agent() -> str:
@@ -105,13 +146,20 @@ def engine_info(base: str) -> dict:
     raise RuntimeError("unreachable")
 
 
-def fit(pool: int, ceiling: int = 0) -> tuple[int, int]:
-    """(context, output) that one request can always hold in this pool."""
+def fit(pool: int, ceiling: int = 0, window: int = 0,
+        cap: tuple[int, int] | None = None) -> tuple[int, int]:
+    """(context, output) that one request can always hold: in this pool, under the lane's
+    prompt ceiling, inside the engine's window, and at most the lane's own pair `cap`."""
     budget = int(pool * USABLE * (1.0 - BOOT_MARGIN))
     output = min(OUTPUT_CAP, int(budget * OUTPUT_SHARE))
     context = budget - output
+    if cap:                              # a native-window lane never goes above its pair
+        output = min(output, cap[1])
+        context = min(budget - output, cap[0])
     if ceiling > 0:                      # a per-lane prompt ceiling caps the context too
         context = min(context, max(0, ceiling - CEILING_MARGIN))
+    if window > 0:                       # and the window holds the prompt and the answer
+        context = min(context, max(0, window - step_margin(output) - output))
     return (context // 1000) * 1000, (output // 1000) * 1000
 
 
@@ -159,7 +207,9 @@ def main(argv: list[str]) -> int:
     env = subprocess.run(["systemctl", "show", "qwen38-keepalive.service", "-p", "Environment"],
                          capture_output=True, text=True).stdout
     ceiling = ceiling_from_env(env)
-    context, output = fit(pool, ceiling)
+    window = int(info.get("context_length") or 0)
+    cap = lane_cap(served) if 0 < window <= NATIVE_WINDOW else None
+    context, output = fit(pool, ceiling, window, cap)
     # Rounding to the kilo bottoms out at zero on an implausibly small pool, and
     # writing "context": 0 into opencode's config would break it far more loudly
     # than not writing anything. No real engine gets here (the smallest pool this
@@ -170,7 +220,9 @@ def main(argv: list[str]) -> int:
         return 1
     print(f"engine: {info.get('model_path')} serving as {served}")
     print(f"pool {pool:,} tokens, usable share {USABLE:.0%}, boot margin {BOOT_MARGIN:.0%}"
-          + (f", lane ceiling {ceiling:,}" if ceiling else ""))
+          + (f", lane ceiling {ceiling:,}" if ceiling else "")
+          + (f", window {window:,}" if window else "")
+          + (f", lane pair {cap[0]:,}/{cap[1]:,}" if cap else ""))
     print(f"limits that fit: context {context:,}, output {output:,} "
           f"(worst case {context + output:,} of {pool:,})")
     if dry:
