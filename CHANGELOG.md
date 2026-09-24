@@ -331,6 +331,27 @@ file would guard nothing the docker group does not already open, so the page say
 it is: the cockpit's user, key and session are root on this machine, and the defences that
 count are the ones in front of it.
 
+**Five smaller proxy defects (v6.25).**
+- A client's own token count was refused as too long. `/v1/messages/count_tokens` generates
+  nothing, yet the size guard answered a conversation past the lane's limit with "the prompt
+  is too long for this lane", and one sent while the pool was unmeasured with a 503: the
+  route a client uses to learn that its conversation no longer fits could not say so. It is
+  relayed now.
+- The pool that guard needs was read with a 4 s timeout, while `/server_info` waits on the
+  scheduler, which answers between two steps of someone else's long prefill: a big prompt
+  sent then got a 503 "not measured yet". The read waits up to 20 s for the measure; a stale
+  pool would be the worse mistake, since the engine behind it may have restarted smaller.
+- A refusal sent before a body was read (the 413 past `MAX_BODY_BYTES`, the identity wall's
+  401) was lost: the socket closed with the upload still coming, and the kernel's reset
+  destroyed the answer on its way (a client sending 20 MB past a 1 MB cap saw a broken pipe
+  five times in five). The proxy now ends its side and drains before closing, and a client
+  that asks first (`Expect: 100-continue`) is refused before it sends anything.
+- One log call is one journal line. A tool schema's pattern, logged whole, could hold
+  `\n[proxy] ...` and write lines of the proxy's own shape, which the cockpit's feed counted
+  as traffic.
+- A System One answer whose engine gave no model name named the caller's alias
+  (`jev-latest`) instead of the model the alias resolved to.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash

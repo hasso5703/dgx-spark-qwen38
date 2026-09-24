@@ -861,6 +861,10 @@ def body_over_cap(n):
     return MAX_BODY_BYTES > 0 and n > MAX_BODY_BYTES
 
 
+# Routes that only count a prompt, and so never reach the size guard below.
+COUNT_ONLY_PATHS = frozenset({"/v1/messages/count_tokens"})
+
+
 def warmup_hold(est, pool):
     """True when the pool is unknown and even the most optimistic token estimate
     exceeds what any lane serves: the request must wait for a measurable engine
@@ -962,11 +966,19 @@ def _server_info(key, timeout):
     raise RuntimeError("unreachable")
 
 
+# /server_info waits on the engine's scheduler, which answers between two steps: in a long
+# prefill a step is one chunk, seconds at a long context. Read with 4 s, a big prompt sent
+# during someone else's prefill found the pool "not measured yet" and got a 503 (found in
+# review, 2026-09-24). The read waits for the measure instead: a stale pool would be the
+# worse mistake, since the engine behind it may have restarted smaller.
+POOL_READ_TIMEOUT_S = float(os.environ.get("POOL_READ_TIMEOUT_S", "20"))
+
+
 def pool_tokens():
     if _POOL["tokens"] and time.time() - _POOL["ts"] < 600:
         return _POOL["tokens"]
     try:
-        info = _server_info(_api_key(), 4)
+        info = _server_info(_api_key(), POOL_READ_TIMEOUT_S)
         n = int(info.get("max_total_num_tokens") or 0)
         if n > 0:
             _POOL.update(tokens=n, ts=time.time())
@@ -2041,7 +2053,7 @@ def systemone_temper(mass):
     return [x / total for x in mass]
 
 
-def systemone_response(req, plan, reads):
+def systemone_response(req, plan, reads, served=None):
     """Assemble Jev's response: one answer under each question id, the engine's own
     model name, and usage as the engine billed it (every branch's prompt tokens, cache
     hits included, plus one output token per branch and the thought's tokens when the
@@ -2079,7 +2091,9 @@ def systemone_response(req, plan, reads):
     for qid, (question, runs) in per_question.items():
         probabilities = [math.fsum(run[i] for run in runs) / len(runs) for i in range(len(runs[0]))]
         answers[qid] = systemone_answer(question, probabilities)
-    out = {"model": model or req["model"], "answers": answers,
+    # the engine's own name first, then the name the alias resolved to: the caller's alias
+    # (jev-latest) names nothing this box serves (found in review, 2026-09-24)
+    out = {"model": model or served or req["model"], "answers": answers,
            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}}
     headers = {"Content-Type": "application/json",
                "x-systemone-label-mass": f"{min(masses):.4f}",
@@ -2137,7 +2151,17 @@ ABORT_TIMEOUT_S = float(os.environ.get("ABORT_TIMEOUT_S", "5"))
 DRAIN_MAX_S = float(os.environ.get("DRAIN_MAX_S", "900"))
 _rid_override_honoured = None       # None = never observed, True/False = what the engine did
 
+# Every character a reader of the journal takes for the end of a line, and every other
+# control. A client's own text reaches some messages (a tool schema's pattern, whole), and a
+# pattern holding "\n[proxy] ..." wrote lines of the proxy's own shape, which the cockpit's
+# feed parses (it splits with str.splitlines, which also breaks at \x1c-\x1e, \x85 and
+# \u2028) and counts as traffic (found in review, 2026-09-24).
+_LOG_UNSAFE = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
+
+
 def log(msg):
+    msg = _LOG_UNSAFE.sub(lambda m: "\\x%02x" % ord(m.group()) if ord(m.group()) < 256
+                          else "\\u%04x" % ord(m.group()), str(msg))
     sys.stderr.write(f"[proxy] {msg}\n"); sys.stderr.flush()
 
 def delta_text(j):
@@ -2252,6 +2276,37 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        if self.command in ("POST", "PUT", "PATCH") and not getattr(self, "_body_read", False):
+            self._linger()
+
+    def _linger(self, idle_s=2.0, total_s=10.0):
+        """After an answer sent before the request's body was read: end our side, then read
+        and drop what the client is still sending, for a while. Closed at once, the socket
+        answered that data with a reset, and the reset destroyed the answer on its way: a
+        client sending 20 MB past a 1 MB cap got a broken pipe five times in five, never the
+        413 (found in review, 2026-09-24)."""
+        try:
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)
+            self.connection.settimeout(idle_s)
+            end = time.time() + total_s
+            while time.time() < end and self.connection.recv(65536):
+                pass
+        except OSError:
+            pass
+
+    def handle_expect_100(self):
+        # A client that asks before it sends (Expect: 100-continue) is told of the cap
+        # before it sends anything, rather than invited to send it all first.
+        n = parse_body_length(self.headers.get("Content-Length"))
+        if n is not None and body_over_cap(n):
+            log(f"{self.client_address[0]}:{self.client_address[1]} REFUSED body {n}b over the "
+                f"{MAX_BODY_BYTES}b cap, before it was sent")
+            self._plain(413, {"Content-Type": "application/json"},
+                        json.dumps({"error": {"type": "body_too_large",
+                                              "message": f"keepalive-proxy: request body {n}b exceeds the {MAX_BODY_BYTES}b cap"}}).encode())
+            return False
+        return super().handle_expect_100()
 
     def _unavailable(self, exc):
         """The engine is not there (stopped, crashed, restarting, loading): say exactly that,
@@ -2693,6 +2748,7 @@ class H(BaseHTTPRequestHandler):
                                               "message": f"keepalive-proxy: request body {n}b exceeds the {MAX_BODY_BYTES}b cap"}}).encode())
             self._done("413 body over cap"); return
         body = self.rfile.read(n) if (with_body and n) else None
+        self._body_read = True
         over = top_logprobs_over_ceiling(body, self.path)
         if over is not None:
             field, asked = over
@@ -2736,7 +2792,12 @@ class H(BaseHTTPRequestHandler):
                     f"compile (the engine would 400 the request): {pat[:120]}")
         if self.command == "POST" and self.path.split("?")[0] == SYSTEMONE_PATH:
             self._systemone(body); return
-        if body and self.path.startswith("/v1/") and len(body) > 200_000:
+        # A count generates nothing, so there is no scheduler for it to wedge, and it is how
+        # an Anthropic client learns that a conversation no longer fits: refused as too long,
+        # or held while the pool was unmeasured, it could not learn it (found in review,
+        # 2026-09-24).
+        count_only = self.path.split("?", 1)[0] in COUNT_ONLY_PATHS
+        if body and self.path.startswith("/v1/") and len(body) > 200_000 and not count_only:
             pool = pool_tokens()
             est = len(body) / CHARS_PER_TOKEN_MIN     # optimistic: fewest tokens the body could be
             if pool is None:
@@ -2885,7 +2946,7 @@ class H(BaseHTTPRequestHandler):
                 reads = systemone_run(auth, model, plan, cancel, live)
             finally:
                 cancel.set()             # the watcher's other exit: the work is done
-            status, headers, out, mass = systemone_response(req, plan, reads)
+            status, headers, out, mass = systemone_response(req, plan, reads, model)
         except SystemOneInvalid as e:
             log(f"{self._peer} systemone INVALID: {_so_logsafe(e.entries[0]['loc'])} {_so_logsafe(e)}")
             self._plain(422, json_hdr, json.dumps({"detail": e.entries}).encode())
