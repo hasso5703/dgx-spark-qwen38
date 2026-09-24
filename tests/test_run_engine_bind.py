@@ -7,7 +7,6 @@ was open to anyone on the network holding the key, while SECURITY.md said it is 
 the network at all (found in review, 2026-09-24). This runs the real run.sh in a
 throwaway HOME, with docker, systemctl, ss and nvidia-smi replaced by stubs, and reads
 the `docker run` it execs."""
-import os
 import pathlib
 import re
 import shutil

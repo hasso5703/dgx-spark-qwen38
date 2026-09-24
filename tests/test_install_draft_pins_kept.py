@@ -6,7 +6,6 @@ convergence was skipped and the other three fell back to the defaults: DRAFT2_TO
 box serving the BF16 draft (the documented rollback) moved it to the NVFP4 draft without a
 word (found in review, 2026-09-24). The revision and the quantization belong to the repo,
 so they follow the unit only together with its repo. This runs install.sh's own block."""
-import os
 import pathlib
 import re
 import subprocess
