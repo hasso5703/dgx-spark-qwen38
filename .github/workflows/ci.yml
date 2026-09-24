@@ -44,7 +44,12 @@ jobs:
       - name: Python correctness (ruff F,E9 + compile)
         run: |
           pip install 'ruff==0.5.0'
-          ruff check --select F,E9 patch-template.py patch-yarn.py keepalive-proxy.py oc-fit-limits.py oc-point-default.py bench-agent.py conc-check.py build-token-map.py tools-check.py systemone-check.py bench-systemone.py evals/*.py tests/*.py dashboard/*.py dashboard/tests/*.py
+          # Every tracked .py but the vendored SGLang overlay, from git: the hand-kept list
+          # left out engine-inputs.py and oc-merge-limits.py, both run by install.sh (found in
+          # review, 2026-09-24).
+          py=$(git ls-files '*.py' ':!flash-sglang/')
+          [ "$(echo "$py" | wc -l)" -ge 100 ] || { echo "found only: $py"; exit 1; }
+          ruff check --select F,E9 $py
           python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py engine-inputs.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py bench-agent.py conc-check.py build-token-map.py tools-check.py systemone-check.py bench-systemone.py evals/mmlu.py evals/humaneval.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
 
       - name: Cockpit unit tests (every tests/test_*.py, discovered)
@@ -617,7 +622,6 @@ jobs:
           [ -n "$n_kv" ] && [ "$n_kv" -gt "$n_conv" ] && [ "$n_kv" -lt "$n_render" ] \
             || { echo "install.sh: KV_CACHE_ARGS must be resolved after the convergence block and before rendering (line $n_kv, convergence $n_conv, render $n_render)"; exit 1; }
 
-
       - name: One list of targets, in all four places that must agree
         run: |
           # The switch selector in the cockpit's HTML, the closed enum the cockpit
@@ -995,54 +999,11 @@ jobs:
 
       - name: patch-template fixture (anchors, idempotence, revision pin)
         run: python3 tests/test_patch_template.py
-      - name: keepalive proxy guards, size and the fields the engine dies on (offline, fake /tokenize)
-        run: python3 tests/test_proxy_guard.py
-
-      - name: keepalive proxy abort contract (offline, fake engine with #35255 rule)
-        run: python3 tests/test_proxy_abort.py
-
-      - name: keepalive proxy keepalive injection and silence ceiling (offline, scripted engine)
-        run: python3 tests/test_proxy_keepalive.py
-
-      - name: the measurement and build tools (BPE ranking, grading, YaRN patch)
-        run: python3 tests/test_tools.py
-
       - name: opencode limits fit the served pool (offline)
         run: python3 tests/test_oc_fit_limits.py
 
       - name: get.sh guards (git fixture, stubbed installer)
         run: python3 tests/test_get_sh.py
-
-      - name: Neither entry point installs as root (faked uid, both shapes)
-        run: python3 tests/test_install_root_refusal.py
-
-      - name: install.sh port refusals name the value they reject
-        run: python3 tests/test_install_preflight.py
-
-      - name: The cockpit ships with a plain install (flags, marker, wiring)
-        run: python3 tests/test_install_cockpit.py
-
-      - name: The lean level, end to end (template, render, opencode, proxy)
-        run: python3 tests/test_lean_level.py
-
-      - name: A plain 27B install serves 1M, and refuses nobody for it
-        run: python3 tests/test_install_context_mode.py
-
-      - name: Everything install.sh leaves behind is in the uninstall inventory
-        run: python3 tests/test_uninstall_inventory.py
-
-      - name: keepalive proxy TLS surface
-        run: python3 tests/test_proxy_tls.py
-
-      - name: keepalive proxy System One endpoint (offline, fake engine with scripted first-token distributions)
-        run: |
-          # The wire-contract claim of this route rests on two tests that skip themselves
-          # when what they check is absent: the round trip through TypeSafe's own SDK, and
-          # the label list re-derived from the served tokenizer. The SDK is installed here
-          # so the first one runs on the runner too; the second needs the model's
-          # tokenizer.json and stays a box-side check (TESTING.md says so).
-          pip install 'typesafe-sdk==0.7.0' 2>/dev/null || echo "typesafe-sdk unavailable: the SDK round trip will skip, which the discovery step refuses on the runner"
-          python3 tests/test_proxy_systemone.py
 
       - name: No test file in tests/ is left unrun
         run: |
@@ -1058,6 +1019,10 @@ jobs:
           # plain scripts with a main() that exits non-zero (fake engines for
           # bench.sh, needle.sh and the tools), which unittest cannot discover,
           # so each of those has to be named by a step of its own.
+          pip install 'jinja2==3.1.6'     # tests/test_lean_level.py renders with it
+          # tests/test_proxy_systemone.py's round trip through TypeSafe's own SDK. A failed
+          # install is refused below on the runner, where the SDK is not optional.
+          pip install 'typesafe-sdk==0.7.0' 2>/dev/null || echo "typesafe-sdk unavailable: the SDK round trip will skip"
           python3 - <<'PY'
           import pathlib, sys
           ci = pathlib.Path(".github/workflows/ci.yml").read_text()
@@ -1118,21 +1083,6 @@ jobs:
 
       - name: needle.sh separates a lane refusal from a retrieval failure (fake engine)
         run: python3 tests/test_needle_refusal.py
-
-      - name: tools-check.py tells its four failures apart (fake engine)
-        run: python3 tests/test_tools_check.py
-
-      - name: the eval drivers keep the contracts that make them work (stub sglang)
-        run: python3 tests/test_eval_drivers.py
-
-      - name: a native install says so before it strands an installed 1m unit
-        run: python3 tests/test_install_native_strands_1m_unit.py
-
-      - name: a checkpoint with one file over the CDN limit still downloads
-        run: python3 tests/test_install_xet_retry.py
-
-      - name: no test file moves HOME for the files that run after it
-        run: python3 tests/test_suite_isolation.py
 
       - name: uninstall inventory runs clean on a bare machine
         run: ./uninstall.sh --list

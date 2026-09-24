@@ -13,6 +13,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+
+def _keep_env(cls):
+    """Put os.environ back as this class found it, once it is done: the variables set for
+    the proxy under test (UPSTREAM and the rest) stayed set for every module after this
+    one (found in review, 2026-09-24; tests/test_suite_isolation.py holds it)."""
+    saved = dict(os.environ)
+    cls.addClassCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
+
+
 HERE = Path(__file__).resolve()
 SPEC = importlib.util.spec_from_file_location("kproxy", HERE.parents[1] / "keepalive-proxy.py")
 
@@ -60,6 +69,7 @@ class FakeTokenize(http.server.BaseHTTPRequestHandler):
 class ProxyGuard(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        _keep_env(cls)
         cls.srv = http.server.HTTPServer(("127.0.0.1", 0), FakeTokenize)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         os.environ["UPSTREAM"] = f"http://127.0.0.1:{cls.srv.server_port}"
@@ -1368,6 +1378,7 @@ class ClientStringsAreNotKept(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        _keep_env(cls)
         cls.srv = http.server.HTTPServer(("127.0.0.1", 0), FakeTokenize)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         os.environ["UPSTREAM"] = f"http://127.0.0.1:{cls.srv.server_port}"
@@ -1439,6 +1450,7 @@ class TopLogprobsCeilingEndToEnd(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        _keep_env(cls)
         cls.srv = http.server.HTTPServer(("127.0.0.1", 0), FakeTokenize)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         os.environ["UPSTREAM"] = f"http://127.0.0.1:{cls.srv.server_port}"

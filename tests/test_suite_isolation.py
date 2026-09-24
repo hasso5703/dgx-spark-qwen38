@@ -17,6 +17,7 @@ the cache, which is the kind of failure that gets called a flake and muted
 
 Two gates, for the two moments a file can leak: importing, and running.
 """
+import json
 import os
 import pathlib
 import subprocess
@@ -42,18 +43,30 @@ for path in sorted(pathlib.Path("tests").glob("test_*.py")):
 print("DONE")
 """
 
-# And running one, since a file can also leave HOME moved on the way out.
+# And running each one, in a process of its own, since a file can also leave the
+# environment changed on the way out: a teardown is the fix there. Only
+# tests/test_tools.py was run, and only HOME compared, while four files left UPSTREAM,
+# KEEPALIVE_S and the rest set for every module after them (found in review, 2026-09-24).
 RUN_PROBE = """
-import os, unittest
-before = os.environ.get("HOME")
-unittest.main(module=None, argv=["probe", "tests.test_tools"], exit=False)
-print("BEFORE=" + str(before))
-print("AFTER=" + str(os.environ.get("HOME")))
+import json, os, sys, unittest
+sys.path.insert(0, os.getcwd())
+before = dict(os.environ)
+suite = unittest.defaultTestLoader.loadTestsFromName("tests." + sys.argv[1])
+with open(os.devnull, "w") as null:
+    unittest.TextTestRunner(stream=null, verbosity=0).run(suite)
+after = dict(os.environ)
+print("CHANGED=" + json.dumps(sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))))
 """
 
 
-def run(code, timeout=600):
-    return subprocess.run([sys.executable, "-c", code], cwd=REPO,
+def modules():
+    """Every unittest module of tests/ but this one."""
+    return [p.stem for p in sorted((REPO / "tests").glob("test_*.py"))
+            if p.stem != "test_suite_isolation" and "def test_" in p.read_text()]
+
+
+def run(code, *args, timeout=600):
+    return subprocess.run([sys.executable, "-c", code, *args], cwd=REPO,
                           capture_output=True, text=True, timeout=timeout,
                           env=dict(os.environ))
 
@@ -67,19 +80,19 @@ class SuiteIsolation(unittest.TestCase):
         leaks = [l for l in proc.stdout.splitlines() if l.startswith("LEAK=")]
         self.assertEqual(leaks, [], "importing these files moved HOME for every file after them")
 
-    def test_running_the_tools_file_leaves_home_where_it_found_it(self):
-        """The same fact on the way out, where a teardown would be the fix."""
-        proc = run(RUN_PROBE)
-        seen = {}
-        for line in proc.stdout.splitlines():
-            for tag in ("BEFORE=", "AFTER="):
-                if line.startswith(tag):
-                    seen[tag] = line[len(tag):]
-        self.assertIn("BEFORE=", seen,
-                      f"probe did not report HOME:\n{proc.stdout}\n{proc.stderr[-2000:]}")
-        self.assertEqual(seen.get("BEFORE="), seen.get("AFTER="),
-                         "tests/test_tools.py left HOME pointing at its throwaway directory")
-
+    def test_no_test_file_leaves_the_environment_changed(self):
+        """The same fact on the way out, for every file and every variable."""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            procs = dict(zip(modules(), pool.map(lambda m: run(RUN_PROBE, m, timeout=1200), modules())))
+        leaks = {}
+        for name, proc in procs.items():
+            line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("CHANGED=")), None)
+            self.assertIsNotNone(line, f"the probe of {name} did not finish:\n{proc.stderr[-2000:]}")
+            changed = json.loads(line[len("CHANGED="):])
+            if changed:
+                leaks[name] = changed
+        self.assertEqual(leaks, {}, "these files left environment variables changed for the files after them")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
