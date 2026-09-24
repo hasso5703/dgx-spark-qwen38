@@ -111,7 +111,8 @@ them, run `./ci-local.sh`, read what it names.
   official release and the locally built image this lane used until v1.14 carry
   sm90 and sm100 only, and GB10 loads the sm100 cubin. It measures fine, it is
   simply not a tuned path.
-- The 176B boot rewrites its 47.7 GiB N-gram table every start (~10 min);
+- The 176B boot rewrites its 47.7 GiB N-gram table every start (12 to 15 min to
+  `/health`, docs/flash-lane.md);
   the cost, the reason, and the upstream shape of a fix are in the flash
   launcher's comments.
 - FP8 combined with the 1M context is not memory-measured; the README says

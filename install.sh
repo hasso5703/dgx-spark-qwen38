@@ -497,8 +497,9 @@ Env overrides (defaults are pinned to the versions validated 2026-09-11):
                                      vocabulary (it is worth 14 to 25% of decode
                                      and cannot change what the model may say)
   FLASH_TIER=concurrency             flash only: 8 concurrent requests with the
-                                     MTP head instead of 4, at a third of the KV
-                                     pool; "throughput" is 24 without speculation
+                                     MTP head instead of 4 (a full 262K prompt
+                                     still fits their measured pool); "throughput"
+                                     is 24 without speculation
   FLASH_REPLAYSSM_SPEC=0            flash only: keep MTP verify intermediates
                                      in per-request state slots instead of the
                                      fixed ring (measured +20% pool on this box,

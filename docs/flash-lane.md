@@ -76,7 +76,7 @@ score **GSM8K 97.1-97.3% on the full 1,319-question set** upstream. `context` st
 this repo's default after measuring 8 requests too: the 8-request pool came out
 larger than the 4-request pool used to (replayssm-spec frees the draft depth
 out of the state budget), but the per-session limits that make long agent
-sessions work (175K/64K) are sized for one or two streams, and concurrent-load
+sessions work (205K/32K) are sized for one or two streams, and concurrent-load
 memory is not measured yet. Same cell, concurrency pinned lower, longer sessions.
 
 The pool is still sized from what the host has free at the instant SGLang
