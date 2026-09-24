@@ -167,6 +167,11 @@ def derive_state(*, unit_active: str, unit_sub: str, container_running: bool,
         return {"state": "orphan", **flags}
     if unit_active == "failed":
         return {"state": "failed", **flags}
+    if unit_active == "activating" and unit_sub == "auto-restart":
+        # Between two attempts of Restart=always after a crash: RestartSec=15 never reaches
+        # systemd's start limit, so a unit dying at load never reads "failed" and was drawn
+        # as a boot in its first stage forever (found in review, 2026-09-24).
+        return {"state": "failed", "restarting": True, **flags}
     if unit_active == "deactivating":
         return {"state": "stopping", **flags}
     if unit_active in ("inactive", "dead", "?", ""):
@@ -194,8 +199,9 @@ def derive_state(*, unit_active: str, unit_sub: str, container_running: bool,
 BUSY_STATES = {"starting", "loading-weights", "loading-draft", "allocating-kv",
                "capturing-graphs", "warming-up", "ready", "degraded",
                "stopping", "wedged", "orphan"}
-# An orphan does not settle by waiting, so it does not hold a switch back either.
-TRANSITIONAL = BUSY_STATES - {"ready", "degraded", "orphan"}
+# An orphan or a wedge does not settle by waiting (autoheal is off by default), so neither
+# holds a switch back, which only rewrites files; both stay busy for a second engine.
+TRANSITIONAL = BUSY_STATES - {"ready", "degraded", "orphan", "wedged"}
 # Every unit that holds the GPU pool while it runs. The image lane is one of them:
 # 31 GB of weights, and two engines at once on 121.6 GB of unified memory is the
 # livelock this whole module exists to prevent.
@@ -246,8 +252,10 @@ def warn_reasons(action: str, params: dict, states: dict,
         unit = params.get("unit", "")
         state = states.get(unit, "stopped")
         if unit == "qwen38-flash.service" and state in TRANSITIONAL:
-            warns.append("stopping the flash lane mid-boot marks the PLE "
-                         "table dirty: the NEXT boot rebuilds it (~12 min)")
+            # Since v1.8 the launcher deletes the table before every boot and each boot
+            # writes it whole, so a stop marks nothing dirty; what it costs is this boot.
+            warns.append("this boot is thrown away: every flash boot writes its 47.7 GiB PLE "
+                         "table from scratch, so the next start takes the full 12 to 15 min again")
         elif unit == IMAGE_UNIT and state == "ready":
             # the proxy on :30001 is a text door; nothing reaches this lane through it
             warns.append("an image being generated right now is lost, and the Image "

@@ -477,6 +477,33 @@ class TheBootBarNeverGoesBack(Base):
 
 
 
+class AWedgedEngineThatLosesHealthIsDegraded(Base):
+    """A wedge is only reachable from ready, so when that engine also stops answering it has
+    long been serving: "degraded". The check that keeps a fresh boot in warming-up did not
+    know the state, and drew a boot bar with an overdue warning over it (found in review,
+    2026-09-24)."""
+    U = "qwen38-sglang.service"
+
+    def test_it_reads_degraded_not_warming_up(self):
+        self.cp.BOOT_HEAD_READ.clear()
+        self.cp.BOOT_SEEN.clear()
+        fired = ("[2026-09-22 19:53:22] Load weight end. elapsed=118.38 s\n"
+                 "[2026-09-22 19:58:40] The server is fired up and ready to roll!\n")
+        with self.cp.STATE_LOCK:
+            self.cp.STATE["engine_fast"] = {"data": {"healthy": False}}
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"] = {self.U: "wedged"}
+        self.cp.UNHEALTHY_TICKS[self.U] = 5
+        self.cp.LAST_PROGRESS["ts"] = None
+        self.box({f"systemctl show {self.U}": "ActiveState=active\nSubState=running\n"
+                                              "ActiveEnterTimestampMonotonic=1000\n",
+                  "docker ps -q -f name=^qwen38-sglang$": "c0ffee\n",
+                  "docker logs --tail 300 qwen38-sglang": fired,
+                  "docker logs --since": fired})
+        out = self.cp.collect_lifecycle()
+        self.assertEqual(out.get("data", out)["engines"][self.U]["state"], "degraded")
+
+
 class AStopTimeoutIsNotACrash(Base):
     """A unit systemd killed because it did not stop in time ends "failed" with
     Result=timeout: that is how a Stop during a generation looked on 2026-09-23, and the

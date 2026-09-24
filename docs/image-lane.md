@@ -253,6 +253,19 @@ empty body; the reason is only in the engine's own log
 (`Qwen-Image 2.1 height and width must be divisible by 32`). All seven aspect ratios Qwen
 publishes already are.
 
+The cockpit reads the size of a call the way the lane does (`build_sampling_params`): an
+explicit `width` or `height` first, axis by axis, then `size` lower-cased with its spaces
+dropped, then 1024. It refuses a size the lane would refuse or 500 on, and budgets the pixels
+on those same numbers. Until v1.18.7 it read `size` only when both axes were missing, and
+case-sensitively, so a `width` alone or `"2048X2048"` went through unbudgeted.
+`num_inference_steps` is 1 to 100, the range the page offers.
+
+**A call the cockpit stops waiting for keeps the lane busy.** After 30 minutes the cockpit
+answers 504, "still generating": the runtime has no abort and goes on, so the next request
+is refused until this run's journal shows the request ended, the lane restarts (Cancel), or
+another 30 minutes pass. Until v1.18.7 the lock was given back at the timeout and a second
+generation could start beside the first, the 90.5 GB case that stopped the engine.
+
 **An output format must be sent, always.** Left out, `choose_output_image_ext` falls back
 to `jpg` when the background is not transparent. This model returns RGBA for *everything*
 it makes, PIL refuses to write RGBA as JPEG, and the request 500s. The plainest possible

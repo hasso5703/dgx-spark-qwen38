@@ -1,8 +1,14 @@
 [Unit]
 Description=Qwen3.8-27B NVFP4 + DFlash2, 1M YaRN context (SGLang, capped docker), OpenAI+Anthropic API :__PORT__
-After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service
+# One engine at a time on this box, said to systemd: starting this lane stops the others
+# and starting another stops this one, the stop finishing before the start in both
+# directions (Conflicts= alone orders nothing; measured with throwaway units on the
+# reference box's systemd 255, 2026-09-24). Until v1.18.7 only the image lane said so,
+# and two text lanes could run side by side, or both start at boot if both were enabled.
+Conflicts=qwen38-flash.service qwen38-image.service qwen38-llamacpp.service
+After=network-online.target docker.service qwen38-flash.service qwen38-image.service qwen38-llamacpp.service
 
 [Service]
 Type=simple

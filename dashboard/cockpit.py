@@ -1123,7 +1123,7 @@ def collect_lifecycle():
     for unit in lc.ENGINE_UNITS + ("qwen38-keepalive.service",):
         raw = run(["systemctl", "show", unit, "-p",
                    "ActiveState,SubState,ActiveEnterTimestampMonotonic,StateChangeTimestampMonotonic,"
-                   "InvocationID,Result"])
+                   "InvocationID,Result,NRestarts"])
         d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
         active = d.get("ActiveState", "?")
         if unit not in lc.ENGINE_UNITS:
@@ -1196,8 +1196,8 @@ def collect_lifecycle():
             # degraded means "WAS serving, lost health", not "health probe has
             # not caught up yet": right after fired-up, stay warming-up unless
             # we had already reached ready in this activation.
-            if st["state"] == "degraded" and prev.get(unit) not in ("ready",
-                                                                    "degraded"):
+            # (wedged is only reachable from ready, so an engine that was wedged has served)
+            if st["state"] == "degraded" and prev.get(unit) not in ("ready", "degraded", "wedged"):
                 st["state"] = "warming-up"
         if st["state"] == "ready" and not is_image:
             with STATE_LOCK:
@@ -1330,6 +1330,9 @@ def collect_lifecycle():
                          # systemd's own word for how the last run ended: "timeout" is a
                          # unit killed because it did not stop in time, not one that crashed
                          "result": d.get("Result", ""),
+                         # a crash loop reads failed between attempts; the page says so
+                         "restarting": bool(st.get("restarting")),
+                         "restarts": int(d.get("NRestarts") or 0) if str(d.get("NRestarts", "")).isdigit() else 0,
                          "elapsed": round(elapsed, 1) if elapsed else None,
                          "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,
                          "eta": eta, "overdue": overdue,
@@ -1750,6 +1753,9 @@ IMAGE_LOCK = threading.Lock()
 # failing the request, so a call may not ask for more pixels, all its images together,
 # than the largest call measured here: one 2752x1536 image, 44.8 GB at its peak.
 IMAGE_MAX_PIXELS = 2752 * 1536
+# How often a call this process gave up on is looked for in the lane's journal (M5 below).
+IMAGE_END_POLL_S = 5.0
+IMAGE_END_MARKS = ("Pixel data generated", "Error executing request", "Failed to generate")
 
 
 IMAGE_UNIT_CACHE: dict = {}
@@ -1969,6 +1975,55 @@ def _image_life() -> tuple:
 
 IMAGE_INTERRUPTED = ("the image lane was stopped or restarted while this image was being made, which is "
                      "the only way this runtime can end a generation early (it has no abort); nothing was kept")
+IMAGE_STILL_RUNNING = ("the image lane is still generating this request: it has no abort, so it goes on after "
+                       "this page stopped waiting, and the next request is refused until it ends. Cancel "
+                       "restarts the lane if it should not finish.")
+
+
+def _image_axes(fields: dict):
+    """(width, height) the way the lane will read them, or the reason it would refuse:
+    build_sampling_params in its runtime takes an explicit width or height first, axis by
+    axis, then `size` (lower-cased, spaces dropped, WIDTHxHEIGHT, both positive), then the
+    pipeline's 1024 default (configs/sample/qwenimage21.py). The budget below read `size`
+    only when both axes were missing, and case-sensitively, so a width alone or "2048X2048"
+    reached the lane unbudgeted (found in review, 2026-09-24)."""
+    w, h = fields.get("width"), fields.get("height")
+    size = fields.get("size")
+    if size:
+        parts = str(size).lower().replace(" ", "").split("x")
+        try:
+            sw, sh = (int(parts[0]), int(parts[1])) if len(parts) == 2 else (0, 0)
+        except ValueError:
+            sw = sh = 0
+        if sw <= 0 or sh <= 0:
+            return "size must be WIDTHxHEIGHT, two positive numbers (the lane refuses anything else)"
+        w = sw if w is None else w
+        h = sh if h is None else h
+    return (1024 if w is None else w), (1024 if h is None else h)
+
+
+def _image_request_ended_since(invocation: str, since: float) -> bool:
+    """Whether this run of the lane has logged the end of a request since `since`: the same
+    lines image_progress() reads as one ending. A journal that cannot be read says no."""
+    if not invocation:
+        return True
+    raw = run(["journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}", "--since", f"@{int(since)}",
+               "--no-pager", "-o", "cat", "-g", "|".join(IMAGE_END_MARKS)], timeout=8.0)
+    return bool(raw.strip())
+
+
+def _release_image_lock_when_done(life0: tuple, since: float) -> None:
+    """The lock of a call that timed out here, given back when the lane is done with it: its
+    journal shows a request ending, or the lane is no longer the run the call went to (a
+    Cancel, a Stop, a crash), or another IMAGE_TIMEOUT went by with neither."""
+    deadline = time.time() + IMAGE_TIMEOUT
+    try:
+        while time.time() < deadline:
+            if _image_life() != life0 or _image_request_ended_since(life0[1], since):
+                return
+            time.sleep(IMAGE_END_POLL_S)
+    finally:
+        IMAGE_LOCK.release()
 
 
 def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
@@ -1986,11 +2041,18 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
     n = fields.get("n", 1)
     if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 10:
         return 400, {"error": "n is how many images the call makes, from 1 to 10"}
-    w, h = fields.get("width"), fields.get("height")
-    if not (w and h):
-        # generations default to 1024x1024 (the API's own default); a size string wins
-        m = re.fullmatch(r"(\d{2,5})x(\d{2,5})", str(fields.get("size") or "1024x1024"))
-        w, h = (int(m.group(1)), int(m.group(2))) if m else (1024, 1024)
+    steps = fields.get("num_inference_steps")
+    if steps is not None and (isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 100):
+        # the page offers 1 to 100, and a count past it is how a call outlives IMAGE_TIMEOUT
+        return 400, {"error": "num_inference_steps is a number from 1 to 100"}
+    axes = _image_axes(fields)
+    if isinstance(axes, str):
+        return 400, {"error": axes}
+    w, h = axes
+    for axis, v in (("width", w), ("height", h)):
+        if v < 32 or v % 32:
+            return 400, {"error": f"{axis} {v} is not a positive multiple of 32 "
+                                  f"(the engine answers a bare HTTP 500 otherwise)"}
     if n * w * h > IMAGE_MAX_PIXELS:
         return 400, {"error": f"{n} image{'s' if n > 1 else ''} of {w}x{h} in one call is "
                               f"{n * w * h / 1e6:.1f} megapixels, and the largest call measured on this "
@@ -2022,6 +2084,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
                               "to finish."}
     t0 = time.time()
     life0 = _image_life()
+    handed_over = [False]
     try:
         if editing:
             refs, why = _image_decoded_refs(payload)
@@ -2052,12 +2115,22 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
     except Exception as e:                              # noqa: BLE001 (isolated route)
         if _image_life() != life0:
             return 503, {"error": IMAGE_INTERRUPTED, "interrupted": True, "seconds": round(time.time() - t0, 2)}
+        if isinstance(e, TimeoutError):
+            # A read timeout: the request reached this same run and this process stopped
+            # waiting (a connect timeout is a URLError, and means it never got there). The
+            # lane has no abort and goes on.
+            # Releasing the lock here admitted a second generation beside it (found in review,
+            # 2026-09-24), so it is handed to a watcher that gives it back when the lane is done.
+            threading.Thread(target=_release_image_lock_when_done, args=(life0, t0), daemon=True).start()
+            handed_over[0] = True
+            return 504, {"error": IMAGE_STILL_RUNNING, "seconds": round(time.time() - t0, 2)}
         return 502, {"error": f"the image lane did not answer ({type(e).__name__}). "
                               f"Switch to Qwen-Image 2.1 in the action bar and start it "
                               f"(or ./switch-model.sh image)",
                      "seconds": round(time.time() - t0, 2)}
     finally:
-        IMAGE_LOCK.release()
+        if not handed_over[0]:
+            IMAGE_LOCK.release()
 
 
 def _multipart(fields: dict, images: list) -> tuple[bytes, str]:

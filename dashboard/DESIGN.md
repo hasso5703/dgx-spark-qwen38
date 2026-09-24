@@ -147,7 +147,8 @@ so a cockpit restart facing a warm engine never records its uptime.
 Action gates live server-side in the same module: starting one engine while
 the other occupies the pool is refused with the reason (409), switch and
 update wait for transitional states to settle, and mid-boot flash stops are
-allowed with a truthful warning (next boot rebuilds the PLE table). The UI
+allowed with a truthful warning (the boot under way is lost, and every flash boot
+writes its PLE table from scratch since v1.8). The UI
 renders the same rules: disabled buttons print their reason, the confirm
 modal carries the warnings, and the per-stage progress bar animates from
 stage pills plus elapsed-vs-learned-ETA.

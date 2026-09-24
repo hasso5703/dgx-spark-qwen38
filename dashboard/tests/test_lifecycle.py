@@ -91,6 +91,17 @@ class DeriveState(unittest.TestCase):
         self.assertEqual(self.s(unit_active="failed", container_running=False)["state"], "failed")
         self.assertEqual(self.s(unit_active="deactivating")["state"], "stopping")
 
+    def test_a_unit_waiting_to_be_relaunched_after_a_crash_is_failed(self):
+        """Restart=always with RestartSec=15 never reaches systemd's start limit, so a unit
+        that dies at load sits in activating/auto-restart between attempts (read on the
+        reference box's systemd 255, 2026-09-24) and never in failed: the page drew a boot
+        in its first stage forever."""
+        got = self.s(unit_active="activating", unit_sub="auto-restart", container_running=False)
+        self.assertEqual(got["state"], "failed")
+        self.assertTrue(got.get("restarting"))
+        self.assertNotEqual(self.s(unit_active="activating", unit_sub="start", container_running=False)["state"],
+                            "failed", "an ordinary start is still a start")
+
     def test_a_container_that_outlives_its_unit_is_an_orphan(self):
         """A stop past its timeout: systemd kills the docker client and marks the unit
         failed (app.js already tells that case apart), while the container, which the
@@ -175,6 +186,17 @@ class BlockedReasons(unittest.TestCase):
                                             states), [])
         self.assertEqual(lc.blocked_reasons("switch", {"target": "stock"}, states), [])
 
+    def test_a_wedged_engine_does_not_hold_a_switch_back(self):
+        """A wedge does not settle by waiting (autoheal is off by default), and a switch only
+        rewrites files: "wait for it to settle" refused it for good (found in review,
+        2026-09-24). It still counts as busy for starting a second engine."""
+        states = {"qwen38-sglang.service": "wedged", "qwen38-flash.service": "stopped"}
+        self.assertEqual(lc.blocked_reasons("switch", {"target": "stock"}, states), [])
+        self.assertTrue(lc.blocked_reasons("unit", {"unit": "qwen38-flash.service", "verb": "start"}, states))
+        self.assertEqual(lc.warn_reasons("unit", {"unit": "qwen38-flash.service", "verb": "stop"},
+                                         {"qwen38-flash.service": "wedged"}), [],
+                         "a wedged lane has booted: no mid-boot warning")
+
     def test_stop_is_never_blocked(self):
         states = {"qwen38-flash.service": "loading-weights",
                   "qwen38-sglang.service": "stopped"}
@@ -187,7 +209,10 @@ class BlockedReasons(unittest.TestCase):
         w = lc.warn_reasons("unit", {"unit": "qwen38-flash.service",
                                      "verb": "stop"}, states)
         self.assertEqual(len(w), 1)
-        self.assertIn("rebuilds", w[0])
+        # the launcher deletes the table before every boot (since v1.8): nothing is left
+        # dirty, and what a stop costs is the boot under way
+        self.assertIn("from scratch", w[0])
+        self.assertNotIn("dirty", w[0])
 
 
 class ThreeEngines(unittest.TestCase):

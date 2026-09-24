@@ -583,7 +583,7 @@ function rConfig(d){
 const CARDS = new Map();
 function servingEngine(){
   const eng = (F.life && F.life.engines) || {};
-  return Object.entries(eng).find(([n, e]) => !UNIT_DOWN.has(e.state)) || null;
+  return Object.entries(eng).find(([n, e]) => !UNIT_DOWN.has(e.state) || e.restarting) || null;
 }
 function enabledUnit(){
   const e = Object.entries(F.units).find(([n, u]) => n !== 'qwen38-keepalive.service' && u.enabled === 'enabled');
@@ -669,9 +669,10 @@ function engineCard(name){
   c = {root, chip, nameEl, enabled, since, btn, why, hist, extra, sig: ''};
   btn.addEventListener('click', () => {
     const e = ((F.life || {}).engines || {})[name]; if (!e) return;
-    const on = !UNIT_DOWN.has(e.state);
+    // a crash loop is failed between attempts, yet only a stop ends it
+    const on = !UNIT_DOWN.has(e.state) || !!e.restarting;
     const warns = [];
-    if (on && TRANSITIONAL.has(e.state) && name.includes('flash')) warns.push('stopping the flash lane mid-boot marks the PLE table dirty: the NEXT boot rebuilds it (about 12 min)');
+    if (on && TRANSITIONAL.has(e.state) && name.includes('flash')) warns.push('this boot is thrown away: every flash boot writes its 47.7 GiB PLE table from scratch, so the next start takes the full 12 to 15 min again');
     if (on && e.state === 'ready') warns.push(name === IMAGE_UNIT
       ? 'an image being generated right now is lost, and the Image tab has nothing to talk to until this lane is back (' + readyIn(name) + ' after a start)'
       : 'clients on :30001 get "engine unavailable" until an engine is back (' + readyIn(name) + ' after a start)');
@@ -700,7 +701,7 @@ function rLifecycle(d){
     const en = (units[name] || {}).enabled;
     c.enabled.textContent = en === 'enabled' ? 'starts at boot' : en === 'disabled' ? 'manual start only' : en || '';
     c.since.textContent = e.state === 'ready' && e.elapsed ? 'up ' + fmtDur(e.elapsed) : '';
-    const on = !UNIT_DOWN.has(e.state);
+    const on = !UNIT_DOWN.has(e.state) || !!e.restarting;
     const blocked = !on && (d.blocked || {})[`unit:start:${name}`];
     c.btn.textContent = on ? (e.state === 'stopping' ? 'stopping…' : 'stop') : 'start';
     c.btn.className = 'btn mini ' + (on ? 'danger' : 'low');
@@ -1203,7 +1204,9 @@ function banners(state, errors){
   const eng = (F.life && F.life.engines) || {};
   Object.entries(eng).forEach(([n, e]) => {
     if (e.state === 'wedged') add('err', `${LANE_NAME[n] || n} is wedged.`, 'It answers health checks but generates nothing. The autoheal belt restarts it after its grace period; the Logs tab has the scheduler forensics.');
-    if (e.state === 'failed' && e.result === 'timeout') add('warn', `${LANE_NAME[n] || n} was killed while stopping.`,
+    if (e.state === 'failed' && e.restarting) add('err', `${LANE_NAME[n] || n} keeps crashing.`,
+      `It dies during startup and systemd relaunches it every 15 s (Restart=always${e.restarts ? `, ${e.restarts} relaunches so far` : ''}): the Logs tab has its journal. Stop it from the action bar to end the loop.`);
+    else if (e.state === 'failed' && e.result === 'timeout') add('warn', `${LANE_NAME[n] || n} was killed while stopping.`,
       'It did not exit within its stop timeout, so systemd killed it and marks the unit failed. Nothing broke while it was serving: start it again from the action bar when you need it.');
     else if (e.state === 'failed') add('err', `${LANE_NAME[n] || n} failed.`, 'systemd reports the unit failed. Read its journal in the Logs tab, then start it again from the action bar.');
     if (e.state === 'degraded') add('warn', `${LANE_NAME[n] || n} stopped answering.`, 'It was serving; health probes retry every 2 s. If it stays here, the Logs tab tells why.');
@@ -2160,6 +2163,8 @@ async function imgRun(){
     if (!r.ok){
       const why = out.error || (out.refused ? JSON.stringify(out.refused).slice(0, 300) : 'HTTP ' + r.status);
       if (r.status === 409){ toast(why, 'warn', 7000); setChip('imgtime', 'lane busy', 'warn'); return; }
+      // 504: this page stopped waiting and the lane goes on (it has no abort); not a refusal
+      if (r.status === 504){ imgParkBar(); clear($('imgout')); $('imgout').append(el('p', 'note', why)); setChip('imgtime', 'still generating', 'warn'); return; }
       imgParkBar(); clear($('imgout')); $('imgout').append(el('p', 'note', 'Refused with HTTP ' + r.status + ': ' + why));
       setChip('imgtime', r.status + ' refused', 'err');
       return;

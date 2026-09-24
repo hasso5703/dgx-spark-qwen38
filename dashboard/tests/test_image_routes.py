@@ -315,6 +315,52 @@ class OneAtATime(Base):
         self.assertEqual(self.call({"prompt": "x", "width": 1000})[0], 400)
         self.assertFalse(self.ck.IMAGE_LOCK.locked())
 
+    def _timeout_then(self, lives, ended):
+        """A call that times out here while the lane goes on, with the lane's invocation and
+        the journal's end marker driven by the test."""
+        import socket
+        saved = (self.ck._image_life, self.ck._image_request_ended_since, self.ck.IMAGE_END_POLL_S)
+        self.addCleanup(lambda: (setattr(self.ck, "_image_life", saved[0]),
+                                 setattr(self.ck, "_image_request_ended_since", saved[1]),
+                                 setattr(self.ck, "IMAGE_END_POLL_S", saved[2])))
+
+        def slow(req, timeout=None):
+            raise socket.timeout("timed out")
+        self.ck.urllib.request.urlopen = slow
+        self.ck._image_life = lambda: lives[0]
+        self.ck._image_request_ended_since = lambda invocation, since: ended[0]
+        self.ck.IMAGE_END_POLL_S = 0.02
+
+    def _released(self):
+        import time
+        for _ in range(200):
+            if not self.ck.IMAGE_LOCK.locked():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_a_request_that_timed_out_keeps_the_lane_busy_until_it_ends(self):
+        """The lane has no abort: a call this process gave up on after IMAGE_TIMEOUT is still
+        generating there, and releasing the lock then admitted a second generation beside it
+        (two at once held 90.5 GB and stopped the engine; found in review, 2026-09-24). The
+        lock now stays held until this invocation's journal shows a request end."""
+        lives, ended = [("active", "run-1")], [False]
+        self._timeout_then(lives, ended)
+        code, out = self.call({"prompt": "x", "width": 512, "height": 512})
+        self.assertEqual(code, 504, out)
+        self.assertIn("still generating", out["error"])
+        self.assertNotIn("start it", out["error"], "it is serving: no advice to start it")
+        self.assertEqual(self.call({"prompt": "y", "width": 512, "height": 512})[0], 409)
+        ended[0] = True
+        self.assertTrue(self._released(), "released once the journal shows the end")
+
+    def test_a_lane_that_restarts_while_the_lock_is_held_gives_it_back(self):
+        lives, ended = [("active", "run-1")], [False]
+        self._timeout_then(lives, ended)
+        self.assertEqual(self.call({"prompt": "x", "width": 512, "height": 512})[0], 504)
+        lives[0] = ("active", "run-2")                   # Cancel, a Stop and a Start, a crash
+        self.assertTrue(self._released(), "a new invocation is not generating the old request")
+
 
 class ThePixelBudget(Base):
     """The images of one call run as one batch: ten 2048x2048 images took 42 s per step on
@@ -347,6 +393,39 @@ class ThePixelBudget(Base):
     def test_a_size_string_counts_too(self):
         code, out = self.ask(size="2048x2048", n=2)
         self.assertEqual(code, 400, out)
+
+    def test_each_axis_is_read_the_way_the_lane_reads_it(self):
+        """build_sampling_params in the lane's runtime: an explicit width or height first,
+        axis by axis, then `size` lower-cased with its spaces dropped, then the pipeline's
+        1024 default. The budget read `size` only when both axes were missing, and matched
+        it case-sensitively, so these reached the lane (found in review, 2026-09-24)."""
+        for fields in ({"width": 16384, "n": 4},                       # height 1024: 67 MP
+                       {"width": 16384, "size": "32x4096", "n": 10},   # 16384 x 4096: 671 MP
+                       {"size": "2048X2048", "n": 4},                  # 16.8 MP
+                       {"size": "123456x123456"},                      # 15 GP
+                       {"height": 8192, "size": "4096x32"}):           # 4096 x 8192
+            with self.subTest(fields=fields):
+                self.spy.body = None
+                code, out = self.ask(**fields)
+                self.assertEqual(code, 400, out)
+                self.assertIsNone(self.spy.body, "a refused call reached the lane")
+
+    def test_a_size_the_lane_would_refuse_or_500_on_is_refused_here(self):
+        for size in ("big", "512x", "0x512", "1000x1000", "1024x1000"):
+            with self.subTest(size=size):
+                self.spy.body = None
+                self.assertEqual(self.ask(size=size)[0], 400)
+                self.assertIsNone(self.spy.body)
+        self.assertEqual(self.ask(size=" 1024 X 768 ")[0], 200, "the lane reads this as 1024x768")
+
+    def test_steps_are_a_number_from_1_to_100(self):
+        """The page offers 1 to 100 and the server capped nothing: one call with a huge
+        count outlived the 1800 s timeout and, with it, the lock."""
+        for bad in (0, 101, -5, "30", 2.5, True):
+            with self.subTest(steps=bad):
+                self.assertEqual(self.ask(width=512, height=512, num_inference_steps=bad)[0], 400)
+        for good in (1, 100):
+            self.assertEqual(self.ask(width=512, height=512, num_inference_steps=good)[0], 200)
 
     def test_the_count_is_a_number_from_1_to_10(self):
         for bad in (0, 11, -1, "3", 2.0, True, [2]):

@@ -1861,6 +1861,14 @@ fi
 SMOKE_MODEL="qwen3.8-27b"
 [ "$LANE" = "flash" ] && SMOKE_MODEL="qwen3.8-flash-next"
 [ "$ENGINE_KEEP" -eq 1 ] || sudo systemctl restart "$UNIT_NAME"
+# A unit that dies at load never reads "failed" here: Restart=always relaunches it after
+# RestartSec=15, which never reaches systemd's default limit of 5 starts in 10 s, so
+# is-active says "activating" between attempts and the loop below waited its full 20
+# minutes with the journal unread. systemd counts the relaunches (NRestarts), and a manual
+# restart does not zero the count (checked on the reference box's systemd 255), so the
+# count now is the baseline and one more is a crash (found in review, 2026-09-24).
+engine_restarts() { systemctl show -p NRestarts --value "$UNIT_NAME" 2>/dev/null | tr -dc '0-9'; }
+ENGINE_RESTARTS0="$(engine_restarts)"
 # what the wait is made of: the flash lane rewrites its PLE table on every boot, and said
 # "first boot compiles kernels" through a 13-minute load that compiled nothing
 LOAD_WHY="first boot compiles kernels, be patient"
@@ -2063,6 +2071,11 @@ except Exception as e:
   fi
   ST="$(systemctl is-active "$UNIT_NAME" || true)"
   [ "$ST" = "failed" ] && { journalctl -u "$UNIT_NAME" --no-pager | tail -25; die "Service failed during startup, logs above. Common cause: another process eating GPU/unified memory (this config needs the machine to itself)."; }
+  NOW_RESTARTS="$(engine_restarts)"
+  if [ -n "$NOW_RESTARTS" ] && [ -n "$ENGINE_RESTARTS0" ] && [ "$NOW_RESTARTS" -gt "$ENGINE_RESTARTS0" ]; then
+    journalctl -u "$UNIT_NAME" --no-pager | tail -25
+    die "The engine died during startup and systemd is relaunching it (Restart=always, $((NOW_RESTARTS - ENGINE_RESTARTS0)) relaunch(es) so far): logs above. Stop the loop with: sudo systemctl stop $UNIT_NAME"
+  fi
   [ $((i % 15)) -eq 0 ] && echo "  still loading... ($((i*8))s; $LOAD_WHY)"
   sleep 8
 done
