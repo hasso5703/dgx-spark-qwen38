@@ -712,10 +712,10 @@ class UpdateCheck(Base):
 
     def setUp(self):
         super().setUp()
-        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0)
+        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0, answered=False)
 
     def tearDown(self):
-        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0)
+        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0, answered=False)
         self.cp.UPDATE_CHECK = True
 
     def test_a_version_number_is_read_as_numbers_not_as_a_string(self):

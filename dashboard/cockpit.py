@@ -53,7 +53,24 @@ AGENT_BIND = os.environ.get("COCKPIT_AGENT_BIND", "tailscale")
 AGENT_UPSTREAM = os.environ.get("COCKPIT_AGENT_UPSTREAM", "http://127.0.0.1:4096")
 AGENT_UNIT = "opencode-web.service"
 STATIC_DIR = HERE / "static"
-VERSION = "1.1.2"
+
+
+def _release() -> str:
+    """The release this checkout is, as CHANGELOG.md's first heading names it. A constant
+    here said 1.1.2 from v1.7.2 on, in the badge, the Server header and the User-Agent of
+    the update check (found in review, 2026-09-24)."""
+    try:
+        with open(REPO_DIR / "CHANGELOG.md", encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"^## v(\d+\.\d+(?:\.\d+)?)\b", line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return "unknown"
+
+
+VERSION = _release()
 # Dry run: every mutating action and every automatic belt is logged, audited and
 # shown exactly as usual, but nothing is executed. This is how the click-storm test
 # (tests/monkey-check.mjs) exercises the whole UI against a second cockpit instance.
@@ -968,7 +985,7 @@ def agent_relay_thread():
 # nothing but the cockpit's version in a User-Agent; COCKPIT_UPDATE_CHECK=0 turns it off
 # and the cockpit then says nothing about releases at all. SECURITY.md states both.
 UPDATE_CHECK = os.environ.get("COCKPIT_UPDATE_CHECK", "1") != "0"
-_RELEASE = {"latest": None, "ts": 0.0, "fails": 0}
+_RELEASE = {"latest": None, "ts": 0.0, "fails": 0, "answered": False}
 
 
 def _semver(tag):
@@ -1000,15 +1017,19 @@ def collect_update():
     # likely to find no route, and an hour-scale first step left a box that had just
     # rebooted unable to learn about an update for two hours. A minute, then two, four,
     # eight, up to six hours.
-    age = 21600.0 if _RELEASE["latest"] else min(60.0 * 2 ** max(0, _RELEASE["fails"] - 1), 21600.0)
+    # An answer is a success whatever its tag says: a release tagged outside semver left
+    # the check neither answered nor failed, so it asked again every minute, the whole of
+    # GitHub's anonymous budget of 60 an hour (found in review, 2026-09-24).
+    age = 21600.0 if _RELEASE["answered"] else min(60.0 * 2 ** max(0, _RELEASE["fails"] - 1), 21600.0)
     if now - _RELEASE["ts"] >= age:
         _RELEASE["ts"] = now
         try:
             j = _get_json("https://api.github.com/repos/hasso5703/"
                           "dgx-spark-qwen38/releases/latest", timeout=8.0)
             tag = (j.get("tag_name") or "").strip()
+            _RELEASE.update(answered=True, fails=0)
             if _semver(tag):
-                _RELEASE.update(latest=tag, fails=0)
+                _RELEASE["latest"] = tag
         except Exception:  # noqa: BLE001 (an update check must never be a failure mode)
             _RELEASE["fails"] += 1
     out["latest"] = _RELEASE["latest"]

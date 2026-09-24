@@ -475,11 +475,16 @@ def presence(recipe: dict, registry: dict) -> dict:
     # Without this a target that was never downloaded read "n/a", which says nothing
     # about whether switching to it would work.
     managed = set(registry.get("managed_repos") or [])
-    known: dict[str, set] = {}
+    # repo -> {revision: complete}. A revision is here when its snapshot holds every file
+    # its index names (the scan's "complete"); "downloading" is a blob still being
+    # written, not one an interrupted download left. A registry with no verdict per
+    # revision (older scans) falls back on the old rule: blobs arriving, not here.
+    known: dict[str, dict] = {}
     busy: set = set()
     for m in registry.get("models", []):
-        known.setdefault(m["repo_id"], set()).update(r["rev"] for r in m.get("revisions", []))
-        if m.get("incomplete"):
+        known.setdefault(m["repo_id"], {}).update(
+            (r["rev"], r.get("complete")) for r in m.get("revisions", []))
+        if m.get("active", m.get("incomplete")):
             busy.add(m["repo_id"])
 
     def cached(repo, rev):
@@ -487,9 +492,10 @@ def presence(recipe: dict, registry: dict) -> dict:
             return None
         if repo not in known:
             return False if repo in managed else None
-        if repo in busy:
-            return False          # a snapshot with blobs still arriving is not servable
-        return rev in known[repo]
+        if rev not in known[repo]:
+            return False
+        verdict = known[repo][rev]
+        return (repo not in busy) if verdict is None else bool(verdict)
 
     dr = recipe.get("drafter", {})
     return {"image": recipe["engine"].get("image") in images,
