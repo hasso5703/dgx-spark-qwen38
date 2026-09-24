@@ -31,6 +31,20 @@ HERE = Path(__file__).resolve()
 DASH = HERE.parents[1]
 REPO = HERE.parents[2]
 
+# The environment this module sets for the cockpit it loads is handed back when it ends,
+# so the next module in the same process starts from what this one found.
+ENV_BEFORE = {}
+
+
+def setUpModule():
+    ENV_BEFORE.update(os.environ)
+
+
+def tearDownModule():
+    for name in set(os.environ) - set(ENV_BEFORE):
+        del os.environ[name]
+    os.environ.update(ENV_BEFORE)
+
 
 def load_cockpit(config_dir: Path):
     os.environ.update(
