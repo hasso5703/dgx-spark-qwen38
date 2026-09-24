@@ -26,7 +26,7 @@ same three controls at the top of the cockpit, and it obeys the same rule.
 1. **Pick `Qwen-Image 2.1`** in the switcher (it sits under its own *Images* heading)
    and press **Switch**. `switch-model.sh image` verifies the checkpoint and makes the
    image lane the one unit enabled at boot. Like every switch, it never starts or
-   stops anything.
+   stops an engine.
 2. **Stop** the lane that is serving. The action bar's lane button reads `Stop 27B`
    while the 27B serves.
 3. **Start Qwen-Image**. It answers in about 70 seconds; the lane pill, the Engines card

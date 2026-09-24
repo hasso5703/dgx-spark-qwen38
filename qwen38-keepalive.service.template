@@ -9,6 +9,8 @@ User=__USER__
 Group=__GROUP__
 Environment=UPSTREAM=http://127.0.0.1:__PORT__
 Environment=PROMPT_CEILING_TOKENS=__PROMPT_CEILING__
+# applied while the flash lane serves, whichever lane was installed or switched to last
+Environment=FLASH_PROMPT_CEILING_TOKENS=__FLASH_PROMPT_CEILING__
 Environment=KEEPALIVE_S=10
 Environment=MAX_SILENCE_S=3600
 Environment=PROXY_BIND=__PROXY_BIND__

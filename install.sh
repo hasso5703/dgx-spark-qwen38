@@ -1905,8 +1905,12 @@ KEEPALIVE_UNIT="qwen38-keepalive.service"
 # 12,138 tokens of slack under it. That band matters because until 2026-09-13 the
 # launcher passed --allow-auto-truncate and a prompt over the wall came back
 # silently cut rather than refused.
-PROMPT_CEILING=0
-[ "$LANE" = "flash" ] && PROMPT_CEILING="${PROMPT_CEILING_TOKENS:-250000}"
+# The flash lane's ceiling goes in the unit whatever lane this installs: the proxy applies
+# it while the flash lane serves (v6.25), so a switch no longer has to move it with a
+# restart. PROMPT_CEILING_TOKENS, when given, is a ceiling on any lane.
+PROMPT_CEILING="${PROMPT_CEILING_TOKENS:-0}"
+FLASH_PROMPT_CEILING="${FLASH_PROMPT_CEILING_TOKENS:-250000}"
+[[ "$PROMPT_CEILING$FLASH_PROMPT_CEILING" =~ ^[0-9]+$ ]] || die "PROMPT_CEILING_TOKENS and FLASH_PROMPT_CEILING_TOKENS take a number of tokens"
 # Every service install gets the keepalive proxy: SGLang buffers tool-call
 # arguments while they stream (127 s of measured silence on a 400-line write,
 # at native context) and agent CLIs abort a silent stream (~140-180 s for
@@ -1922,6 +1926,7 @@ sed -e "s|__HOME__|$HOME|g" \
     -e "s|__PROXY_PORT__|$PROXY_PORT|g" \
     -e "s|__PROXY_BIND__|$PROXY_BIND|g" \
     -e "s|__PROMPT_CEILING__|$PROMPT_CEILING|g" \
+    -e "s|__FLASH_PROMPT_CEILING__|$FLASH_PROMPT_CEILING|g" \
     "$REPO_DIR/qwen38-keepalive.service.template" > "$TMP_KA"
 cmp -s "$TMP_KA" "/etc/systemd/system/$KEEPALIVE_UNIT" \
   || { sudo install -m 644 "$TMP_KA" "/etc/systemd/system/$KEEPALIVE_UNIT"; KA_CHANGED=1; }

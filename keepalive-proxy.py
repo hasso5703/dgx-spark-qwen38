@@ -45,7 +45,9 @@ tool_result blocks were counted 2,044,251 tokens and refused, for 28,463 served.
 control or non-ASCII byte in a query is a 400 instead of a dropped socket; the values
 logged once are remembered as digests, in bounded memory, and an effort level is printed
 short; and a client named by the identity wall is named on the line that opens its
-request too, in one word. Found in review, 2026-09-24.
+request too, in one word. And the flash lane's one-prompt ceiling follows the lane that
+serves, by its model's name (FLASH_PROMPT_CEILING_TOKENS), instead of being moved by a
+switch, with a restart, while the old lane still served. Found in review, 2026-09-24.
 
 v6.24: the identity wall covers every route and every method but /health (it looked at
 POST /v1/... only, while the engine's key went upstream on everything relayed, so GET
@@ -236,6 +238,14 @@ OVERSIZE_MARGIN_FRAC = float(os.environ.get("OVERSIZE_MARGIN_FRAC", "0.08"))
 # per 1k tokens beyond ~90k (measured 29/08), so the ceiling that keeps the box away from
 # the memory edge is a token count set per lane by install.sh, not a share of the pool.
 PROMPT_CEILING_TOKENS = int(os.environ.get("PROMPT_CEILING_TOKENS", "0") or 0)
+# The flash lane's own ceiling, applied while the flash lane is what serves (v6.25), which
+# the served model's name says. It was PROMPT_CEILING_TOKENS above, set per install and
+# moved by switch-model.sh at switch time with a proxy restart, while the old lane still
+# served: a switch to flash queued behind a 27B serving 1M refused every prompt past
+# 250,000 until the next boot, and the restart cut every stream in flight (found in review,
+# 2026-09-24). PROMPT_CEILING_TOKENS stays, as a ceiling on any lane.
+FLASH_PROMPT_CEILING_TOKENS = int(os.environ.get("FLASH_PROMPT_CEILING_TOKENS", "0") or 0)
+FLASH_SERVED_NAMES = frozenset({"qwen3.8-flash-next"})
 # Hard ceiling on one request body, in bytes (0 = none). The oversize guard
 # below only inspects bodies above 200 kB; without a cap a lying or broken
 # Content-Length in the gigabytes is allocated before anything is counted,
@@ -251,11 +261,28 @@ MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", str(256 * 1024 * 1024)) or
 UPSTREAM_GET_TIMEOUT_S = float(os.environ.get("UPSTREAM_GET_TIMEOUT_S", "30"))
 
 
+def lane_ceiling():
+    """The one-prompt ceiling for the lane that serves now (0 = none): PROMPT_CEILING_TOKENS
+    on any lane, and the flash lane's own while it serves. A lane that cannot be told gets
+    the flash one too, when it is set: a refusal a client can retry is the cheaper mistake,
+    the ceiling being what keeps a long flash prefill off the memory edge."""
+    ceiling = PROMPT_CEILING_TOKENS
+    if FLASH_PROMPT_CEILING_TOKENS > 0:
+        try:
+            served = set(served_models())
+        except EngineUnreachable:
+            served = set()
+        if not served or served & FLASH_SERVED_NAMES:
+            ceiling = FLASH_PROMPT_CEILING_TOKENS if ceiling <= 0 else min(ceiling, FLASH_PROMPT_CEILING_TOKENS)
+    return ceiling
+
+
 def prompt_limit(pool):
-    """Usable prompt tokens: the pool share, capped by the absolute ceiling when set."""
+    """Usable prompt tokens: the pool share, capped by the serving lane's ceiling when set."""
     limit = int(pool * (1.0 - OVERSIZE_MARGIN_FRAC))
-    if PROMPT_CEILING_TOKENS > 0:
-        limit = min(limit, PROMPT_CEILING_TOKENS)
+    ceiling = lane_ceiling()
+    if ceiling > 0:
+        limit = min(limit, ceiling)
     return limit
 
 
@@ -2744,7 +2771,7 @@ class H(BaseHTTPRequestHandler):
                     reason = None
                     log(f"{self._peer} oversize check: {count} tokens fit ({limit} usable of pool {pool})")
                 if reason:
-                    ceil = f", one-prompt ceiling {PROMPT_CEILING_TOKENS}" if PROMPT_CEILING_TOKENS > 0 else ""
+                    ceil = f", one-prompt ceiling {lane_ceiling()}" if lane_ceiling() > 0 else ""
                     # The wording is not decoration. An agent client only recovers from
                     # this if it recognises the refusal as a context overflow: opencode
                     # matches the provider's message against a fixed vocabulary (and
@@ -3030,6 +3057,9 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
     log(f"v6.25 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    if FLASH_PROMPT_CEILING_TOKENS > 0:
+        log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
+            + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))
     if CLIENT_KEYS:
         log(f"client keys on: {len(CLIENT_KEYS)} identities ({CLIENT_KEYS_FILE})")
         if UPSTREAM_API_KEY:

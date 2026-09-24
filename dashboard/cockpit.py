@@ -495,12 +495,15 @@ def collect_engine_info():
         if repo == slim.get("model_path") and var in VAR2TARGET:
             served_target = VAR2TARGET[var]
             break
-    # the proxy's absolute prompt ceiling, as deployed in the keepalive unit (0 = pool share only)
-    ceiling = 0
+    # the one-prompt ceiling the proxy applies to the model that serves, as deployed in the
+    # keepalive unit (0 = pool share only): the fit tool's own reading of it, so the two
+    # cannot disagree (the flash lane's ceiling follows that lane since proxy v6.25)
     env = run(["systemctl", "show", "qwen38-keepalive.service", "-p", "Environment"], timeout=5)
-    m = re.search(r"PROMPT_CEILING_TOKENS=(\d+)", env or "")
-    if m:
-        ceiling = int(m.group(1))
+    try:
+        ceiling = _oc_fit().ceiling_from_env(env or "", slim.get("served_model_name"))
+    except Exception:  # noqa: BLE001 (a missing fit tool must not darken the panel)
+        m = re.search(r"(?<![A-Z_])PROMPT_CEILING_TOKENS=(\d+)", env or "")
+        ceiling = int(m.group(1)) if m else 0
     return {"node_id": "local", "info": slim, "prompt_ceiling_tokens": ceiling,
             "served_target": served_target}
 
@@ -1480,7 +1483,7 @@ ACTIONS = {
         "argv": lambda p: ["sudo", "-n", "/usr/bin/systemctl", p["verb"], p["unit"]],
         "timeout": 90,
     },
-    # model switch (repo script, itself never restarts anything)
+    # model switch (repo script: it never starts, stops or restarts an engine)
     "switch": {
         "danger": "medium",
         "params": {"target": ["stock", "uncensored", "fp8", "uncensored-fp8",

@@ -467,18 +467,21 @@ and the keepalive proxy stay put.
   `stock`, `fp8`, `uncensored-fp8`), as many times as you like. It downloads the
   checkpoint (cached after the first time), applies the 1M YaRN config patch if
   the installed unit uses `--context-length 1010000`, regenerates the patched
-  chat template from the target's own snapshot, rewrites **only** the
-  `--model-path` line of `/etc/systemd/system/qwen38-sglang.service` and
-  daemon-reloads.
+  chat template from the target's own snapshot, rewrites the `--model-path`,
+  `--revision` and KV cache lines of `/etc/systemd/system/qwen38-sglang.service`
+  and daemon-reloads.
 - Existing install, across lanes (`flash` ↔ any 27B target): install each
   stack once (`MODEL_CHOICE=flash ./install.sh` downloads the image and
   checkpoint and builds the overlay); after that `./switch-model.sh flash` /
   `./switch-model.sh stock` is surgical too: it re-verifies the checkpoint,
   regenerates the target's template, flips which unit is enabled at boot, and
   points the opencode default model at the target.
-- `switch-model.sh` never restarts a service itself: every switch takes effect
-  on the next restart or reboot, and the script prints the exact stop/start
-  commands for the engine pair it just queued.
+- `switch-model.sh` never starts, stops or restarts an engine: every switch takes
+  effect on the next restart or reboot, and the script prints the exact stop/start
+  commands for the engine pair it just queued. It restarts opencode-web when the
+  limits it reads change (across lanes), and nothing else: the proxy's one-prompt
+  ceiling follows the lane that serves by itself since v1.18.7 (until then the
+  switch moved it, with a proxy restart, while the old lane still served).
 - Speculation stays lossless with every target (DFlash2 drafts and MTP drafts
   are verified against the target model); only acceptance rates vary.
 

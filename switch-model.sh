@@ -25,8 +25,12 @@
 #
 # The DFlash2 drafter (27B) and the NEXTN/MTP head (flash) are lossless speculative
 # paths: drafts are verified against the target, quality is the target's own.
-# The switch takes effect on the NEXT restart; this script NEVER restarts or
-# stops a service itself. It prints the exact commands instead.
+# The switch takes effect on the engine's NEXT restart: this script never starts, stops
+# or restarts an engine, and prints the exact commands instead. The services around it: it
+# restarts opencode-web when the limits it reads change (a switch across lanes), and, on a
+# box whose proxy unit is from before v1.18.7, the proxy, the old way of moving its
+# ceiling (since v1.18.7 the ceiling follows the lane that serves). For the 27B lane it
+# rewrites --model-path, --revision and the KV cache line of the unit.
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -462,7 +466,15 @@ sudo systemctl daemon-reload
 #     file). The drop-in overrides the unit's Environment line; install.sh bakes the
 #     ceiling into the unit and removes this drop-in, so either path converges.
 KA_UNIT="/etc/systemd/system/qwen38-keepalive.service"
-if [ -f "$KA_UNIT" ]; then
+if [ -f "$KA_UNIT" ] && grep -q '^Environment=FLASH_PROMPT_CEILING_TOKENS=' "$KA_UNIT"; then
+  # The proxy of this unit follows the lane that serves by itself (v6.25): nothing to move,
+  # and nothing to restart. Moving it here applied the target's ceiling while the old lane
+  # still served (a 27B serving 1M refused every prompt past 250,000 until the next boot),
+  # and the restart cut every stream in flight through :30001 (found in review, 2026-09-24).
+  echo "keepalive proxy: its one-prompt ceiling follows the lane that serves; left as it is"
+elif [ -f "$KA_UNIT" ]; then
+  # A unit from before v1.18.7, whose proxy only knows one ceiling: the old way, until a
+  # ./install.sh writes the new unit.
   CEIL=0
   [ "$TARGET_LANE" = "flash" ] && CEIL="${PROMPT_CEILING_TOKENS:-250000}"
   [[ "$CEIL" =~ ^[0-9]+$ ]] || die "PROMPT_CEILING_TOKENS must be a number (got '$CEIL')"
@@ -489,6 +501,9 @@ else
 # the invocation this switch just wrote, which is what the box will serve.
 # The label is read but not used here: the picker name is set by the python
 # block below, from the same table's LABEL dict, so it is read into a throwaway.
+# what the opencode server reads, before this switch writes any of it (see 4d)
+oc_configs_sum(){ cat "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json" 2>/dev/null | sha256sum; }
+SW_OC_SUM_BEFORE="$(oc_configs_sum)"
 if read -r SW_CTX SW_OUT _SW_LABEL \
      <<<"$("$REPO_DIR/oc-limits.sh" "$CHOICE" --from "$INVOCATION")" \
    && [ -n "${SW_CTX:-}" ]; then
@@ -535,11 +550,18 @@ done
 #     rewrote the limits correctly and left the Agent tab compacting against the
 #     previous lane's window, which is a silent version of the mid-session 400
 #     this whole table exists to prevent.
+#     Only when they changed: a switch between two targets of one lane (stock to
+#     uncensored) writes the same numbers, and the restart ended the turn the Agent tab
+#     was in all the same (found in review, 2026-09-24).
 if systemctl list-unit-files opencode-web.service >/dev/null 2>&1 \
    && systemctl is-active --quiet opencode-web.service; then
-  sudo systemctl restart opencode-web.service \
-    && echo "opencode-web.service restarted so it reads the new limits" \
-    || echo "NOTE: could not restart opencode-web.service; restart it by hand or the Agent tab keeps the old limits"
+  if [ "$(oc_configs_sum)" != "$SW_OC_SUM_BEFORE" ]; then
+    sudo systemctl restart opencode-web.service \
+      && echo "opencode-web.service restarted so it reads the new limits" \
+      || echo "NOTE: could not restart opencode-web.service; restart it by hand or the Agent tab keeps the old limits"
+  else
+    echo "opencode-web.service kept: the limits it reads did not change"
+  fi
 fi
 fi
 

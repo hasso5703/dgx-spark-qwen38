@@ -163,8 +163,16 @@ def fit(pool: int, ceiling: int = 0, window: int = 0,
     return (context // 1000) * 1000, (output // 1000) * 1000
 
 
-def ceiling_from_env(text: str) -> int:
-    """PROMPT_CEILING_TOKENS out of `systemctl show -p Environment` output.
+# The flash lane's served name: its own one-prompt ceiling applies while it serves (v6.25).
+FLASH_SERVED_NAMES = ("qwen3.8-flash-next",)
+
+
+def ceiling_from_env(text: str, served=None) -> int:
+    """The one-prompt ceiling the proxy applies to the `served` model, out of
+    `systemctl show -p Environment` output: PROMPT_CEILING_TOKENS on any lane, and
+    FLASH_PROMPT_CEILING_TOKENS while the flash lane serves (v6.25), the proxy's own rule
+    (lane_ceiling in keepalive-proxy.py). An unknown served model gets the flash one too,
+    as the proxy does. The cockpit reads its verdict through this function.
 
     systemd prints every variable on one line behind a single `Environment=`
     prefix, so the FIRST variable carries that prefix and the rest do not. The
@@ -173,14 +181,20 @@ def ceiling_from_env(text: str) -> int:
     lane would then get 27B-sized opencode limits and refuse a prompt
     mid-conversation, the exact failure this tool exists to prevent.
     """
+    values = {}
     for part in text.split():
         part = part[len("Environment="):] if part.startswith("Environment=") else part
-        if part.startswith("PROMPT_CEILING_TOKENS="):
-            try:
-                return int(part.split("=", 1)[1] or 0)
-            except ValueError:
-                return 0
-    return 0
+        for key in ("PROMPT_CEILING_TOKENS", "FLASH_PROMPT_CEILING_TOKENS"):
+            if part.startswith(key + "="):
+                try:
+                    values[key] = int(part.split("=", 1)[1] or 0)
+                except ValueError:
+                    values[key] = 0
+    ceiling = values.get("PROMPT_CEILING_TOKENS", 0)
+    flash = values.get("FLASH_PROMPT_CEILING_TOKENS", 0)
+    if flash > 0 and (not served or served in FLASH_SERVED_NAMES):
+        ceiling = flash if ceiling <= 0 else min(ceiling, flash)
+    return ceiling
 
 
 def main(argv: list[str]) -> int:
@@ -206,7 +220,7 @@ def main(argv: list[str]) -> int:
         return 1
     env = subprocess.run(["systemctl", "show", "qwen38-keepalive.service", "-p", "Environment"],
                          capture_output=True, text=True).stdout
-    ceiling = ceiling_from_env(env)
+    ceiling = ceiling_from_env(env, served)
     window = int(info.get("context_length") or 0)
     cap = lane_cap(served) if 0 < window <= NATIVE_WINDOW else None
     context, output = fit(pool, ceiling, window, cap)

@@ -220,6 +220,20 @@ your opencode config that reads the key, without which opencode refuses to start
 `oc` command at `~/.local/bin/oc` that is not this repo's launcher, OpenShift's CLI for one,
 was overwritten: it is left alone, and the command offered instead carries `OPENCODE_CONFIG`.
 
+**The flash lane's prompt ceiling follows the lane that serves, and a switch cuts nothing.**
+The 250,000-token ceiling that keeps a long flash prefill off the memory edge was the proxy
+unit's `PROMPT_CEILING_TOKENS`, moved by `switch-model.sh` at switch time with a proxy
+restart, while the old lane still served: a switch to flash queued behind a 27B serving 1M
+refused every prompt past 250,000 until the next boot, and every switch cut the streams in
+flight through `:30001`. The proxy (v6.25) now applies `FLASH_PROMPT_CEILING_TOKENS` while the
+served model is the flash lane's, the unit carries it whatever lane was installed, and the
+cockpit and `oc-fit-limits.py` read the same rule. A switch leaves such a proxy alone, and
+restarts opencode-web only when the limits it reads change, which a switch between two 27B
+targets never does; it used to restart it every time, ending the Agent tab's turn. The
+switch's own description, the README and ARCHITECTURE.md said it restarted nothing and
+rewrote only `--model-path`: they say what it does now. `PROMPT_CEILING_TOKENS` remains, as a
+ceiling on any lane.
+
 **Switching, the image lane and uninstalling, on boxes that are not the reference one.**
 - A switch on a native 27B box restores the target's config when it still carries YaRN: a
   target served while the box was in 1m kept its patch in the cache, and a native engine

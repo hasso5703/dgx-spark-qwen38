@@ -50,7 +50,7 @@ TIER_ARGS = {
 # lane", and a box that closed its engine to localhost must not be reported as drifted
 # from the recipe it is in fact running.
 HOST_PLACEHOLDERS = ("__HOME__", "__USER__", "__GROUP__", "__HF_CACHE__",
-                     "__PLE_DIR__", "__PORT__", "__PROXY_PORT__", "__PROMPT_CEILING__",
+                     "__PLE_DIR__", "__PORT__", "__PROXY_PORT__", "__PROMPT_CEILING__", "__FLASH_PROMPT_CEILING__",
                      "__ENGINE_BIND__")
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
