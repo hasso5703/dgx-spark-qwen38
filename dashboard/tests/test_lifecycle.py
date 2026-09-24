@@ -471,7 +471,7 @@ class FeedOutcomes(unittest.TestCase):
         # answered a branch with something that is not a one-token distribution.
         "ok systemone": "ok",
         "400 systemone refused": "fail",   # a request that parses and cannot be served
-        "400 suspect path": "fail",        # a path that changes meaning when it is decoded
+        "400 suspect path": "fail",        # a path the proxy cannot relay as it is
         "422 systemone refused": "fail",
         "500 systemone failed": "fail",    # the catch-all: nothing leaves the route unanswered
         "CLIENT GONE mid-systemone": "gone",
@@ -564,6 +564,19 @@ class FeedOutcomes(unittest.TestCase):
     def test_a_delivered_answer_reads_as_ok(self):
         for outcome in ("ok", "ok get", "ok non-sse", "ok non-sse CORRUPTED"):
             self.assertEqual(lc.parse_feed(self._line(outcome))[0]["kind"], "ok", outcome)
+
+    def test_a_request_labelled_by_the_identity_wall_is_read_to_its_end(self):
+        """With the wall on, the proxy names the client after the peer on every line:
+        "127.0.0.1:5555 key=alice". No end line matched, so every such request stayed "in
+        flight", then "no end logged" (found in review, 2026-09-24)."""
+        raw = "\n".join([
+            "2026-09-24T12:00:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 key=alice -> POST /v1/messages body=900000b",
+            "2026-09-24T12:00:01+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 key=alice oversize check: 28458 tokens fit (829020 usable of pool 901109)",
+            "2026-09-24T12:00:09+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 key=alice POST /v1/messages ok in 9.0s [300b relayed, first event at 8.1s, last at 9.0s]"])
+        rows = lc.parse_feed(raw)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["outcome"], rows[0]["kind"], rows[0]["peer"]), ("ok", "ok", "127.0.0.1:5555"))
+        self.assertIn("28,458 tokens counted", rows[0]["detail"])
 
     def test_an_unfinished_request_is_live_then_unknown(self):
         start = ("2026-09-10T09:00:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 -> "
@@ -1053,6 +1066,27 @@ class ZombieGuard(unittest.TestCase):
         self.assertEqual(g["drain_max_s"], 18.0)
         self.assertEqual(g["abort_failed"], 1)
         self.assertEqual(g["reasons"], {"client gone": 1})
+
+    def test_the_banner_is_read_whatever_address_the_proxy_listens_on(self):
+        """Since PROXY_BIND the banner names the address: "v6.24 on 0.0.0.0:30001". The
+        pattern knew only "on :30001", so the page showed the last banner of that era,
+        v6.20 on the reference box while v6.24 ran (found in review, 2026-09-24)."""
+        for line, want in (("[proxy] v6.25 on 0.0.0.0:30001 -> http://127.0.0.1:30000", ("6.25", 30001)),
+                           ("[proxy] v6.25 on 127.0.0.1:30071 -> http://127.0.0.1:30000", ("6.25", 30071)),
+                           ("[proxy] v6.25 on [::]:30001 -> http://127.0.0.1:30000", ("6.25", 30001)),
+                           ("[proxy] v6.14 on :30001 -> http://127.0.0.1:30000", ("6.14", 30001))):
+            g = lc.parse_guard(line)
+            self.assertEqual((g["version"], g["port"]), want, line)
+            self.assertRegex(line, lc.GUARD_BANNER_GREP)
+
+    def test_versions_compare_part_by_part(self):
+        """As floats "6.9" is above "6.14": the page took v6.2 to v6.9 for proxies that
+        abort, which only v6.14 and later do."""
+        for v, older in (("6.2", True), ("6.9", True), ("6.13", True), ("6.14", False),
+                         ("6.20", False), ("6.25", False), ("7.0", False)):
+            self.assertIs(lc.version_before(v, "6.14"), older, v)
+        for v in (None, "", "six", "6.x"):
+            self.assertIsNone(lc.version_before(v, "6.14"), v)
 
     def test_an_end_line_is_never_counted_as_an_abort(self):
         """The end line names the same event ("CLIENT GONE on write") and must not

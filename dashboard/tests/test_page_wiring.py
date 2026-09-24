@@ -67,5 +67,17 @@ class EveryActionButtonIsWired(unittest.TestCase):
         self.assertIn("fit_opencode: () =>", titles)
 
 
+
+class TheOldProxyWarningIsNotAFloatComparison(unittest.TestCase):
+    """The Zombie guard panel warned below v6.14 with parseFloat(v) < 6.14, and as a float
+    "6.9" is above "6.14": v6.2 to v6.9 read as proxies that abort (found in review,
+    2026-09-24). The server compares the parts as numbers and sends the answer."""
+
+    def test_the_page_reads_the_servers_answer(self):
+        body = APP[APP.index("function rGuard(d)"):]
+        body = body[:body.index("\nfunction ")]
+        self.assertIn("g.predates_abort === true", body)
+        self.assertNotRegex(body, r"parseFloat\(v\)")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

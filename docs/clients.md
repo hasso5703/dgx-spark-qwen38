@@ -207,9 +207,11 @@ carries the engine key in clear), `/generate`, `/flush_cache` and
 twice (`/%2576%2531/...`), which SGLang decodes once more before routing. Since
 v1.18.7 a path still escaped after one decode is refused, and `/server_info` is
 relayed without the engine's key fields in either mode. The label appears on
-every journal line of the request (`journalctl -u qwen38-keepalive`), so
-per-client throughput and refusals become readable without a telemetry
-component. A missing, empty, malformed or unreadable keys file stops the unit
+every journal line of the request (`journalctl -u qwen38-keepalive`), the first
+one included since v1.18.7, as one word (a space or a control character in it is
+written `_`), so per-client throughput and refusals become readable without a
+telemetry component, and the cockpit's request feed reads those requests to
+their end. A missing, empty, malformed or unreadable keys file stops the unit
 at start: the wall is present or the unit is down, never silently absent.
 
 ## Typed decisions: TypeSafe SDK and HTTP (v6.19)

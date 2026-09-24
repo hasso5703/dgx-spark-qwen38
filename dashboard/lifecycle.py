@@ -390,10 +390,15 @@ def decide_mem_floor(*, avail_gib: float | None, floor_gib: float, num_reqs: int
 
 
 # ── keepalive proxy journal -> request feed (pure) ──────────────────────────
-FEED_START = re.compile(r"\[proxy\] (\S+) -> (POST|GET) (\S+) body=(\d+)b")
-FEED_END = re.compile(r"\[proxy\] (\S+) (POST|GET) (\S+) (.+?) in ([\d.]+)s")
-FEED_REFUSED = re.compile(r"\[proxy\] (\S+) REFUSED oversize \(\d+b, (.+?), limit (\d+)\)")
-FEED_FIT = re.compile(r"\[proxy\] (\S+) oversize check: (\d+) tokens fit \((\d+) usable")
+# With the identity wall on, the proxy names a listed client after the peer on every line
+# of its request ("127.0.0.1:5555 key=alice"): the key part is optional, so a request is
+# still matched by its ip:port (found in review, 2026-09-24: every such request stayed
+# "in flight").
+_KEY = r"(?: key=\S+)?"
+FEED_START = re.compile(r"\[proxy\] (\S+)" + _KEY + r" -> (POST|GET) (\S+) body=(\d+)b")
+FEED_END = re.compile(r"\[proxy\] (\S+)" + _KEY + r" (POST|GET) (\S+) (.+?) in ([\d.]+)s")
+FEED_REFUSED = re.compile(r"\[proxy\] (\S+)" + _KEY + r" REFUSED oversize \(\d+b, (.+?), limit (\d+)\)")
+FEED_FIT = re.compile(r"\[proxy\] (\S+)" + _KEY + r" oversize check: (\d+) tokens fit \((\d+) usable")
 
 
 # How an outcome reads, so the UI never has to match strings itself (it did, and it
@@ -485,7 +490,22 @@ ZOMBIE_RE = re.compile(
 # The proxy's side of the same event, since v6.14: it either names the request to
 # the engine (abort) or reads the abandoned answer to its end (drain). Both are
 # an absence of zombie; which one happened says whether the engine took the rid.
-GUARD_VERSION_RE = re.compile(r"\[proxy\] v([\d.]+) on :(\d+)")
+# The banner names the address it listens on since the proxy learned PROXY_BIND
+# ("v6.24 on 0.0.0.0:30001"); before that it was "v6.14 on :30001". Matching only the
+# old shape read the last banner of that era instead, v6.20 on the reference box while
+# v6.24 ran, and "no banner" on a box installed since (found in review, 2026-09-24).
+GUARD_VERSION_RE = re.compile(r"\[proxy\] v([\d.]+) on \S*:(\d+)")
+GUARD_BANNER_GREP = r"\[proxy\] v[0-9.]+ on "        # the same line, for journalctl -g
+
+
+def version_before(version, ref):
+    """True when a dotted version is older than ref, False when it is not, None when
+    either cannot be read. Compared as numbers part by part: as floats, "6.9" is above
+    "6.14", so the page took v6.2 to v6.9 for proxies that abort, which they do not."""
+    try:
+        return tuple(int(p) for p in version.split(".")) < tuple(int(p) for p in ref.split("."))
+    except (AttributeError, ValueError):
+        return None
 GUARD_ABORT_RE = re.compile(r"\[proxy\] aborted upstream rid=(\S+) \((.+?)\)")
 GUARD_ABORT_FAIL_RE = re.compile(r"\[proxy\] abort_request failed for rid=(\S+)")
 GUARD_DRAIN_RE = re.compile(r"\[proxy\] drained an abandoned (\S+) for ([\d.]+)s")

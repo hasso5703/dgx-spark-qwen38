@@ -248,6 +248,51 @@ class ClientKeys(unittest.TestCase):
             sys.stderr = real
         self.assertIn("key=alice", capture.getvalue())
 
+    def journal_of(self, port, token, path="/v1/chat/completions"):
+        capture, real = io.StringIO(), sys.stderr
+        sys.stderr = capture
+        try:
+            status, _ = post(port, path, token)
+            time.sleep(0.1)
+        finally:
+            sys.stderr = real
+        self.assertEqual(status, 200)
+        return [ln for ln in capture.getvalue().splitlines() if "[proxy] 127.0.0.1:" in ln]
+
+    def test_every_line_of_a_labelled_request_names_the_client(self):
+        """The label was added by the wall, after the line that opens the request, so that
+        line named a peer no later line did (found in review, 2026-09-24)."""
+        port = self.live(self.keys_file('{"tok-alice":"alice"}'))
+        lines = self.journal_of(port, "tok-alice")
+        self.assertGreaterEqual(len(lines), 2, lines)
+        self.assertTrue(any(" -> POST " in ln for ln in lines), lines)
+        peers = {ln.split("[proxy] ", 1)[1].split(" key=")[0] for ln in lines}
+        self.assertEqual(len(peers), 1, lines)
+        for ln in lines:
+            self.assertIn(" key=alice ", ln)
+
+    def test_the_cockpit_reads_a_labelled_request_to_its_end(self):
+        """Every such request stayed "in flight" in the cockpit, then "no end logged":
+        its end line did not match the peer its first line did."""
+        sys.path.insert(0, str(REPO / "dashboard"))
+        import lifecycle
+        port = self.live(self.keys_file('{"tok-alice":"alice"}'))
+        lines = self.journal_of(port, "tok-alice")
+        rows = lifecycle.parse_feed("\n".join("2026-09-24T12:00:00+02:00 gx10 python3[1]: " + ln
+                                               for ln in lines))
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual((rows[0]["outcome"], rows[0]["kind"]), ("ok non-sse", "ok"), rows)
+
+    def test_a_label_is_one_word_on_the_line(self):
+        """A space in a label split the peer the cockpit matches on; a newline wrote a
+        line of the label's choosing into the journal."""
+        port = self.live(self.keys_file(json.dumps({"tok-b": "my laptop\n[proxy] forged"})))
+        lines = self.journal_of(port, "tok-b")
+        self.assertTrue(lines)
+        for ln in lines:
+            self.assertIn(" key=my_laptop_[proxy]_forged ", ln)
+        self.assertFalse(any(ln.startswith("[proxy] forged") for ln in lines))
+
     def test_an_escaped_path_does_not_walk_past_the_wall(self):
         """SGLang decodes percent-escapes before it routes (checked live: GET /%76%31/models
         answers with the model list), so "/%76%31/chat/completions" reached the engine while

@@ -668,12 +668,13 @@ def collect_guard():
     # nine hours earlier. -n 1 is the newest match and needs no ordering
     # assumption at all.
     banner = run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "1",
-                  "--no-pager", "-o", "cat", "-g", "on :"], timeout=6)
+                  "--no-pager", "-o", "cat", "-g", lc.GUARD_BANNER_GREP], timeout=6)
     counters = run(["journalctl", "-u", "qwen38-keepalive.service",
                     "--since", f"-{ZOMBIE_WINDOW.replace('m', 'min')}",
                     "--no-pager", "-o", "cat"], timeout=6)
     g = lc.parse_guard(counters)
     g["version"] = lc.parse_guard(banner)["version"] or g["version"]
+    g["predates_abort"] = lc.version_before(g["version"], "6.14")   # the page's warning
     state, verdict = lc.guard_verdict(zombies, g, override)
     return {"node_id": "local", "lane": active, "window": ZOMBIE_WINDOW,
             "zombies": zombies, "guard": g, "override": override,

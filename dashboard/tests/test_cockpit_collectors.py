@@ -168,6 +168,34 @@ class Parse(Base):
         self.assertEqual(out["guard"]["aborted"], 1)
         self.assertIn(out["state"], ("ok", "warn", "err", ""))
 
+    def test_the_zombie_guard_reports_the_proxy_that_runs(self):
+        """journalctl -g is given a pattern, and -n 1 answers the newest line matching it:
+        the fake applies the collector's own pattern to a journal holding a banner of the
+        old shape and, after it, the banner the proxy prints today (rendered from its
+        source). The old pattern, "on :", only matched the first, so the page showed
+        v6.20 on the reference box while v6.24 ran."""
+        import re
+        src = (REPO / "keepalive-proxy.py").read_text()
+        tpl = re.search(r'log\(f"(v([\d.]+) on \{BIND\}:\{port\} -> [^"]*)"\)', src)
+        current = tpl.group(2)
+        banner = "[proxy] " + re.sub(r"\{[^}]*\}", "x", tpl.group(1).replace("{BIND}", "0.0.0.0")
+                                                             .replace("{port}", "30001"))
+        journal = ["[proxy] v6.20 on :30001 -> http://127.0.0.1:30000 (keepalive 10s, max silence 3600s)",
+                   "[proxy] aborted upstream rid=abc (client gone)", banner]
+
+        class Journal(FakeBox):
+            def __call__(self, argv, timeout=5.0, merge_err=False):
+                self.calls.append(list(argv))
+                if argv[0] == "journalctl" and "-g" in argv:
+                    pattern = argv[argv.index("-g") + 1]
+                    hits = [ln for ln in journal if re.search(pattern, ln, re.I)]
+                    return (hits[-1] + "\n") if hits else ""
+                return "\n".join(journal) + "\n" if argv[0] == "journalctl" else ""
+        self.cp.run = Journal()
+        out = self.cp.collect_guard()
+        self.assertEqual(out["guard"]["version"], current)
+        self.assertIs(out["guard"]["predates_abort"], False)
+
     def test_an_untracked_file_is_not_a_modified_working_tree(self):
         """A screenshot dropped in the checkout is not the served code drifting.
 

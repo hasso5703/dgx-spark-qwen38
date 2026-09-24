@@ -39,7 +39,13 @@ caller's socket is watched during that wait now, and at its EOF the upstream is 
 SGLang checks its own HTTP client every 4 s for a non-streamed request and drops it (the
 same prefill stopped 4.0 s after the caller left). A non-streamed body the engine ends early
 is no longer relayed as complete: the client sees the cut, as it would from the engine
-itself. Found in review, 2026-09-24.
+itself. An Anthropic body is counted by the engine's own /v1/messages/count_tokens, tools
+included and screenshots priced from their headers wherever they sit: five screenshots in
+tool_result blocks were counted 2,044,251 tokens and refused, for 28,463 served. A raw
+control or non-ASCII byte in a query is a 400 instead of a dropped socket; the values
+logged once are remembered as digests, in bounded memory, and an effort level is printed
+short; and a client named by the identity wall is named on the line that opens its
+request too, in one word. Found in review, 2026-09-24.
 
 v6.24: the identity wall covers every route and every method but /health (it looked at
 POST /v1/... only, while the engine's key went upstream on everything relayed, so GET
@@ -170,7 +176,7 @@ before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
 / max 1307 ms through the proxy vs a steady 118 ms direct. read1() returns as
 soon as bytes are available, so the stream stays token by token.
 """
-import base64, concurrent.futures, http.client, json, math, os, queue, re, select, socket, ssl, string, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error, uuid
+import base64, collections, concurrent.futures, hashlib, http.client, json, math, os, queue, re, select, socket, ssl, string, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -367,8 +373,39 @@ def strip_key_fields(data):
 # only constrains what the model may write into an argument, so dropping the ones Python
 # cannot compile costs the caller nothing and keeps the lane usable.
 UNPYTHONIC_PATTERN_MARKS = (rb"\\p{", rb"\\P{", rb"(?<")
-_pattern_drop_logged = set()
-_effort_move_logged = set()
+
+
+class _LoggedOnce:
+    """What was logged already, so a line is written once per distinct value and not once
+    per request. A value is kept as a 16-byte digest, and past `cap` the oldest are
+    forgotten: these values come from clients and can be as large as a body. Until v6.25
+    they were sets of the strings themselves, for the life of the process: five 20 MB
+    patterns took the proxy from 22 to 137 MiB, five 20 MB effort levels to 346 MiB
+    (found in review, measured 2026-09-24)."""
+
+    def __init__(self, cap=512):
+        self.cap = cap
+        self._seen = collections.OrderedDict()
+        self._lock = threading.Lock()
+
+    def first(self, value):
+        """True the first time this value is seen (among the last `cap` distinct ones)."""
+        key = hashlib.blake2b(value.encode("utf-8", "surrogatepass"), digest_size=16).digest()
+        with self._lock:
+            if key in self._seen:
+                self._seen.move_to_end(key)
+                return False
+            self._seen[key] = None
+            if len(self._seen) > self.cap:
+                self._seen.popitem(last=False)
+            return True
+
+    def __len__(self):
+        return len(self._seen)
+
+
+_pattern_drop_logged = _LoggedOnce()
+_effort_move_logged = _LoggedOnce()
 
 
 def _prune_patterns(node, dropped, depth=0, abandoned=None):
@@ -714,32 +751,48 @@ def _media_tokens(block):
     return _image_tokens(*dims) or fallback
 
 
-def _anthropic_as_openai(j, media):
-    """Anthropic /v1/messages body -> OpenAI-shaped messages for /tokenize.
-    Text blocks are kept, media blocks add their measured token cost to media[0]
-    (their base64 is not prompt text), other blocks (tool_use, tool_result) go
-    through their JSON, close enough for a guard that keeps an 8 percent margin."""
-    def flat(content):
-        if isinstance(content, str):
+# The fields of an Anthropic body that make its prompt, which the engine's own count route
+# takes (AnthropicCountTokensRequest). The rest (max_tokens, stream, sampling, metadata)
+# changes nothing it counts.
+ANTHROPIC_COUNT_FIELDS = ("system", "messages", "tools", "tool_choice", "thinking")
+
+
+def _anthropic_for_count(j, media):
+    """An Anthropic /v1/messages body as the engine's /v1/messages/count_tokens takes it:
+    that route converts it the way a generation is converted, tools included, and applies
+    the chat template, so its count is the prompt the engine will build. Every media
+    block is priced into media[0] from its header and replaced by an empty text block, in
+    a message's content and inside a tool_result's, where Claude Code puts the
+    screenshots it reads: their base64 is not prompt text, the engine's count prices an
+    image at its placeholder only, and a content list left empty is a 500 there where an
+    empty text block counts nothing.
+
+    Until v6.25 the body was flattened into OpenAI messages for /tokenize, without its
+    tools and with every tool_result as JSON text. Measured on the box 2026-09-24 against
+    the engine's own input_tokens: 8 tools, 2,709 served and 422 counted; a 384 KB
+    screenshot in a tool_result, 5,237 served and 367,185 counted, its base64 read as
+    text. This way, 2,709 and 5,236."""
+    def strip(content):
+        if not isinstance(content, list):
             return content
-        parts = []
-        for b in content or []:
-            if not isinstance(b, dict):
-                parts.append(str(b))
-            elif b.get("type") == "text":
-                parts.append(str(b.get("text", "")))
-            elif b.get("type") in MEDIA_BLOCKS:
+        out = []
+        for b in content:
+            if isinstance(b, dict) and b.get("type") in MEDIA_BLOCKS:
                 media[0] += _media_tokens(b)   # measured from its header, never from its base64 text
+                out.append({"type": "text", "text": ""})
+            elif isinstance(b, dict) and b.get("type") == "tool_result" and isinstance(b.get("content"), list):
+                out.append({**b, "content": strip(b["content"])})
             else:
-                parts.append(json.dumps(b, ensure_ascii=False))
-        return "\n".join(parts)
-    msgs = []
-    if j.get("system"):
-        msgs.append({"role": "system", "content": flat(j["system"])})
-    for m in j.get("messages") or []:
-        role = m.get("role") if m.get("role") in ("user", "assistant", "system") else "user"
-        msgs.append({"role": role, "content": flat(m.get("content"))})
-    return msgs
+                out.append(b)
+        return out
+    req = {"model": j.get("model") or "default"}
+    for k in ANTHROPIC_COUNT_FIELDS:
+        if k in j:
+            req[k] = j[k]
+    if isinstance(req.get("messages"), list):
+        req["messages"] = [{**m, "content": strip(m["content"])} if isinstance(m, dict) and "content" in m
+                           else m for m in req["messages"]]
+    return req
 
 
 def _strip_media(messages, media):
@@ -790,20 +843,24 @@ def warmup_hold(est, pool):
 
 
 def tokenize_count(body, path):
-    """Exact prompt length from the engine's /tokenize endpoint (chat template
-    applied to messages). None when nothing exact is possible for THIS body
-    (malformed, unknown shape, rejected by the engine with a 4xx): the caller
-    then refuses on size. Raises EngineUnreachable when the engine itself does
-    not answer (connection refused, reset, timeout, 5xx): that is not a size
-    problem and the caller must say so instead of refusing."""
+    """Exact prompt length from the engine's own count: /v1/messages/count_tokens for
+    the Anthropic dialect (see _anthropic_for_count), /tokenize for the others (chat
+    template applied to messages and tools), media priced from their headers on both.
+    None when nothing exact is possible for THIS body (malformed, unknown shape,
+    rejected by the engine with a 4xx): the caller then refuses on size. Raises
+    EngineUnreachable when the engine itself does not answer (connection refused,
+    reset, timeout, 5xx): that is not a size problem and the caller must say so
+    instead of refusing."""
     try:
         j = json.loads(body)
         if not isinstance(j, dict):
             return None
-        req = {"model": j.get("model") or "default"}
         media = [0]
+        route, field = "/tokenize", "count"
+        req = {"model": j.get("model") or "default"}
         if path.startswith("/v1/messages"):
-            req["messages"] = _anthropic_as_openai(j, media)
+            route, field = "/v1/messages/count_tokens", "input_tokens"
+            req = _anthropic_for_count(j, media)
         elif isinstance(j.get("messages"), list):
             req["messages"] = _strip_media(j["messages"], media)
             if j.get("tools"):
@@ -817,20 +874,20 @@ def tokenize_count(body, path):
     except Exception:
         return None
     try:
-        r = urllib.request.Request(UPSTREAM + "/tokenize", data=payload,
+        r = urllib.request.Request(UPSTREAM + route, data=payload,
                                    headers={"Authorization": f"Bearer {key}",
                                             "Content-Type": "application/json"})
         raw = urllib.request.urlopen(r, timeout=20).read()
     except urllib.error.HTTPError as e:
         if e.code >= 500:
-            raise EngineUnreachable(f"/tokenize answered HTTP {e.code}") from e
+            raise EngineUnreachable(f"{route} answered HTTP {e.code}") from e
         return None                       # 4xx: this body cannot be counted, size decides
     except (urllib.error.URLError, OSError) as e:   # refused, reset, timeout: no engine there
         raise EngineUnreachable(str(getattr(e, "reason", None) or e)) from e
     except Exception:
         return None
     try:
-        n = int(json.loads(raw.decode()).get("count", -1))
+        n = int(json.loads(raw.decode()).get(field, -1))
     except Exception:
         return None
     return n + media[0] if n >= 0 else None
@@ -1290,6 +1347,12 @@ def canonical_path(path):
         # the caller got an empty reply and the journal got a traceback, before any key was
         # checked (found in review, 2026-09-21). Printable ASCII is the whole alphabet of a
         # route this proxy serves or relays, so anything else is refused rather than guessed.
+        return path, True
+    if any(c <= " " or c >= "\x7f" for c in query):
+        # The query goes upstream as it came, so a raw byte there did the same: a control
+        # byte is InvalidURL, a byte past 0x7e (the request line is read as Latin-1)
+        # UnicodeEncodeError, and the caller got an empty reply while the journal said it
+        # had vanished (found in review, 2026-09-24).
         return path, True
     return head + sep + query, False
 
@@ -2579,12 +2642,14 @@ class H(BaseHTTPRequestHandler):
         n0 = self.headers.get("Content-Length") or "0"
         self.path, suspect = canonical_path(self.path)
         if suspect:
-            log(f"{self._peer} REFUSED a path that changes meaning when it is decoded")
+            log(f"{self._peer} REFUSED a path it cannot relay as it is (an escape that changes its meaning, or a byte outside printable ASCII)")
             self._plain(400, {"Content-Type": "application/json"},
                         json.dumps({"error": {"type": "invalid_request", "message":
-                                              "keepalive-proxy: this path carries an encoded query, "
-                                              "fragment or control character and is refused"}}).encode())
+                                              "keepalive-proxy: this path carries an encoded query or "
+                                              "fragment, an escape left after one decode, or a byte "
+                                              "outside printable ASCII, and is refused"}}).encode())
             self._done("400 suspect path"); return
+        self._label_peer()
         log(f"{self._peer} -> {self.command} {self.path.split('?')[0]} body={n0}b")
         if self._wall_refused():
             return
@@ -2634,13 +2699,12 @@ class H(BaseHTTPRequestHandler):
                 self._done("400 sampling field out of range"); return
         body, dropped = sanitize_tool_schemas(body, self.path)
         body, moved_effort = route_reasoning_effort(body, self.path)
-        if moved_effort and moved_effort not in _effort_move_logged:
-            _effort_move_logged.add(moved_effort)   # once per level, not per request
-            log(f"{self._peer} reasoning_effort={moved_effort!r} is not in SGLang's enum; "
+        if moved_effort and _effort_move_logged.first(moved_effort):   # once per level, not per request
+            shown = repr(moved_effort[:40]) + ("..." if len(moved_effort) > 40 else "")
+            log(f"{self._peer} reasoning_effort={shown} is not in SGLang's enum; "
                 f"relayed inside chat_template_kwargs so the chat template can read it")
         for pat in dropped:                 # once per distinct pattern, not per request
-            if pat not in _pattern_drop_logged:
-                _pattern_drop_logged.add(pat)
+            if _pattern_drop_logged.first(pat):
                 log(f"{self._peer} tool schema: dropped a 'pattern' Python's re cannot "
                     f"compile (the engine would 400 the request): {pat[:120]}")
         if self.command == "POST" and self.path.split("?")[0] == SYSTEMONE_PATH:
@@ -2902,11 +2966,12 @@ class H(BaseHTTPRequestHandler):
         self._bytes = 0; self._first = None; self._last = None
         self.path, suspect = canonical_path(self.path)
         if suspect:
-            log(f"{self._peer} REFUSED a path that changes meaning when it is decoded")
+            log(f"{self._peer} REFUSED a path it cannot relay as it is (an escape that changes its meaning, or a byte outside printable ASCII)")
             self._plain(400, {"Content-Type": "application/json"},
                         json.dumps({"error": {"type": "invalid_request", "message":
-                                              "keepalive-proxy: this path carries an encoded query, "
-                                              "fragment or control character and is refused"}}).encode())
+                                              "keepalive-proxy: this path carries an encoded query or "
+                                              "fragment, an escape left after one decode, or a byte "
+                                              "outside printable ASCII, and is refused"}}).encode())
             self._done("400 suspect path"); return
         if self._wall_refused():
             return
@@ -2924,16 +2989,33 @@ class H(BaseHTTPRequestHandler):
         self._plain(resp.status, dict(resp.headers), data)
         self._done("ok get")
 
+    def _label_peer(self):
+        """Name a listed client on every journal line of its request, the first one
+        included: the peer becomes "ip:port key=<label>". The label used to be added by
+        the wall, after the line that opens the request, so no later line carried the
+        peer that line did and the cockpit left every such request "in flight", then
+        "no end logged" (found in review, 2026-09-24)."""
+        if getattr(self, "_labelled", False):
+            return
+        self._labelled, self._client_label = True, None
+        if not CLIENT_KEYS or self.path.split("?")[0] in OPEN_ROUTES:
+            return
+        auth = (self.headers.get("Authorization") or "").strip()
+        self._client_label = CLIENT_KEYS.get(auth[7:].strip()) if auth.startswith("Bearer ") else None
+        if self._client_label is not None:
+            # one word however the label is written in keys.json: a space would split the
+            # peer the cockpit matches on, a newline would forge a journal line
+            shown = re.sub(r"[\s\x00-\x1f\x7f]", "_", str(self._client_label))
+            self._peer = f"{self._peer} key={shown}"
+
     def _wall_refused(self):
         """True when the identity wall answered this request with a 401. Every route but
         OPEN_ROUTES needs a listed key when the wall is on, whatever the method."""
         route = self.path.split("?")[0]
         if not CLIENT_KEYS or route in OPEN_ROUTES:
             return False
-        auth = (self.headers.get("Authorization") or "").strip()
-        label = CLIENT_KEYS.get(auth[7:].strip()) if auth.startswith("Bearer ") else None
-        if label is not None:
-            self._peer = f"{self._peer} key={label}"
+        self._label_peer()
+        if self._client_label is not None:
             return False
         log(f"{self._peer} REFUSED unknown client key on {route}")
         err = ({"type": "error", "error": {"type": "authentication_error",

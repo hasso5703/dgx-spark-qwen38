@@ -94,6 +94,35 @@ caller left. A request that asks for a stream is left to the relay, which aborts
 closes. A non-streamed body the engine ended early was also relayed as complete (the proxy
 re-frames it as chunked and wrote the final chunk anyway): the client now sees the cut.
 
+**A Claude Code session with screenshots is no longer refused as too long.** The proxy
+counted an Anthropic body by flattening it into OpenAI messages for `/tokenize`, which sent
+no tools and turned every `tool_result` into JSON text, base64 included, and Claude Code puts
+the screenshots it reads in `tool_result` blocks. On the reference box, five screenshots
+(2.85 MB) were counted 2,044,251 tokens and refused with "the prompt is too long for this
+lane", and so was every later request carrying them; the engine serves the same request as
+28,463. The proxy now asks the
+engine's own `/v1/messages/count_tokens`, which converts the body the way a generation does,
+tools included (8 tools: 2,709 counted, 2,709 served, 422 before), and it still prices each
+image from its header, wherever it sits, since that route counts an image as its placeholder.
+
+**Three smaller proxy defects.** A raw control or non-ASCII byte in a query string reached
+`http.client`, which raised, and the caller got an empty reply while the journal said it had
+vanished: it is a 400 now. The proxy logged each dropped tool pattern and each moved
+`reasoning_effort` once, by remembering the values themselves for the life of the process,
+and printed the effort whole: five 20 MB values took it from 22 to 346 MiB, with a
+20-million-character journal line each. It remembers a digest now, in bounded memory, and
+prints 40 characters. And with the identity wall on, the label a client is known by was
+added after the line that opens its request, so the cockpit's feed left every such request
+"in flight", then "no end logged": the first line carries it too, as one word, and the feed
+reads it.
+
+**The Zombie guard panel shows the proxy that runs.** It looked for a banner of the shape
+`v6.14 on :30001`, and the banner names its address since the proxy learned `PROXY_BIND`
+(`v6.24 on 0.0.0.0:30001`): on the reference box it showed v6.20, the last banner of the old
+shape, while v6.24 ran, and a box installed since would show "no banner". Its warning for a
+proxy too old to abort also compared versions as floats, so v6.2 to v6.9 passed for v6.14 or
+later; the versions are compared part by part now.
+
 **A timed-out image call keeps the lane busy.** After its 30-minute read timeout the cockpit
 gave the image lock back while the runtime, which has no abort, went on generating, so a
 second image could start beside the first, the pair that held 90.5 GB and wedged the engine.

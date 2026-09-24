@@ -26,16 +26,33 @@ class FakeTokenize(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         FakeTokenize.seen.append((self.path, body))
-        if self.path != "/tokenize":
+        if self.path not in ("/tokenize", "/v1/messages/count_tokens"):
             self.send_response(404); self.end_headers(); return
         if body.get("model") in ("__503__", "__400__"):     # engine loading / body rejected
             self.send_response(int(body["model"].strip("_"))); self.end_headers(); return
         def flat(c):
+            """One word per whitespace-separated token of the text the template would see:
+            text parts, a tool_result's own content, any other block as its JSON."""
             if isinstance(c, list):
-                return " ".join(str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in c)
+                out = []
+                for p in c:
+                    if not isinstance(p, dict):
+                        out.append(str(p))
+                    elif p.get("type") == "text":
+                        out.append(str(p.get("text", "")))
+                    elif p.get("type") == "tool_result":
+                        out.append(flat(p.get("content", "")))
+                    else:
+                        out.append(json.dumps(p))
+                return " ".join(out)
             return str(c)
         text = body.get("prompt") or " ".join(flat(m.get("content", "")) for m in body.get("messages", []))
-        out = json.dumps({"tokens": [], "count": len(str(text).split()), "max_model_len": 262144}).encode()
+        if self.path == "/v1/messages/count_tokens":
+            words = len((flat(body.get("system", "")) + " " + str(text)).split())
+            words += len(json.dumps(body["tools"]).split()) if body.get("tools") else 0
+            out = json.dumps({"input_tokens": words}).encode()
+        else:
+            out = json.dumps({"tokens": [], "count": len(str(text).split()), "max_model_len": 262144}).encode()
         self.send_response(200); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
 
@@ -73,17 +90,53 @@ class ProxyGuard(unittest.TestCase):
         body = json.dumps({"model": "m", "prompt": "a b c d"}).encode()
         self.assertEqual(self.mod.tokenize_count(body, "/v1/completions"), 4)
 
-    def test_anthropic_shape_converted(self):
-        body = json.dumps({"model": "m", "system": [{"type": "text", "text": "sys one"}],
-                           "messages": [{"role": "user", "content": [{"type": "text", "text": "hello there"},
-                                                                     {"type": "tool_result", "tool_use_id": "x", "content": "ok"}]},
-                                        {"role": "assistant", "content": "fine"}]}).encode()
+    def test_anthropic_body_counted_by_the_engines_own_route(self):
+        """The engine converts an Anthropic body for a generation; its count route does
+        the same conversion and applies the same template, so the body goes there as it
+        is (v6.25), not flattened into OpenAI messages here."""
+        body = {"model": "m", "system": [{"type": "text", "text": "sys one"}], "max_tokens": 9,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "hello there"},
+                                                          {"type": "tool_result", "tool_use_id": "x", "content": "ok"}]},
+                             {"role": "assistant", "content": "fine"}]}
+        n = self.mod.tokenize_count(json.dumps(body).encode(), "/v1/messages")
+        path, sent = FakeTokenize.seen[-1]
+        self.assertEqual(path, "/v1/messages/count_tokens")
+        self.assertEqual(sent["system"], body["system"])
+        self.assertEqual(sent["messages"], body["messages"])
+        self.assertNotIn("max_tokens", sent)          # not a field of the count route
+        self.assertEqual(n, 6)                        # sys one, hello there, ok, fine
+
+    def test_anthropic_tools_are_counted(self):
+        """Measured on the box: 8 tools, 2,709 prompt tokens served, 422 counted by v6.24,
+        which sent no tools at all on this route."""
+        tools = [{"name": "Read", "description": "reads a file from disk",
+                  "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}]
+        body = json.dumps({"model": "m", "tools": tools,
+                           "messages": [{"role": "user", "content": "two words"}]}).encode()
         n = self.mod.tokenize_count(body, "/v1/messages")
         _path, sent = FakeTokenize.seen[-1]
-        self.assertEqual([m["role"] for m in sent["messages"]], ["system", "user", "assistant"])
-        self.assertIn("sys one", sent["messages"][0]["content"])
-        self.assertIn("tool_result", sent["messages"][1]["content"])  # non-text blocks counted via their JSON
-        self.assertGreaterEqual(n, 5)
+        self.assertEqual(sent.get("tools"), tools)
+        self.assertEqual(n, 2 + len(json.dumps(tools).split()))
+
+    def test_an_image_in_a_tool_result_is_priced_not_read_as_text(self):
+        """Claude Code returns the screenshots it reads inside tool_result blocks. v6.24
+        sent those as JSON text, base64 included: a 384 KB screenshot counted 367,185
+        tokens on the box where the engine served 5,237, enough to refuse a prompt that
+        fits. The block is priced from its header and replaced by an empty text block,
+        never by an empty list, which the engine's count route answers with a 500."""
+        import base64
+        shot = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                            "data": base64.b64encode(self._png(1280, 720)).decode() + "B" * 300_000}}
+        body = json.dumps({"model": "m", "messages": [
+            {"role": "user", "content": "look"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [shot]}]}]}).encode()
+        n = self.mod.tokenize_count(body, "/v1/messages")
+        _path, sent = FakeTokenize.seen[-1]
+        self.assertNotIn("BBBB", json.dumps(sent))
+        self.assertEqual(sent["messages"][2]["content"][0]["content"], [{"type": "text", "text": ""}])
+        self.assertEqual(n - self.mod._image_tokens(1280, 720),
+                         1 + len(json.dumps(sent["messages"][1]["content"][0]).split()))
 
     def test_tool_pattern_python_cannot_compile_is_dropped(self):
         """Claude Code's Artifact tool sends an ECMA-262 pattern with Unicode property
@@ -1021,6 +1074,15 @@ class PathsHttpClientCannotSend(unittest.TestCase):
             _out, suspect = self.m.canonical_path(path)
             self.assertTrue(suspect, f"{path} would reach http.client and drop the socket")
 
+    def test_a_raw_control_or_non_ascii_byte_in_the_query_is_refused(self):
+        """The query goes upstream undecoded, so a raw byte in it reached http.client just
+        the same: a control byte is InvalidURL, a byte past 0x7e (the request line is read
+        as Latin-1) UnicodeEncodeError (found in review, 2026-09-24)."""
+        for path in ("/v1/models?x=\x01", "/v1/models?q=\xc3\xa9", "/v1/chat/completions?a=\x7f",
+                     "/v1/models?x=\x1b[2J"):
+            _out, suspect = self.m.canonical_path(path)
+            self.assertTrue(suspect, f"{path!r} would reach http.client and drop the socket")
+
     def test_what_http_client_can_send_still_goes_through_decoded(self):
         for path, want in (("/health", "/health"), ("/%76%31/models", "/v1/models"),
                            ("/v1/chat/completions?x=1", "/v1/chat/completions?x=1")):
@@ -1034,10 +1096,12 @@ class PathsHttpClientCannotSend(unittest.TestCase):
         import http.client
         conn = http.client.HTTPConnection("127.0.0.1", 1)
         for path in ("/health", "/v1/models", "/%76%31/models", "/a~b", "/a.b-c_d",
-                     "/h%C3%A9alth", "/a%20b", "/a%0ab", "/%E2%9C%93", "/a%7fb"):
+                     "/h%C3%A9alth", "/a%20b", "/a%0ab", "/%E2%9C%93", "/a%7fb",
+                     "/v1/models?x=1&y=%01", "/v1/models?x=\x01", "/v1/models?q=\xe9"):
             out, suspect = self.m.canonical_path(path)
             try:
-                conn._encode_request(out)
+                conn._validate_path(out)          # control characters: InvalidURL
+                conn._encode_request(out)         # anything past ASCII: UnicodeEncodeError
                 encodable = True
             except Exception:
                 encodable = False
@@ -1278,6 +1342,81 @@ class SamplingFieldsTheEngineDiesOn(unittest.TestCase):
         finally:
             self.m.urllib.request.urlopen = real
             self.m._VOCAB.update(size=0, ts=0.0)
+
+
+class ClientStringsAreNotKept(unittest.TestCase):
+    """The proxy logs a dropped tool pattern and a moved reasoning_effort once per distinct
+    value. It remembered the values themselves, for the life of the process, and printed
+    the effort whole: five 20 MB patterns took it from 22 to 137 MiB, five 20 MB effort
+    levels to 346 MiB with a 20,000,137-character journal line each (found in review,
+    measured 2026-09-24)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = http.server.HTTPServer(("127.0.0.1", 0), FakeTokenize)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        os.environ["UPSTREAM"] = f"http://127.0.0.1:{cls.srv.server_port}"
+        spec = importlib.util.spec_from_file_location("kproxy_kept", HERE.parents[1] / "keepalive-proxy.py")
+        cls.m = importlib.util.module_from_spec(spec)
+        sys.argv = ["keepalive-proxy.py"]
+        spec.loader.exec_module(cls.m)
+        cls.proxy = cls.m.Server(("127.0.0.1", 0), cls.m.H)
+        threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.proxy.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proxy.shutdown()
+        cls.srv.shutdown()
+
+    def post(self, obj):
+        import io
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(obj).encode(),
+                                     method="POST", headers={"Content-Type": "application/json"})
+        err, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            try:
+                urllib.request.urlopen(req, timeout=30).read()
+            except urllib.error.HTTPError as e:
+                e.read()
+            time.sleep(0.1)
+            return sys.stderr.getvalue()
+        finally:
+            sys.stderr = err
+
+    @staticmethod
+    def held(memory):
+        return list(getattr(memory, "_seen", memory))
+
+    def test_a_dropped_pattern_is_logged_once_and_not_kept(self):
+        logs = ""
+        for letter in "abca":
+            pattern = "\\p{L}" + letter * 1_000_000
+            logs += self.post({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                               "tools": [{"type": "function", "function": {"name": "f", "parameters": {
+                                   "type": "object", "properties": {"x": {"type": "string", "pattern": pattern}}}}}]})
+        self.assertEqual(logs.count("dropped a 'pattern'"), 3, "one line per distinct pattern")
+        self.assertTrue(all(len(k) <= 16 for k in self.held(self.m._pattern_drop_logged)),
+                        "the proxy keeps the patterns themselves")
+
+    def test_a_moved_effort_is_logged_short_and_not_kept(self):
+        logs = ""
+        for letter in "xy":
+            logs += self.post({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                               "reasoning_effort": letter * 1_000_000})
+        lines = [ln for ln in logs.splitlines() if "reasoning_effort=" in ln]
+        self.assertEqual(len(lines), 2)
+        self.assertLess(max(map(len, lines)), 300, "the whole value went to the journal")
+        self.assertTrue(all(len(k) <= 16 for k in self.held(self.m._effort_move_logged)),
+                        "the proxy keeps the effort values themselves")
+
+    def test_the_memory_is_bounded(self):
+        once = self.m._LoggedOnce(cap=3)
+        self.assertEqual([once.first(v) for v in ("a", "b", "a", "c", "d", "e")],
+                         [True, True, False, True, True, True])
+        self.assertEqual(len(once), 3)
+        self.assertTrue(once.first("b"), "the oldest distinct value is forgotten past the cap")
+        self.assertFalse(once.first("e"))
 
 
 class TopLogprobsCeilingEndToEnd(unittest.TestCase):

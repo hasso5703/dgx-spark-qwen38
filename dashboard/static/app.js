@@ -498,7 +498,7 @@ function rGuard(d){
   setText('zgverdict', `${verdict} (last ${d.window || '10m'}${d.lane ? ', ' + d.lane : ''})`);
   // The RUNNING proxy is the one that matters: the file in the repo says nothing
   // about the process systemd started.
-  const v = g.version, old = v && parseFloat(v) < 6.14;
+  const v = g.version, old = g.predates_abort === true;   // compared server-side, part by part
   setText('zgversion', v ? 'v' + v : 'no banner');
   $('zgversion').style.color = old ? 'var(--warn)' : '';
   note('zgversionnote', old ? 'Below v6.14 a client that gives up during prefill leaves a generation the proxy cannot name.'
