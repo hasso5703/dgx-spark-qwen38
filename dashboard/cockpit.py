@@ -2307,6 +2307,10 @@ def job_diag_bundle(job: Job):
         (tdp / "journal-flash.txt").write_text(run(["journalctl", "-u", "qwen38-flash.service", "-n", "400", "--no-pager", "-o", "short-iso"], timeout=15))
         (tdp / "journal-sglang.txt").write_text(run(["journalctl", "-u", "qwen38-sglang.service", "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
         (tdp / "journal-keepalive.txt").write_text(run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
+        # the image lane and the Agent tab's server have journals of their own, which the
+        # bundle left out (found in review, 2026-09-24)
+        (tdp / "journal-image.txt").write_text(run(["journalctl", "-u", IMAGE_UNIT, "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
+        (tdp / "journal-opencode-web.txt").write_text(run(["journalctl", "-u", AGENT_UNIT, "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
         for cont in CONTAINERS:
             (tdp / f"docker-{cont}.txt").write_text(run(["docker", "logs", "--tail", "600", cont], timeout=15, merge_err=True))
         (tdp / "nvidia-smi.txt").write_text(run(["nvidia-smi"], timeout=10))
