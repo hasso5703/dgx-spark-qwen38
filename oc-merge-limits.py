@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Merge this repo's opencode limits into an EXISTING opencode.json.
 
-Usage: oc-merge-limits.py <target opencode.json> <provider> <model id> <context> <output>
+Usage: oc-merge-limits.py <target opencode.json> <provider> <model id> <context> <output> [--keep-lower]
        oc-merge-limits.py <target opencode.json> --compaction <preserve_recent_tokens>
        oc-merge-limits.py <target opencode.json> <provider> <model id> --add-variant <level>
        oc-merge-limits.py <target opencode.json> --autoupdate notify
@@ -13,6 +13,14 @@ by targeted text substitution: comments, ordering and the user's other
 providers are left untouched. A dated backup is written first. Exit 0 with
 "unchanged" when the limits already match, 3 when the provider/model is not
 in the file (nothing to merge), 1 on a malformed file.
+
+--keep-lower leaves a pair already at or below <context>/<output> as it is: on a 1m
+install the numbers given are the table's bounds, and the pair a fit to the engine's
+pool wrote under them (the end of the install, or the cockpit) is the one to keep.
+Rewriting the bounds over it made every 1m run write twice, the table's pair here and
+the fit's at the end, with a backup and an opencode restart for each: 79 backups in the
+reference box's ~/.config/opencode by 2026-09-24, 19 of them written on the 23rd (found in
+review).
 
 --compaction writes the top-level "compaction" object instead. That block is not
 per-model, which is why it has its own mode: `preserve_recent_tokens` is how much
@@ -477,6 +485,9 @@ def main(argv: list[str]) -> int:
         return remove_providers(argv[1], argv[3])
     if len(argv) == 6 and argv[4] == "--add-variant":
         return add_variant(argv[1], argv[2], argv[3], argv[5])
+    keep_lower = argv[6:] == ["--keep-lower"]
+    if keep_lower:
+        argv = argv[:6]
     if len(argv) != 6:
         print(__doc__)
         return 2
@@ -497,6 +508,12 @@ def main(argv: list[str]) -> int:
         return 3
     if limit.get("context") == ctx and limit.get("input") == ctx and limit.get("output") == out:
         print(f"{provider}/{model} limits already {ctx}/{out}: unchanged")
+        return 0
+    have_ctx, have_out = limit.get("context"), limit.get("output")
+    if (keep_lower and isinstance(have_ctx, int) and isinstance(have_out, int)
+            and 0 < have_ctx <= ctx and 0 < have_out <= out and limit.get("input") in (None, have_ctx)):
+        print(f"{provider}/{model} limits {have_ctx}/{have_out} are within {ctx}/{out}: unchanged "
+              f"(a fit to the pool, kept)")
         return 0
     # locate this model's "limit" object in the raw text (provider -> model -> limit)
     i = text.index(f'"{provider}"')

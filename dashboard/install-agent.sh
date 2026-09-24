@@ -141,6 +141,19 @@ INSTALLED_PATH="$({ grep -m1 -E '^Environment=PATH=' "$INSTALLED_OC" 2>/dev/null
 SVC_PATH="${AGENT_PATH:-$(printf '%s:%s:%s' "$(dirname "$OPENCODE_BIN")" "$PATH" "$INSTALLED_PATH" | tr ':' '\n' | awk 'NF && !seen[$0]++' | paste -sd: -)}"
 case "$SVC_PATH" in *'|'*|*' '*) die "PATH contains a space or a | character; set PATH to something plain and re-run" ;; esac
 
+# True (0) when a service has to be restarted to run what is on disk: it is not running, or
+# it started before the last change of one of the files it reads (see install.sh).
+stale_since(){
+  local unit="$1" started f; shift
+  [ "$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)" = "active" ] || return 0
+  started="$(systemctl show -p ExecMainStartTimestamp --value --timestamp=unix "$unit" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$started" ] || return 0
+  for f in "$@"; do
+    [ -e "$f" ] && [ "$(stat -L -c %Y "$f")" -gt "$started" ] && return 0
+  done
+  return 1
+}
+
 # ── render and install the unit ────────────────────────────────────────────
 TMP_UNIT="$(mktemp)"
 sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" -e "s|__HOME__|$HOME|g" \
@@ -149,10 +162,19 @@ sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" -e "s|__HOME__|$HOM
     -e "s|__AUTO_LINE__|$AUTO_LINE|g" \
     "$HERE/opencode-web.service.template" > "$TMP_UNIT"
 grep -q '__[A-Z_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in the unit render"
-sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT"; rm -f "$TMP_UNIT"
+AGENT_CHANGED=0
+cmp -s "$TMP_UNIT" "/etc/systemd/system/$UNIT" \
+  || { sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT"; AGENT_CHANGED=1; }
+rm -f "$TMP_UNIT"
 sudo systemctl daemon-reload
 sudo systemctl enable --now "$UNIT"
-sudo systemctl try-restart "$UNIT"      # a re-run with a new port, cap or binary must take effect
+# A re-run with a new port, cap or binary must take effect; one that changed nothing must
+# not end the turn the Agent tab is in, which it did at every ./install.sh (49 starts of
+# opencode-web on the reference box on 2026-09-23; found in review, 2026-09-24).
+if [ "$AGENT_CHANGED" -eq 1 ] || stale_since "$UNIT" "$OPENCODE_BIN" "$ENV_FILE" \
+     "$HOME/.config/qwen38/opencode.json" "$HOME/.config/opencode/opencode.json"; then
+  sudo systemctl try-restart "$UNIT"
+fi
 
 # ── the server answers with the credentials (never on the command line) ────
 health(){

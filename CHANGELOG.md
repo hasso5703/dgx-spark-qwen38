@@ -191,6 +191,35 @@ wrong with them: a kept engine gets 30 minutes. And it accepted any non-empty te
 of `!` (token 0, the decode corruption this hardware is known for) ended in "Installed,
 verified": it is refused, with what to do about it.
 
+**An update that changes nothing restarts nothing.** v1.18.5 kept the engine when nothing it
+reads had changed, and everything around it went on restarting at every run: the proxy,
+cutting every request in flight through it; opencode-web up to three times, ending the turn
+the Agent tab was in; the cockpit twice. The reference box's journal counts 49 starts of
+opencode-web and 36 of the cockpit on 2026-09-23. Each is now restarted when it is not
+running, when the run changed what it runs, or when it started before the last change of a
+file it reads, and those files are written only when their content changes. On a 1m box,
+step 7 also wrote the table's bounds over the pair the end-of-install fit had set, and the
+fit wrote it back: two writes and two backups per run, 79 of them in `~/.config/opencode`
+by 2026-09-24. A fitted pair under the bounds is kept now.
+
+**The engine is restarted when a branch or a moving tag has moved.** With `MODEL_REV=main`
+the checkpoint's config was looked for under `snapshots/main`, which never exists, and the
+ref that names the commit was not an input either; an image named by a tag
+(`IMAGE=lmsysorg/sglang:v0.5.19`) matched neither pattern of the engine's inputs. Either way
+the installer kept an engine running the old checkpoint or image under "nothing it reads
+changed", and with `main` the flash lane's draft vocabulary was never built. Both are
+resolved now. And an explicit `CONTEXT_MODE=native` on a 1m box kept the 1M limits in the
+user's opencode config under a note advising `CONTEXT_MODE=1m`, while step 8 installed the
+native unit: they follow the mode that was asked for.
+
+**Two things the installer said or did about the rest of the box.** Its closing summary gave
+OpenAI and Anthropic clients the engine's own port, on loopback since v1.17 and without the
+proxy's guards: it names the proxy. The `--no-service` summary said the install lived in two
+folders, to delete; it names what `./uninstall.sh --list` shows, including the provider in
+your opencode config that reads the key, without which opencode refuses to start. And an
+`oc` command at `~/.local/bin/oc` that is not this repo's launcher, OpenShift's CLI for one,
+was overwritten: it is left alone, and the command offered instead carries `OPENCODE_CONFIG`.
+
 **A timed-out image call keeps the lane busy.** After its 30-minute read timeout the cockpit
 gave the image lock back while the runtime, which has no abort, went on generating, so a
 second image could start beside the first, the pair that held 90.5 GB and wedged the engine.

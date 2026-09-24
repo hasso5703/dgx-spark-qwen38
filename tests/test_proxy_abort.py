@@ -54,10 +54,18 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-    def _write_events(self, rid, ids, prefill=0.0, count=6):
-        """Write SSE events until the reader goes away; report which happened."""
+    def _register(self, rid):
+        """The request's state exists before its first byte is out. In SGLang the stream's
+        headers go out and generate_request runs _init_req_state right after, with no await
+        in between, so an abort (handled on the same event loop) cannot land between the
+        two. This fake is threaded: registering after the headers let a fast abort land in
+        that gap and read as discarded, about once in a CI run (seen 2026-09-24)."""
         with self.lock:
             FakeEngine.live[rid] = True
+
+    def _write_events(self, rid, ids, prefill=0.0, count=6):
+        """Write SSE events until the reader goes away; report which happened. The state
+        was registered by _register, before the headers."""
         try:
             if prefill:
                 time.sleep(prefill)
@@ -98,11 +106,13 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
         if path == "/v1/messages":
             # the Anthropic route mints its own id and applies no header overrides
             rid = uuid.uuid4().hex
+            self._register(rid)
             self._sse_head()
             self._write_events(rid, f"msg_{uuid.uuid4().hex}", prefill=0.0)
             return
         rid = (override if FakeEngine.honour else None) or uuid.uuid4().hex
         prefill = PREFILL_S if b"slow-prefill" in body else 0.0
+        self._register(rid)
         self._sse_head()
         self._write_events(rid, rid, prefill=prefill)
 

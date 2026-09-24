@@ -54,11 +54,26 @@ def inputs(unit, config_dir, hf_cache, ckpts):
         repo, _, rev = ck.partition("@")
         if not repo or not rev:
             continue
-        path = os.path.join(hf_cache, "hub", "models--" + repo.replace("/", "--"), "snapshots", rev, "config.json")
+        repo_dir = os.path.join(hf_cache, "hub", "models--" + repo.replace("/", "--"))
+        ref = os.path.join(repo_dir, "refs", rev)
+        if os.path.isfile(ref):
+            # A branch or a tag (MODEL_REV=main): its snapshot is the commit the ref names,
+            # and the ref itself is an input, since a download that moves it changes what
+            # the engine serves at its next start. snapshots/main never exists, so neither
+            # the config nor the ref counted, and a moved main or a YaRN patch kept the
+            # engine with "nothing it reads changed" (found in review, 2026-09-24).
+            files.append(ref)
+            rev = _read(ref).strip() or rev
+        path = os.path.join(repo_dir, "snapshots", rev, "config.json")
         if os.path.exists(path):
             files.append(path)
+    # Every image the units name, however they name it: by digest, by the local tags this
+    # repo gives them, and whatever reference sits where the image goes, right before the
+    # server command. A moving tag (IMAGE=lmsysorg/sglang:v0.5.19, a local SERVE_IMAGE)
+    # matched neither of the first two, so a pull that moved it kept the engine.
     images = sorted(set(re.findall(r"[a-z0-9][a-z0-9./_-]*@sha256:[0-9a-f]{64}", body))
-                    | set(re.findall(r"\bqwen38-[a-z0-9-]+:[A-Za-z0-9._-]+", body)))
+                    | set(re.findall(r"\bqwen38-[a-z0-9-]+:[A-Za-z0-9._-]+", body))
+                    | set(re.findall(r"(?m)([^\s\\]+)\s*\\?\s*\n?\s*python3 -m sglang\.launch_server", body)))
     containers = sorted(set(re.findall(r"--name[ =]([A-Za-z0-9._-]+)", body)))
     return files, images, containers
 

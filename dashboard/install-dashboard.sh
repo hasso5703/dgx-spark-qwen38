@@ -50,6 +50,19 @@ ast.parse(open(sys.argv[1]).read())
 EOF
 done
 
+# True (0) when a service has to be restarted to run what is on disk: it is not running, or
+# it started before the last change of one of the files it reads (see install.sh).
+stale_since(){
+  local unit="$1" started f; shift
+  [ "$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)" = "active" ] || return 0
+  started="$(systemctl show -p ExecMainStartTimestamp --value --timestamp=unix "$unit" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$started" ] || return 0
+  for f in "$@"; do
+    [ -e "$f" ] && [ "$(stat -L -c %Y "$f")" -gt "$started" ] && return 0
+  done
+  return 1
+}
+
 TMP_UNIT="$(mktemp)"
 sed -e "s|__PORT__|$PORT|g" -e "s|__BIND__|$BIND|g" -e "s|__USER__|$(id -un)|g" \
     -e "s|__GROUP__|$(id -gn)|g" -e "s|__REPO_DIR__|$REPO_DIR|g" \
@@ -58,7 +71,9 @@ sed -e "s|__PORT__|$PORT|g" -e "s|__BIND__|$BIND|g" -e "s|__USER__|$(id -un)|g" 
     -e "s|__AGENT_UPSTREAM__|$AGENT_UPSTREAM|g" \
     "$HERE/qwen38-dashboard.service.template" > "$TMP_UNIT"
 grep -q '__[A-Z_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in unit"
-sudo install -m 644 "$TMP_UNIT" "$INSTALLED"; rm -f "$TMP_UNIT"
+DASH_CHANGED=0
+cmp -s "$TMP_UNIT" "$INSTALLED" || { sudo install -m 644 "$TMP_UNIT" "$INSTALLED"; DASH_CHANGED=1; }
+rm -f "$TMP_UNIT"
 
 TMP_SUDO="$(mktemp)"
 # read-only forensics wrapper (scheduler stack dump), referenced by the sudoers line below
@@ -70,8 +85,14 @@ sudo install -m 440 "$TMP_SUDO" /etc/sudoers.d/qwen38-cockpit; rm -f "$TMP_SUDO"
 sudo systemctl daemon-reload
 sudo systemctl enable --now "$UNIT"
 # enable --now leaves an already running unit alone, so a re-run with a changed
-# port or bind would report success while the old process kept the old socket.
-sudo systemctl try-restart "$UNIT"
+# port or bind would report success while the old process kept the old socket:
+# restarted then, or when the code it imported at start changed since. Not
+# otherwise: a restart drops every open page and the Agent tab's connection, and
+# a run that changed nothing did it twice, install.sh then install-agent.sh (36
+# cockpit starts on the reference box on 2026-09-23; found in review, 2026-09-24).
+if [ "$DASH_CHANGED" -eq 1 ] || stale_since "$UNIT" "$HERE"/*.py "$REPO_DIR/oc-fit-limits.py"; then
+  sudo systemctl try-restart "$UNIT"
+fi
 for _ in $(seq 1 15); do
   curl -s -m 2 "http://$PROBE:$PORT/api/health" >/dev/null 2>&1 && break
   sleep 1

@@ -879,6 +879,21 @@ if [ "$NO_SERVICE" -eq 1 ] && [ "$LANE" = "flash" ]; then
 fi
 
 step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
+# True (0) when a service has to be restarted to run what is on disk: it is not running,
+# or it started before the last change of one of the files it reads. The files are only
+# rewritten when their content changes (cmp before install), so a date that moved is a
+# change. A run that changed nothing restarted the proxy, cutting every request in flight
+# through it, even with the engine kept (found in review, 2026-09-24).
+stale_since(){
+  local unit="$1" started f; shift
+  [ "$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)" = "active" ] || return 0
+  started="$(systemctl show -p ExecMainStartTimestamp --value --timestamp=unix "$unit" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$started" ] || return 0
+  for f in "$@"; do
+    [ -e "$f" ] && [ "$(stat -L -c %Y "$f")" -gt "$started" ] && return 0
+  done
+  return 1
+}
 # (die() is defined above, before the port validations that call it first.)
 
 step "1/10 Preflight checks"
@@ -1174,7 +1189,11 @@ if [ "$LANE" = "flash" ] && [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ]; then
     echo "reduced draft vocabulary already built: $CONFIG_DIR/$TOKEN_MAP_NAME"
   else
     echo "building the reduced draft vocabulary ($SPEC_TOKEN_MAP_SIZE ids, ~30 s)"
-    SNAP_DIR="$(ls -d "$HF_CACHE/hub/models--${MODEL_REPO//\//--}/snapshots/$MODEL_REV" 2>/dev/null || true)"
+    # the commit a ref names (MODEL_REV=main): snapshots/main never exists, and the map was
+    # skipped on every run (found in review, 2026-09-24)
+    MAP_REPO_CACHE="$HF_CACHE/hub/models--${MODEL_REPO//\//--}"
+    MAP_REV="$MODEL_REV"; [ -f "$MAP_REPO_CACHE/refs/$MODEL_REV" ] && MAP_REV="$(cat "$MAP_REPO_CACHE/refs/$MODEL_REV")"
+    SNAP_DIR="$(ls -d "$MAP_REPO_CACHE/snapshots/$MAP_REV" 2>/dev/null || true)"
     if [ -z "$SNAP_DIR" ]; then
       echo "NOTE: no snapshot at the pinned revision yet; the draft vocabulary is skipped this run."
       echo "      Re-run ./install.sh after the checkpoint is in place to build and serve it."
@@ -1187,7 +1206,7 @@ if [ "$LANE" = "flash" ] && [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ]; then
         -v "$REPO_DIR":/repo:ro \
         "$([ "$OVERLAY_FLASH" = "1" ] && echo "$FLASH_SERVE_IMAGE" || echo "$FLASH_IMAGE")" \
         /repo/build-token-map.py \
-          --snapshot "/root/.cache/huggingface/hub/models--${MODEL_REPO//\//--}/snapshots/$MODEL_REV" \
+          --snapshot "/root/.cache/huggingface/hub/models--${MODEL_REPO//\//--}/snapshots/$MAP_REV" \
           --out "/out/$TOKEN_MAP_NAME" --size "$SPEC_TOKEN_MAP_SIZE" $MAP_CORPUS \
         || die "building the reduced draft vocabulary failed. It is an optimization, not a requirement: re-run with SPEC_TOKEN_MAP_SIZE=0 to serve without it, and please open an issue with the output above."
     fi
@@ -1302,6 +1321,10 @@ if [ "$OPENCODE" -eq 0 ]; then
 else
 rm -f "$OC_OFF_MARK"
 step "7/10 opencode provider config + oc launcher"
+# What opencode-web reads, as it stands before this step writes any of it: the server is
+# restarted at the end of the step only when one of them changed (see there).
+oc_configs_sum(){ cat "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json" 2>/dev/null | sha256sum; }
+OC_SUM_BEFORE="$(oc_configs_sum)"
 # ── opencode itself, at the pinned version (see the OPENCODE_VERSION pin) ─────────
 # Absent: the release asset is downloaded, checked against its pinned sha256 and put
 # where opencode's own installer puts it. Older in that place: replaced the same way.
@@ -1493,14 +1516,29 @@ def prov(name, model_id, model_name, ctx, out):
         }},
     }
 
+def fitted(provider, model_id, bound_ctx, bound_out):
+    """The pair a fit to the engine's pool left here under the table's 1m bounds, if any.
+    On a 1m box the table only gives bounds and the fit (end of the install, or the
+    cockpit) sets the pair: writing the bounds over it made every 1m run write twice, the
+    bounds here and the fit at the end, with an opencode restart for each (found in
+    review, 2026-09-24)."""
+    try:
+        with open(f"{cfg_dir}/opencode.json") as f:
+            lim = json.load(f)["provider"][provider]["models"][model_id]["limit"]
+        c, o = int(lim["context"]), int(lim["output"])
+    except Exception:
+        return None
+    return (c, o) if 0 < c <= bound_ctx and 0 < o <= bound_out else None
+
 providers = {}
 if os.environ["OC_27B"] == "1":
     if lane == "27b":
         ctx, out, label = int(os.environ["OC_CTX"]), int(os.environ["OC_OUT"]), os.environ["OC_LABEL"]
     else:  # flash install on a box that also has the 27B unit: keep its own limits
-        one_m = os.environ["OC_CONTEXT_MODE"] == "1m"
         ctx, out = int(os.environ["OC_27B_CTX"]), int(os.environ["OC_27B_OUT"])
-        label = "local, 1M" if one_m else "local"
+        label = "local, 1M" if os.environ["OC_CONTEXT_MODE"] == "1m" else "local"
+    if os.environ["OC_CONTEXT_MODE"] == "1m":
+        ctx, out = fitted("qwen38", "qwen3.8-27b", ctx, out) or (ctx, out)
     providers["qwen38"] = prov("Qwen3.8-27B (DGX Spark)", "qwen3.8-27b",
                                f"Qwen3.8-27B NVFP4+DFlash2 ({label})", ctx, out)
 if os.environ["OC_FLASH"] == "1":
@@ -1527,10 +1565,18 @@ doc = {"$schema": "https://opencode.ai/config.json", "provider": providers,
 # (unset, it installs its own patch releases; see the OPENCODE_VERSION pin).
 if os.environ.get("OC_PIN") == "1":
     doc["autoupdate"] = "notify"
-with open(f"{cfg_dir}/opencode.json", "w") as f:
-    json.dump(doc, f, indent=2)
-    f.write("\n")
-print(f"wrote {cfg_dir}/opencode.json (default {default}, "
+# written only when it changes, so its date says when it last did: opencode-web is
+# restarted below only for a config newer than it
+text = json.dumps(doc, indent=2) + "\n"
+try:
+    with open(f"{cfg_dir}/opencode.json") as f:
+        same = f.read() == text
+except OSError:
+    same = False
+if not same:
+    with open(f"{cfg_dir}/opencode.json", "w") as f:
+        f.write(text)
+print(f"{'kept' if same else 'wrote'} {cfg_dir}/opencode.json (default {default}, "
       f"providers: {', '.join(providers) or 'none'})")
 PYEOF
 echo "opencode limits: context $OC_CTX, output $OC_OUT, port $OC_PORT"
@@ -1572,14 +1618,22 @@ if [ -f "$OC_USER_CFG" ]; then
   else
     # Never downgrade a 27B unit that serves a larger window than this run's
     # CONTEXT_MODE computed (a native-mode re-install clobbered a 1m user's
-    # 700000/200000 back to 194048/64000, reference box 2026-08-30).
+    # 700000/200000 back to 194048/64000, reference box 2026-08-30). Only a mode
+    # nobody asked for, though: an explicit CONTEXT_MODE=native installs the native
+    # unit at step 8, and the 1M limits kept here then asked 700,000 of a 262,144
+    # window, a 400 past it, under advice to pass CONTEXT_MODE=1m (found in review,
+    # 2026-09-24). Since the mode converges on the installed unit, an explicit one is
+    # the only way here.
     UNIT_CTX="$(grep -oE -- '--context-length [0-9]+' "$SGL_UNIT_PATH" 2>/dev/null | awk '{print $2}' | head -1 || true)"
-    if [ -n "$UNIT_CTX" ] && [ "$UNIT_CTX" -gt 262144 ] && [ "$CONTEXT_MODE" != "1m" ]; then
+    if [ -n "$UNIT_CTX" ] && [ "$UNIT_CTX" -gt 262144 ] && [ "$CONTEXT_MODE" != "1m" ] && [ -z "$_ENV_CONTEXT_MODE" ]; then
       echo "NOTE: the installed 27B unit serves --context-length $UNIT_CTX; keeping the existing"
       echo "      opencode limits (these $CONTEXT_MODE-mode values would shrink them). Re-run with"
       echo "      CONTEXT_MODE=1m to manage them, or edit $OC_USER_CFG yourself."
     else
-      python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" qwen38 qwen3.8-27b "$OC_CTX" "$OC_OUT" || true
+      # on 1m the table's pair is a bound, and the fit at the end sets the pair: keep one
+      # already under it (see oc-merge-limits.py --keep-lower)
+      OC_KEEP_LOWER=(); [ "$CONTEXT_MODE" = "1m" ] && OC_KEEP_LOWER=(--keep-lower)
+      python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" qwen38 qwen3.8-27b "$OC_CTX" "$OC_OUT" ${OC_KEEP_LOWER[@]+"${OC_KEEP_LOWER[@]}"} || true
       python3 "$REPO_DIR/oc-merge-limits.py" "$OC_USER_CFG" --compaction "$OC_KEEP" || true
     fi
     # Offered whatever the limits branch decided above: the level comes from the
@@ -1604,20 +1658,39 @@ fi
 # server still answered 175,000 on /config), so without this the Agent tab keeps
 # compacting against the previous install's window. Last, not mid-write: a
 # restart before the user's own config is merged would reload the old numbers.
+# Only when one of them changed: this restart ended whatever turn the Agent tab was in
+# the middle of, on every run, a run that changed nothing included (up to three restarts
+# of opencode-web per install on 2026-09-23; found in review, 2026-09-24).
 if systemctl list-unit-files opencode-web.service >/dev/null 2>&1 \
    && systemctl is-active --quiet opencode-web.service; then
-  sudo systemctl restart opencode-web.service \
-    && echo "opencode-web.service restarted so it reads the new limits" \
-    || echo "NOTE: restart opencode-web.service by hand, or the Agent tab keeps the old limits"
+  if [ "$(oc_configs_sum)" != "$OC_SUM_BEFORE" ]; then
+    sudo systemctl restart opencode-web.service \
+      && echo "opencode-web.service restarted so it reads the new limits" \
+      || echo "NOTE: restart opencode-web.service by hand, or the Agent tab keeps the old limits"
+  else
+    echo "opencode-web.service kept: the configs it reads did not change"
+  fi
 fi
 # oc: launcher that lifts opencode's hidden 32000 max_tokens cap to the
 # declared output limit (without it, long thinking is cut at 32000 and the
 # turn ends silently). Never clobbers a foreign oc binary (e.g. OpenShift).
 OC_BIN="$HOME/.local/bin/oc"
 OC_EXISTING="$(command -v oc || true)"
-if [ -n "$OC_EXISTING" ] && [ "$OC_EXISTING" != "$OC_BIN" ] && ! grep -q 'dgx-spark-qwen38' "$OC_EXISTING" 2>/dev/null; then
-  echo "NOTE: an unrelated 'oc' command exists at $OC_EXISTING; not installing the launcher."
-  echo "      Launch opencode with:  OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=$OC_OUT_CAP opencode --yolo"
+# Not ours: a file at the launcher's own path without this repo's mark (OpenShift's oc
+# lives there too), or another oc first on the PATH. Only the second was looked at, so an
+# oc at the very path was overwritten, and so was one in a ~/.local/bin this shell's PATH
+# lacks (found in review, 2026-09-24).
+OC_FOREIGN=""
+if [ -e "$OC_BIN" ] && ! grep -q 'dgx-spark-qwen38' "$OC_BIN" 2>/dev/null; then
+  OC_FOREIGN="$OC_BIN"
+elif [ -n "$OC_EXISTING" ] && [ "$OC_EXISTING" != "$OC_BIN" ] && ! grep -q 'dgx-spark-qwen38' "$OC_EXISTING" 2>/dev/null; then
+  OC_FOREIGN="$OC_EXISTING"
+fi
+if [ -n "$OC_FOREIGN" ]; then
+  echo "NOTE: an unrelated 'oc' command exists at $OC_FOREIGN; not installing the launcher."
+  # OPENCODE_CONFIG as the launcher sets it: without it opencode sends the prompts to its
+  # own hosted model when the global config names no provider for this box (2026-09-23)
+  echo "      Launch opencode with:  OPENCODE_CONFIG=$CONFIG_DIR/opencode.json OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=$OC_OUT_CAP opencode --yolo"
 else
   mkdir -p "$HOME/.local/bin"
   cat > "$OC_BIN" <<OCWRAP
@@ -1660,7 +1733,14 @@ if [ "$NO_SERVICE" -eq 1 ]; then
   apply_context_configs
   printf '\n\033[1;32m✅ Prepared (no systemd, nothing needed sudo).\033[0m\n'
   echo "  Run in the foreground: ./run.sh     (Ctrl+C stops it; first boot ≈ 9 min)"
-  echo "  Everything it uses lives in $CONFIG_DIR and $HF_CACHE: delete those to remove."
+  # Not just two folders: the summary said so, and left out the serving image, opencode,
+  # the oc launcher and the provider this box adds to the user's opencode config, which
+  # reads the key in the config folder: opencode refuses to start while it points at a key
+  # that is gone (found in review, 2026-09-24).
+  echo "  To remove it later: ./uninstall.sh --list names everything this left and changes nothing:"
+  echo "  $CONFIG_DIR (the key, templates), the checkpoints in $HF_CACHE, the serving image, opencode"
+  echo "  and its oc launcher, and a provider in your opencode config that reads $CONFIG_DIR/api-key."
+  echo "  Remove that provider with the key, or opencode refuses to start."
   echo "  No cockpit either: it is a systemd unit, and --no-service installs none."
   exit 0
 fi
@@ -1831,7 +1911,9 @@ PROMPT_CEILING=0
 # arguments while they stream (127 s of measured silence on a 400-line write,
 # at native context) and agent CLIs abort a silent stream (~140-180 s for
 # opencode). It also aborts zombie generations when the client disconnects.
-install -m 755 "$REPO_DIR/keepalive-proxy.py" "$CONFIG_DIR/keepalive-proxy.py"
+KA_CHANGED=0      # whether this run changed what the proxy runs (see its restart below)
+cmp -s "$REPO_DIR/keepalive-proxy.py" "$CONFIG_DIR/keepalive-proxy.py" \
+  || { install -m 755 "$REPO_DIR/keepalive-proxy.py" "$CONFIG_DIR/keepalive-proxy.py"; KA_CHANGED=1; }
 TMP_KA="$(mktemp)"
 sed -e "s|__HOME__|$HOME|g" \
     -e "s|__USER__|$(id -un)|g" \
@@ -1841,7 +1923,9 @@ sed -e "s|__HOME__|$HOME|g" \
     -e "s|__PROXY_BIND__|$PROXY_BIND|g" \
     -e "s|__PROMPT_CEILING__|$PROMPT_CEILING|g" \
     "$REPO_DIR/qwen38-keepalive.service.template" > "$TMP_KA"
-sudo install -m 644 "$TMP_KA" "/etc/systemd/system/$KEEPALIVE_UNIT"; rm -f "$TMP_KA"
+cmp -s "$TMP_KA" "/etc/systemd/system/$KEEPALIVE_UNIT" \
+  || { sudo install -m 644 "$TMP_KA" "/etc/systemd/system/$KEEPALIVE_UNIT"; KA_CHANGED=1; }
+rm -f "$TMP_KA"
 sudo systemctl enable "$KEEPALIVE_UNIT"
 # The ceiling lives in the unit this installer writes. A switch-model.sh
 # drop-in from an earlier lane would override it silently, so it goes: either
@@ -1849,6 +1933,7 @@ sudo systemctl enable "$KEEPALIVE_UNIT"
 if [ -f "/etc/systemd/system/$KEEPALIVE_UNIT.d/ceiling.conf" ]; then
   echo "removing the stale keepalive ceiling drop-in (the installed unit carries the ceiling now)"
   sudo rm -f "/etc/systemd/system/$KEEPALIVE_UNIT.d/ceiling.conf"
+  KA_CHANGED=1
   sudo rmdir "/etc/systemd/system/$KEEPALIVE_UNIT.d" 2>/dev/null || true
 fi
 # The Claude Code warmup was removed in v1.3: clean up what earlier versions
@@ -1869,8 +1954,10 @@ else
   # The proxy's code and unit were just rewritten above; on the text path it is restarted
   # once the engine behind it answers, which this path never waits for. Without this it
   # kept the old keepalive-proxy.py in memory until someone restarted it by hand.
-  sudo systemctl restart "$KEEPALIVE_UNIT" \
-    || echo "NOTE: could not restart $KEEPALIVE_UNIT; restart it by hand so it runs the new code"
+  if [ "$KA_CHANGED" -eq 1 ] || stale_since "$KEEPALIVE_UNIT" "/etc/systemd/system/$KEEPALIVE_UNIT" "$CONFIG_DIR/keepalive-proxy.py"; then
+    sudo systemctl restart "$KEEPALIVE_UNIT" \
+      || echo "NOTE: could not restart $KEEPALIVE_UNIT; restart it by hand so it runs the new code"
+  fi
   if [ "$COCKPIT" -eq 1 ] && [ -x "$REPO_DIR/dashboard/install-dashboard.sh" ]; then
     "$REPO_DIR/dashboard/install-dashboard.sh" \
       || echo "NOTE: the cockpit did not reinstall; retry with ./dashboard/install-dashboard.sh"
@@ -1969,7 +2056,15 @@ except Exception as e:
     print(f"FAIL:{e}")')"
     [ "$SMOKE" != "CORRUPT" ] || die "Server is up but the smoke generation came back as a run of '!' (token 0), the decode corruption this hardware is known for, not an answer. Restart the engine (sudo systemctl restart $UNIT_NAME), and if it comes back the same, check: journalctl -u $UNIT_NAME -n 50"
     [ "$SMOKE" = "OK" ] || die "Server is up but the smoke generation failed ($SMOKE). Check: journalctl -u $UNIT_NAME -n 50"
-    sudo systemctl restart "$KEEPALIVE_UNIT"
+    # A restarted engine can come back with another pool than the one the proxy has cached
+    # (it keeps a reading 10 minutes), so the proxy goes with it; with the engine kept, only
+    # new code or a new unit is a reason to cut the requests in flight through it.
+    if [ "$ENGINE_KEEP" -eq 0 ] || [ "$KA_CHANGED" -eq 1 ] \
+       || stale_since "$KEEPALIVE_UNIT" "/etc/systemd/system/$KEEPALIVE_UNIT" "$CONFIG_DIR/keepalive-proxy.py"; then
+      sudo systemctl restart "$KEEPALIVE_UNIT"
+    else
+      echo "keepalive proxy kept: the engine was kept and nothing the proxy runs changed"
+    fi
     PROXY_OK=0
     for _ in 1 2 3 4 5; do
       curl -s -m 5 "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1 && { PROXY_OK=1; break; }
@@ -2117,9 +2212,14 @@ except Exception as e:
     else
       echo
     fi
-    echo "  Agent CLIs : http://<host>:$PROXY_PORT (keepalive proxy, use THIS for opencode)"
-    echo "  OpenAI     : http://<host>:$PORT/v1/chat/completions"
-    echo "  Anthropic  : http://<host>:$PORT/v1/messages   (Bearer auth only)"
+    # The proxy for every client: it passes every route of the engine through, with its
+    # guards. These lines named the engine's own port, which listens on loopback since
+    # v1.17 (unreachable from another machine) and has none of the guards (found in
+    # review, 2026-09-24).
+    echo "  Clients    : http://<host>:$PROXY_PORT (keepalive proxy, for opencode and every other client)"
+    echo "  OpenAI     : http://<host>:$PROXY_PORT/v1/chat/completions"
+    echo "  Anthropic  : http://<host>:$PROXY_PORT/v1/messages   (Bearer auth only)"
+    echo "  Engine     : $ENGINE_BIND:$PORT, behind the proxy (ENGINE_BIND=0.0.0.0 opens it)"
     echo "  API key    : $CONFIG_DIR/api-key"
     if [ "$OPENCODE" -eq 1 ]; then
       OC_NOW="$( { opencode --version 2>/dev/null || true; } | tail -1 | tr -d 'v[:space:]')"

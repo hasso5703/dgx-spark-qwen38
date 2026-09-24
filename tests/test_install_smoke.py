@@ -23,7 +23,9 @@ TEXT = (REPO / "install.sh").read_text()
 TRAP = next(ln for ln in TEXT.splitlines() if ln.startswith("trap ") and "ERR" in ln)
 A = TEXT.index('echo "health OK, running a real generation smoke test..."')
 START = TEXT.index("\n", A) + 1
-BLOCK = TEXT[START:TEXT.index('sudo systemctl restart "$KEEPALIVE_UNIT"', START)]
+# up to and including the smoke's last check (what follows restarts the proxy)
+LAST = TEXT.index('die "Server is up but the smoke generation failed ($SMOKE)', START)
+BLOCK = TEXT[START:TEXT.index("\n", LAST) + 1]
 
 
 def answer(content):

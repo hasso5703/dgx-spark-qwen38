@@ -71,11 +71,11 @@ class Box:
         self.images.write_text(f"{DIGEST}=sha256:img1\ncontainer:{container}=sha256:img1\n")
         self.active, self.started = "active", int(time.time()) + 5
 
-    def run(self, mode):
+    def run(self, mode, ckpt="org/model@rev1"):
         env = {"PATH": f"{self.bin}:/usr/bin:/bin", "FAKE_IMAGES": str(self.images),
                "FAKE_ACTIVE": self.active, "FAKE_STARTED": str(self.started)}
         r = subprocess.run([sys.executable, str(TOOL), mode, str(self.unit), str(self.cfg), str(self.hf),
-                            "org/model@rev1"], capture_output=True, text=True, env=env, timeout=30)
+                            ckpt], capture_output=True, text=True, env=env, timeout=30)
         assert r.returncode == 0, r.stderr
         return r.stdout.strip()
 
@@ -102,6 +102,47 @@ class WhatTheEngineReads(unittest.TestCase):
         fp = box.run("fingerprint")
         (box.cfg / "launch-flash.sh").write_text((box.cfg / "launch-flash.sh").read_text() + "# a flag\n")
         self.assertNotEqual(box.run("fingerprint"), fp, "the launcher itself is an input")
+
+
+class RefsAndMovingTags(unittest.TestCase):
+    """Two documented settings kept a stale engine under "nothing it reads changed" (found in
+    review, 2026-09-24): a revision given as a branch (MODEL_REV=main), whose snapshot is
+    named by the commit its ref holds, so neither snapshots/main/config.json (it never
+    exists) nor the ref counted; and an image given by a tag that moves, which neither of
+    the image patterns matched."""
+
+    def test_a_branch_revision_reads_the_config_of_the_commit_it_names(self):
+        box = Box()
+        refs = box.hf / "hub" / "models--org--model" / "refs"
+        refs.mkdir()
+        (refs / "main").write_text("rev1")
+        fp = box.run("fingerprint", "org/model@main")
+        box.config_json.write_text('{"rope_scaling": {"type": "yarn"}}\n')     # a YaRN patch
+        self.assertNotEqual(box.run("fingerprint", "org/model@main"), fp)
+
+    def test_a_branch_that_moves_is_a_change(self):
+        box = Box()
+        refs = box.hf / "hub" / "models--org--model" / "refs"
+        refs.mkdir()
+        (refs / "main").write_text("rev1")
+        fp = box.run("fingerprint", "org/model@main")
+        snap2 = box.hf / "hub" / "models--org--model" / "snapshots" / "rev2"
+        snap2.mkdir()
+        (snap2 / "config.json").write_text('{"rope_scaling": null, "new": 1}\n')
+        (refs / "main").write_text("rev2")                                       # a download moved main
+        self.assertNotEqual(box.run("fingerprint", "org/model@main"), fp)
+
+    def test_an_image_named_by_a_tag_that_moves_is_a_change(self):
+        box = Box()
+        box.unit.write_text("[Service]\nExecStart=/bin/bash -c 'exec docker run --name qwen38-sglang "
+                            f"-v {box.cfg}:/out \\\n  lmsysorg/sglang:v0.5.19 \\\n  python3 -m sglang.launch_server "
+                            "--chat-template /out/chat-template-sglang.jinja'\n")
+        box.images.write_text("lmsysorg/sglang:v0.5.19=sha256:img1\ncontainer:qwen38-sglang=sha256:img1\n")
+        fp = box.run("fingerprint")
+        self.assertEqual(box.run("running"), "yes")
+        box.images.write_text("lmsysorg/sglang:v0.5.19=sha256:img2\ncontainer:qwen38-sglang=sha256:img1\n")
+        self.assertNotEqual(box.run("fingerprint"), fp, "a pull that moved the tag is a change")
+        self.assertIn("another image", box.run("running"))
 
 
 class TheFingerprintIsByContent(unittest.TestCase):
