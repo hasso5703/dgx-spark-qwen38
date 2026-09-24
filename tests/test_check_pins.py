@@ -13,6 +13,7 @@ These run the script as written against a fake curl that answers like the real s
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -20,11 +21,14 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "check-pins.sh"
+OC_SHA = re.search(r'^OPENCODE_SHA256="\$\{OPENCODE_SHA256:-([0-9a-f]{64})\}"', (REPO / "install.sh").read_text(), re.M).group(1)
 
-# Answers the way huggingface.co and Docker Hub do. The scenario (JSON in FAKE_PINS) maps a
-# URL substring to [http code, x-error-code] for checkpoint and manifest requests, and
-# "no-registry-token" empties the token endpoint's answer. Every call is logged with its
-# argv and whatever came in on stdin for -K -.
+# Answers the way huggingface.co, Docker Hub, GitHub and PyPI do. The scenario (JSON in
+# FAKE_PINS) maps a URL substring to [http code, x-error-code] for the requests that read a
+# code, "no-registry-token" empties the token endpoint's answer, and "bodies" maps a URL
+# substring to the body a JSON request gets (by default: the PyPI release asked for, not
+# yanked; the opencode release with the digest in FAKE_OC_SHA). Every call is logged with
+# its argv and whatever came in on stdin for -K -.
 FAKE_CURL = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -42,14 +46,24 @@ if url.startswith("https://auth.docker.io/"):
     sys.exit(0)
 code, err = 200, ""
 for part, answer in scen.items():
-    if part != "no-registry-token" and part in url:
+    if part not in ("no-registry-token", "bodies") and part in url:
         code, err = answer
 if fmt is not None:
     sys.stdout.write(fmt.replace("%{http_code}", str(code)).replace("%header{x-error-code}", err))
+    sys.exit(0)
+for part, body in (scen.get("bodies") or {}).items():
+    if part in url:
+        sys.stdout.write(body); sys.exit(0)
+if url.startswith("https://pypi.org/pypi/"):
+    version = url.rstrip("/").split("/")[-2]
+    sys.stdout.write(json.dumps({"info": {"version": version}, "urls": [{"yanked": False}]}))
+elif "/releases/tags/" in url:
+    sys.stdout.write(json.dumps({"assets": [{"name": "opencode-linux-arm64.tar.gz",
+                                              "digest": "sha256:" + os.environ.get("FAKE_OC_SHA", "")}]}))
 '''
 
 
-class TheCheckPins(unittest.TestCase):
+class PinsBase(unittest.TestCase):
     def setUp(self):
         self.t = pathlib.Path(tempfile.mkdtemp(prefix="check-pins-"))
         self.addCleanup(shutil.rmtree, self.t, ignore_errors=True)
@@ -62,7 +76,7 @@ class TheCheckPins(unittest.TestCase):
     def run_pins(self, scenario=None, token=None, *args):
         env = {k: v for k, v in os.environ.items() if k != "HF_TOKEN"}
         env.update(PATH=f"{self.bin}:{env['PATH']}", FAKE_PINS=json.dumps(scenario or {}),
-                   FAKE_LOG=str(self.log))
+                   FAKE_LOG=str(self.log), FAKE_OC_SHA=OC_SHA)
         if token is not None:
             env["HF_TOKEN"] = token
         r = subprocess.run(["bash", str(SCRIPT), *args], env=env, capture_output=True, text=True,
@@ -72,6 +86,8 @@ class TheCheckPins(unittest.TestCase):
     def calls(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
+
+class TheCheckPins(PinsBase):
     def test_every_pin_answered_resolves(self):
         rc, out = self.run_pins()
         self.assertEqual(rc, 0, out)
@@ -102,7 +118,7 @@ class TheCheckPins(unittest.TestCase):
         rc, out = self.run_pins(None, "hf_secretvalue123")
         self.assertEqual(rc, 0, out)
         hf = [c for c in self.calls() if c["url"].startswith("https://huggingface.co/")]
-        self.assertEqual(len(hf), 9, hf)
+        self.assertEqual(len(hf), 10, hf)          # nine checkpoints and the image lane's
         for c in hf:
             self.assertIn("Authorization: Bearer hf_secretvalue123", c["stdin"], c)
             self.assertFalse(any("hf_secretvalue123" in a for a in c["argv"]), c["argv"])
@@ -125,6 +141,45 @@ class TheCheckPins(unittest.TestCase):
         rc, out = self.run_pins({"registry-1.docker.io/v2/lmsysorg/sglang/manifests/sha256:d6e7": [404, ""]})
         self.assertEqual(rc, 1, out)
         self.assertIn("HTTP 404", out)
+
+
+class ThePinsOutsideThePinBlock(PinsBase):
+    """opencode's release and digest, and the image lane's checkpoint, source commit and
+    wheel, were checked by nothing: a release, commit or file removed upstream went unseen
+    by the daily watch (found in review, 2026-09-24)."""
+
+    def line(self, out, label):
+        return next(ln for ln in out.splitlines() if f" {label} " in ln)
+
+    def test_they_are_all_checked(self):
+        rc, out = self.run_pins()
+        self.assertEqual(rc, 0, out)
+        for label in ("qwen-image", "sglang-source", "sglang-wheel", "opencode"):
+            self.assertIn("ok", self.line(out, label), out)
+        self.assertTrue(any("Qwen/Qwen-Image-2.1/raw/790c9263" in c["url"] and c["url"].endswith("/model_index.json")
+                            for c in self.calls()), "the image checkpoint is asked for at its pinned revision")
+
+    def test_a_removed_source_commit_fails(self):
+        rc, out = self.run_pins({"api.github.com/repos/sgl-project/sglang/commits/": [422, ""]})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL", self.line(out, "sglang-source"))
+
+    def test_a_wheel_gone_or_yanked_fails(self):
+        rc, out = self.run_pins({"bodies": {"pypi.org": '{"message": "Not Found"}'}})
+        self.assertIn("FAIL", self.line(out, "sglang-wheel"), out)
+        rc, out = self.run_pins({"bodies": {"pypi.org": json.dumps({"info": {"version": "0.5.20"},
+                                                                     "urls": [{"yanked": True}]})}})
+        self.assertIn("every file yanked", self.line(out, "sglang-wheel"), out)
+
+    def test_an_opencode_asset_whose_bytes_changed_fails(self):
+        body = json.dumps({"assets": [{"name": "opencode-linux-arm64.tar.gz", "digest": "sha256:" + "0" * 64}]})
+        rc, out = self.run_pins({"bodies": {"/releases/tags/": body}})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("installs refuse it", self.line(out, "opencode"))
+
+    def test_an_opencode_release_that_is_gone_fails(self):
+        rc, out = self.run_pins({"bodies": {"/releases/tags/": '{"message": "Not Found"}'}})
+        self.assertIn("no such release or asset", self.line(out, "opencode"), out)
 
 
 if __name__ == "__main__":

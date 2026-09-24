@@ -61,7 +61,10 @@ serves: they talk to the text engine on :30000, which is closed then. They used 
 The cookbook is explicit for this model: *"This integration currently uses the
 Python/source command; no published Docker image is verified."* Qwen-Image 2.1 is in no
 SGLang release either, so the lane runs a pinned source checkout
-(`ddebc52f237a1dbb56533469ab2ec2a7b856c4ab`).
+(`ddebc52f237a1dbb56533469ab2ec2a7b856c4ab`). The checkpoint is pinned too, at the revision
+the lane was measured with (`790c92633540aa0cb11d9abf19eb46d861714758`, `IMAGE_MODEL_REV`
+overrides it), and `./check-pins.sh` asks upstream daily whether the checkpoint, the commit
+and the `0.5.20` wheel still resolve.
 
 The released wheel still goes in **first**, and the order is not cosmetic: it carries
 `sglang-kernel` built for aarch64, which a source tree does not build. Source first

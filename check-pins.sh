@@ -24,6 +24,13 @@ CHECKED=0
 
 pins="$(grep -E '^(STOCK|UNC|FP8|UNCFP8|FLASH|FLASH_NVDA|FLASH_UNC|DRAFT|DRAFT2)_(REPO|REV)=' "$REPO_DIR/install.sh")"
 eval "$pins"
+# The pins that do not live in the pin block: opencode's release and its digest, and the
+# image lane's checkpoint, source commit and wheel. None of them was checked, so a release
+# or a commit removed upstream went unseen (found in review, 2026-09-24).
+more="$(grep -E '^(OPENCODE_VERSION|OPENCODE_SHA256)=' "$REPO_DIR/install.sh")"
+eval "$more"
+lane="$(grep -E '^(IMAGE_MODEL_PIN|IMAGE_MODEL_PIN_REV|PIN|WHEEL)=' "$REPO_DIR/install-image.sh")"
+eval "$lane"
 
 # Hugging Face answers an anonymous request with 401 both for a gated repo and for one that
 # does not exist (or is private): only its x-error-code tells a gated repo apart, so the
@@ -35,11 +42,11 @@ hf_answer() {  # $1 url: prints "<http code> <x-error-code>"
   printf '%s\n' "$cfg" | curl -s -o /dev/null -m 25 -K - -w '%{http_code} %header{x-error-code}' "$1"
 }
 
-check_model() {  # $1 label, $2 repo, $3 revision
+check_model() {  # $1 label, $2 repo, $3 revision, [$4 a file at its root, default config.json]
   case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
   CHECKED=$((CHECKED + 1))
   local code err
-  read -r code err <<<"$(hf_answer "https://huggingface.co/$2/raw/$3/config.json")"
+  read -r code err <<<"$(hf_answer "https://huggingface.co/$2/raw/$3/${4:-config.json}")"
   case "$code:$err" in
     200:*) printf '  \033[0;32mok\033[0m    %-14s %s @ %s\n' "$1" "$2" "${3:0:12}" ;;
     40[13]:GatedRepo)
@@ -82,6 +89,59 @@ check_image() {  # $1 label, $2 image reference (name@sha256:... or name:tag)
   esac
 }
 
+check_commit() {  # $1 label, $2 owner/repo on GitHub, $3 commit: install-image.sh fetches it by id
+  case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
+  CHECKED=$((CHECKED + 1))
+  local code
+  code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "https://api.github.com/repos/$2/commits/$3")"
+  case "$code" in
+    200) printf '  \033[0;32mok\033[0m    %-14s %s @ %s\n' "$1" "$2" "${3:0:12}" ;;
+    *) printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s from the GitHub API)\n' "$1" "$2" "${3:0:12}" "${code:-none}"; FAIL=1 ;;
+  esac
+}
+
+check_wheel() {  # $1 label, $2 package, $3 version: released on PyPI, with a file not yanked
+  case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
+  CHECKED=$((CHECKED + 1))
+  local why
+  why="$(curl -s -m 25 "https://pypi.org/pypi/$2/$3/json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    print("no answer from PyPI"); sys.exit()
+if (d.get("info") or {}).get("version") != sys.argv[1]:
+    print("not on PyPI")
+elif not [u for u in d.get("urls") or [] if not u.get("yanked")]:
+    print("every file yanked")
+' "$3")"
+  if [ -z "$why" ]; then
+    printf '  \033[0;32mok\033[0m    %-14s %s==%s\n' "$1" "$2" "$3"
+  else
+    printf '  \033[0;31mFAIL\033[0m  %-14s %s==%s (%s)\n' "$1" "$2" "$3" "$why"; FAIL=1
+  fi
+}
+
+check_asset() {  # $1 label, $2 owner/repo, $3 release tag, $4 asset, $5 its sha256: GitHub's digest must match
+  case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
+  CHECKED=$((CHECKED + 1))
+  local digest
+  digest="$(curl -s -m 25 "https://api.github.com/repos/$2/releases/tags/$3" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit()
+print(next((a.get("digest") or "none" for a in d.get("assets") or [] if a.get("name") == sys.argv[1]), ""))
+' "$4")"
+  case "$digest" in
+    "sha256:$5") printf '  \033[0;32mok\033[0m    %-14s %s %s %s\n' "$1" "$2" "$3" "$4" ;;
+    "") printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (no such release or asset, or no answer)\n' "$1" "$2" "$3" "$4"; FAIL=1 ;;
+    none) printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (GitHub publishes no digest for it: not checked)\n' "$1" "$2" "$3" "$4"; FAIL=1 ;;
+    *) printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (its digest is now %s: installs refuse it)\n' "$1" "$2" "$3" "$4" "$digest"; FAIL=1 ;;
+  esac
+}
+
 echo "Checkpoints"
 check_model stock          "$STOCK_REPO"      "$STOCK_REV"
 check_model uncensored     "$UNC_REPO"        "$UNC_REV"
@@ -92,6 +152,12 @@ check_model flash-nvda     "$FLASH_NVDA_REPO" "$FLASH_NVDA_REV"
 check_model flash-unc      "$FLASH_UNC_REPO"  "$FLASH_UNC_REV"
 check_model dflash2-draft  "$DRAFT2_REPO"     "$DRAFT2_REV"
 check_model dspark-draft   "$DRAFT_REPO"      "$DRAFT_REV"
+
+echo "Image lane and opencode"
+check_model  qwen-image     "$IMAGE_MODEL_PIN" "$IMAGE_MODEL_PIN_REV" model_index.json
+check_commit sglang-source  sgl-project/sglang "$PIN"
+check_wheel  sglang-wheel   sglang "$WHEEL"
+check_asset  opencode       anomalyco/opencode "v$OPENCODE_VERSION" opencode-linux-arm64.tar.gz "$OPENCODE_SHA256"
 
 echo "Images"
 img="$(grep -E '^(IMAGE|FLASH_IMAGE)=' "$REPO_DIR/install.sh")"
