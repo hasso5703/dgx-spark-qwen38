@@ -42,11 +42,17 @@ AGENT_UPSTREAM="${DASH_AGENT_UPSTREAM:-$(installed COCKPIT_AGENT_UPSTREAM)}"; AG
 [[ "$AGENT_PORT" =~ ^[0-9]+$ ]] || die "DASH_AGENT_PORT must be a number (got '$AGENT_PORT')"
 [ "$AGENT_PORT" != "$PORT" ] || die "the agent relay cannot share the cockpit port $PORT"
 case "$BIND$AGENT_BIND$AGENT_UPSTREAM" in *'|'*|*' '*) die "bind and upstream values must not contain spaces or |" ;; esac
+# The cockpit's two servers speak IPv4: DASH_BIND=:: made the unit fail at every start and
+# systemd restart it forever (found in review, 2026-09-24). 0.0.0.0 is every interface.
+ipv4(){ [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+        local o; for o in "${BASH_REMATCH[@]:1}"; do [ "$o" -le 255 ] || return 1; done; }
+ipv4 "$BIND" || die "DASH_BIND takes an IPv4 address, 0.0.0.0 for every interface (got '$BIND'): the cockpit does not serve IPv6"
+[ "$AGENT_BIND" = "tailscale" ] || ipv4 "$AGENT_BIND" \
+  || die "DASH_AGENT_BIND takes an IPv4 address or 'tailscale' (got '$AGENT_BIND'): the relay does not serve IPv6"
 
 # The health probe below needs an address to dial, and 0.0.0.0 is not one.
 case "$BIND" in
   0.0.0.0) PROBE=127.0.0.1 ;;
-  ::|'[::]') PROBE='[::1]' ;;
   *) PROBE="$BIND" ;;
 esac
 

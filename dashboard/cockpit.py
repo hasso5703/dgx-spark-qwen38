@@ -1264,9 +1264,20 @@ def collect_lifecycle():
                 if plan["first"]:
                     audit({"kind": "wedge", "unit": unit, "canary_fails": CANARY["fails"],
                            "num_reqs": num_reqs, "progress_age": age})
-                    # forensics before any restart: the scheduler's Python stacks
-                    dump = "" if DRY_RUN else run(["sudo", "-n", "/usr/local/bin/qwen38-pyspy-scheduler"],
-                                                  timeout=40, merge_err=True)
+                    # forensics before any restart: the scheduler's Python stacks. The exit
+                    # status decides, not whether text came back: "py-spy not installed" was
+                    # saved as the stacks (found in review, 2026-09-24).
+                    dump, why = "", ""
+                    if not DRY_RUN:
+                        try:
+                            r = subprocess.run(["sudo", "-n", "/usr/local/bin/qwen38-pyspy-scheduler"],
+                                               capture_output=True, text=True, timeout=40)
+                            if r.returncode == 0:
+                                dump = r.stdout
+                            else:
+                                why = (r.stderr or r.stdout).strip()[:200] or f"exit {r.returncode}"
+                        except (OSError, subprocess.TimeoutExpired) as e:
+                            why = type(e).__name__
                     if dump.strip():
                         f = CONFIG_DIR / f"wedge-{time.strftime('%Y%m%d-%H%M%S')}.txt"
                         try:
@@ -1274,6 +1285,8 @@ def collect_lifecycle():
                             add_event("forensics", f"scheduler stacks saved: {f.name}")
                         except OSError:
                             pass
+                    elif why:
+                        add_event("forensics", f"no scheduler stacks: {why}")
                 if plan["restart"]:
                     LAST_HEAL["ts"] = time.time()
                     add_event("autoheal", f"{unit} wedged (health ok, {CANARY['fails']} "
@@ -1793,7 +1806,11 @@ def systemone_call(payload: dict) -> tuple[int, dict]:
             detail = json.loads(raw.decode())
         except Exception:                               # noqa: BLE001
             detail = {"detail": raw[:400].decode("utf-8", "replace")}
-        return e.code, {"refused": detail, "seconds": round(time.time() - t0, 3)}
+        # The proxy refusing the cockpit's key is not the browser's session ending, and the
+        # page reads a 401 as that: it sent a signed-in user to the login (found in review,
+        # 2026-09-24). A refusal of the key reaches the page as the gateway error it is.
+        code = 502 if e.code in (401, 403) else e.code
+        return code, {"refused": detail, "upstream_status": e.code, "seconds": round(time.time() - t0, 3)}
     except Exception as e:                              # noqa: BLE001 (isolated route)
         return 502, {"error": f"{type(e).__name__}: {str(e)[:200]}",
                      "seconds": round(time.time() - t0, 3)}
