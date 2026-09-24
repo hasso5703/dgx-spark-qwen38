@@ -17,10 +17,13 @@ the cache, which is the kind of failure that gets called a flake and muted
 
 Two gates, for the two moments a file can leak: importing, and running.
 """
+import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -52,6 +55,32 @@ print("AFTER=" + str(os.environ.get("HOME")))
 """
 
 
+# The fixtures that give a proxy its engine key, set up the way unittest sets them up, in a
+# HOME that has no key: nothing may appear there. They used to write "test-key" into
+# ~/.config/qwen38/api-key when it was missing and delete it at tearDownClass, which a Ctrl-C
+# skips, and install.sh keeps a key it finds (found in review, 2026-09-24). The check runs
+# between setUpClass and tearDownClass, which is where an interrupted run stops.
+KEY_FIXTURES = {"tests.test_proxy_guard": ("ProxyGuard", "ProxyInFrontOfLoadingEngine",
+                                           "RefusalIsRecognisableAsOverflow",
+                                           "TopLogprobsCeilingEndToEnd"),
+                "tests.test_proxy_systemone": ("SystemOne",)}
+KEY_PROBE = """
+import importlib, json, os, pathlib, sys
+home = pathlib.Path(os.environ["HOME"])
+wrote = []
+for name, classes in json.loads(sys.argv[1]).items():
+    mod = importlib.import_module(name)
+    for cls_name in classes:
+        cls = getattr(mod, cls_name)
+        cls.setUpClass()
+        try:
+            wrote += [f"{cls_name}: {p.relative_to(home)}" for p in sorted(home.rglob("*"))]
+        finally:
+            cls.tearDownClass()
+print("WROTE=" + json.dumps(wrote))
+"""
+
+
 def run(code, timeout=600):
     return subprocess.run([sys.executable, "-c", code], cwd=REPO,
                           capture_output=True, text=True, timeout=timeout,
@@ -79,6 +108,20 @@ class SuiteIsolation(unittest.TestCase):
                       f"probe did not report HOME:\n{proc.stdout}\n{proc.stderr[-2000:]}")
         self.assertEqual(seen.get("BEFORE="), seen.get("AFTER="),
                          "tests/test_tools.py left HOME pointing at its throwaway directory")
+
+    def test_no_proxy_fixture_writes_a_key_into_home(self):
+        """The engine key is handed to the proxy, never left in the HOME it runs from."""
+        home = tempfile.mkdtemp(prefix="key-probe-home-")
+        try:
+            proc = subprocess.run([sys.executable, "-c", KEY_PROBE, json.dumps(KEY_FIXTURES)],
+                                  cwd=REPO, capture_output=True, text=True, timeout=300,
+                                  env={**os.environ, "HOME": home})
+            line = next((l for l in proc.stdout.splitlines() if l.startswith("WROTE=")), None)
+            self.assertIsNotNone(line, f"the probe did not finish:\n{proc.stdout}\n{proc.stderr[-2000:]}")
+            self.assertEqual(json.loads(line[len("WROTE="):]), [],
+                             "a fixture wrote into HOME, where an interrupted run leaves it")
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
 
 
 if __name__ == "__main__":

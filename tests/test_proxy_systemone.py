@@ -201,11 +201,10 @@ class SystemOne(unittest.TestCase):
         cls.mod = importlib.util.module_from_spec(spec)
         sys.argv = ["keepalive-proxy.py"]
         spec.loader.exec_module(cls.mod)
-        cls.keyfile = Path.home() / ".config/qwen38/api-key"
-        cls.had_key = cls.keyfile.exists()
-        if not cls.had_key:
-            cls.keyfile.parent.mkdir(parents=True, exist_ok=True)
-            cls.keyfile.write_text("test-key\n")
+        # Handed its key rather than given ~/.config/qwen38/api-key: the file this wrote
+        # when it was missing outlived an interrupted run, and install.sh keeps the key it
+        # finds (found in review, 2026-09-24).
+        cls.mod._api_key = lambda: "test-key"
         cls.proxy = cls.mod.Server(("127.0.0.1", 0), cls.mod.H)
         threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.proxy.server_port}"
@@ -214,8 +213,6 @@ class SystemOne(unittest.TestCase):
     def tearDownClass(cls):
         cls.proxy.shutdown()
         cls.engine.shutdown()
-        if not cls.had_key:
-            cls.keyfile.unlink()
         for name, value in cls.env_before.items():
             if value is None:
                 os.environ.pop(name, None)

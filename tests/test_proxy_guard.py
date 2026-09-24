@@ -5,7 +5,9 @@ import http.server
 import importlib.util
 import json
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -15,6 +17,20 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve()
 SPEC = importlib.util.spec_from_file_location("kproxy", HERE.parents[1] / "keepalive-proxy.py")
+
+
+# The proxy reads the engine key from ~/.config/qwen38/api-key, and these fixtures used to
+# write "test-key" there when the file was missing, then delete it in tearDownClass. A Ctrl-C
+# skips tearDownClass, the key stayed, and install.sh keeps the key it finds: the box's
+# engine and cockpit then answered to a string published in this file. Where a key existed,
+# the real one was read and sent to the fake engines (found in review, 2026-09-24). A proxy
+# loaded here is handed its key; one started as a process gets a HOME of its own.
+def key_home():
+    """A throwaway HOME holding nothing but an engine key, for a proxy run as a process."""
+    home = Path(tempfile.mkdtemp(prefix="proxy-key-home-"))
+    (home / ".config/qwen38").mkdir(parents=True)
+    (home / ".config/qwen38/api-key").write_text("test-key\n")
+    return home
 
 
 class FakeTokenize(http.server.BaseHTTPRequestHandler):
@@ -66,17 +82,11 @@ class ProxyGuard(unittest.TestCase):
         cls.mod = importlib.util.module_from_spec(SPEC)
         sys.argv = ["keepalive-proxy.py"]
         SPEC.loader.exec_module(cls.mod)
-        cls.keyfile = Path.home() / ".config/qwen38/api-key"
-        cls.had_key = cls.keyfile.exists()
-        if not cls.had_key:
-            cls.keyfile.parent.mkdir(parents=True, exist_ok=True)
-            cls.keyfile.write_text("test-key\n")
+        cls.mod._api_key = lambda: "test-key"
 
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
-        if not cls.had_key:
-            cls.keyfile.unlink()
 
     def test_openai_chat_counted_with_tools(self):
         body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "one two three"}],
@@ -368,15 +378,12 @@ class ProxyInFrontOfLoadingEngine(unittest.TestCase):
             sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
         # This class models a loading engine whose pool IS known (200000 via
         # /get_server_info) while /tokenize still 503s. pool_tokens() needs the
-        # api-key file to ask, so provide one when the (possibly throwaway)
-        # HOME has none; without it the pool reads as unknown and the new
-        # warmup hold answers first (also 503, different type).
-        cls.keyfile = Path.home() / ".config/qwen38/api-key"
-        cls.had_key = cls.keyfile.exists()
-        if not cls.had_key:
-            cls.keyfile.parent.mkdir(parents=True, exist_ok=True)
-            cls.keyfile.write_text("test-key\n")
-        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}")
+        # api-key file to ask, so the proxy runs in a HOME that has one; without
+        # it the pool reads as unknown and the new warmup hold answers first
+        # (also 503, different type).
+        cls.home = key_home()
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}",
+                   HOME=str(cls.home))
         cls.proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
@@ -388,8 +395,7 @@ class ProxyInFrontOfLoadingEngine(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.proc.terminate(); cls.proc.wait(timeout=5); cls.eng.shutdown()
-        if not cls.had_key:
-            cls.keyfile.unlink()
+        shutil.rmtree(cls.home, ignore_errors=True)
 
     def _post(self, body):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
@@ -531,12 +537,9 @@ class RefusalIsRecognisableAsOverflow(unittest.TestCase):
         threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
         with socket.socket() as sk:
             sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
-        cls.keyfile = Path.home() / ".config/qwen38/api-key"
-        cls.had_key = cls.keyfile.exists()
-        if not cls.had_key:
-            cls.keyfile.parent.mkdir(parents=True, exist_ok=True)
-            cls.keyfile.write_text("test-key\n")
-        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}")
+        cls.home = key_home()
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}",
+                   HOME=str(cls.home))
         cls.proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
@@ -548,8 +551,7 @@ class RefusalIsRecognisableAsOverflow(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.proc.terminate(); cls.proc.wait(timeout=5); cls.eng.shutdown()
-        if not cls.had_key:
-            cls.keyfile.unlink()
+        shutil.rmtree(cls.home, ignore_errors=True)
 
     def _refusal(self):
         body = json.dumps({"model": "m", "messages": [
@@ -1432,11 +1434,7 @@ class TopLogprobsCeilingEndToEnd(unittest.TestCase):
         cls.m = importlib.util.module_from_spec(spec)
         sys.argv = ["keepalive-proxy.py"]
         spec.loader.exec_module(cls.m)
-        cls.keyfile = Path.home() / ".config/qwen38/api-key"
-        cls.had_key = cls.keyfile.exists()
-        if not cls.had_key:
-            cls.keyfile.parent.mkdir(parents=True, exist_ok=True)
-            cls.keyfile.write_text("test-key\n")
+        cls.m._api_key = lambda: "test-key"
         cls.proxy = cls.m.Server(("127.0.0.1", 0), cls.m.H)
         threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.proxy.server_port}"
@@ -1445,8 +1443,6 @@ class TopLogprobsCeilingEndToEnd(unittest.TestCase):
     def tearDownClass(cls):
         cls.proxy.shutdown()
         cls.srv.shutdown()
-        if not cls.had_key:
-            cls.keyfile.unlink()
 
     def post(self, obj, path="/v1/chat/completions"):
         req = urllib.request.Request(
