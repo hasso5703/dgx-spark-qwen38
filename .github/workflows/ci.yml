@@ -516,7 +516,10 @@ jobs:
               || { echo "the $tier tier renders --allow-auto-truncate into the launcher"; exit 1; }
           done
           grep -q -- '--speculative-draft-model-quantization unquant' /tmp/flash.rendered
-          grep -q -- '--api-key' /tmp/flash.rendered
+          # the key comes through a file SGLang merges in memory, never the command line
+          grep -q -- '--config /out/engine-secrets.yaml' /tmp/flash.rendered
+          ! grep -q -- '--api-key' /tmp/flash.rendered || { echo "the flash launcher puts the key on a command line"; exit 1; }
+          grep -q 'engine-secrets.sh' /tmp/flash.rendered
           grep -q 'chat-template-flashnext.jinja' /tmp/flash.rendered
           grep -q 'HF_HUB_OFFLINE=1' /tmp/flash.rendered
           grep -q -- '--revision cafe' /tmp/flash.rendered

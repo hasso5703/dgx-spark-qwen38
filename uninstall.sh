@@ -110,7 +110,7 @@ for f in "$CONFIG_DIR"/*.bak-preupdate; do
   [ -f "$f" ] && echo "  backup    $f (pre-update unit backup)"
 done
 if [ -d "$CONFIG_DIR" ]; then
-  echo "  config    $CONFIG_DIR ($(dir_size "$CONFIG_DIR")): api-key, patched templates, opencode.json, launch script, compile cache"
+  echo "  config    $CONFIG_DIR ($(dir_size "$CONFIG_DIR")): api-key and the engine's copy of it, patched templates, opencode.json, launch scripts, compile cache"
   [ -f "$CONFIG_DIR/opencode-web.env" ] && echo "  config    $CONFIG_DIR/opencode-web.env (Agent tab: credentials of the opencode web server)"
   [ -f "$CONFIG_DIR/claude-code.env" ] && echo "  legacy    $CONFIG_DIR/claude-code.env (pre-v1.3 client config, unmaintained)"
   [ -f "$CONFIG_DIR/opencode.off" ] && echo "  marker    $CONFIG_DIR/opencode.off (opencode integration disabled with --no-opencode)"

@@ -118,8 +118,8 @@ pinned revision, the opencode release by its sha256. The image lane
 (`--with-image`) is the one part with unpinned bytes: its SGLang wheel and source
 commit are pinned, but pip resolves the wheel's dependency tree from PyPI at install
 time, with no hash checked, and its checkpoint is downloaded at the repo's current
-revision rather than a pinned one. The engine enforces `--api-key` (the file is
-created 0600) and the chat template and launcher are regenerated from the
+revision rather than a pinned one. The engine enforces its key, read from a file created
+0600 and handed to it through SGLang's `--config`, so it is in no process's command line and the chat template and launcher are regenerated from the
 repo on every install.
 
 ## Assumptions that are design choices, not vulnerabilities

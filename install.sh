@@ -1315,6 +1315,12 @@ else
   echo "API key already present, keeping it"
 fi
 KEY="$(cat "$CONFIG_DIR/api-key")"   # used by the step-9 smoke test
+# The engine is handed its key in a file SGLang merges in memory, written by this script
+# before every start (the units, the flash launcher, run.sh): as --api-key "$(cat ...)" it
+# was in the argv of the docker client and of the server (found in review, 2026-09-24).
+cmp -s "$REPO_DIR/engine-secrets.sh" "$CONFIG_DIR/engine-secrets.sh" \
+  || install -m 755 "$REPO_DIR/engine-secrets.sh" "$CONFIG_DIR/engine-secrets.sh"
+bash "$CONFIG_DIR/engine-secrets.sh" || die "could not write the engine's key file from $CONFIG_DIR/api-key (see above)"
 # One patched template per engine file name: the served template always follows
 # the served model (both fixes: reasoning_effort normalization + mid-conversation
 # system messages as <system-reminder> blocks; see patch-template.py).

@@ -69,6 +69,10 @@ __SPEC_TOKEN_MAP_LINE__
 # refuses anything above the lane's ceiling with a clear 400, so the flag bought
 # nothing and cost the one failure mode worse than a refusal, which is a wrong
 # answer from a context that was quietly cut.
+#
+# The key goes to the server in a file SGLang merges in memory (see engine-secrets.sh),
+# written again here before every start, so it is on no command line.
+/bin/bash __HOME__/.config/qwen38/engine-secrets.sh
 exec /usr/bin/docker run --rm --name qwen38-flash --gpus all \
   --memory 110g --memory-swap 110g --shm-size 16g --network host --ipc=host \
   -v __HF_CACHE__:/root/.cache/huggingface \
@@ -94,5 +98,5 @@ exec /usr/bin/docker run --rm --name qwen38-flash --gpus all \
     "${TIER[@]}" \
     --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
     --chat-template /out/chat-template-flashnext.jinja \
-    --api-key "$(cat __HOME__/.config/qwen38/api-key)" \
+    --config /out/engine-secrets.yaml \
     --host __ENGINE_BIND__ --port __PORT__

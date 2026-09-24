@@ -541,6 +541,17 @@ lane, whose pip dependencies are resolved from PyPI unpinned.
   being shown acting; a native 27B recipe failed its own validation (no `--context-length`,
   as a native unit has none). Each is fixed, and two comments that gave wrong numbers are.
 
+**Keys stay off command lines.** Every lane passed the engine its key as
+`--api-key "$(cat .../api-key)"`, so the key was in the argv of the docker client and of
+the server, which any local user reads in `/proc`; the download's `docker run` carried
+`-e HF_TOKEN=<token>`, and the smoke test's curl the key in a `-H` argument. The units, the
+flash launcher and `run.sh` now hand the server `--config /out/engine-secrets.yaml`, which
+SGLang merges into its arguments in memory (checked in both serving images), written from
+the api-key file by `engine-secrets.sh` before every start, so a key changed by hand still
+reaches the next start, and only when its content changes, so an update that changes
+nothing still restarts nothing. The token goes to docker by name, and the smoke key as a
+header file. The engine restarts once, at the update that brings this.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash
