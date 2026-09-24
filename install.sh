@@ -8,8 +8,8 @@
 # SGLang image with nothing added and this script builds nothing by default: the
 # flash lane crossed over in v1.8, the 27B lane followed once the two reasons it
 # had stayed behind were measured rather than restated (see the IMAGE pin below).
-# OVERLAY_FLASH=1 rebuilds the flash lane's old local image, the one rollback
-# this repo still carries (see flash-sglang/ATTRIBUTION.md).
+# The flash lane's old overlay files stay in flash-sglang/ as the record of what
+# upstream replaced; nothing builds them since v1.18.7 (see OVERLAY_FLASH below).
 set -euo pipefail
 trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-running ./install.sh is safe: completed steps are skipped.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
@@ -168,13 +168,8 @@ FLASH_UNC_REV="be794b990578ef3031eccf9f28e675a289a09ee9"
 # KDA QSA sm_121 decode kernel (sglang#36845, replacing the vendored copy), the
 # router fix for the GB10 MTP output collapse (sglang#36811 via #38308/#38290,
 # which is the root cause of the wall of "!" the proxy learned to detect in
-# v1.6), and the mixed-precision loader (sglang#38121). OVERLAY_FLASH=1 rebuilds
-# the old locally-patched image instead.
+# v1.6), and the mixed-precision loader (sglang#38121).
 FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:9d2a843c706c74bc259c0d9abf360551eb2734e1e7d255ab012a6965f10480b6}"  # = lmsysorg/sglang:dev-qwen38-next-local (qwen4-main-squashed 4ccff141db), 2026-09-07
-# The base the flash overlay's files were verified against, kept so the rollback
-# still builds: OVERLAY_FLASH=1 must graft them onto THAT image, not onto the one
-# above, whose module layout they were never diffed against.
-OVERLAY_FLASH_BASE_IMAGE="lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1"  # = lmsysorg/sglang:qwen38flashnext, 2026-08-26
 # Backing store for the flash target's file-backed 47.7 GiB PLE table. The
 # server rewrites it on every boot (~10 min from a fresh sparse file, ~55 min
 # over a populated one), so the launcher deletes the previous file first.
@@ -370,20 +365,25 @@ fi
 # upstream now, so both lanes serve the pinned official image directly and
 # build nothing. The flash lane crossed over in v1.8; the 27B lane followed in
 # v1.14, once the two things holding it back were measured rather than assumed
-# (see the IMAGE pin above). OVERLAY_FLASH=1 rebuilds the flash lane's old
-# locally-patched image, which is the only overlay this repo still carries.
-OVERLAY_FLASH="${OVERLAY_FLASH:-${OVERLAY:-0}}"
-# The local tag of the flash overlay path. Every line below sits at column 0 and
-# refers only to names defined above it, because run.sh and switch-model.sh read
-# these assignments out of this file and eval them with nothing else bound.
-OVERLAY_FLASH_SERVE_IMAGE="qwen38-flash:v1.6.0-kda"
+# (see the IMAGE pin above).
+#
+# OVERLAY_FLASH=1 used to rebuild the flash lane's old overlay image (v1.5 to v1.7)
+# as its rollback, and serve it with the launcher of v1.8, which does not fit it:
+# the overlay's model code keeps the 47.7 GiB PLE table in pinned host RAM unless
+# SGLANG_QWEN4_PLE_MMAP_DIR is set, the launcher sets no such thing and passes
+# --ple-offload-backend file (sglang#37068, newer than the overlay's base) instead,
+# and it has none of the attention backends and sizes the overlay was validated
+# with. Nothing had booted that pairing since v1.8 (found in review, 2026-09-24).
+# The overlay, its launcher and its pins shipped together in v1.7.2, which is the
+# rollback that holds together.
+if [ "${OVERLAY_FLASH:-${OVERLAY:-0}}" = "1" ]; then
+  die "OVERLAY_FLASH=1 is retired: this release's flash launcher does not fit the overlay image, and the pair cannot boot. The overlay path shipped whole in v1.7.2 (git checkout v1.7.2 && ./install.sh); this release serves the official image (unset OVERLAY_FLASH)."
+fi
+# Every line below sits at column 0 and refers only to names defined above it,
+# because run.sh and switch-model.sh read these assignments out of this file and
+# eval them with nothing else bound.
 SERVE_IMAGE="${SERVE_IMAGE:-$IMAGE}"
 FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-$FLASH_IMAGE}"
-# The non-default overlay choice, applied only when the operator did not name a
-# serving image outright.
-if [ -z "$_ENV_FLASH_SERVE_IMAGE" ] && [ "$OVERLAY_FLASH" = "1" ]; then
-  FLASH_SERVE_IMAGE="$OVERLAY_FLASH_SERVE_IMAGE"
-fi
 # opencode, the client this repo configures and serves in the cockpit's Agent tab, is
 # pinned like everything else. Four things the repo does were read out of this
 # version's own binary and checked against its behaviour: the compaction threshold
@@ -514,8 +514,6 @@ Env overrides (defaults are pinned to the versions validated 2026-09-11):
                                      --no-service are native either way, and a
                                      re-run keeps whatever is already installed
   PROXY_PORT=30001                   keepalive proxy port (default: PORT+1)
-  OVERLAY_FLASH=1                    flash: serve the locally built overlay
-                                     image of v1.7 instead of the official one
   SERVE_IMAGE=ref                    serving image for the 27B lane
   FLASH_SERVE_IMAGE=ref              serving image for the Flash-Next lane
   HF_CACHE=/path                     HuggingFace cache location (~28 GB for a 27B
@@ -978,12 +976,9 @@ fi
 [ -n "$FREE_DISK_GB" ] && [ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free for the checkpoints and caches under $HF_CACHE; found ${FREE_DISK_GB:-unknown} GB. Free some space or set HF_CACHE to another disk."
 DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
 DOCKER_FREE_GB=$({ df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null || true; } | tail -1 | tr -dc '0-9')
-# What step 2 pulls, decided here because the room it needs depends on it. An
-# OVERLAY_FLASH=1 install builds on the 2026-08-26 base, not on the image the lane
-# serves by default, so it is that one that has to be here.
+# What step 2 pulls, decided here because the room it needs depends on it.
 if [ "$LANE" = "flash" ]; then
   PULL_TARGET="$FLASH_IMAGE"
-  [ "$OVERLAY_FLASH" = "1" ] && PULL_TARGET="$OVERLAY_FLASH_BASE_IMAGE"
 else
   PULL_TARGET="$IMAGE"
 fi
@@ -1174,34 +1169,24 @@ for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
 print("checkpoints ready", flush=True)
 PYEOF
 
-LANE_OVERLAY=0; [ "$LANE" = "flash" ] && LANE_OVERLAY="$OVERLAY_FLASH"
-if [ "$LANE_OVERLAY" != "1" ]; then
-  # Say the image the unit will actually carry, not the pin it came from: those
-  # are the same thing on a default install and different the moment someone
-  # passes SERVE_IMAGE=, which is the one case where this line is the only
-  # on-screen confirmation that the override took.
-  LANE_SERVE_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_SERVE_IMAGE" || echo "$SERVE_IMAGE")"
-  LANE_PIN_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
-  if [ "$LANE_SERVE_IMAGE" = "$LANE_PIN_IMAGE" ]; then
-    step "5/10 Serving image: the pinned official one, nothing to build"
-    echo "$LANE_SERVE_IMAGE"
-  else
-    step "5/10 Serving image: an operator override, nothing to build"
-    echo "$LANE_SERVE_IMAGE   (SERVE_IMAGE=, instead of the pin $LANE_PIN_IMAGE)"
-    # Step 2 pulls the pin, never an override, and the overlay build that used to
-    # guarantee this tag existed is gone since v1.14. Without this check the
-    # install completes green, writes and enables the unit, and the engine then
-    # loops on an unpullable local tag for the full 20-minute health wait.
-    docker image inspect "$LANE_SERVE_IMAGE" >/dev/null 2>&1 \
-      || die "serving image not present: $LANE_SERVE_IMAGE. Nothing pulls an override, so build or pull it first, or drop SERVE_IMAGE= to serve the pin ($LANE_PIN_IMAGE)."
-  fi
-  if [ "$LANE" = flash ]; then
-    echo "OVERLAY_FLASH=1 ./install.sh rebuilds the local overlay image of v1.7 instead (the rollback)."
-  fi
+# Say the image the unit will actually carry, not the pin it came from: those
+# are the same thing on a default install and different the moment someone
+# passes SERVE_IMAGE=, which is the one case where this line is the only
+# on-screen confirmation that the override took.
+LANE_SERVE_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_SERVE_IMAGE" || echo "$SERVE_IMAGE")"
+LANE_PIN_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
+if [ "$LANE_SERVE_IMAGE" = "$LANE_PIN_IMAGE" ]; then
+  step "5/10 Serving image: the pinned official one, nothing to build"
+  echo "$LANE_SERVE_IMAGE"
 else
-  step "5/10 Building the Flash-Next overlay image (OVERLAY_FLASH=1: pinned base + verified files + gate checks, offline, ~2 min)"
-  BASE_IMAGE="$OVERLAY_FLASH_BASE_IMAGE" TAG="$FLASH_SERVE_IMAGE" "$REPO_DIR/flash-sglang/build-image.sh" \
-    || die "Flash overlay image build failed: see flash-sglang/ATTRIBUTION.md; the checksums and in-image checks run before tagging, so a failure means a corrupted checkout (git status) or an upstream image layout change. The overlay is the rollback path: the default install needs no build."
+  step "5/10 Serving image: an operator override, nothing to build"
+  echo "$LANE_SERVE_IMAGE   (SERVE_IMAGE=, instead of the pin $LANE_PIN_IMAGE)"
+  # Step 2 pulls the pin, never an override, and the overlay build that used to
+  # guarantee this tag existed is gone since v1.14. Without this check the
+  # install completes green, writes and enables the unit, and the engine then
+  # loops on an unpullable local tag for the full 20-minute health wait.
+  docker image inspect "$LANE_SERVE_IMAGE" >/dev/null 2>&1 \
+    || die "serving image not present: $LANE_SERVE_IMAGE. Nothing pulls an override, so build or pull it first, or drop SERVE_IMAGE= to serve the pin ($LANE_PIN_IMAGE)."
 fi
 
 # The reduced draft vocabulary. Built inside the serving image, so the tokenizer
@@ -1232,7 +1217,7 @@ if [ "$LANE" = "flash" ] && [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ]; then
         -v "$HF_CACHE":/root/.cache/huggingface \
         -v "$CONFIG_DIR":/out \
         -v "$REPO_DIR":/repo:ro \
-        "$([ "$OVERLAY_FLASH" = "1" ] && echo "$FLASH_SERVE_IMAGE" || echo "$FLASH_IMAGE")" \
+        "$FLASH_IMAGE" \
         /repo/build-token-map.py \
           --snapshot "/root/.cache/huggingface/hub/models--${MODEL_REPO//\//--}/snapshots/$MAP_REV" \
           --out "/out/$TOKEN_MAP_NAME" --size "$SPEC_TOKEN_MAP_SIZE" $MAP_CORPUS \
@@ -2121,21 +2106,16 @@ except Exception as e:
       done
     fi
     while IFS= read -r tagref; do
-      # Never offer to delete what is being served, nor the flash overlay tag:
-      # since v1.8 the flash overlay image IS the rollback for that lane. The 27B
-      # overlay tag is offered, since v1.14 serves the official image instead.
+      # Never offer to delete what is being served. The overlay tags of both lanes
+      # are offered: the 27B one since v1.14 serves the official image, the flash
+      # one since v1.18.7 retired OVERLAY_FLASH=1, its rollback.
       [ -n "$tagref" ] && [ "$tagref" != "$SERVE_IMAGE" ] && [ "$tagref" != "$FLASH_SERVE_IMAGE" ] \
-        && [ "$tagref" != "$OVERLAY_FLASH_SERVE_IMAGE" ] \
         && case "$LEFTOVER_NOTES" in *"'$tagref'"*) ;; *) LEFTOVER_NOTES="${LEFTOVER_NOTES}      docker rmi '$tagref'\n" ;; esac
     done < <({ docker images --format '{{.Repository}}:{{.Tag}}' qwen38-dflash2 2>/dev/null; docker images --format '{{.Repository}}:{{.Tag}}' qwen38-flash 2>/dev/null; } || true)
     if [ -n "$LEFTOVER_NOTES" ]; then
       echo "  Note: earlier versions of this repo left superseded images; reclaim when you like:"
       printf '%b' "$LEFTOVER_NOTES"
       echo "      (full inventory anytime: ./uninstall.sh --list)"
-    fi
-    if [ "$LANE" = "flash" ] && [ "$OVERLAY_FLASH" != "1" ] \
-       && docker image inspect "$OVERLAY_FLASH_SERVE_IMAGE" >/dev/null 2>&1; then
-      echo "  Note: $OVERLAY_FLASH_SERVE_IMAGE is kept as this lane's rollback (OVERLAY_FLASH=1 ./install.sh)."
     fi
     # The 1m limits the generator writes are static, and their worst case
     # (compaction at about 680,000 plus 200,000 of output) sits ABOVE the

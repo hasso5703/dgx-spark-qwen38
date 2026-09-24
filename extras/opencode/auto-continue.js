@@ -21,7 +21,15 @@ const IDLE_DELAY_MS = num(process.env.AC_IDLE_DELAY_MS, 1500); // breather after
 const MAX_CONSECUTIVE = num(process.env.AC_MAX_CONSECUTIVE, 25); // relaunches in a row without any progress
 // never relaunch on these: a deliberate user action, or a problem that will
 // not fix itself
-const EXCLUDE = ["abort", "interrupt", "permission", "unauthorized", "auth", "payment", "quota"];
+const EXCLUDE = ["abort", "interrupt", "permission", "unauthorized", "auth", "payment", "quota",
+  // A prompt past what the lane serves, or an image the engine cannot decode: a relaunch
+  // sends the same history plus its own reminder, so it can only fail again, longer
+  // (the reference box's log, 2026-09-09: 210,159 then 210,210 then 210,261 tokens against
+  // a 200,000 ceiling). opencode compacts on an overflow by itself, and a compaction that
+  // does not resume is the compaction path's to relaunch. The last three are the proxy's
+  // wording before its refusal read as an overflow to opencode.
+  "contextoverflow", "context_too_long", "prompt is too long", "serves at most",
+  "tokens by size", "imagedecodeerror", "could not be decoded"];
 
 const RESUME_AFTER_ERROR = "<system-reminder>The previous turn was interrupted by a transient technical error, not by the user. Resume the task exactly where it stopped and continue through to completion. Do not apologize for or mention this interruption.</system-reminder>";
 const RESUME_AFTER_COMPACTION = "<system-reminder>The context was just compacted and the turn did not resume on its own. Continue the task from the compaction summary, exactly where it left off, through to completion. Do not restart from scratch, and do not apologize for or mention this.</system-reminder>";

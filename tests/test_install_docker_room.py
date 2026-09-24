@@ -32,16 +32,15 @@ def block() -> str:
     return text[start:end]
 
 
-def run(lane, free, images, overlay="0"):
+def run(lane, free, images):
     t = pathlib.Path(tempfile.mkdtemp(prefix="docker-room-"))
     for name, body in (("docker", FAKE_DOCKER), ("df", FAKE_DF)):
         (t / name).write_text(body)
         (t / name).chmod(0o755)
     need, label = ("35", "30 GB Docker image") if lane == "flash" else ("40", "39 GB Docker image")
     script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
-              f"LANE={lane}; OVERLAY_FLASH={overlay}; DOCKER_NEED_GB={need}; IMG_LABEL='{label}'\n"
+              f"LANE={lane}; DOCKER_NEED_GB={need}; IMG_LABEL='{label}'\n"
               "IMAGE=lmsysorg/sglang@sha256:27b; FLASH_IMAGE=lmsysorg/sglang@sha256:flash\n"
-              "OVERLAY_FLASH_BASE_IMAGE=lmsysorg/sglang@sha256:overlaybase\n"
               + block() + 'echo "PASS need=$DOCKER_NEED_GB pull=$PULL_TARGET"\n')
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
                        env={"PATH": f"{t}:/usr/bin:/bin", "FAKE_FREE": str(free),
@@ -67,12 +66,6 @@ class TheDockerRoomFollowsWhatThereIsToPull(unittest.TestCase):
                       run("flash", 20, ["lmsysorg/sglang@sha256:flash"]))
         # the 27B's image being here says nothing about the flash lane's
         self.assertIn("DIE: Need ~35 GB free", run("flash", 20, ["lmsysorg/sglang@sha256:27b"]))
-
-    def test_an_overlay_install_looks_for_the_base_it_builds_on(self):
-        self.assertIn("DIE: Need ~35 GB free",
-                      run("flash", 20, ["lmsysorg/sglang@sha256:flash"], overlay="1"))
-        self.assertIn("PASS need=5 pull=lmsysorg/sglang@sha256:overlaybase",
-                      run("flash", 20, ["lmsysorg/sglang@sha256:overlaybase"], overlay="1"))
 
 
 

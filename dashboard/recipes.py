@@ -217,7 +217,7 @@ def _deref(value: str | None, assigns: dict[str, str]) -> str | None:
 
     install.sh declares the two serving images as the pinned bases by default
     (SERVE_IMAGE="${SERVE_IMAGE:-$IMAGE}"), because since v1.8 the served image
-    IS the official one and only OVERLAY=1 puts a locally built tag there. The
+    IS the official one and only an operator's override puts another there. The
     pin parser sees the reference, so a recipe read from the repo has to follow
     it or it reports "$IMAGE" as the image."""
     if isinstance(value, str) and value.startswith("$"):
@@ -252,7 +252,7 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str],
         image = _deref(assigns["FLASH_SERVE_IMAGE"], assigns)
         base = assigns.get("FLASH_IMAGE")
         # Since v1.8 the served image IS the pinned official one, so there is no
-        # overlay to name unless this box installed with OVERLAY=1.
+        # overlay to name unless the operator served another image.
         overlay = "flash-sglang" if image != base else None
     else:
         pfx = {"stock": "STOCK", "uncensored": "UNC", "fp8": "FP8",
