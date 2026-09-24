@@ -1,8 +1,9 @@
 # Spark Cockpit: design foundations
 
 One web app that does everything this repo does from the shell, by clicks, with
-everything visible in real time. Ships as `qwen38-dashboard.service`,
-opt-in, since v1.6.
+everything visible in real time. Ships as `qwen38-dashboard.service` since v1.6,
+and since v1.12 `install.sh` installs it by default as its last step
+(`--no-cockpit` opts out, and the choice sticks).
 
 ## Non-negotiables (from the owner)
 
@@ -34,9 +35,12 @@ GET for the fallback path. Actions are POST with JSON, CSRF-protected.**
 
 ## Security model (NASA mode)
 
-- Binds 127.0.0.1 by default; reaching it from another machine is an explicit
-  choice (`DASH_BIND` at install, `COCKPIT_BIND` on the unit), announced in the
-  journal at startup, and still gated by the API key.
+- A first `install.sh` binds the box's tailnet address when it has one, so the
+  page opens from a laptop or a phone over a private network, and 127.0.0.1
+  otherwise; `dashboard/install-dashboard.sh` run alone binds 127.0.0.1. Any other
+  address is an explicit choice (`DASH_BIND` at install, `COCKPIT_BIND` on the
+  unit), and a re-run keeps the installed one. A bind other than loopback is
+  announced in the journal at startup, and the API key is its only gate.
 - Session auth: the app reuses the repo's api-key file as its bearer secret
   (cookie session after a login page; the key never appears in URLs).
 - CSRF token on every mutating POST; same-origin checked.
