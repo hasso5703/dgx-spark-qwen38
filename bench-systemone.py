@@ -390,6 +390,18 @@ def load_done(path):
     return done
 
 
+def mixed_models(rows):
+    """'a (n), b (m)' when a target's rows were answered by more than one model, else None.
+    A run resumed after a lane switch appends the other lane's answers to the same file,
+    and every row records the model that answered it: a table line over both would
+    describe neither (found in review, 2026-09-24)."""
+    counts = {}
+    for row in rows.values():
+        if row.get("model"):
+            counts[row["model"]] = counts.get(row["model"], 0) + 1
+    return ", ".join(f"{m} ({n})" for m, n in sorted(counts.items())) if len(counts) > 1 else None
+
+
 def post_systemone(target, payload, model, timeout):
     body = dict(payload, model=model)
     key = Path(target["key"]).read_text().strip()
@@ -452,12 +464,23 @@ def cmd_run(args):
         print(f"{name}: {len(done)} done, {len(todo)} to send to {target['url']} (concurrency {args.concurrency or target['concurrency']})")
         lock = threading.Lock()
         errors = 0
+        # The rows already here name the model that answered them: a resume answered by
+        # another one (a lane switched in between, a new hosted version) stops at its
+        # first answer instead of mixing two models into one target.
+        done_models = {r["model"] for r in done.values() if r.get("model")}
+        other = []
 
         def one(it):
             nonlocal errors
+            if other:
+                return None
             row = {"id": it["id"], "target": name}
             try:
                 resp, dt, headers, retries = post_systemone(target, it["payload"], args.model, args.timeout)
+                if done_models and resp.get("model") not in done_models:
+                    other.append(resp.get("model"))
+                    raise RuntimeError(f"answered by {resp.get('model')}, not by {', '.join(sorted(done_models))} "
+                                       f"like the rows already in {path.name}")
                 row.update(answers=resp.get("answers"), model=resp.get("model"), usage=resp.get("usage"),
                            latency_s=round(dt, 4), retries=retries,
                            label_mass=headers.get("x-systemone-label-mass"),
@@ -476,6 +499,10 @@ def cmd_run(args):
             for k, _ in enumerate(pool.map(one, todo), 1):
                 if k % 100 == 0 or k == len(todo):
                     print(f"  {name}: {k}/{len(todo)} in {time.time() - t0:.0f}s, {errors} errors", flush=True)
+        if other:
+            sys.exit(f"{name}: {path} holds {len(done)} rows answered by {', '.join(sorted(done_models))}, and "
+                     f"{target['url']} now answers as {other[0]}: one target, one model. Move that file "
+                     f"aside, or give this run a name of its own (--target {name}-2).")
         if errors:
             print(f"  {name}: {errors} items failed; re-run to retry them (successful rows are kept)")
 
@@ -569,6 +596,9 @@ def report_classification(task, items, runs):
         if len(recs) != len(items):
             lines.append(f"| {name} | {len(recs)} of {len(items)} | not scored: {len(items) - len(recs)} rows missing or failed |")
             continue
+        if mixed_models(rows):
+            lines.append(f"| {name} | {len(recs)} | not scored: rows from more than one model, {mixed_models(rows)} |")
+            continue
         per_target[name] = recs
         hits = [1.0 if r["hit"] else 0.0 for r in recs]
         tops = [r["top"] for r in recs]
@@ -645,6 +675,9 @@ def report_gdpr(items, runs):
         got = [r for r in rows.values() if r["id"] in by_id]
         if len(got) != len(items):
             lines.append(f"## {name}: {len(got)} of {len(items)} rows present, not scored")
+            continue
+        if mixed_models(rows):
+            lines.append(f"## {name}: rows from more than one model, {mixed_models(rows)}, not scored")
             continue
         lines += [f"## {name}", "", "| question | type | batched mean (sd) | single mean (sd) | reference |", "|---|---|---:|---:|---|"]
         tracked = {}
@@ -787,6 +820,20 @@ def report_public(items, runs):
                                         for it in items if it["gold"]["saved"].get(m)}
     per_wf = {}
     for name, rows in rows_by_target.items():
+        if name in runs:
+            # A run is scored on every node and every question or not at all, like the other
+            # tasks: this table used to score whatever rows were there, so a run that died at
+            # node 5 of 76 published a line about 5 nodes (found in review, 2026-09-24).
+            whole = sum(1 for it in items
+                        if set(it["payload"]["questions"]) <= set((rows.get(it["id"]) or {}).get("answers") or {}))
+            if whole != len(items):
+                lines.append(f"| {name} | {whole} of {len(items)} nodes | not scored: {len(items) - whole} "
+                             f"nodes missing, failed or partly answered |")
+                continue
+            if mixed_models(rows):
+                lines.append(f"| {name} | {whole} nodes | not scored: rows from more than one model, "
+                             f"{mixed_models(rows)} |")
+                continue
         # Each agreement column counts only the questions that model actually saved an
         # answer for, and carries its own denominator: dividing all three by the question
         # count published three numbers over three different bases (found in review).
@@ -850,7 +897,7 @@ def cmd_report(args):
     if args.fit_temperature and args.task not in ("gdpr", "public"):
         for name, rows in runs.items():
             recs = score_rows(items, rows)
-            if len(recs) == len(items):
+            if len(recs) == len(items) and not mixed_models(rows):
                 text += f"\n\n## {name}: temperature scaling\n\n" + "\n".join(fit_temperature(recs))
     out = Path(args.data) / "reports"
     out.mkdir(parents=True, exist_ok=True)
