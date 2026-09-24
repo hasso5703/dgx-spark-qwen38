@@ -10,7 +10,8 @@
 #   ./check-pins.sh          # every pin
 #   ./check-pins.sh flash    # only the pins whose name matches
 #
-# Exit 0 when every checked pin resolves, 1 otherwise. CI does not run this
+# Exit 0 when every checked pin resolves, 1 otherwise: a pin that could not be
+# asked about (no answer, no registry token) has not resolved. CI does not run this
 # (a green build must not depend on Hugging Face being up); run it before a
 # release and when an install fails on a fresh box. The "pin watch" scheduled
 # workflow runs it daily and files a labeled issue when a pin dies: a watch,
@@ -24,16 +25,34 @@ CHECKED=0
 pins="$(grep -E '^(STOCK|UNC|FP8|UNCFP8|FLASH|FLASH_NVDA|FLASH_UNC|DRAFT|DRAFT2)_(REPO|REV)=' "$REPO_DIR/install.sh")"
 eval "$pins"
 
+# Hugging Face answers an anonymous request with 401 both for a gated repo and for one that
+# does not exist (or is private): only its x-error-code tells a gated repo apart, so the
+# answer's code and that header are read together. HF_TOKEN, when set, is sent the way the
+# installer's download sends it, and goes in on stdin rather than on the command line.
+hf_answer() {  # $1 url: prints "<http code> <x-error-code>"
+  local cfg=""
+  [ -n "${HF_TOKEN:-}" ] && cfg="header = \"Authorization: Bearer $HF_TOKEN\""
+  printf '%s\n' "$cfg" | curl -s -o /dev/null -m 25 -K - -w '%{http_code} %header{x-error-code}' "$1"
+}
+
 check_model() {  # $1 label, $2 repo, $3 revision
   case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
   CHECKED=$((CHECKED + 1))
-  local code
-  code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' \
-    "https://huggingface.co/$2/raw/$3/config.json")"
-  case "$code" in
-    200) printf '  \033[0;32mok\033[0m    %-14s %s @ %s\n' "$1" "$2" "${3:0:12}" ;;
-    401|403) printf '  \033[1;33mgated\033[0m %-14s %s @ %s (accept the terms, or set HF_TOKEN)\n' "$1" "$2" "${3:0:12}" ;;
-    *) printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s)\n' "$1" "$2" "${3:0:12}" "$code"; FAIL=1 ;;
+  local code err
+  read -r code err <<<"$(hf_answer "https://huggingface.co/$2/raw/$3/config.json")"
+  case "$code:$err" in
+    200:*) printf '  \033[0;32mok\033[0m    %-14s %s @ %s\n' "$1" "$2" "${3:0:12}" ;;
+    40[13]:GatedRepo)
+      # the repo exists, and a fresh install without a token that accepted its terms cannot
+      # download it: nothing in this repo expects a gated checkpoint
+      if [ -n "${HF_TOKEN:-}" ]; then
+        printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (gated: accept its terms on huggingface.co with the account of HF_TOKEN)\n' "$1" "$2" "${3:0:12}"
+      else
+        printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (gated: a fresh install needs an HF_TOKEN that accepted its terms)\n' "$1" "$2" "${3:0:12}"
+      fi
+      FAIL=1 ;;
+    40[13]:*) printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s: the repo is gone or private)\n' "$1" "$2" "${3:0:12}" "$code"; FAIL=1 ;;
+    *) printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s)\n' "$1" "$2" "${3:0:12}" "${code:-none}"; FAIL=1 ;;
   esac
 }
 
@@ -46,7 +65,9 @@ check_image() {  # $1 label, $2 image reference (name@sha256:... or name:tag)
   token="$(curl -s -m 25 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull" \
     | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
   if [ -z "$token" ]; then
-    printf '  \033[1;33mskip\033[0m  %-14s %s (no registry token; offline?)\n' "$1" "$2"
+    # not asked is not resolved: an offline run must not end in "all resolve"
+    printf '  \033[0;31mFAIL\033[0m  %-14s %s (no registry token, so not checked: offline?)\n' "$1" "$2"
+    FAIL=1
     return 0
   fi
   code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' -H "Authorization: Bearer $token" \
