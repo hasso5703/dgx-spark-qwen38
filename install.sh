@@ -69,7 +69,7 @@ _ENV_PORT="${PORT:-}"; _ENV_HF_CACHE="${HF_CACHE:-}"
 _ENV_CONTEXT_MODE="${CONTEXT_MODE:-}"; _ENV_PROXY_PORT="${PROXY_PORT:-}"
 _ENV_ENGINE_BIND="${ENGINE_BIND:-}"; _ENV_PROXY_BIND="${PROXY_BIND:-}"
 _ENV_PLE_DIR="${PLE_DIR:-}"; FLASH_TIER_ENV="${FLASH_TIER:-}"
-_ENV_SERVE_IMAGE="${SERVE_IMAGE:-}"; _ENV_FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-}"
+_ENV_SPEC_TOKEN_MAP_SIZE="${SPEC_TOKEN_MAP_SIZE:-}"; _ENV_FLASH_REPLAYSSM_SPEC="${FLASH_REPLAYSSM_SPEC:-}"
 _ENV_DRAFT2_REPO="${DRAFT2_REPO:-}"; _ENV_DRAFT2_REV="${DRAFT2_REV:-}"
 _ENV_DRAFT2_QUANT="${DRAFT2_QUANT:-}"; _ENV_DRAFT2_TOKENS="${DRAFT2_TOKENS:-}"
 
@@ -272,7 +272,7 @@ resolve_flash_tier_args() {
         throughput) echo "NOTE: FLASH_REPLAYSSM_SPEC=1 has no speculation to apply to on the throughput tier; ignored" ;;
         *) FLASH_TIER_ARGS="$FLASH_TIER_ARGS --enable-linear-replayssm-spec" ;;
       esac ;;
-    *) printf 'ERROR: FLASH_REPLAYSSM_SPEC must be 0 or 1 (got: %s)\n' "$FLASH_REPLAYSSM_SPEC" >&2; return 1 ;;
+    *) printf 'ERROR: FLASH_REPLAYSSM_SPEC must be 0 or 1 (got: %s)\n' "$FLASH_REPLAYSSM_SPEC" >&2; exit 1 ;;
   esac
 }
 resolve_flash_tier_args
@@ -477,8 +477,9 @@ Env overrides (defaults are pinned to the versions validated 2026-09-11):
                                      calibrated NVFP4 draft at depth 16)
   MODEL_CHOICE=uncensored            serve the huihui-abliterated model
                                      (edp1096 NVFP4) instead of the stock base
-  MODEL_CHOICE=fp8                   serve Qwen's own FP8 release (30.9 GB, about
-                                     200k fewer tokens of KV pool, slower decode)
+  MODEL_CHOICE=fp8                   serve Qwen's own FP8 release (30.9 GB, slower
+                                     decode; its 1M pool measured 881,895 tokens
+                                     against 887,797 for NVFP4, 2026-09-18)
   MODEL_CHOICE=uncensored-fp8        the huihui abliteration in that same FP8 format
   MODEL_CHOICE=flash                 serve Qwen3.8-Flash-Next (176B hybrid MoE,
                                      NVFP4, SGLang engine, ~126 GB download; the
@@ -562,11 +563,22 @@ done
 # README has said so since v1.5, and it is the one that refuses what the engine cannot.
 ENGINE_BIND="${ENGINE_BIND:-127.0.0.1}"
 PROXY_BIND="${PROXY_BIND:-0.0.0.0}"
-for _b in "$ENGINE_BIND" "$PROXY_BIND"; do
-  case "$_b" in
-    *[!0-9.]*|"") printf 'ERROR: ENGINE_BIND and PROXY_BIND take an IPv4 address (got: %s)\n' "$_b" >&2; exit 1 ;;
-  esac
-done
+# Loopback or every interface, nothing between: the box reaches both ports itself on
+# 127.0.0.1 (the proxy's UPSTREAM, the health checks and the smoke test, opencode's
+# base_url, the cockpit), so a bind that leaves loopback out breaks all of them. The
+# old check took any digits and dots, 300.1.1.1 and ... included (found in review,
+# 2026-09-24). Called again once the installed binds are read back.
+check_binds() {
+  local b
+  for b in "ENGINE_BIND=$ENGINE_BIND" "PROXY_BIND=$PROXY_BIND"; do
+    case "${b#*=}" in
+      127.0.0.1|0.0.0.0) ;;
+      *) printf 'ERROR: %s=%s: this box reaches that port itself on 127.0.0.1 (the proxy, the health checks, opencode), so it binds 127.0.0.1 (this machine only) or 0.0.0.0 (every interface: narrow it with a firewall)\n' "${b%%=*}" "${b#*=}" >&2
+         exit 1 ;;
+    esac
+  done
+}
+check_binds
 
 # Which choice is installed? The flash unit wins only when it is the enabled
 # one; a box can hold both unit files but only one engine serves the port.
@@ -654,6 +666,26 @@ if [ "$INSTALLED_CHOICE" = "flash" ]; then
         fi
       done
       resolve_flash_tier_args
+    fi
+    # The two speculative-path knobs a box can turn off, read back like the tier: set to
+    # 0 on one run, both came back on at the next (found in review, 2026-09-24). A
+    # launcher that does not speculate carries neither whatever they were, and one
+    # rendered before a knob existed says nothing of it: those keep the defaults. The
+    # markers are comments of the template, since v1.8 and since v1.10.2.
+    if grep -q -- '--speculative-algorithm' "$FLASH_LAUNCH"; then
+      if [ -z "$_ENV_SPEC_TOKEN_MAP_SIZE" ] && grep -q 'Engine since v1.8' "$FLASH_LAUNCH"; then
+        CUR_MAP="$(grep -oE -- '--speculative-token-map /out/token-map-[0-9]+\.pt' "$FLASH_LAUNCH" | head -1 | sed -E 's/.*token-map-([0-9]+)\.pt/\1/' || true)"
+        if [ "${CUR_MAP:-0}" != "$SPEC_TOKEN_MAP_SIZE" ]; then
+          SPEC_TOKEN_MAP_SIZE="${CUR_MAP:-0}"; TOKEN_MAP_NAME="token-map-${SPEC_TOKEN_MAP_SIZE}.pt"
+          echo "Keeping the installed reduced draft vocabulary: SPEC_TOKEN_MAP_SIZE=$SPEC_TOKEN_MAP_SIZE. Pass SPEC_TOKEN_MAP_SIZE= to change."
+        fi
+      fi
+      if [ -z "$_ENV_FLASH_REPLAYSSM_SPEC" ] && [ "$FLASH_REPLAYSSM_SPEC" = "1" ] \
+         && grep -q 'No --allow-auto-truncate' "$FLASH_LAUNCH" \
+         && ! grep -q -- '--enable-linear-replayssm-spec' "$FLASH_LAUNCH"; then
+        FLASH_REPLAYSSM_SPEC=0; resolve_flash_tier_args
+        echo "Keeping the installed MTP verify state: FLASH_REPLAYSSM_SPEC=0. Pass FLASH_REPLAYSSM_SPEC=1 to change."
+      fi
     fi
     if [ -z "${_ENV_PLE_DIR:-}" ] && [ -n "$CUR_PLE" ] && [ "$CUR_PLE" != "$PLE_DIR" ]; then
       PLE_DIR="$CUR_PLE"
@@ -757,6 +789,7 @@ if [ -n "$INSTALLED_CHOICE" ]; then
       echo "Keeping the installed proxy bind: $PROXY_BIND. Pass PROXY_BIND= to change."
     fi
   fi
+  check_binds
   if [ "$INSTALLED_CHOICE" = "27b" ] && [ "$LANE" != "flash" ] && [ -z "$_ENV_CONTEXT_MODE" ]; then
     if grep -q -- '--context-length 1010000' "$SGL_UNIT_PATH"; then
       CONTEXT_MODE=1m
@@ -841,6 +874,11 @@ fi
 if [ "$NO_COCKPIT" -eq 1 ] && [ "$WITH_COCKPIT" -eq 1 ]; then
   printf -- '--no-cockpit and --with-cockpit contradict each other (drop one flag)\n' >&2; exit 1
 fi
+# The same for the image lane: both were taken, and --no-image won silently at the end of
+# the install (found in review, 2026-09-24).
+if [ "$NO_IMAGE" -eq 1 ] && [ "$WITH_IMAGE" -eq 1 ]; then
+  printf -- '--no-image and --with-image contradict each other (drop one flag)\n' >&2; exit 1
+fi
 
 # --no-start and --no-service both return before the image step, so the flag would be
 # accepted and silently do nothing. Say so here rather than at the end of a long install.
@@ -902,6 +940,17 @@ stale_since(){
 
 step "1/10 Preflight checks"
 [ "$(uname -m)" = "aarch64" ] || die "This setup targets GB10 (aarch64). Detected: $(uname -m)."
+# These paths are written into the units and the flash launcher: inside a quoted
+# `bash -c` line, in a docker `-v src:dst`, and in systemd's own syntax, where % is a
+# specifier. A space, a colon, a quote, a $ or a % in one was accepted and broke the
+# unit it went into, seen only when that failed to start (found in review, 2026-09-24).
+for _p in "HOME=$HOME" "HF_CACHE=$HF_CACHE" "PLE_DIR=$PLE_DIR"; do
+  case "${_p#*=}" in
+    /*) case "${_p#*=}" in *[!A-Za-z0-9._/+@-]*) die "${_p%%=*}=${_p#*=}: the units this installs cannot carry that path. Use an absolute path of letters, digits and . _ / + @ - only." ;; esac ;;
+    *) die "${_p%%=*}=${_p#*=}: an absolute path is needed (the units carry it as it is)." ;;
+  esac
+done
+unset _p
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found. Is the NVIDIA driver stack installed? (stock on DGX OS)"
 # nvidia-smi says what is wrong when it cannot reach the driver, and exits non-zero:
 # inside a bare $(...) under set -e that ended the install with only "Install failed at
@@ -1002,7 +1051,11 @@ if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   fi
 fi
 if [ "$NO_SERVICE" -eq 0 ] && ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PROXY_PORT\$"; then
-  if systemctl is-active --quiet qwen38-keepalive 2>/dev/null; then
+  # Ours only if the proxy that runs is the one on that port: a running proxy made ANY
+  # busy PROXY_PORT pass, another program's included, which then kept the new unit from
+  # binding (found in review, 2026-09-24).
+  KA_PORT_NOW="$(grep -oE 'keepalive-proxy\.py [0-9]+' /etc/systemd/system/qwen38-keepalive.service 2>/dev/null | head -1 | tr -dc '0-9' || true)"
+  if [ "$KA_PORT_NOW" = "$PROXY_PORT" ] && systemctl is-active --quiet qwen38-keepalive 2>/dev/null; then
     echo "Note: the keepalive proxy is already running on :$PROXY_PORT, re-installing over it."
   else
     die "Port $PROXY_PORT (keepalive proxy) is already in use by another program. Free it, or install with PROXY_PORT=<other>"
@@ -1361,9 +1414,13 @@ oc_fetch_pinned(){   # prints the cause of a failure; the caller says what it le
     rm -rf "$tmp"; echo "NOTE: the opencode $OPENCODE_VERSION archive did not unpack"; return 1
   fi
   mkdir -p "$OC_HOME_DIR"
-  # a new file renamed over the old one: a server still running the old binary keeps it
-  install -m 755 "$tmp/opencode" "$OC_HOME_BIN.new" && mv -f "$OC_HOME_BIN.new" "$OC_HOME_BIN"
-  rm -rf "$tmp"
+  # a new file renamed over the old one: a server still running the old binary keeps it.
+  # Its failure is the function's: the rm after it made every run return 0, and a full
+  # disk read "installed" (found in review, 2026-09-24).
+  local placed=0
+  install -m 755 "$tmp/opencode" "$OC_HOME_BIN.new" && mv -f "$OC_HOME_BIN.new" "$OC_HOME_BIN" && placed=1
+  rm -rf "$tmp" "$OC_HOME_BIN.new"
+  [ "$placed" -eq 1 ] || { echo "NOTE: could not put opencode $OPENCODE_VERSION at $OC_HOME_BIN"; return 1; }
 }
 OC_FOUND="$(command -v opencode || true)"
 OC_ON_PATH="$OC_FOUND"   # what a shell of the user's finds, before the fallback below
@@ -2266,6 +2323,10 @@ except Exception as e:
     [ "$COCKPIT" -eq 0 ] && echo "  cockpit    : off (--no-cockpit); ./install.sh --with-cockpit turns it on"
     if [ "${IMAGE_READY:-0}" -eq 1 ]; then
       echo "  Images     : a third lane; switch to Qwen-Image 2.1 in the cockpit (or ./switch-model.sh image)"
+    elif [ -f /etc/systemd/system/qwen38-image.service ] && [ "${IMAGE_ON:-0}" -eq 0 ]; then
+      # --no-image on a box that has the lane: it is there, only not updated by this run
+      # (it used to read "not installed", found in review, 2026-09-24)
+      echo "  Images     : installed, not updated by this run (--no-image); ./install-image.sh --uninstall removes it"
     elif [ "${IMAGE_ON:-0}" -eq 0 ]; then
       echo "  Images     : not installed; ./install.sh --with-image adds the Qwen-Image 2.1 lane (38 GB)"
     fi
