@@ -2712,6 +2712,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                            "--no-pager", "-o", "cat"], timeout=8)
             else:
                 return self.send_json({"error": "unknown source"}, 404)
+            # The key's value, masked as the bundle masks it: SGLang prints its ServerArgs at
+            # boot, 'api_key' included, and for the first minutes of a boot that line was in
+            # what this tab showed (found in review, 2026-09-24).
+            key = api_key()
+            if key:
+                txt = txt.replace(key, "<masked>")
             return self.send_json({"name": name,
                                    "lines": txt.splitlines()[-120:]})
         if path.startswith("/api/jobs/"):

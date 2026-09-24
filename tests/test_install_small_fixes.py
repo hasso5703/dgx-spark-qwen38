@@ -165,5 +165,29 @@ class TheImageLaneKeptByNoImageIsNotCalledMissing(unittest.TestCase):
         self.assertLess(i, TEXT.index('"  Images     : not installed;'))
 
 
+class OneDiskForBoth(unittest.TestCase):
+    """HF_CACHE and Docker's root on one disk, as on a stock box: the needs add up there."""
+    START = TEXT.index('HF_DEV="$(stat -c %d "$HF_CACHE"')
+    BLOCK = TEXT[START:TEXT.index("\nfi\n", START) + 4]
+
+    def run_block(self, same_disk, free):
+        d = pathlib.Path(tempfile.mkdtemp(prefix="one-disk-"))
+        (d / "hf").mkdir()
+        other = pathlib.Path("/dev/shm") if not same_disk else d / "docker"
+        other.mkdir(exist_ok=True)
+        script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
+                  f'HF_CACHE="{d}/hf"; DOCKER_ROOT="{other}"; NEED_GB=45; DOCKER_NEED_GB=40; IMG_LABEL=img; '
+                  f"FREE_DISK_GB={free}\n" + self.BLOCK + "\necho FITS\n")
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        return r.stdout
+
+    def test_the_sum_is_asked_on_one_disk(self):
+        self.assertIn("DIE: Need ~85 GB free on the disk that holds both", self.run_block(True, 60))
+        self.assertIn("FITS", self.run_block(True, 90))
+
+    def test_two_disks_are_left_to_their_own_checks(self):
+        self.assertIn("FITS", self.run_block(False, 60))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

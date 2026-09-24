@@ -1039,6 +1039,14 @@ if docker image inspect "$PULL_TARGET" >/dev/null 2>&1; then
   DOCKER_NEED_GB=5; IMG_LABEL="container (its image is already here)"
 fi
 [ "${DOCKER_FREE_GB:-0}" -ge "$DOCKER_NEED_GB" ] || die "Need ~${DOCKER_NEED_GB} GB free on $DOCKER_ROOT for the $IMG_LABEL; found ${DOCKER_FREE_GB:-?} GB (docker images live there, not under \$HOME)."
+# One disk for both, as on the reference box: the two needs add up there. Checked apart,
+# 45 GB free passed a first 27B install that needs 45 for the checkpoints and 40 for the
+# image on that same disk (found in review, 2026-09-24).
+HF_DEV="$(stat -c %d "$HF_CACHE" 2>/dev/null || true)"; DOCKER_DEV="$(stat -c %d "$DOCKER_ROOT" 2>/dev/null || true)"
+if [ -n "$HF_DEV" ] && [ "$HF_DEV" = "$DOCKER_DEV" ]; then
+  BOTH_GB=$((NEED_GB + DOCKER_NEED_GB))
+  [ "${FREE_DISK_GB:-0}" -ge "$BOTH_GB" ] || die "Need ~${BOTH_GB} GB free on the disk that holds both $HF_CACHE and $DOCKER_ROOT (${NEED_GB} for the checkpoints and caches, ${DOCKER_NEED_GB} for the $IMG_LABEL); found ${FREE_DISK_GB:-unknown} GB. Free some space, or set HF_CACHE to another disk."
+fi
 if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   # The port may be held by either of OUR engines: same-engine reinstall
   # (converge) or a cross-engine switch (the old engine is stopped at step 9).

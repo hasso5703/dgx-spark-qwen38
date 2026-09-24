@@ -499,6 +499,14 @@ never had. Each now names what the tab does, and a test checks that every tab na
 repo is one the page has. ROADMAP.md, frozen at v1.14.0, now lists System One, the release
 check, the engine on loopback, the image lane and the pinned opencode.
 
+**Two more found while fixing the docs.** On a box whose Hugging Face cache and Docker
+share one disk, as on a stock one, the installer checked the checkpoints' 45 GB and the
+image's 40 GB each against the same free space, so 45 GB passed a first 27B install that
+needs 85 there: it asks for the sum when the two are one disk. And the cockpit's Logs tab
+showed the last lines of the engine's container and journal as they were, while SGLang's
+ServerArgs line at boot carries the serving key: the key is masked there as the
+diagnostics bundle masks it.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash
