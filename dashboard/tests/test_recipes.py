@@ -3,6 +3,7 @@ the two lane templates) plus synthetic registry snapshots."""
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -405,6 +406,7 @@ class TheLastSixLines(unittest.TestCase):
         import json
         import tempfile
         d = Path(tempfile.mkdtemp(prefix="recipes-"))
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         (d / "list.json").write_text(json.dumps([1, 2, 3]))
         (d / "good.json").write_text(json.dumps(
             {"id": "mine", "lane": "flash",

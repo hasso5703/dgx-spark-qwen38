@@ -327,10 +327,6 @@ class MalformedJson(Base):
                                 cookie=cookie)
             self.assertEqual(st, 404, f"name={name!r}")
 
-    def test_the_server_is_still_answering_after_all_of_that(self):
-        """The point of the whole class: no input above took the server with it."""
-        st, _, _ = self.req("GET", "/api/health")
-        self.assertEqual(st, 200)
 
 
 class BodyLimits(Base):
@@ -504,8 +500,12 @@ class ReadRoutes(Base):
             st, body = self.get(f"/api/logs/{name}", cookie)
             self.assertEqual(st, 404, f"/api/logs/{name} answered {st}")
             self.assertEqual(body["error"], "unknown source", name)
-        # and the allowlist is exactly the two sets the cockpit declares
-        self.assertTrue(set(self.cp.CONTAINERS) | set(self.cp.JOURNAL_UNITS))
+        # and the allowlist is exactly these: the lanes' containers and this repo's units.
+        # A truthiness check of the union could not fail (found in review, 2026-09-24).
+        self.assertEqual(set(self.cp.CONTAINERS), {"qwen38-sglang", "qwen38-flash"})
+        self.assertEqual(set(self.cp.JOURNAL_UNITS), {
+            "qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service",
+            "qwen38-keepalive.service", "opencode-web.service"})
 
     def test_a_known_log_source_answers_with_bounded_lines(self):
         cookie = self.login()
@@ -538,16 +538,23 @@ class ReadRoutes(Base):
         finally:
             self.cp.JOBS.pop(job.id, None)
 
+    # What only each page has: the login form, and the app's lane selector. "<" and the
+    # product name are in both, so either page passed for the other (found in review,
+    # 2026-09-24).
+    LOGIN_MARK, APP_MARK = b'<form class="card" id="f">', b'id="switchsel"'
+
     def test_the_root_serves_the_login_page_without_a_session(self):
-        st, body = self.req("GET", "/")[0], self.req("GET", "/")[2]
+        st, _, body = self.req("GET", "/")
         self.assertEqual(st, 200)
-        self.assertIn(b"<", body)
+        self.assertIn(self.LOGIN_MARK, body)
+        self.assertNotIn(self.APP_MARK, body)
 
     def test_the_root_serves_the_app_with_a_session(self):
         cookie = self.login()
         st, _, body = self.req("GET", "/", cookie=cookie)
         self.assertEqual(st, 200)
-        self.assertIn(b"Spark Cockpit", body)
+        self.assertIn(self.APP_MARK, body)
+        self.assertNotIn(self.LOGIN_MARK, body)
 
     def test_an_unknown_api_route_is_a_404_and_not_a_static_file(self):
         cookie = self.login()

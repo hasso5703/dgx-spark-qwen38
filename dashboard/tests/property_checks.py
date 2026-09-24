@@ -402,10 +402,12 @@ class RelayBoundaryIsClosed(unittest.TestCase):
     @given(st.text(max_size=200))
     def test_credentials_are_read_or_absent_never_a_crash(self, text):
         import tempfile
-        d = Path(tempfile.mkdtemp(prefix="relay-cred-"))
-        f = d / "env"
-        f.write_text(text)
-        got = ar.read_credentials(f)
+        # removed after each example: a mkdtemp per example left 300 directories per run
+        # in /tmp, 7,200 on the reference box (found in review, 2026-09-24)
+        with tempfile.TemporaryDirectory(prefix="relay-cred-") as d:
+            f = Path(d) / "env"
+            f.write_text(text)
+            got = ar.read_credentials(f)
         self.assertTrue(got is None or (isinstance(got, tuple) and len(got) == 2))
         if got:
             self.assertTrue(got[0] and got[1])

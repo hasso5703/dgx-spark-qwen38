@@ -11,6 +11,7 @@ so. These tests pin that it does, and that it stays quiet when nothing moved.
 cockpit.py is loaded as a module here: importing it must not bind a port or
 start a thread, which is itself worth pinning.
 """
+import atexit
 import importlib.util
 import os
 import shutil
@@ -36,6 +37,7 @@ def load_cockpit(from_dir: Path):
     # not setdefault(): its argument is evaluated anyway, and left a directory per call
     if "COCKPIT_CONFIG_DIR" not in os.environ:
         os.environ["COCKPIT_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cockpit-code-cfg-")
+        atexit.register(shutil.rmtree, os.environ["COCKPIT_CONFIG_DIR"], ignore_errors=True)
     os.environ.setdefault("COCKPIT_PORT", "0")
     os.environ.setdefault("COCKPIT_AGENT_PORT", "0")
     spec = importlib.util.spec_from_file_location(
