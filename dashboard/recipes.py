@@ -451,7 +451,9 @@ def drift(recipe: dict, installed: dict) -> list[dict]:
     cmp("engine.image", recipe["engine"].get("image"), installed["engine"].get("image"))
     cmp("model.repo", recipe["model"].get("repo"), installed["model"].get("repo"))
     cmp("model.revision", recipe["model"].get("revision"), installed["model"].get("revision"))
-    for k in ("algorithm", "repo", "revision", "steps", "draft_tokens"):
+    # the draft's quantization too: a flash launcher without "unquant" loads the BF16 MTP
+    # head as if it were quantized, and showed no drift (found in review, 2026-09-24)
+    for k in ("algorithm", "repo", "revision", "steps", "draft_tokens", "quantization"):
         cmp(f"drafter.{k}", recipe.get("drafter", {}).get(k), installed.get("drafter", {}).get(k))
     keys = set(recipe.get("serve", {})) | set(installed.get("serve", {}))
     for k in sorted(keys):

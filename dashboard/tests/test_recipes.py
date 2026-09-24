@@ -18,6 +18,17 @@ ASSIGNS = rc.parse_assignments((REPO / "install.sh").read_text())
 TEMPLATES = rc.load_templates(REPO)
 
 
+def flash_quant_args(choice="flash"):
+    """What install.sh renders for __FLASH_QUANT_ARGS__, read from its own function: the
+    Drift test wrote the string itself, without the draft's "unquant", and so certified a
+    launcher install.sh never renders (found in review, 2026-09-24)."""
+    fn = re.search(r"^resolve_flash_checkpoint_args\(\) \{\n.*?^\}\n", (REPO / "install.sh").read_text(), re.M | re.S)
+    out = subprocess.run(["bash", "-c", fn.group(0) + f'MODEL_CHOICE={choice}; resolve_flash_checkpoint_args; '
+                          'printf %s "$FLASH_QUANT_ARGS"'], capture_output=True, text=True, check=True).stdout
+    assert out, "install.sh renders no checkpoint flags for the flash lane"
+    return out
+
+
 class ParseAssignments(unittest.TestCase):
     def test_literal_default_and_comment(self):
         text = ('STOCK_REV="52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"\n'
@@ -247,13 +258,12 @@ class Validate(unittest.TestCase):
 
 
 class Drift(unittest.TestCase):
-    def test_no_drift_against_own_template_render(self):
-        f = rc.builtin("flash", ASSIGNS, TEMPLATES)
+    def render_flash(self, f, quant_args):
         rendered = TEMPLATES["qwen38-flash-launch.sh.template"]
         for k, v in {"__IMAGE__": f["engine"]["image"], "__MODEL__": f["model"]["repo"],
                      "__MODEL_REV_ARGS__": "--revision " + f["model"]["revision"],
                      "__MODEL_REV__": f["model"]["revision"],
-                     "__FLASH_QUANT_ARGS__": "--quantization modelopt_fp4 ",
+                     "__FLASH_QUANT_ARGS__": quant_args,
                      "__FLASH_TIER_ARGS__": rc.TIER_ARGS["context"] + " --enable-linear-replayssm-spec",
                      "__FLASH_MEM_FRACTION__": ASSIGNS["FLASH_MEM_FRACTION"],
                      "__PLE_RSS_BUDGET_GB__": ASSIGNS["PLE_RSS_BUDGET_GB"],
@@ -261,7 +271,16 @@ class Drift(unittest.TestCase):
                          "TIER+=(--speculative-token-map /out/token-map-"
                          + ASSIGNS["SPEC_TOKEN_MAP_SIZE"] + ".pt)"}.items():
             rendered = rendered.replace(k, v)
-        self.assertEqual(rc.drift(f, rc.profile_from_text(rendered)), [])
+        return rendered
+
+    def test_no_drift_against_own_template_render(self):
+        f = rc.builtin("flash", ASSIGNS, TEMPLATES)
+        self.assertEqual(rc.drift(f, rc.profile_from_text(self.render_flash(f, flash_quant_args()))), [])
+
+    def test_a_launcher_without_the_drafts_quantization_drifts(self):
+        f = rc.builtin("flash", ASSIGNS, TEMPLATES)
+        rows = rc.drift(f, rc.profile_from_text(self.render_flash(f, "--quantization modelopt_fp4 ")))
+        self.assertEqual(rows, [{"key": "drafter.quantization", "recipe": "unquant", "installed": None}])
 
     def test_changed_flag_and_env_reported(self):
         f = rc.builtin("flash", ASSIGNS, TEMPLATES)
