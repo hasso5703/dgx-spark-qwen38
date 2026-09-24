@@ -115,10 +115,9 @@ names, header hygiene) are property-tested.
 **The installer (`install.sh`, `dashboard/install-*.sh`)** runs things you
 sudo. Every pinned byte is hash-verified: images by digest, checkpoints by
 pinned revision, the opencode release by its sha256. The image lane
-(`--with-image`) is the one part with unpinned bytes: its SGLang wheel and source
-commit are pinned, but pip resolves the wheel's dependency tree from PyPI at install
-time, with no hash checked, and its checkpoint is downloaded at the repo's current
-revision rather than a pinned one. The engine enforces `--api-key` (the file is
+(`--with-image`) is the one part with unpinned bytes: its SGLang wheel, source
+commit and checkpoint revision are pinned, but pip resolves the wheel's dependency tree
+from PyPI at install time, with no hash checked. The engine enforces `--api-key` (the file is
 created 0600) and the chat template and launcher are regenerated from the
 repo on every install.
 

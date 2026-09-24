@@ -59,7 +59,7 @@ PORT="${IMAGE_PORT:-$(unit_flag --port)}"; PORT="${PORT:-30020}"
 # IMAGE_MODEL_REV, or main.
 IMAGE_MODEL_PIN="Qwen/Qwen-Image-2.1"
 IMAGE_MODEL_PIN_REV="790c92633540aa0cb11d9abf19eb46d861714758"
-MODEL="${IMAGE_MODEL:-$(unit_flag --model-path)}"; MODEL="${MODEL:-$IMAGE_MODEL_PIN}"
+MODEL="${IMAGE_MODEL:-$(unit_flag --model-path)}"; MODEL="${MODEL:-Qwen/Qwen-Image-2.1}"   # = IMAGE_MODEL_PIN
 if [ "$MODEL" = "$IMAGE_MODEL_PIN" ]; then MODEL_REV="${IMAGE_MODEL_REV:-$IMAGE_MODEL_PIN_REV}"; else MODEL_REV="${IMAGE_MODEL_REV:-main}"; fi
 # The installed unit's cache, then the one the text lane mounts, then the default: an
 # update that ignored the unit downloaded 31 GB again into ~/.cache and rewrote HF_HOME on

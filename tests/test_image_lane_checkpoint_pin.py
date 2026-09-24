@@ -75,9 +75,16 @@ class TheImageCheckpoint(unittest.TestCase):
     def test_the_default_is_the_validated_revision(self):
         # assertTrue, not assertIn: a failure must not print the whole script
         self.assertTrue(f'IMAGE_MODEL_PIN_REV="{VALIDATED}"' in SCRIPT, "the validated revision is not the pin")
-        self.assertTrue('MODEL="${MODEL:-$IMAGE_MODEL_PIN}"' in SCRIPT, "the default model is not the pinned one")
+        # the default model is written out (the uninstall inventory reads it there) and is the pinned one
+        self.assertTrue('IMAGE_MODEL_PIN="Qwen/Qwen-Image-2.1"' in SCRIPT, "the pin names another repo")
+        self.assertTrue('MODEL="${MODEL:-Qwen/Qwen-Image-2.1}"' in SCRIPT, "the default model is not the pinned one")
         self.assertTrue('MODEL_REV="${IMAGE_MODEL_REV:-$IMAGE_MODEL_PIN_REV}"' in SCRIPT, "the pin is not the default revision")
 
+
+    def test_security_md_says_the_checkpoint_is_pinned(self):
+        text = " ".join((REPO / "SECURITY.md").read_text().split())
+        self.assertNotIn("current revision rather than a pinned one", text)
+        self.assertIn("source commit and checkpoint revision are pinned", text)
 
 if __name__ == "__main__":
     unittest.main()
