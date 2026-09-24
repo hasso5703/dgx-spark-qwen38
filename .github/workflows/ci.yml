@@ -60,11 +60,15 @@ jobs:
           mods=$(for f in $files; do printf 'tests.%s ' "${f%.py}"; done)
           echo "suites: $mods"
           declared=$(cd tests && cat $files | grep -c 'def test_')
-          out=$(python3 -m unittest $mods 2>&1)
+          out=$(python3 -m unittest -v $mods 2>&1)
           echo "$out" | tail -5
           ran=$(echo "$out" | grep -oE '^Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
           echo "declared $declared, ran $ran"
           [ "$ran" = "$declared" ] || { echo "unittest ran $ran of $declared declared tests"; exit 1; }
+          # "Ran" counts a skipped test as run, so a skip on a whole class stayed green
+          # (found in review, 2026-09-24). No cockpit test has a reason to skip here.
+          skips=$(echo "$out" | grep -E "\.\.\. skipped '" || true)
+          [ -z "$skips" ] || { echo "cockpit tests skipped:"; echo "$skips"; exit 1; }
           # Each file must also RUN its tests when invoked directly, the way a
           # human and the old CI step do. A file without a __main__ block exits 0
           # having run nothing, so only the reported count proves anything.
@@ -84,7 +88,8 @@ jobs:
           echo "$out" | grep -qE '^proxy fuzz: [0-9]+ passed of [0-9]+, [0-9]+ generated examples each$' \
             || { echo "the fuzz suite did not report a run"; echo "$out" | tail -20; exit 1; }
           n=$(echo "$out" | grep -oE '^proxy fuzz: [0-9]+' | grep -oE '[0-9]+')
-          [ "$n" -ge 15 ] || { echo "only $n fuzz checks ran"; exit 1; }
+          # every one of the 16: a floor of 15 let one of them disappear
+          [ "$n" -ge 16 ] || { echo "only $n fuzz checks ran"; exit 1; }
 
       - name: Coverage floors, the root modules
         run: |
@@ -155,6 +160,28 @@ jobs:
           export HOME="$witness/home"
           mkdir -p "$HOME/.config/qwen38"
           echo "not-the-real-key" > "$HOME/.config/qwen38/api-key"
+          # The listening sockets compared below cannot see a connection to a port that
+          # was already listening, the engine's on the box that runs ci-local.sh (found in
+          # review, 2026-09-24). Every python the suite starts carries an audit hook that
+          # records a connect() to a serving port, with the test line that made it; a
+          # shell test's curl is not seen. Kept outside the witness, which is hashed.
+          probe="$(mktemp -d)"
+          cat > "$probe/sitecustomize.py" <<'PY'
+          import os, sys, traceback
+          PORTS = {int(p) for p in os.environ.get("QWEN38_SERVING_PORTS", "").split(",") if p}
+          def hook(event, args):
+              if event != "socket.connect":
+                  return
+              addr = args[1]
+              if isinstance(addr, tuple) and len(addr) >= 2 and addr[1] in PORTS:
+                  where = [f"{os.path.basename(f.filename)}:{f.lineno}" for f in traceback.extract_stack()
+                           if "/tests/" in f.filename]
+                  with open(os.environ["QWEN38_CONTACT_LOG"], "a") as fh:
+                      fh.write(f"{addr[0]}:{addr[1]} from {' '.join(where[-2:]) or sys.argv[0]}\n")
+          if PORTS and os.environ.get("QWEN38_CONTACT_LOG"):
+              sys.addaudithook(hook)
+          PY
+          export PYTHONPATH="$probe" QWEN38_CONTACT_LOG="$probe/contacts" QWEN38_SERVING_PORTS=30000,30001,30020,30090,30091,4096
           before="$(find "$witness" -type f -exec sha256sum {} + | sort)"
           ports_before="$(ss -Htln 2>/dev/null | awk '{print $4}' | sort || true)"
           (cd dashboard && python3 -m unittest \
@@ -175,8 +202,13 @@ jobs:
             echo " an engine or cockpit finishing its boot mid-suite shows up here too: check"
             echo " whether the port that appeared is one of this repo's own before digging.)"
             exit 1; }
-          rm -rf "$witness"
-          echo "  ok: HOME untouched, no socket left listening"
+          if [ -s "$probe/contacts" ]; then
+            echo "the offline suite contacted a serving port:"
+            sort "$probe/contacts" | uniq -c | sort -rn | head -20
+            exit 1
+          fi
+          rm -rf "$witness" "$probe"
+          echo "  ok: HOME untouched, no socket left listening, no serving port contacted"
 
       - name: Coverage floors (measured, per module)
         run: |
@@ -1011,7 +1043,7 @@ jobs:
           # the label list re-derived from the served tokenizer. The SDK is installed here
           # so the first one runs on the runner too; the second needs the model's
           # tokenizer.json and stays a box-side check (TESTING.md says so).
-          pip install 'typesafe-sdk==0.7.0' 2>/dev/null || echo "typesafe-sdk unavailable: the SDK round trip will skip"
+          pip install 'typesafe-sdk==0.7.0' 2>/dev/null || echo "typesafe-sdk unavailable: the SDK round trip will skip, which the discovery step refuses on the runner"
           python3 tests/test_proxy_systemone.py
 
       - name: No test file in tests/ is left unrun
@@ -1050,7 +1082,7 @@ jobs:
           declared=$(cd tests && cat $files | grep -c 'def test_')
           # Under bash -e a failing run used to end the step right here, having
           # printed nothing but the list above (2026-09-23): say what failed.
-          out=$(python3 -m unittest $mods 2>&1) || {
+          out=$(python3 -m unittest -v $mods 2>&1) || {
             echo "$out" | grep -vF ResourceWarning | tail -80
             echo "the unittest suites failed:"; echo "$out" | grep -E '^(FAIL|ERROR):' || true
             exit 1; }
@@ -1058,6 +1090,17 @@ jobs:
           ran=$(echo "$out" | grep -oE '^Ran [0-9]+' | grep -oE '[0-9]+' || echo 0)
           echo "declared $declared, ran $ran"
           [ "$ran" = "$declared" ] || { echo "unittest ran $ran of $declared declared tests"; exit 1; }
+          # "Ran" counts a skipped test as run: a skip decorator on a whole class stayed
+          # green, and so did the SDK round trip when its install above failed (found in
+          # review, 2026-09-24). A skip passes only for a reason this list names: what a
+          # runner cannot have (the reference box, its cache, its units, opencode). The
+          # SDK is installed on the runner, so its absence is a reason only off it.
+          allowed='needs the reference class of machine|needs the pinned bytes cached|no 27B unit installed here|is not the enabled lane here|no Qwen3.8 tokenizer.json|needs a real opencode'
+          [ -n "${GITHUB_ACTIONS:-}" ] || allowed="$allowed|typesafe-sdk is not installed"
+          skips=$(echo "$out" | grep -E "\.\.\. skipped '" || true)
+          bad=$(echo "$skips" | grep -vE "$allowed" | grep . || true)
+          echo "skipped for a listed reason: $(echo "$skips" | grep -c . || true)"
+          [ -z "$bad" ] || { echo "tests skipped for a reason nobody listed:"; echo "$bad"; exit 1; }
           # And each one must run its own tests when invoked directly: a file
           # without a __main__ block exits 0 having run nothing. A SkipTest out
           # of setUpClass counts as one skip with testsRun 0, which is how
