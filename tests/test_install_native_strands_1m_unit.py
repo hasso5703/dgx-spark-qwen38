@@ -21,9 +21,11 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 INSTALL = (REPO / "install.sh").read_text()
-HEAD = ('  if [ "$LANE" = "27b" ] && [ "$NO_SERVICE" -eq 1 ] && [ -r "$SGL_UNIT_PATH" ]; then\n'
-        '    _INSTALLED_CTX=')
-TAIL = '  if [ "$LANE" = "27b" ]; then'
+# inside apply_context_configs since v1.18.7, which writes the configs right before the
+# unit that reads them (or at the end of step 7 on --no-service): one level deeper
+HEAD = ('    if [ "$LANE" = "27b" ] && [ "$NO_SERVICE" -eq 1 ] && [ -r "$SGL_UNIT_PATH" ]; then\n'
+        '      _INSTALLED_CTX=')
+TAIL = '    if [ "$LANE" = "27b" ]; then'
 SENTINEL = "WARNING: the installed unit serves"
 
 

@@ -705,11 +705,20 @@ elif [ "$INSTALLED_CHOICE" = "27b" ]; then
     CUR_DRAFT_QUANT="$(grep -oE -- '--speculative-draft-model-quantization [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
     CUR_DRAFT_TOKENS="$(grep -oE -- '--speculative-num-draft-tokens [0-9]+' "$UNIT_PATH" | head -1 | tr -dc '0-9' || true)"
     if [ -n "$CUR_DRAFT" ] && [ "$CUR_DRAFT" != "$DRAFT2_REPO" ]; then
+      DEF_DRAFT2="DRAFT2_REPO=$DRAFT2_REPO DRAFT2_REV=$DRAFT2_REV DRAFT2_QUANT=$DRAFT2_QUANT DRAFT2_TOKENS=$DRAFT2_TOKENS"
       DRAFT2_REPO="$CUR_DRAFT"
       [ -n "$CUR_DRAFT_REV" ] && DRAFT2_REV="$CUR_DRAFT_REV"
       [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
       [ -n "$CUR_DRAFT_TOKENS" ] && DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
       echo "Keeping the installed drafter: $DRAFT2_REPO (D=$DRAFT2_TOKENS, $DRAFT2_QUANT). Pass DRAFT2_REPO= to change."
+      if [ "$CUR_DRAFT" = "z-lab/Qwen3.8-27B-DFlash2" ]; then
+        # The default of v1.2.3 to v1.8.6, and the documented rollback since: the unit
+        # cannot say which, so it is kept, and a box that was only ever updated never
+        # got v1.9's draft (found in review, 2026-09-24). Said here, with the way over.
+        echo "NOTE: that is the BF16 draft installs used before v1.9. The default since v1.9 drafts from a"
+        echo "      calibrated NVFP4 head, measured +30% there on the reference box (lossless). To move to it:"
+        echo "      $DEF_DRAFT2 ./install.sh"
+      fi
     elif [ -n "$CUR_DRAFT_TOKENS" ] && [ "$CUR_DRAFT_TOKENS" != "$DRAFT2_TOKENS" ]; then
       DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
       [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
@@ -856,6 +865,13 @@ fi
 [ "$NO_SERVICE" -eq 1 ] && COCKPIT=0
 
 if [ "$NO_SERVICE" -eq 1 ] && [ "$CONTEXT_MODE" = "1m" ]; then
+  if [ -z "$_ENV_CONTEXT_MODE" ]; then
+    # The 1m came from the installed unit, not from the operator: say so. The refusal
+    # named a CONTEXT_MODE nobody had set (found in review, 2026-09-24). It stays a
+    # refusal: a native --no-service install restores the configs that unit reads, and it
+    # would crash at its next start.
+    printf -- 'The installed 27B unit serves the 1M window, and --no-service installs the native 262144 one for\n./run.sh: the checkpoint configs would no longer match that unit, which would crash at its next start.\nDrop --no-service to update the service (it keeps 1m), or pass CONTEXT_MODE=native to move this box\nto native (then run a plain ./install.sh, so the unit follows).\n' >&2; exit 1
+  fi
   printf -- 'CONTEXT_MODE=1m needs the systemd path (keepalive proxy service); ./run.sh serves the native config only.\nEither drop --no-service, or pass CONTEXT_MODE=native explicitly.\n' >&2; exit 1
 fi
 if [ "$NO_SERVICE" -eq 1 ] && [ "$LANE" = "flash" ]; then
@@ -868,7 +884,14 @@ step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
 step "1/10 Preflight checks"
 [ "$(uname -m)" = "aarch64" ] || die "This setup targets GB10 (aarch64). Detected: $(uname -m)."
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found. Is the NVIDIA driver stack installed? (stock on DGX OS)"
-GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
+# nvidia-smi says what is wrong when it cannot reach the driver, and exits non-zero:
+# inside a bare $(...) under set -e that ended the install with only "Install failed at
+# line N", its own explanation captured into a variable nobody printed (found in review,
+# 2026-09-24).
+if ! GPU_OUT="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>&1)"; then
+  die "nvidia-smi cannot reach the GPU: $(printf '%s' "$GPU_OUT" | tr '\n' ' ' | cut -c1-300). The NVIDIA driver is probably not loaded; after a kernel or driver update, a reboot loads it ('nvidia-smi' alone shows the same error)."
+fi
+GPU_NAME="$(printf '%s\n' "$GPU_OUT" | head -1)"
 echo "GPU: $GPU_NAME"
 case "$GPU_NAME" in *GB10*) ;; *) echo "WARNING: expected GB10, found '$GPU_NAME'. Continuing, but this config was only validated on GB10 (memory sizing may not fit other GPUs)." ;; esac
 command -v docker >/dev/null || die "docker not found. Install Docker + NVIDIA Container Toolkit (stock on DGX OS)."
@@ -891,11 +914,43 @@ NEED_GB=45; DOCKER_NEED_GB=40; IMG_LABEL="39 GB Docker image"
 if [ "$LANE" = "flash" ]; then
   NEED_GB=180; DOCKER_NEED_GB=35; IMG_LABEL="30 GB Docker image"
 fi
-ls -d "$HF_CACHE/hub/models--${MODEL_REPO//\//--}/snapshots/"*/ >/dev/null 2>&1 && NEED_GB=10
+# What is left to download, not what a checkpoint weighs. huggingface_hub creates the
+# snapshot folder before the first byte of the first file (file_download.py, 1.31.0), so a
+# folder there said nothing, and a flash download interrupted at 74 GB of 124 was checked
+# against 10 on its resume (found in review, 2026-09-24). A snapshot is cached when every
+# shard its index names is in it, since a file appears there only once its blob is whole;
+# otherwise what the cache already holds for this repo comes off the need.
+ckpt_cached(){  # $1 = the repo's cache folder, $2 = the revision (a commit or a ref name)
+  python3 - "$1" "$2" <<'PY'
+import json, pathlib, sys
+repo, rev = pathlib.Path(sys.argv[1]), sys.argv[2]
+ref = repo / "refs" / rev
+snap = repo / "snapshots" / (ref.read_text().strip() if ref.is_file() else rev)
+try:
+    shards = set(json.loads((snap / "model.safetensors.index.json").read_text())["weight_map"].values())
+except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    shards = {"model.safetensors"}
+sys.exit(0 if shards and all((snap / s).exists() for s in shards) else 1)
+PY
+}
+HF_REPO_CACHE="$HF_CACHE/hub/models--${MODEL_REPO//\//--}"
+if ckpt_cached "$HF_REPO_CACHE" "$MODEL_REV"; then
+  NEED_GB=10
+else
+  HAVE_B="$({ du -s --apparent-size -B1 "$HF_REPO_CACHE/blobs" 2>/dev/null || true; } | cut -f1)"
+  NEED_GB=$((NEED_GB - ${HAVE_B:-0} / 1073741824)); [ "$NEED_GB" -ge 10 ] || NEED_GB=10   # floor: never under the need
+fi
 if [ "$LANE" = "flash" ] && ! ls "$PLE_DIR"/ple_table_*.bin >/dev/null 2>&1; then
-  # The 47.7 GiB sparse backing file is written on every boot; the space has to
-  # be there whether or not a previous boot left one behind.
-  NEED_GB=$((NEED_GB + 50))
+  # The 47.7 GiB sparse backing file is written on every boot, in PLE_DIR; the space
+  # has to be there whether or not a previous boot left one behind, and on that disk:
+  # it was counted against HF_CACHE's, which says nothing when PLE_DIR is elsewhere.
+  PLE_PARENT="$PLE_DIR"; while [ ! -e "$PLE_PARENT" ]; do PLE_PARENT="$(dirname "$PLE_PARENT")"; done
+  if [ "$(stat -c %d "$PLE_PARENT")" = "$(stat -c %d "$HF_CACHE")" ]; then
+    NEED_GB=$((NEED_GB + 50))
+  else
+    PLE_FREE_GB="$({ df -BG --output=avail "$PLE_PARENT" 2>/dev/null || true; } | tail -1 | tr -dc '0-9')"
+    [ -n "$PLE_FREE_GB" ] && [ "$PLE_FREE_GB" -ge 50 ] || die "Need ~50 GB free under PLE_DIR=$PLE_DIR for the flash lane's PLE table (47.7 GiB, written at every boot); found ${PLE_FREE_GB:-unknown} GB. Free some space or set PLE_DIR to another disk."
+  fi
 fi
 [ -n "$FREE_DISK_GB" ] && [ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free for the checkpoints and caches under $HF_CACHE; found ${FREE_DISK_GB:-unknown} GB. Free some space or set HF_CACHE to another disk."
 DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
@@ -1177,52 +1232,62 @@ else
   python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$TEMPLATE_OUT" "$MODEL_REV" "$MODEL_REPO" \
     || die "Template patch failed (see message above). If the upstream template changed, please open an issue on this repo."
 fi
-if [ "$CONTEXT_MODE" = "1m" ]; then
-  # Both configs must carry the YaRN patch (target AND draft, or the draft
-  # crashes at load). Idempotent; originals backed up as config.json.pre-yarn.
-  # A kept custom model has no known pin: its newest cached snapshot is patched.
-  if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
-    python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$MODEL_REPO" || die "YaRN patch failed on the target model"
-  else
-    python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$MODEL_REPO" "$MODEL_REV" || die "YaRN patch failed on the target model"
-  fi
-  python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$DRAFT2_REPO" "$DRAFT2_REV" || die "YaRN patch failed on the DFlash2 draft"
-else
-  # Coming home from 1m: a native server crashes at load on a YaRN-patched
-  # config (measured 2026-09-11: target context_length 1010000 against a
-  # derived 262144), so a native install restores the pre-YaRN originals.
-  # Refuses with a re-download fix-it when a config is patched but its backup
-  # is gone. Flash configs are never patched (1m is a 27B mode), so only the
-  # 27B lane restores.
-  #
-  # One combination leaves a box that boots into a crash, and it is quiet about
-  # it: --no-service returns at the end of step 7, so an installed 1m unit keeps
-  # asking for 1,010,000 from a config this restore just put back to 262,144,
-  # and the engine dies at load the next time systemd starts it. Seen here on
-  # 2026-09-18 while testing a native install against a 1m box's cache.
-  # ONLY --no-service. --no-start reaches step 8, renders the native template
-  # over that unit and enables it, so nothing is stranded there and warning
-  # about it would be a lie with two wrong remedies attached (caught in review
-  # the day this guard was written).
-  if [ "$LANE" = "27b" ] && [ "$NO_SERVICE" -eq 1 ] && [ -r "$SGL_UNIT_PATH" ]; then
-    _INSTALLED_CTX="$(grep -oE -- '--context-length [0-9]+' "$SGL_UNIT_PATH" 2>/dev/null | awk '{print $2}' | head -1 || true)"
-    if [ -n "$_INSTALLED_CTX" ] && [ "$_INSTALLED_CTX" -gt 262144 ]; then
-      echo "WARNING: the installed unit serves --context-length $_INSTALLED_CTX, and this native"
-      echo "         install is about to restore the pre-YaRN configs it reads. --no-service writes"
-      echo "         no unit, so that unit would crash at load the next time it starts."
-      echo "         Either re-run without --no-service (the unit is rewritten native),"
-      echo "         or put the box back with: CONTEXT_MODE=1m ./install.sh"
-    fi
-  fi
-  if [ "$LANE" = "27b" ]; then
+# The checkpoint configs the context mode needs, YaRN patched in or restored. Written right
+# before the unit that reads them, never at this step: a run that died between the two
+# (the opencode download of step 7, a sudo that could no longer ask at step 8) left the
+# installed unit of the old mode on configs of the new one, and a unit on configs of the
+# other mode crashes at load, the next time systemd starts it (found in review,
+# 2026-09-24). Called at step 8 just before the unit is installed, or at the end of step 7
+# on a --no-service install, which writes no unit.
+apply_context_configs(){
+  if [ "$CONTEXT_MODE" = "1m" ]; then
+    # Both configs must carry the YaRN patch (target AND draft, or the draft
+    # crashes at load). Idempotent; originals backed up as config.json.pre-yarn.
+    # A kept custom model has no known pin: its newest cached snapshot is patched.
     if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
-      python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$MODEL_REPO" || die "YaRN restore failed on the kept model"
+      python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$MODEL_REPO" || die "YaRN patch failed on the target model"
     else
-      python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$MODEL_REPO" "$MODEL_REV" || die "YaRN restore failed on the target model"
+      python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$MODEL_REPO" "$MODEL_REV" || die "YaRN patch failed on the target model"
     fi
-    python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$DRAFT2_REPO" "$DRAFT2_REV" || die "YaRN restore failed on the DFlash2 draft"
+    python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$DRAFT2_REPO" "$DRAFT2_REV" || die "YaRN patch failed on the DFlash2 draft"
+  else
+    # Coming home from 1m: a native server crashes at load on a YaRN-patched
+    # config (measured 2026-09-11: target context_length 1010000 against a
+    # derived 262144), so a native install restores the pre-YaRN originals.
+    # Refuses with a re-download fix-it when a config is patched but its backup
+    # is gone. Flash configs are never patched (1m is a 27B mode), so only the
+    # 27B lane restores.
+    #
+    # One combination leaves a box that boots into a crash, and it is quiet about
+    # it: --no-service returns at the end of step 7, so an installed 1m unit keeps
+    # asking for 1,010,000 from a config this restore just put back to 262,144,
+    # and the engine dies at load the next time systemd starts it. Seen here on
+    # 2026-09-18 while testing a native install against a 1m box's cache.
+    # ONLY --no-service. --no-start reaches step 8, renders the native template
+    # over that unit and enables it, so nothing is stranded there and warning
+    # about it would be a lie with two wrong remedies attached (caught in review
+    # the day this guard was written).
+    if [ "$LANE" = "27b" ] && [ "$NO_SERVICE" -eq 1 ] && [ -r "$SGL_UNIT_PATH" ]; then
+      _INSTALLED_CTX="$(grep -oE -- '--context-length [0-9]+' "$SGL_UNIT_PATH" 2>/dev/null | awk '{print $2}' | head -1 || true)"
+      if [ -n "$_INSTALLED_CTX" ] && [ "$_INSTALLED_CTX" -gt 262144 ]; then
+        echo "WARNING: the installed unit serves --context-length $_INSTALLED_CTX, and this native"
+        echo "         install is about to restore the pre-YaRN configs it reads. --no-service writes"
+        echo "         no unit, so that unit would crash at load the next time it starts."
+        echo "         Either re-run without --no-service (the unit is rewritten native),"
+        echo "         or put the box back with: CONTEXT_MODE=1m ./install.sh"
+      fi
+    fi
+    if [ "$LANE" = "27b" ]; then
+      if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
+        python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$MODEL_REPO" || die "YaRN restore failed on the kept model"
+      else
+        python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$MODEL_REPO" "$MODEL_REV" || die "YaRN restore failed on the target model"
+      fi
+      python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$DRAFT2_REPO" "$DRAFT2_REV" || die "YaRN restore failed on the DFlash2 draft"
+    fi
   fi
-fi
+}
+
 
 if [ "$OPENCODE" -eq 0 ]; then
   step "7/10 opencode integration: off"
@@ -1348,8 +1413,11 @@ if [ "${LANE:-27b}" = "flash" ]; then
 else
   OC_SELECTOR="$CONTEXT_MODE"
 fi
-read -r OC_CTX OC_OUT OC_LABEL <<<"$("$REPO_DIR/oc-limits.sh" "$MODEL_CHOICE" "$OC_SELECTOR")" \
+# captured first: `read <<<"$(cmd)"` returns 0 whatever cmd returned, so this refusal
+# never fired and a refused target died below under "returned no limits"
+OC_ROW="$("$REPO_DIR/oc-limits.sh" "$MODEL_CHOICE" "$OC_SELECTOR")" \
   || die "oc-limits.sh refused MODEL_CHOICE=$MODEL_CHOICE with $OC_SELECTOR (repo bug: please open an issue)"
+read -r OC_CTX OC_OUT OC_LABEL <<<"$OC_ROW"
 [ -n "${OC_CTX:-}" ] && [ -n "${OC_OUT:-}" ] \
   || die "oc-limits.sh returned no limits for $MODEL_CHOICE/$OC_SELECTOR"
 # The output CEILING is not this target's number: opencode sends
@@ -1589,6 +1657,7 @@ fi
 # end of step 7
 
 if [ "$NO_SERVICE" -eq 1 ]; then
+  apply_context_configs
   printf '\n\033[1;32m✅ Prepared (no systemd, nothing needed sudo).\033[0m\n'
   echo "  Run in the foreground: ./run.sh     (Ctrl+C stops it; first boot ≈ 9 min)"
   echo "  Everything it uses lives in $CONFIG_DIR and $HF_CACHE: delete those to remove."
@@ -1706,6 +1775,7 @@ if [ "$LANE" = "flash" ]; then
 fi
 TMP_UNIT="$(mktemp)"
 render_tpl "$UNIT_TPL" > "$TMP_UNIT"
+apply_context_configs              # the configs, then at once the unit that reads them
 # the same rule for the unit: an identical one is left as it is, mtime included
 cmp -s "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME" || sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME"
 rm -f "$TMP_UNIT"
@@ -1876,15 +1946,28 @@ LOAD_WHY="first boot compiles kernels, be patient"
 for i in $(seq 1 150); do
   if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     echo "health OK, running a real generation smoke test..."
-    SMOKE="$(curl -s -m 300 "http://127.0.0.1:$PORT/v1/chat/completions" \
+    # curl on its own, so its failure is named: in the pipe it came out through the ERR trap
+    # as "Install failed at line N", and the pointer to the journal below never showed. A
+    # kept engine may be in the middle of someone's long prefill, which the smoke request
+    # waits behind, so it gets more than a freshly booted one (found in review, 2026-09-24).
+    SMOKE_MAX_S=300; [ "$ENGINE_KEEP" -eq 1 ] && SMOKE_MAX_S=1800
+    SMOKE_RC=0
+    SMOKE_RAW="$(curl -s -m "$SMOKE_MAX_S" "http://127.0.0.1:$PORT/v1/chat/completions" \
       -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-      -d '{"model":"'"$SMOKE_MODEL"'","messages":[{"role":"user","content":"Reply with exactly: READY"}],"max_tokens":600}' \
-      | python3 -c 'import json,sys
+      -d '{"model":"'"$SMOKE_MODEL"'","messages":[{"role":"user","content":"Reply with exactly: READY"}],"max_tokens":600}')" \
+      || SMOKE_RC=$?
+    [ "$SMOKE_RC" -eq 0 ] || die "Server is up but the smoke generation got no answer (curl exit $SMOKE_RC; 28 is its ${SMOKE_MAX_S} s timeout). Check: journalctl -u $UNIT_NAME -n 50"
+    # A wall of "!" (token 0) is this hardware's known decode corruption, and it is not an
+    # answer: any non-empty text used to pass, so it ended in "Installed, verified". The
+    # smoke calls the engine directly, past the proxy's own tripwire, so it looks itself.
+    SMOKE="$(printf '%s' "$SMOKE_RAW" | python3 -c 'import json,sys
 try:
     m=json.load(sys.stdin)["choices"][0]["message"]
-    print("OK" if (m.get("content") or m.get("reasoning_content") or "").strip() else "EMPTY")
+    text=(m.get("content") or "")+(m.get("reasoning_content") or "")
+    print("CORRUPT" if "!"*32 in text else "OK" if text.strip() else "EMPTY")
 except Exception as e:
     print(f"FAIL:{e}")')"
+    [ "$SMOKE" != "CORRUPT" ] || die "Server is up but the smoke generation came back as a run of '!' (token 0), the decode corruption this hardware is known for, not an answer. Restart the engine (sudo systemctl restart $UNIT_NAME), and if it comes back the same, check: journalctl -u $UNIT_NAME -n 50"
     [ "$SMOKE" = "OK" ] || die "Server is up but the smoke generation failed ($SMOKE). Check: journalctl -u $UNIT_NAME -n 50"
     sudo systemctl restart "$KEEPALIVE_UNIT"
     PROXY_OK=0

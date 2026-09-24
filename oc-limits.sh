@@ -191,7 +191,12 @@ case "$CHOICE" in
     esac
     LABEL="local"
     ;;
-  stock|uncensored|fp8|uncensored-fp8)
+  stock|uncensored|fp8|uncensored-fp8|custom)
+    # custom: a --model-path this table does not know, kept from the installed 27B unit
+    # (install.sh). It had no row, so every update of such a box died at step 7 (found in
+    # review, 2026-09-24). Its weights are of no known format, so in 1m it gets the pair of
+    # the smaller pool; the fit at the end of the install then sets the pair its engine's
+    # real pool allows.
     MODE="$SELECTOR"
     if [ -z "$MODE" ]; then
       CTX_LEN="$(flag '--context-length')"
@@ -200,7 +205,7 @@ case "$CHOICE" in
     case "$MODE" in
       1m)
         case "$CHOICE" in
-          fp8|uncensored-fp8)
+          fp8|uncensored-fp8|custom)
             # FP8 weights cost KV pool (measured on the retired image at
             # fraction 0.70, same 1M unit: 863,398 on NVFP4, 771,139 on FP8),
             # and the NVFP4 numbers do not transfer: 680,000 of compaction plus

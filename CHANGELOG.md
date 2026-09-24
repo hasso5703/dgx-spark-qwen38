@@ -152,6 +152,45 @@ port and address back on their defaults and gave the service the caller's PATH: 
 its own address went dark after an update on a box without tailscale. What is installed is
 read back, and the environment still wins.
 
+**The installer's disk check counts what is left to download, on the disk it lands on.**
+huggingface_hub creates a checkpoint's snapshot folder before the first byte of its first
+file, and `install.sh` took the folder for a cached checkpoint: its need dropped from 180 GB
+to 10, so a flash download interrupted at 74 GB of 124 was resumed against 10. A checkpoint
+counts as cached when every shard its index names is in its snapshot (a file appears there
+only once it is whole), and otherwise what the cache already holds comes off the need. The
+flash lane's PLE table (47.7 GiB, written at every boot) is checked against the disk of
+`PLE_DIR` when that is not the disk of `HF_CACHE`.
+
+**A context-mode change can no longer leave the engine unable to start.** A 27B unit on
+checkpoint configs of the other mode crashes at load. `install.sh` patched YaRN into those
+configs, or restored them, at step 6, and wrote the unit at step 8: a run that died in
+between (the opencode download of step 7, a sudo that could no longer ask at step 8) left
+the unit of the old mode on the configs of the new one, and the engine died the next time
+systemd started it. The configs are now written right before the unit that reads them, or
+at the end of step 7 on `--no-service`, which writes no unit.
+
+**Three things an update got wrong.** A box serving a custom `--model-path` could
+not be updated: the opencode limits table had no row for it, and the refusal meant to say so
+could not fire (`read <<<"$(cmd)"` returns 0 whatever the command returned), so step 7 died
+under "returned no limits"; the table now gives a custom model the pair of the smaller pool,
+which the fit at the end of the install corrects to the real one. `--no-service` on a box
+whose installed unit serves 1m was refused under "CONTEXT_MODE=1m needs the systemd path", a
+variable nobody had set: the refusal now names the installed unit and both ways out. And a box
+updated from before v1.9 keeps the BF16 draft it was installed with, as the documented rollback
+requires, since the two cannot be told apart: it is now told so, with the command that moves it
+to v1.9's draft.
+
+**The installer's first and last checks say what they found.** A driver that is not loaded
+made `nvidia-smi` fail inside a bare `$(...)` under `set -e`, and the install ended with
+"Install failed at line N", nvidia-smi's own explanation captured and never printed: it is
+now quoted, with the likely cause. The smoke generation at the end was a `curl | python3`
+pipe with the same fault, so a curl that timed out never reached the message that points at
+the journal; it does now. It also gave a kept engine, which may be in the middle of someone's
+long prefill, the same 300 s as a freshly booted one, and failed updates that had nothing
+wrong with them: a kept engine gets 30 minutes. And it accepted any non-empty text, so a wall
+of `!` (token 0, the decode corruption this hardware is known for) ended in "Installed,
+verified": it is refused, with what to do about it.
+
 **A timed-out image call keeps the lane busy.** After its 30-minute read timeout the cockpit
 gave the image lock back while the runtime, which has no abort, went on generating, so a
 second image could start beside the first, the pair that held 90.5 GB and wedged the engine.
