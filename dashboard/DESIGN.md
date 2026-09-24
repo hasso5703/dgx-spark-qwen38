@@ -43,7 +43,7 @@ GET for the fallback path. Actions are POST with JSON, CSRF-protected.**
   announced in the journal at startup, and the API key is its only gate.
 - Session auth: the app reuses the repo's api-key file as its bearer secret
   (cookie session after a login page; the key never appears in URLs).
-- CSRF token on every mutating POST; same-origin checked.
+- CSRF token on every mutating POST (no Origin check: the token is the guard).
 - The backend never interpolates client input into shell commands: every
   action maps to a fixed allowlisted argv template; parameters are validated
   against closed enums (model in {stock,uncensored,flash}, unit in the fixed
@@ -54,7 +54,9 @@ GET for the fallback path. Actions are POST with JSON, CSRF-protected.**
   listing EXACT argv lines only. The app runs unprivileged.
 - Read paths are allowlisted absolute prefixes (repo dir, config dir, HF cache
   metadata); no path traversal possible (resolved + prefix-checked).
-- Rate limiting on actions; idempotency keys on switches.
+- One job at a time (a second action is refused with 409 while one runs) and a
+  per-address limit on failed logins; there is no other rate limit, and no
+  idempotency key.
 - Agent relay (v1.7.0): opencode's web server stays on loopback with a generated
   Basic password (0600, never leaves the box). The relay binds one address (the
   tailnet address by default), requires the cockpit session cookie, refuses any
@@ -72,15 +74,22 @@ GET for the fallback path. Actions are POST with JSON, CSRF-protected.**
 | Unified memory | `/proc/meminfo` (MemTotal/MemAvailable) | the real GB10 gauge |
 | CPU | `/proc/stat` deltas, per-core | |
 | Disk | `df -B1` on $HOME + docker root + statvfs; NVMe IO from `/proc/diskstats` | |
-| Serving engine | SGLang `GET /get_server_info` (100+ fields: model, revision, quant, memfrac, mrr, ctx), `GET /get_load`, `GET /health` | Bearer key from config; works on both lanes |
+| Serving engine | SGLang `GET /server_info` (100+ fields: model, revision, quant, memfrac, mrr, ctx), `GET /v1/loads?include=core`, `GET /health`; the old `/get_server_info` and `/get_load` only on an engine that answers 404 to the new ones | Bearer key from config; works on both lanes |
 | Live decode telemetry | `docker logs --since` parsing of scheduler lines (`#running-req`, `#full token`, `accept len`, tok/s) | robust regex, degrade gracefully |
-| Requests in flight | keepalive proxy log lines (journald via `docker`/file) + `/get_load` | proxy already logs one line per request with outcome |
+| Requests in flight | keepalive proxy log lines (journald via `docker`/file) + `/v1/loads` | proxy already logs one line per request with outcome |
 | systemd | `systemctl show -p ...` (read, no sudo) / actions via sudoers allowlist | |
 | Containers | `docker ps/inspect/stats --no-stream` | user is in docker group |
 | Repo state | `git -C repo` describe/status/log, pins parsed from install.sh | |
 | Inventory | `./uninstall.sh --list` (read-only by design) | |
 
-## Update engine (atomic, self-rolling-back)
+## Update engine (designed, not built)
+
+None of this section exists at v1.18.7. The cockpit runs from the repo checkout
+and imports its code at start, so an update is the one-liner (`get.sh` updates the
+checkout, then `install.sh` restarts the cockpit); updating the serving stack is a terminal
+command the Setup tab prints, because the installer needs an interactive sudo
+(the `ACTIONS` table in `cockpit.py` says why there is no `update_stack`). Only
+the last point below is real: one job at a time. The design, as written:
 
 - Releases = git tags on the repo. The app runs from `releases/<sha>/` with a
   `current` symlink; `previous` kept.
@@ -202,7 +211,7 @@ parametres, depuis l'interface, avec les memes garanties que le repo (tout eping
 verifie, rien de destructif sans confirmation), et voir en direct ce qui est installe et ce
 qui est disponible.
 
-Modele de donnees (une recipe = un fichier YAML, validee par schema, jamais d'argv libre):
+Modele de donnees (une recipe = un fichier JSON dans ~/.config/qwen38/recipes/, validee par schema, jamais d'argv libre ; le bloc ci-dessous en donne les champs):
 
     id: flash                      # identifiant stable, enum ferme cote actions
     lane: flash                    # 27b | flash (decide l'unite systemd et le launcher)
@@ -239,7 +248,7 @@ Operations (toutes via le registre d'actions du cockpit, enums fermes, audit, un
   sauvegarde (le meme contrat que l'auto-update atomique)
 - available: veille upstream etendue aux images (tags/digests recents des familles connues)
   et aux revisions HF des modeles/drafters, avec « nouveau depuis » et un bouton
-  « creer une recipe a partir de cette version » qui pre-remplit le YAML
+  « creer une recipe a partir de cette version » qui pre-remplit le JSON
 
 Ce qui n'est PAS fait tant que le contrat n'est pas ecrit: l'adaptateur vllm/llamacpp
 (la famille sglang couvre les deux lanes du repo), et l'application d'une recipe custom

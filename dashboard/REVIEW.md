@@ -13,8 +13,8 @@ bash dashboard/install-dashboard.sh     # or as a systemd service (sudo asked on
 ```
 
 Login = the server API key (`~/.config/qwen38/api-key`). The sudoers allowlist
-(nine exact systemctl lines, visudo-checked before install) is only needed for
-the unit start/stop buttons; everything else runs unprivileged.
+(exact argv lines, visudo-checked before install; 26 at v1.18.7: start, stop and restart of five units, boot enablement of the lanes, daemon-reload and the two installs a switch makes, the py-spy wrapper and the kernel journal) is what the
+privileged actions need; everything else runs unprivileged.
 
 ## What works today (all validated on screen)
 
@@ -147,7 +147,7 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
   idle = 0 requete et 3 sondes consecutives en echec; occupee = requetes en
   cours mais aucune ligne Prefill/Decode depuis 300 s. Jamais melangees.
 - Etat « wedged » (rouge), compte comme occupe pour les gates; audit; autoheal
-  (COCKPIT_AUTOHEAL=1 par defaut, refroidissement 30 min) qui redemarre l'unite
+  (COCKPIT_AUTOHEAL=0 par defaut dans l'unite livree avec v1.6, a armer a la main; refroidissement 30 min) qui redemarre l'unite
   via le chemin d'action audite.
 - 43 tests unitaires verts, smoke HTTP 17/17.
 
@@ -186,7 +186,7 @@ avec /health a 200 et /get_load a 0 requete; le cockpit affichait « healthy ».
   ~/.config/qwen38/wedge-<ts>.txt AVANT tout restart. `COCKPIT_AUTOHEAL_GRACE` (s) retarde le
   restart pour laisser le temps d'une autopsie manuelle (600 s sur la box de reference via drop-in
   systemd, 0 par defaut). Pool guard: se tait sur « pending requests » (400) et purge ses lectures.
-- Sessions: 12 h glissantes (le navigateur de test s'est retrouve sur /login a 13:50 apres un
+- Sessions: 12 h fixes a partir du login (le navigateur de test s'est retrouve sur /login a 13:50 apres un
   login a 00:53: comportement voulu, pas un bug).
 - Correctif critique (14:33): le patch « grace » avait place audit, dump et autoheal dans la branche
   NON figee (dumps toutes les 2 s en service normal, aucun autoheal pendant le blocage de 14:15).
