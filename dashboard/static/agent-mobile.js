@@ -186,14 +186,19 @@
     ].join(";");
   }
 
+  // One request at a time, and a failed one waits before the next. renderCard asks again
+  // whenever nothing is cached, and a failure cached nothing, so an unreachable relay was
+  // a loop of requests, one per failure, as fast as they failed (found in review, 2026-09-24).
+  var fetching = false, retryAt = 0, RETRY_MS = 15000;
+
   function fetchSessions(done) {
+    if (fetching || Date.now() < retryAt) return;
+    fetching = true;
     fetch("/api/session?limit=8&order=desc", { credentials: "same-origin" })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) {
-        cached = (j && (Array.isArray(j) ? j : j.data)) || [];
-        done();
-      })
-      .catch(function () { done(); });
+      .then(function (j) { cached = (j && (Array.isArray(j) ? j : j.data)) || []; })
+      .catch(function () { retryAt = Date.now() + RETRY_MS; })
+      .then(function () { fetching = false; done(); });
   }
 
   function renderCard() {
@@ -257,7 +262,7 @@
 
   renderCard();
   document.addEventListener("click", function (e) {
-    if (e.target && e.target.closest && e.target.closest("[data-spark-refresh]")) { cached = null; renderCard(); }
+    if (e.target && e.target.closest && e.target.closest("[data-spark-refresh]")) { cached = null; retryAt = 0; renderCard(); }
     setTimeout(function () { remember(); renderCard(); }, 350);
   }, true);
   window.addEventListener("popstate", function () { remember(); renderCard(); });

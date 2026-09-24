@@ -103,7 +103,7 @@ const stateChipCls = st => (STATE_CHIP[st] ?? 'warn') + (st === 'stopping' || TR
 
 // ── tabs and the collapsible rail ─────────────────────────────────────────────
 // declared here, not next to its loader: showTab() runs at parse time and reads it
-const loaded = {recipes: false, systemone: false};
+const loaded = {recipes: false};
 const TABS = ['overview', 'agent', 'engines', 'requests', 'machine', 'models', 'systemone', 'image', 'video', 'logs', 'setup'];
 let activeTab = 'overview';
 function showTab(name, push = true){
@@ -117,9 +117,10 @@ function showTab(name, push = true){
   // the maximised frame covers every other tab: leaving the tab always shrinks it back
   if (name !== 'agent' && document.body.classList.contains('agentmax')) setAgentMax(false, false);
   if (name === 'models' && !loaded.recipes) loadRecipes();
-  // the probe costs one refused request to the proxy, so it runs when the tab is
-  // opened rather than on every state tick
-  if (name === 'systemone' && !loaded.systemone){ loaded.systemone = true; s1Probe(); }
+  // the probe costs one refused request to the proxy, so it runs when the tab is opened
+  // and when the lane that would answer changes (rLifecycle), rather than on every tick;
+  // it ran once per page load, and the tab went on naming a lane long gone
+  if (name === 'systemone') s1Probe();
   // the lane can be started and stopped from elsewhere in this page, so unlike the
   // System One probe this one re-reads on every visit rather than once
   if (name === 'image' && typeof imgLane === 'function') imgLane();
@@ -154,12 +155,42 @@ $('railbtn').addEventListener('click', () => setRail(!document.body.classList.co
 // then the lane button), but a narrow window or a page zoom can still push it to two:
 // without this the second row is drawn above the viewport and the strip sits under it.
 const topbar = document.querySelector('header.top');
+// One row while the actions fit beside everything but the pill, which gives way first;
+// a row of their own otherwise (.topwrap in index.html). Measured rather than set at a
+// breakpoint: the widths move with the lane button's label, the fonts and a touch
+// screen's larger buttons, and shrunk inside one row the actions slid under the
+// connection lamp anywhere from 981 to about 1,440 px (found in review, 2026-09-24).
+function fitTopbar(){
+  const act = $('actbar'), pill = $('lanepill');
+  if (!topbar || !act) return;
+  const wrapped = topbar.classList.contains('topwrap');
+  if (window.matchMedia('(max-width:980px)').matches){ if (wrapped) setTopwrap(false); return; }
+  const cs = getComputedStyle(topbar), px = v => parseFloat(v) || 0, wd = e => e.getBoundingClientRect().width;
+  const shown = e => !!e && getComputedStyle(e).display !== 'none';
+  const others = [...topbar.children].filter(c => c !== act && c !== pill && shown(c));
+  const groups = [...act.children].filter(shown);
+  const need = others.reduce((s, c) => s + wd(c), 0) + px(cs.columnGap) * others.length
+    + (shown(pill) ? px(getComputedStyle(pill).minWidth) + px(cs.columnGap) : 0)
+    + groups.reduce((s, g) => s + wd(g), 0) + px(getComputedStyle(act).columnGap) * Math.max(0, groups.length - 1)
+    + px(cs.paddingLeft) + px(cs.paddingRight);
+  // a margin on the way back, so a width on the edge does not flip it at every tick
+  const wrap = need > topbar.clientWidth - (wrapped ? 12 : 0);
+  if (wrap !== wrapped) setTopwrap(wrap);
+}
+function setTopwrap(on){
+  topbar.classList.toggle('topwrap', on);
+  // the bar's min-height is --top, which follows its height: kept, a bar back on one row
+  // would keep the height of two
+  if (!on) document.documentElement.style.removeProperty('--top');
+}
 if (topbar && window.ResizeObserver){
   new ResizeObserver(() => {
+    fitTopbar();
     const h = Math.round(topbar.getBoundingClientRect().height);
     if (h) document.documentElement.style.setProperty('--top', h + 'px');
   }).observe(topbar);
 }
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitTopbar);
 
 // The visual viewport is the part of the page a person can actually see. On iOS
 // the software keyboard shrinks it and offsets it without touching the layout
@@ -396,12 +427,19 @@ function rDecode(d){
   setText('mambausage', u.mamba ? (100 * u.mamba).toFixed(0) + ' %' + (u.mamba >= 0.5 ? ' (guard flushes when idle)' : '') : 'idle');
 }
 function rCanary(d){
-  let txt, cls = '';
-  if (d.skipped && d.last_ok == null) txt = 'not yet run';
+  let txt, cls = '', why = '';
+  // With no text engine the probe has nothing to ask, and its last success, however old,
+  // was shown as a reading of what runs now (found in review, 2026-09-24).
+  if (d.skipped && !textReady()){
+    txt = imageServing() ? 'no text engine (the image lane serves)' : 'no text engine';
+    why = d.last_ok ? `The last probe passed at ${clockTime(d.last_ok)}, on the engine that served then.`
+                    : 'The probe waits for a text engine that is ready and idle.';
+  }
+  else if (d.skipped && d.last_ok == null) txt = 'not yet run';
   else if (d.fails > 0){ txt = `${d.fails} consecutive failure${d.fails > 1 ? 's' : ''}: ${d.last_err || ''}`; cls = 'var(--err)'; }
-  else if (d.last_ok) txt = `ok, ${d.latency} s` + (d.skipped ? ' (skipped this round: engine busy)' : '');
+  else if (d.last_ok) txt = `ok, ${d.latency} s` + (d.skipped ? ` (skipped this round: ${d.why || 'engine busy'})` : '');
   else txt = 'idle';
-  const why = d.skipped && d.last_ok == null ? 'The probe waits for an engine that is ready and idle.' : txt;
+  why = why || (d.skipped && d.last_ok == null ? 'The probe waits for an engine that is ready and idle.' : txt);
   setShort('canary', txt, why); setShort('canary2', txt, why);
   [$('canary'), $('canary2')].forEach(e => { if (e) e.style.color = cls; });
   setText('canarylast', d.last_ok ? clockTime(d.last_ok) : 'never in this cockpit life');
@@ -411,26 +449,41 @@ function rKernel(d){
   setText('nvrm', txt); setText('nvrm2', txt);
   [$('nvrm'), $('nvrm2')].forEach(e => { if (e) e.style.color = d.nvrm_oom_1h ? 'var(--warn)' : ''; });
 }
+// The proxy's row, built once and updated in place. Rebuilt on every state message (up
+// to twice a second), a click whose press and release straddled a refresh landed on a
+// button that was already gone, and nothing happened (found in review, 2026-09-24).
+const UNIT_ROWS = new Map();
+function unitRow(name){
+  let r = UNIT_ROWS.get(name);
+  if (r) return r;
+  const row = el('div', 'eng'), top = el('div', 'row');
+  r = {row, state: el('span', 'chip'), boot: el('span', 'chip'), ver: el('span', 'chip'), since: el('span', 'since'),
+       btn: el('button', 'btn mini')};
+  r.btn.dataset.act = 'unit'; r.btn.dataset.unit = name;
+  // the verb is the one the button shows when it is pressed
+  r.btn.addEventListener('click', () => {
+    const on = r.btn.dataset.verb === 'stop';
+    askAction('unit', {verb: on ? 'stop' : 'start', unit: name}, ['sudo', '-n', '/usr/bin/systemctl', on ? 'stop' : 'start', name],
+      on ? ['agent clients on :30001 lose the proxy until it is back (the engine itself keeps running)'] : []);
+  });
+  top.append(r.state, el('span', 'name', 'keepalive proxy :30001'), r.boot, r.ver, r.since, r.btn);
+  row.append(top, el('div', 'why', 'Fronts the engine for agent clients: keeps streams alive, refuses prompts the lane cannot serve, aborts orphan generations.'));
+  UNIT_ROWS.set(name, r); $('unitlist').append(row);
+  return r;
+}
 function rUnits(d){
   F.units = d.units || {};
   const sel = $('switchsel'); if (sel) markInstalled(sel);
-  const box = $('unitlist'); clear(box);
-  Object.entries(F.units).filter(([n]) => n.includes('keepalive')).forEach(([name, u]) => {
-    const row = el('div', 'eng'); const top = el('div', 'row');
-    const on = u.active === 'active';
-    top.append(el('span', 'chip ' + (on ? 'ok' : u.active === 'failed' ? 'err' : ''), on ? 'running' : u.active));
-    top.append(el('span', 'name', 'keepalive proxy :30001'));
-    top.append(el('span', 'chip', u.enabled === 'enabled' ? 'starts at boot' : u.enabled));
-    if (F.proxy && F.proxy.version) top.append(el('span', 'chip ' + (F.proxy.same_as_repo === false ? 'warn' : ''), F.proxy.version + (F.proxy.same_as_repo === false ? ' · not the repo copy' : '')));
-    top.append(el('span', 'since', fmtSince(u.since)));
-    const btn = el('button', 'btn mini' + (on ? ' danger' : ' low'), on ? 'stop' : 'start');
-    btn.dataset.act = 'unit'; btn.dataset.unit = name; btn.dataset.verb = on ? 'stop' : 'start';
-    btn.addEventListener('click', () => askAction('unit', {verb: on ? 'stop' : 'start', unit: name},
-      ['sudo', '-n', '/usr/bin/systemctl', on ? 'stop' : 'start', name],
-      on ? ['agent clients on :30001 lose the proxy until it is back (the engine itself keeps running)'] : []));
-    top.append(btn); row.append(top);
-    row.append(el('div', 'why', 'Fronts the engine for agent clients: keeps streams alive, refuses prompts the lane cannot serve, aborts orphan generations.'));
-    box.append(row);
+  const shown = Object.entries(F.units).filter(([n]) => n.includes('keepalive'));
+  UNIT_ROWS.forEach((r, n) => { if (!shown.some(([m]) => m === n)){ r.row.remove(); UNIT_ROWS.delete(n); } });
+  shown.forEach(([name, u]) => {
+    const r = unitRow(name), on = u.active === 'active', v = F.proxy && F.proxy.version, other = !!v && F.proxy.same_as_repo === false;
+    r.state.textContent = on ? 'running' : u.active; r.state.className = 'chip ' + (on ? 'ok' : u.active === 'failed' ? 'err' : '');
+    r.boot.textContent = u.enabled === 'enabled' ? 'starts at boot' : u.enabled;
+    r.ver.textContent = v ? v + (other ? ' · not the repo copy' : '') : ''; r.ver.className = 'chip ' + (other ? 'warn' : '');
+    r.since.textContent = fmtSince(u.since);
+    r.btn.textContent = on ? 'stop' : 'start'; r.btn.className = 'btn mini' + (on ? ' danger' : ' low');
+    r.btn.dataset.verb = on ? 'stop' : 'start';
   });
   applyBusy();
 }
@@ -546,10 +599,14 @@ function rOpencode(d){
     ? (d.launcher.ours ? `oc, output cap ${d.launcher.cap ? fmtN(d.launcher.cap) : '?'}` : 'a foreign oc command, launcher not installed')
     : 'missing (re-run ./install.sh)');
   const f = d.fit;
-  setShort('ocfit', !f ? 'unknown until an engine is serving' : f.ok ? 'fits this pool' : 'too large for this pool',
+  // A refusal shows the pair the server names as failing: the proxy's ceiling, the engine's
+  // window or the pool. Prompt plus answer against the pool, shown for all three, read
+  // "730,000 asked, 827,968 servable" under "too large" (found in review, 2026-09-24).
+  setShort('ocfit', !f ? 'unknown until an engine is serving' : f.ok ? 'fits this lane' : 'too large for this lane',
     !f ? 'The pool size arrives with the engine.'
-       : f.ok ? `Prompt up to ${fmtN(f.context)} of ${fmtN(f.prompt_cap)}; worst case ${fmtN(f.worst)} of ${fmtN(f.usable)}.`
-       : `${f.why}: ${fmtN(f.worst)} asked, ${fmtN(f.usable)} servable.`);
+       : f.ok ? `Prompt up to ${fmtN(f.context)} of ${fmtN(f.prompt_cap)}; prompt plus answer ${fmtN(f.worst)} of ${fmtN(f.usable)}`
+                + (f.window ? `, inside the ${fmtN(f.window)}-token window.` : '.')
+       : `${f.why}: ${fmtN(f.asked)} asked, ${fmtN(f.limit)} servable.`);
   const fe = $('ocfit'); if (fe) fe.style.color = f && !f.ok ? 'var(--warn)' : '';
   $('occmd').hidden = false;
   setText('ocnote', 'One command: the launcher lifts the output cap and auto-approves permissions. The default model follows every switch; existing sessions keep the model they started with.');
@@ -582,6 +639,14 @@ function rConfig(d){
 
 // ── lifecycle: engine cards (updated in place), lane pill, events, badges ─────
 const CARDS = new Map();
+// What happens next to a wedged engine. The autoheal belt restarts it only where it was
+// armed (COCKPIT_AUTOHEAL=1), and it is off by default: the page promised that restart on
+// every box, where waiting for it is the wrong move (found in review, 2026-09-24).
+function wedgeNext(){
+  const c = F.config || {};
+  if (c.autoheal) return 'The autoheal belt restarts it' + (c.autoheal_grace_s ? ` after its ${fmtDur(c.autoheal_grace_s)} grace period` : '');
+  return 'Nothing will restart it by itself (the autoheal belt is off; COCKPIT_AUTOHEAL=1 arms it): stop it and start it again from the action bar';
+}
 function servingEngine(){
   const eng = (F.life && F.life.engines) || {};
   return Object.entries(eng).find(([n, e]) => !UNIT_DOWN.has(e.state) || e.restarting) || null;
@@ -685,6 +750,9 @@ function engineCard(name){
 function rLifecycle(d){
   F.life = d; syncSelector(); rLanePill(); renderLaneAction();
   if (typeof imgRenderLane === 'function') imgRenderLane();
+  // the System One tab names the lane that answers it, so it asks again when that changes
+  const s1s = servingEngine(), s1k = s1s ? s1s[0] + ':' + s1s[1].state : '';
+  if (s1k !== s1LaneKey){ s1LaneKey = s1k; if (activeTab === 'systemone') s1Probe(); }
   const g = d.pool_guard;
   if (g){
     F.poolGuard = g;
@@ -745,17 +813,31 @@ function rLifecycle(d){
     ov.append(row);
     if (TRANSITIONAL.has(e.state)) ov.append(bootBlock(e, name));
     else if (e.state === 'stopping') ov.append(stoppingBlock(e));
-    else if (e.state === 'wedged') ov.append(el('div', 'why warn', 'the engine answers health checks but generates nothing: the autoheal belt restarts it after its grace period (Engines tab, Logs tab for the forensics)'));
+    else if (e.state === 'wedged') ov.append(el('div', 'why warn', 'the engine answers health checks but generates nothing. ' + wedgeNext() + ' (the Logs tab has the forensics).'));
     else if (e.state === 'degraded') ov.append(el('div', 'why warn', 'the engine was serving and stopped answering: probes retry every 2 s'));
   }
   // events, twice (overview short, logs long)
   const evs = (d.events || []).slice().reverse();
   // Overview keeps the last few: it is the alarm, not the archive (the Logs tab holds 30).
+  // Both lists are live regions (role=log, additions), so a row stays once drawn and a new
+  // event is one row added at the top: emptied and refilled on every tick, they were read
+  // out whole again twice a second (found in review, 2026-09-24).
   [[$('evtlist'), 7], [$('evtlist2'), 30]].forEach(([box, n]) => {
-    if (!box) return; clear(box);
-    if (!evs.length){ box.append(el('p', 'empty', 'no events yet in this cockpit session')); return; }
-    evs.slice(0, n).forEach(ev => {
-      const row = el('div', 'evt'); row.append(el('time', null, clockTime(ev.ts)), el('span', 'k', ev.kind), el('span', null, ev.msg)); box.append(row);
+    if (!box) return;
+    const want = evs.slice(0, n), seen = {};
+    if (!want.length){
+      if (!box.querySelector('p.empty')){ clear(box); box.append(el('p', 'empty', 'no events yet in this cockpit session')); }
+      return;
+    }
+    box.querySelectorAll('p.empty').forEach(p => p.remove());
+    const keys = want.map(ev => { const k = `${ev.ts}|${ev.kind}|${ev.msg}`; seen[k] = (seen[k] || 0) + 1; return k + '#' + seen[k]; });
+    const have = new Map([...box.children].map(r => [r.dataset.ev, r]));
+    have.forEach((r, k) => { if (!keys.includes(k)) r.remove(); });
+    want.forEach((ev, i) => {
+      let row = have.get(keys[i]);
+      if (!row){ row = el('div', 'evt'); row.dataset.ev = keys[i]; row.append(el('time'), el('span', 'k', ev.kind), el('span', null, ev.msg)); }
+      const t = clockTime(ev.ts); if (row.firstChild.textContent !== t) row.firstChild.textContent = t;   // a date once it is not today
+      if (box.children[i] !== row) box.insertBefore(row, box.children[i] || null);
     });
   });
   // badges: what needs eyes
@@ -789,11 +871,18 @@ function syncSelector(){
   // first option, which read as "stock" through nine minutes of an FP8 boot
   const sel = $('switchsel');
   if (sel) markInstalled(sel);
-  if (!sel || sel.dataset.touched) return;
+  if (!sel) return;
   const eng = (F.life || {}).engines || {};
   const s = servingEngine();
   const unit = s ? s[0] : enabledUnit();
   const target = (s && s[0] !== IMAGE_UNIT && F.target) || (eng[unit] || {}).target;
+  // A choice holds the selector until the lane serves it, and then the selector follows
+  // the lane again: it stayed on the first choice for the life of the page, cancelled or
+  // served, while the lanes moved under it (found in review, 2026-09-24).
+  if (sel.dataset.touched){
+    if (!target || sel.value !== target) return;
+    delete sel.dataset.touched;
+  }
   if (target && sel.value !== target) sel.value = target;
 }
 function badge(tab, txt, cls){ const b = $('bdg-' + tab); if (b){ b.textContent = txt; b.className = 'bdg ' + (cls || ''); } }
@@ -818,6 +907,7 @@ function actionPhrase(action, params){
 }
 
 let stripPinned = false, lastFinished;
+const JOB_ROWS = new Map();   // job id -> its row in the history panel
 function rJob(d){
   F.job = d;
   const strip = $('jobstrip'), cur = d.current, recent = (d.recent || [])[0];
@@ -851,17 +941,27 @@ function rJob(d){
   }
   $('joblog').textContent = JOBLINES.lines.join('\n') || '(no output yet)';
   if (!$('joblog').hidden) $('joblog').scrollTop = $('joblog').scrollHeight;
-  // history panel
-  const hist = $('jobhist'); clear(hist);
+  // history panel: one row per job, kept by id and updated in place, for the reason the
+  // proxy's row is (its log buttons lost clicks to the refresh the same way)
+  const hist = $('jobhist');
   const all = (cur ? [cur] : []).concat(d.recent || []);
-  if (!all.length) hist.append(el('p', 'empty', 'no job run since the cockpit started'));
-  all.forEach(j => {
-    const row = el('div', 'hist');
-    row.append(el('span', 'chip ' + (j.status === 'running' ? 'warn live' : j.status === 'done' ? 'ok' : 'err'), j.status));
-    row.append(el('span', null, describe(j)));
-    row.append(el('span', 'm num', clockTime(j.started) + ' · ' + fmtDur(j.elapsed)));
-    const b = el('button', 'btn mini ghost', 'log'); b.addEventListener('click', () => showJobLog(j.id)); row.append(b);
-    hist.append(row);
+  const ids = new Set(all.map(j => j.id));
+  JOB_ROWS.forEach((r, id) => { if (!ids.has(id)){ r.row.remove(); JOB_ROWS.delete(id); } });
+  const none = hist.querySelector('p.empty');
+  if (!all.length){ if (!none) hist.append(el('p', 'empty', 'no job run since the cockpit started')); }
+  else if (none) none.remove();
+  all.forEach((j, i) => {
+    let r = JOB_ROWS.get(j.id);
+    if (!r){
+      r = {row: el('div', 'hist'), chip: el('span', 'chip'), what: el('span'), when: el('span', 'm num'),
+           btn: el('button', 'btn mini ghost', 'log')};
+      r.btn.addEventListener('click', () => showJobLog(j.id));
+      r.row.append(r.chip, r.what, r.when, r.btn); JOB_ROWS.set(j.id, r);
+    }
+    r.chip.textContent = j.status; r.chip.className = 'chip ' + (j.status === 'running' ? 'warn live' : j.status === 'done' ? 'ok' : 'err');
+    r.what.textContent = describe(j);
+    r.when.textContent = clockTime(j.started) + ' · ' + fmtDur(j.elapsed);
+    if (hist.children[i] !== r.row) hist.insertBefore(r.row, hist.children[i] || null);   // newest first
   });
   applyBusy();
 }
@@ -946,7 +1046,12 @@ function verCmp(a, b){
   for (let i = 0; i < Math.max(x.length, y.length); i++){ const d = (x[i] || 0) - (y[i] || 0); if (d) return d; }
   return 0;
 }
+// The choice made on this page holds for the page's life even where storage throws
+// (private mode, blocked site data): the exit was never kept there, and the next state
+// tick put the frame back over a phone's page a second later (found in review, 2026-09-24).
+let agentMaxChoice = null;
 function agentMaxDefault(){
+  if (agentMaxChoice !== null) return agentMaxChoice;
   let pref = null;
   try { pref = localStorage.getItem('cockpit.agent.max'); } catch { /* storage may be unavailable */ }
   if (pref === '1') return true;
@@ -968,7 +1073,7 @@ function setAgentMax(on, persist = true){
   document.body.classList.toggle('agentmax', on);
   const b = $('agmax'); if (b){ b.textContent = on ? 'Exit fullscreen' : 'Fullscreen'; b.setAttribute('aria-pressed', String(on)); }
   if (on){ mountAgent(); agexitPlace(); }   // the parked place only measures once the button can be seen
-  if (persist){ try { localStorage.setItem('cockpit.agent.max', on ? '1' : '0'); } catch { /* storage may be unavailable */ } }
+  if (persist){ agentMaxChoice = on; try { localStorage.setItem('cockpit.agent.max', on ? '1' : '0'); } catch { /* storage may be unavailable */ } }
 }
 const agentUrl = () => F.agent && F.agent.relay && F.agent.relay.port ? `http://${location.hostname}:${F.agent.relay.port}/` : null;
 const agentReady = () => !!(F.agent && F.agent.enabled && F.agent.relay && F.agent.relay.listening && F.agent.server && F.agent.server.healthy);
@@ -1180,6 +1285,7 @@ function apply(state){
   lastAges = ages; lastErrors = errors;
   freshness();
   banners(state, errors);
+  fitTopbar();   // the lane button's label may have changed its width
   document.querySelectorAll('.skel').forEach(e => { if (e.textContent.trim() !== '...') e.classList.remove('skel'); });
 }
 function freshness(){
@@ -1204,7 +1310,7 @@ function banners(state, errors){
   if (F.config && F.config.dry_run) add('info', 'Dry run.', 'Every action is confirmed, logged and audited exactly as usual, but nothing is executed. This instance exists for tests.');
   const eng = (F.life && F.life.engines) || {};
   Object.entries(eng).forEach(([n, e]) => {
-    if (e.state === 'wedged') add('err', `${LANE_NAME[n] || n} is wedged.`, 'It answers health checks but generates nothing. The autoheal belt restarts it after its grace period; the Logs tab has the scheduler forensics.');
+    if (e.state === 'wedged') add('err', `${LANE_NAME[n] || n} is wedged.`, `It answers health checks but generates nothing. ${wedgeNext()}; the Logs tab has the scheduler forensics.`);
     if (e.state === 'failed' && e.restarting) add('err', `${LANE_NAME[n] || n} keeps crashing.`,
       `It dies during startup and systemd relaunches it every 15 s (Restart=always${e.restarts ? `, ${e.restarts} relaunches so far` : ''}): the Logs tab has its journal. Stop it from the action bar to end the loop.`);
     else if (e.state === 'failed' && e.result === 'timeout') add('warn', `${LANE_NAME[n] || n} was killed while stopping.`,
@@ -1350,8 +1456,13 @@ function askAction(name, params, argv, warns){
   $('modal').hidden = false; pending = {name, params};
   setTimeout(() => $('mgo').focus(), 0);
 }
-function closeModal(){ $('modal').hidden = true; pending = null; }
-$('mcancel').addEventListener('click', closeModal);
+function closeModal(accepted){
+  // a switch not gone through with gives the selector back to the lane that serves
+  const back = !accepted && pending && pending.name === 'switch';
+  $('modal').hidden = true; pending = null;
+  if (back){ delete $('switchsel').dataset.touched; syncSelector(); }
+}
+$('mcancel').addEventListener('click', () => closeModal());
 $('modal').addEventListener('click', e => { if (e.target === $('modal') && !inflight) closeModal(); });
 document.addEventListener('keydown', e => {
   if ($('modal').hidden) return;
@@ -1373,7 +1484,7 @@ $('mgo').addEventListener('click', async () => {
     const out = await r.json();
     if (r.status === 202){
       if (name === 'unit' && params.unit === IMAGE_UNIT && params.verb !== 'start') IMG_INTERRUPTED = Date.now();
-      closeModal(); toast(`${name} started` + (out.dry_run ? ' (dry run)' : '') + '. Follow it in the strip under the top bar.', 'ok'); stripPinned = false; return;
+      closeModal(true); toast(`${name} started` + (out.dry_run ? ' (dry run)' : '') + '. Follow it in the strip under the top bar.', 'ok'); stripPinned = false; return;
     }
     if (r.status === 409 && out.reasons){ $('mstatus').textContent = 'blocked: ' + out.reasons.join('; '); return; }
     if (r.status === 409){ closeModal(); toast(out.message || 'Another action is already running.', 'warn'); return; }
@@ -1535,13 +1646,18 @@ $('logfollow').addEventListener('change', () => {
   if (followTimer){ clearInterval(followTimer); followTimer = null; }
   if ($('logfollow').checked){ tailLog(); followTimer = setInterval(() => { if (activeTab === 'logs' && !document.hidden) tailLog(); }, 3000); }
 });
-// default log source: the container that is serving, unless the user already picked one
+// Default log source, unless the user already picked one: the serving container, or the
+// unit's journal when there is no container to read. The image lane has none, and a text
+// lane that failed at start has lost its own; five places on this page send people to
+// "its journal in the Logs tab", which offered no unit journal at all before 2026-09-24.
 let logTouched = false;
 $('logsel').addEventListener('change', () => { logTouched = true; });
 setTimeout(() => {
   if (logTouched) return;
   const s = servingEngine(); const u = s ? s[0] : enabledUnit();
-  $('logsel').value = u.includes('flash') ? 'qwen38-flash' : 'qwen38-sglang';
+  const e = ((F.life || {}).engines || {})[u] || {};
+  const journal = u === IMAGE_UNIT || e.state === 'failed' || !!e.restarting;
+  $('logsel').value = journal ? u : u.includes('flash') ? 'qwen38-flash' : 'qwen38-sglang';
 }, 3000);
 
 // ── System One: the console ─────────────────────────────────────────────────
@@ -1718,7 +1834,7 @@ async function s1Run(){
   const btn = $('s1run'); const payload = s1Payload();
   if (!payload.state.trim()) { toast('A state is required: that is what the questions are asked about.', 'warn'); return; }
   if (!Object.keys(payload.questions).length) { toast('Add at least one question.', 'warn'); return; }
-  btn.disabled = true; $('s1status').textContent = 'asking the lane...';
+  btn.disabled = true; s1Running = true; $('s1status').textContent = 'asking the lane...';
   $('s1answers').textContent = ''; $('s1meta').textContent = ''; s1Chip('s1time', '');
   try{
     const t = await fetch('/api/csrf', {method: 'POST'}); if (t.status === 401) return login();
@@ -1750,22 +1866,28 @@ async function s1Run(){
     $('s1answers').append(el('p', 'note', 'The cockpit could not reach the proxy: ' + e));
     s1Chip('s1time', 'failed', 'err');
   } finally {
-    btn.disabled = false; $('s1status').textContent = '';
+    s1Running = false; btn.disabled = s1Available === false; $('s1status').textContent = '';
   }
 }
 
+// What the last probe said, and whether a call is in flight: a later probe gives Ask back
+// once a lane answers again (a refusal used to disable it for the life of the page).
+let s1Available = null, s1Running = false, s1LaneKey = null;
+const S1_NOTE = $('s1note') ? $('s1note').textContent : '';
 async function s1Probe(){
   try{
     const r = await fetch('/api/systemone'); if (r.status === 401) return login();
     const d = await r.json();
-    setText('s1lane', d.lane || '...');
+    s1Available = !!d.available;
+    setText('s1lane', d.lane || 'no text lane');
     if (d.available){
       s1Chip('s1chip', 'serving', 'ok');
+      note('s1note', S1_NOTE);
     } else {
       s1Chip('s1chip', 'not served here', 'err');
       note('s1note', d.reason || 'the proxy in front of this box does not answer /v1/systemone');
-      const b = $('s1run'); if (b) b.disabled = true;
     }
+    const b = $('s1run'); if (b) b.disabled = !d.available || s1Running;
   } catch (e){ s1Chip('s1chip', 'unknown', 'warn'); }
 }
 
@@ -1946,8 +2068,12 @@ function imgCurl(){
     const fields = Object.entries(p).filter(([k]) => k !== 'width' && k !== 'height')
       .map(([k, v]) => `  --form-string ${shq(k + '=' + v)}`);
     fields.unshift(`  --form-string ${shq('size=' + p.width + 'x' + p.height)}`);
+    // curl reads its own syntax inside a -F value (a ; or a , ends the file name), so the
+    // name goes in double quotes with \ and " escaped, and the value in single quotes for
+    // the shell. In the double quotes it had, a reference named x$(cmd).png ran cmd for
+    // whoever pasted the line (found in review, 2026-09-24).
     const refs = (imgRefs.length ? imgRefs : [{name: 'input.png'}])
-      .map(r => `  -F "image[]=@${r.name};type=image/png"`);
+      .map(r => `  -F ${shq('image[]=@"' + String(r.name).replace(/[\\"]/g, '\\$&') + '";type=image/png')}`);
     text = where + `curl -sS ${base}/edits \\\n` + [...fields, ...refs].join(' \\\n');
   }
   setText('imgcurl', text);
@@ -2154,6 +2280,13 @@ async function imgRun(){
                            body: JSON.stringify(body)});
     if (r.status === 401) return login();
     const out = await r.json();
+    // a lane that died under the request is not a cancel, whoever looks at it
+    if (!r.ok && out.crashed){
+      imgParkBar(); clear($('imgout'));
+      $('imgout').append(el('p', 'note', 'The lane crashed: ' + out.error));
+      setChip('imgtime', 'lane crashed', 'err');
+      return;
+    }
     if (!r.ok && (IMG_INTERRUPTED > t0 || out.interrupted)){
       imgParkBar(); clear($('imgout'));
       $('imgout').append(el('p', 'note', 'Cancelled: the lane was stopped or restarted while this image was '
@@ -2194,8 +2327,18 @@ function imgWatch(on, ms = 2500){
   // is asking again.
   if (on && imgPoll && imgPoll.ms === ms) return;
   if (imgPoll){ clearInterval(imgPoll.id); imgPoll = null; }
-  if (on) imgPoll = {id: setInterval(imgLane, ms), ms};
+  if (on) imgPoll = {id: setInterval(imgTick, ms), ms};
 }
+// Each answer runs a journalctl on the box. Someone else's generation is followed on the
+// Image tab of a page someone can see, and not once it is over; this page's own request
+// is followed wherever it is looked at from. Before, one sight of another client's
+// generation kept this page asking every 2 s for its whole life, behind any tab (found in
+// review, 2026-09-24).
+function imgTick(){
+  if (!imgInflight && (document.hidden || activeTab !== 'image')) return imgWatch(false);
+  imgLane();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && activeTab === 'image') imgLane(); });
 
 // One drawer for both bars: the phase name on the left, the number on the right.
 // The NAME is the engine's own and exact. The number beside a request is this page's
@@ -2258,6 +2401,7 @@ async function imgLane(){
     IMG_STATE.busy = !imgInflight && p.kind === 'stage';
     IMG_STATE.busyLabel = p.label || '';
     if (IMG_STATE.busy) imgWatch(true, 2000);
+    else if (!imgInflight) imgWatch(false);
     imgRenderLane();
   } catch (e){ setChip('imgchip', 'unknown', 'warn'); }
 }
@@ -2383,6 +2527,7 @@ function imgInit(){
           + 'next to a window, even natural light', width: 1024, height: 1024, num_inference_steps: 20, n: 1,
           output_format: 'png', response_format: 'b64_json', generator_device: 'cpu', seed: 42})});
       const out = await r.json();
+      if (!r.ok && out.crashed) return toast('No sample: the lane crashed while making it. ' + out.error, 'err', 9000);
       if (!r.ok && (IMG_INTERRUPTED > t0 || out.interrupted)) return toast('Sample cancelled: the lane was stopped or restarted.', 'warn');
       if (!r.ok) return toast(r.status === 409 ? out.error : 'Could not make a sample: ' + (out.error || r.status),
                               r.status === 409 ? 'warn' : 'err', 7000);

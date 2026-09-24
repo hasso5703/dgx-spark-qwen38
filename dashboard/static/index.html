@@ -72,17 +72,25 @@
   .iconbtn{width:34px; height:34px; border-radius:9px; border:1px solid var(--line); background:transparent;
            display:grid; place-items:center; cursor:pointer; color:var(--mut)}
   .iconbtn:hover{color:var(--txt); border-color:var(--line2)}
-  /* Width order when the header runs out of room: the pill gives way first, then the
-     target selector, then the lane button. Nothing wraps, nothing leaves the bar. */
+  /* Width order when the header runs out of room: the pill gives way first, down to its
+     minimum and then out of the bar below 1180 px. When the actions still do not fit
+     beside the brand and the connection lamp, they take a row of their own (.topwrap,
+     set by app.js from the widths it measures): shrunk inside one row they slid under the
+     lamp from 981 px to about 1,440 px with a touch screen's buttons (found in review,
+     2026-09-24). A breakpoint could not hold: the widths move with the lane button's
+     label, the fonts and the pointer. */
   .lanepill{display:flex; align-items:center; gap:8px; padding:5px 11px; border:1px solid var(--line);
             border-radius:999px; background:color-mix(in srgb, var(--card) 70%, transparent); font-size:12.5px;
-            white-space:nowrap; min-width:0; overflow:hidden; flex-shrink:8}
+            white-space:nowrap; min-width:9rem; overflow:hidden; flex-shrink:8}
   .lanepill b{font-weight:650; overflow:hidden; text-overflow:ellipsis}
   /* the sub-line is the first thing to give way on a narrow screen, never the state chip */
   .lanepill .sub{color:var(--mut); min-width:0; overflow:hidden; text-overflow:ellipsis}
   .lanepill .chip{flex:none}
   .actbar{display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:nowrap;
-          justify-content:flex-end; min-width:0; flex-shrink:1}
+          justify-content:flex-end; min-width:0; flex-shrink:0}
+  .top.topwrap{flex-wrap:wrap; row-gap:6px; padding-top:6px; padding-bottom:6px}
+  .top.topwrap .conn{order:2; margin-left:auto}
+  .top.topwrap .actbar{order:3; flex:1 0 100%; justify-content:flex-start; margin-left:0}
   /* Grouping by a rule instead of by a box: three fewer frames in the busiest 60 px
      of the app, and about 50 px given back to the lane pill. */
   .actbar .grp{display:flex; align-items:center; gap:6px; min-width:0}
@@ -126,7 +134,10 @@
   /* ── shell: rail + content ── */
   .shell{display:grid; grid-template-columns:var(--rail) 1fr; min-height:calc(100vh - var(--top));
          min-height:calc(100dvh - var(--top))}
-  body.railmin .shell{grid-template-columns:var(--rail-min) 1fr}
+  /* The collapsed rail exists beside the content only: on a narrow screen the rail is a row
+     of labelled tabs and its button is hidden, so a collapse kept from a wide window left
+     64 px of unlabelled icons there and no way to open them (found in review, 2026-09-24). */
+  @media (min-width:981px){ body.railmin .shell{grid-template-columns:var(--rail-min) 1fr} }
   .rail{position:sticky; top:var(--top); align-self:start; height:calc(100vh - var(--top)); overflow:auto;
         border-right:1px solid var(--line); padding:12px 10px; display:flex; flex-direction:column; gap:4px;
         background:color-mix(in srgb, var(--card) 40%, transparent)}
@@ -143,8 +154,10 @@
   .rail .nav .bdg.warn{color:var(--warn); border-color:color-mix(in srgb, var(--warn) 55%, transparent)}
   .rail .nav .bdg.err{color:var(--err); border-color:color-mix(in srgb, var(--err) 55%, transparent)}
   .rail .nav .bdg:empty{display:none}
-  body.railmin .rail .nav .lab, body.railmin .rail .nav .bdg, body.railmin .rail .foot{display:none}
-  body.railmin .rail .nav{justify-content:center; padding:10px 0}
+  @media (min-width:981px){
+    body.railmin .rail .nav .lab, body.railmin .rail .nav .bdg, body.railmin .rail .foot{display:none}
+    body.railmin .rail .nav{justify-content:center; padding:10px 0}
+  }
   .rail .foot{margin-top:auto; color:var(--mut); font-size:11px; padding:10px 11px; line-height:1.6}
   .content{padding:var(--s5) var(--s5) 48px; min-width:0}
   .tab{display:none}
@@ -947,6 +960,9 @@
               <select id="logsel" aria-label="Log source">
                 <option value="qwen38-sglang">qwen38-sglang (container)</option>
                 <option value="qwen38-flash">qwen38-flash (container)</option>
+                <option value="qwen38-sglang.service">27B lane (journal: why it stopped or failed)</option>
+                <option value="qwen38-flash.service">flash lane (journal: why it stopped or failed)</option>
+                <option value="qwen38-image.service">image lane (journal)</option>
                 <option value="qwen38-keepalive.service">keepalive proxy (journal)</option>
                 <option value="opencode-web.service" id="logopt-agent" hidden>opencode web server (journal)</option>
               </select>
@@ -1257,7 +1273,7 @@
             <dt>Limits 27B</dt><dd class="num" id="oclim27">...</dd>
             <dt>Limits flash</dt><dd class="num" id="oclimflash">...</dd>
             <dt>Launcher</dt><dd id="oclauncher">...</dd>
-            <dt>Limits vs the pool</dt><dd id="ocfit">...</dd>
+            <dt>Limits vs this lane</dt><dd id="ocfit">...</dd>
           </dl>
           <div style="margin-top:10px"><button class="btn mini" data-act="fit_opencode">Fit the limits to this engine</button></div>
           <pre id="occmd" class="cmd" style="margin-top:10px">oc</pre>

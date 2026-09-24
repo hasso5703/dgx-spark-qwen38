@@ -611,10 +611,15 @@ def collect_canary():
     recent = LAST_PROGRESS["ts"] and time.time() - LAST_PROGRESS["ts"] < 60
     # a dry-run instance exists to exercise the UI: it must not make the real engine
     # generate anything, not even two tokens (a second cockpit shares the same box).
-    if DRY_RUN or not ready or JOB_LOCK.locked() or busy or recent:
+    # The reason travels with the skip: the page printed "engine busy" for all five, next
+    # to the last success however old, with no text engine at all.
+    why = ("this cockpit is a dry run" if DRY_RUN else "no text engine is ready" if not ready
+           else "an action is running" if JOB_LOCK.locked() else "requests are running" if busy
+           else "a client was active in the last minute" if recent else "")
+    if why:
         # never queue a probe behind a user's request: a scheduler at its cap would make
         # the probe wait for it, and the canary would read a busy engine as a wedged one
-        return {"node_id": "local", **CANARY, "skipped": True}
+        return {"node_id": "local", **CANARY, "skipped": True, "why": why}
     body = json.dumps({"model": "canary", "max_tokens": 2, "temperature": 0,
                        "messages": [{"role": "user", "content": "Say OK"}],
                        "chat_template_kwargs": {"enable_thinking": False}}).encode()
@@ -1506,6 +1511,9 @@ PERIODS = {name: period for period, cols in TIERS for name in cols}
 STATE["config"] = {"data": {"usable_frac": USABLE_FRAC, "version": VERSION, "dry_run": DRY_RUN,
                             "repo_dir": str(REPO_DIR), "periods": PERIODS,
                             "agent_port": AGENT_PORT,
+                            # the page says what happens to a wedged engine, and on a default
+                            # install that is nothing: it promised the belt's restart regardless
+                            "autoheal": AUTOHEAL, "autoheal_grace_s": AUTOHEAL_GRACE,
                             "terminal_only": {"update_stack": f"cd {REPO_DIR} && ./install.sh",
                                               "install_agent": f"cd {REPO_DIR} && dashboard/install-agent.sh"}},
                    "ts": time.time()}
@@ -1805,11 +1813,30 @@ def systemone_available(max_age: float = 60.0) -> dict:
     answer for? Asked with a request that cannot reach the model: no `state`, which a
     proxy that serves the route refuses at the schema with 422, and a proxy that does not
     relays to the engine, where the path does not exist. So the probe costs no inference
-    either way, and the answer is cached for a minute."""
+    either way, and the answer is cached for a minute.
+
+    The proxy refuses that probe at the schema with or without an engine behind it, and
+    served_model_name() falls back to the 27B's name when no engine gives one: with nothing
+    serving, or the image lane up, the tab read "serving qwen3.8-27b", and a minute of
+    cache carried an answer across a switch (found in review, 2026-09-24). Only a text lane
+    that is ready answers System One, and a cached answer lasts as long as its lane."""
+    with LIFE_LOCK:
+        states = dict(LIFE.get("states", {}))
+    text = next(((u, states[u]) for u in lc.TEXT_UNITS if states.get(u) in lc.BUSY_STATES), None)
+    key = (text, served_model_name() if text else "")
     with SYSTEMONE_LOCK:
-        if SYSTEMONE_CACHE["data"] and time.time() - SYSTEMONE_CACHE["ts"] < max_age:
+        if (SYSTEMONE_CACHE["data"] and SYSTEMONE_CACHE.get("key") == key
+                and time.time() - SYSTEMONE_CACHE["ts"] < max_age):
             return SYSTEMONE_CACHE["data"]
-        out = {"available": False, "lane": served_model_name(), "reason": "", "status": None}
+        if not text or text[1] != "ready":
+            lane = "flash" if text and "flash" in text[0] else "27B"
+            out = {"available": False, "lane": "", "status": None,
+                   "reason": (f"the {lane} lane is {text[1]}: System One answers once it is ready" if text
+                              else "no text lane is serving: System One is answered by the 27B or the "
+                                   "flash lane, so start one of them (the image lane cannot answer it)")}
+            SYSTEMONE_CACHE.update(data=out, ts=time.time(), key=key)
+            return out
+        out = {"available": False, "lane": key[1], "reason": "", "status": None}
         body = json.dumps({"model": "jev-latest", "questions": {}}).encode()
         req = urllib.request.Request(PROXY_BASE + "/v1/systemone", body,
                                      {"Content-Type": "application/json",
@@ -1829,7 +1856,7 @@ def systemone_available(max_age: float = 60.0) -> dict:
                 out["reason"] = f"the proxy answered HTTP {e.code} to the probe"
         except Exception as e:                          # noqa: BLE001 (isolated probe)
             out["reason"] = f"the proxy at {PROXY_BASE} did not answer ({type(e).__name__})"
-        SYSTEMONE_CACHE.update(data=out, ts=time.time())
+        SYSTEMONE_CACHE.update(data=out, ts=time.time(), key=key)
         return out
 
 
@@ -2122,6 +2149,31 @@ def _image_life() -> tuple:
 
 IMAGE_INTERRUPTED = ("the image lane was stopped or restarted while this image was being made, which is "
                      "the only way this runtime can end a generation early (it has no abort); nothing was kept")
+IMAGE_CRASHED = ("the image lane crashed while this image was being made (systemd: {result}), and nothing "
+                 "was kept. Its journal, in the Logs tab, says why; systemd starts it again by itself.")
+# How a run that ended under a request ended. A stop leaves Result=success, or timeout when
+# it overran TimeoutStopSec, and a restart is a new run: neither goes through auto-restart.
+# A death nobody asked for does (the unit has Restart=on-failure), and these results only
+# ever come from one. exit-code alone is left out: a stop can end with one.
+IMAGE_CRASH_RESULTS = {"signal", "core-dump", "oom-kill", "watchdog"}
+
+
+def _image_exit() -> dict:
+    """SubState and Result of the image unit, asked of systemd once a request was cut."""
+    raw = run(["systemctl", "show", IMAGE_UNIT, "-p", "SubState,Result,NRestarts"], timeout=5)
+    return dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
+
+
+def _image_cut(t0: float) -> tuple[int, dict]:
+    """The answer for a request whose run of the lane ended under it: a crash said as one
+    (the page read every such end as "Cancelled", found in review, 2026-09-24), a stop or a
+    restart as the interruption it is."""
+    ex = _image_exit()
+    secs = round(time.time() - t0, 2)
+    if ex.get("SubState") == "auto-restart" or ex.get("Result") in IMAGE_CRASH_RESULTS:
+        return 502, {"error": IMAGE_CRASHED.format(result=ex.get("Result") or "died"), "crashed": True,
+                     "seconds": secs}
+    return 503, {"error": IMAGE_INTERRUPTED, "interrupted": True, "seconds": secs}
 IMAGE_STILL_RUNNING = ("the image lane is still generating this request: it has no abort, so it goes on after "
                        "this page stopped waiting, and the next request is refused until it ends. Cancel "
                        "restarts the lane if it should not finish.")
@@ -2253,7 +2305,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         # that with a bare 500. Whoever sent the stop (this page, another tab, a terminal),
         # the answer is the same fact, so it is told here and not guessed by one client.
         if e.code >= 500 and _image_life() != life0:
-            return 503, {"error": IMAGE_INTERRUPTED, "interrupted": True, "seconds": round(time.time() - t0, 2)}
+            return _image_cut(t0)
         try:
             detail = json.loads(raw.decode())
         except Exception:                               # noqa: BLE001
@@ -2261,7 +2313,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         return e.code, {"refused": detail, "seconds": round(time.time() - t0, 2)}
     except Exception as e:                              # noqa: BLE001 (isolated route)
         if _image_life() != life0:
-            return 503, {"error": IMAGE_INTERRUPTED, "interrupted": True, "seconds": round(time.time() - t0, 2)}
+            return _image_cut(t0)
         if isinstance(e, TimeoutError):
             # A read timeout: the request reached this same run and this process stopped
             # waiting (a connect timeout is a URLError, and means it never got there). The
