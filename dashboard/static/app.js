@@ -2042,7 +2042,9 @@ function imgPayload(){
   if ($('imgbg').value !== 'auto') p.background = $('imgbg').value;
   if (imgVal('imgseed') !== '') p.seed = Number(imgVal('imgseed'));
   if (imgVal('imgcfg') !== '') p.true_cfg_scale = Number(imgVal('imgcfg'));
-  if (imgVal('imgshift') !== '') p.flow_shift = Number(imgVal('imgshift'));
+  // the editing endpoint has no flow_shift field and drops it unread, so an edit leaves it out
+  if (imgVal('imgshift') !== '' && $('imgmode-edit').getAttribute('aria-pressed') !== 'true')
+    p.flow_shift = Number(imgVal('imgshift'));
   if (imgVal('imgneg') !== '') p.negative_prompt = imgVal('imgneg');
   return p;
 }

@@ -179,6 +179,18 @@ class TheEditingPath(Base):
         self.assertNotIn(b'name="width"', self.spy.body)
         self.assertNotIn(b'name="height"', self.spy.body)
 
+    def test_the_fields_the_edits_endpoint_has_no_form_for_stay_out(self):
+        """edits() declares no flow_shift and no max_sequence_length, so they were sent
+        and dropped unread (found in review, 2026-09-24). A generation still gets both."""
+        self.call({"prompt": "x", "flow_shift": 3.0, "max_sequence_length": 512, "images": [self.PNG]},
+                  editing=True)
+        self.assertNotIn(b'name="flow_shift"', self.spy.body)
+        self.assertNotIn(b'name="max_sequence_length"', self.spy.body)
+        self.assertIn(b'name="prompt"', self.spy.body)
+        self.call({"prompt": "x", "flow_shift": 3.0, "max_sequence_length": 512})
+        body = json.loads(self.spy.body)
+        self.assertEqual((body["flow_shift"], body["max_sequence_length"]), (3.0, 512))
+
     def test_it_posts_to_the_edits_endpoint(self):
         self.call({"prompt": "x", "images": [self.PNG]}, editing=True)
         self.assertTrue(self.spy.url.endswith("/v1/images/edits"), self.spy.url)

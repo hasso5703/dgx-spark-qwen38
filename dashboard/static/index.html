@@ -1233,7 +1233,8 @@
             a width or height that is not a multiple of 32 comes back <span class="num">HTTP 500</span> with an empty body;
             so does any request that does not name an output format, because the API falls back to JPEG and this model always
             returns RGBA, which JPEG cannot hold; and on the editing endpoint <span class="num">flow_shift</span> is accepted and
-            ignored, byte for byte. This page sends a format on every call and refuses the other two before they leave the box.</p>
+            ignored, byte for byte. This page sends a format on every call, refuses a size that is not a multiple of 32 before it
+            leaves the box, and leaves <span class="num">flow_shift</span> out of an edit.</p>
         </section>
       </div>
     </div>

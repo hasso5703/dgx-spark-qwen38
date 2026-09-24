@@ -2129,6 +2129,10 @@ IMAGE_ALLOWED = {"prompt", "width", "height", "num_inference_steps", "n", "outpu
                  "response_format", "generator_device", "background", "seed",
                  "true_cfg_scale", "guidance_scale", "flow_shift", "negative_prompt",
                  "size", "max_sequence_length"}
+# The editing endpoint has no form field for these two, so it drops them unread: five
+# flow_shift values made one output on the reference box, and the lane's image_api.py
+# edits() declares neither (found in review, 2026-09-24). They are left out of an edit.
+IMAGE_EDIT_UNREAD = ("flow_shift", "max_sequence_length")
 
 
 def _image_life() -> tuple:
@@ -2266,6 +2270,8 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         w, h = fields.pop("width", None), fields.pop("height", None)
         if w and h:
             fields["size"] = f"{w}x{h}"
+        for k in IMAGE_EDIT_UNREAD:
+            fields.pop(k, None)
     # No Authorization header: the diffusion runtime has no --api-key, so the lane cannot
     # check one and the unit binds loopback instead. The gate is this process's own session.
     if not IMAGE_LOCK.acquire(blocking=False):

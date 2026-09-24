@@ -495,6 +495,28 @@ class TheEditCommandCannotRunAFileName(unittest.TestCase):
         self.assertEqual(args[args.index("-F") + 1], 'image[]=@"it\'s \\"a\\"; b.png";type=image/png')
 
 
+class AnEditLeavesOutWhatTheEditsEndpointDropsUnread(unittest.TestCase):
+    """The editing endpoint has no flow_shift field: the page sent the Shift box's value with
+    an edit, and showed it in the edit's curl, and the lane dropped it unread (found in
+    review, 2026-09-24)."""
+
+    def payload(self, mode):
+        return run(self, r"""
+        imgMode(MODE); $('imgshift').value = '3.5';
+        report({payload: imgPayload(), curl: (imgCurl(), txt('imgcurl'))});
+        """.replace("MODE", json.dumps(mode)))
+
+    def test_a_generation_keeps_the_shift(self):
+        r = self.payload("t2i")
+        self.assertEqual(r["payload"].get("flow_shift"), 3.5)
+        self.assertIn("flow_shift", r["curl"])
+
+    def test_an_edit_leaves_it_out(self):
+        r = self.payload("edit")
+        self.assertNotIn("flow_shift", r["payload"])
+        self.assertNotIn("flow_shift", r["curl"])
+
+
 def css_rules(markup):
     """(selector, [enclosing @media conditions], declarations) for every rule of the page's
     <style>, comments dropped."""
