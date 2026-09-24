@@ -26,6 +26,17 @@ interpreter that has them, and a developer sets that up once:
 python3 -m venv .venv-test && .venv-test/bin/pip install coverage hypothesis
 ```
 
+That venv is not enough on its own. `ci-local.sh` runs a step only when the tools
+it names are on `PATH` and reports it SKIPPED otherwise: it looks for
+`shellcheck`, `docker` and `gh` by name anywhere in the step's text (which also
+skips 13 steps that merely contain the letters `gh` when the GitHub CLI is
+missing), and it runs the six steps that pip-install their tooling on the runner
+(ruff, the fuzz suite, both coverage floors, the property checks, System One)
+only when `ruff` is on `PATH`, dropping their pip lines. So put `ruff`,
+`shellcheck` and `gh` on `PATH` too. A skipped gate checked nothing, and a run in
+which every step was skipped still exits 0: read the last line, and a complete
+run ends with `0 sautes` (`CI local: N ok, N echecs, N sautes`).
+
 ## The layers
 
 | layer | where | what it answers |

@@ -116,6 +116,8 @@ them, run `./ci-local.sh`, read what it names.
   launcher's comments.
 - FP8 combined with the 1M context is not memory-measured; the README says
   to run at native until the curve exists.
-- TLS, per-client identity and multi-tenant use do not exist; SECURITY.md
-  names them as the design's edges, and anything toward them starts as an
-  issue with a measured motivation.
+- Multi-tenant use does not exist. The proxy has optional TLS and optional
+  per-client identity since v6.16, both off by default and naming clients
+  rather than limiting them; the cockpit and the relay speak plain HTTP.
+  SECURITY.md names these as the design's edges, and anything past them starts
+  as an issue with a measured motivation.

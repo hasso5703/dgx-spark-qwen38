@@ -980,7 +980,8 @@ FREE_DISK_GB=$({ df -BG --output=avail "$HF_CACHE" 2>/dev/null || true; } | tail
 # Fresh installs need ~45 GB for the 27B stack (checkpoints + caches) and ~180 GB for
 # Flash-Next (its NVFP4 checkpoint alone is ~136 GB), plus ~50 GB for the flash lane's
 # PLE table where PLE_DIR lands; what the cache already holds comes off (below).
-NEED_GB=45; DOCKER_NEED_GB=40; IMG_LABEL="39 GB Docker image"
+# README "Quickstart" states these numbers: keep the two together.
+NEED_GB=45; DOCKER_NEED_GB=40; IMG_LABEL="33 GB Docker image"
 if [ "$LANE" = "flash" ]; then
   NEED_GB=180; DOCKER_NEED_GB=35; IMG_LABEL="30 GB Docker image"
 fi
@@ -2330,7 +2331,7 @@ except Exception as e:
     elif [ "${IMAGE_ON:-0}" -eq 0 ]; then
       echo "  Images     : not installed; ./install.sh --with-image adds the Qwen-Image 2.1 lane (38 GB)"
     fi
-    [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh  (or the Benchmarks tab of the cockpit)"
+    [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh"
     exit 0
   fi
   ST="$(systemctl is-active "$UNIT_NAME" || true)"

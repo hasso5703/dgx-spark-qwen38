@@ -69,7 +69,7 @@ The engine answers `/health` even when it is wedged, so the cockpit runs a real 
 
 ## Quickstart
 
-Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). Free disk: **~84 GB** for a 27B target (~39 under `$HOME` for checkpoints and caches, ~45 on the Docker partition for the 39 GB image; caching the other 27B targets adds ~21 GB per NVFP4 target and ~31 GB per FP8 one), **~225 GB** for a flash target (~175 under `$HOME`: the ~126 GB checkpoint, ~124 for NVIDIA's export, plus the 47.7 GiB sparse file the N-gram table is served from and rewritten into on every boot; ~35 on the Docker partition for the 30 GB image).
+Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). Free disk, as the installer checks it before it downloads anything: for a 27B target, **45 GB** on the disk of `HF_CACHE` (`~/.cache/huggingface` by default) for the checkpoints and caches, and **40 GB** on Docker's (`/var/lib/docker`) for its 33 GB image; for a flash target, **230 GB** on the disk of `HF_CACHE` (180 for the checkpoint and its caches, 50 for the 47.7 GiB PLE table the lane rewrites at every boot, counted on the disk of `PLE_DIR` instead when that is another one) and **35 GB** on Docker's for its 30 GB image. The installer checks each disk on its own, so on a stock box, where both are the home disk, plan for the sum: **85 GB** for a 27B target, **265 GB** for a flash one. What the cache already holds of a checkpoint comes off its share (a checkpoint that is all there needs 10 GB of working room instead), and an image already pulled needs 5 GB instead of its own size. Caching the other 27B targets adds ~22 GB per NVFP4 target and ~31 GB per FP8 one.
 
 One command, first install and updates alike. It clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer, which installs **the whole box**: engine, keepalive proxy, opencode wiring, the cockpit and its Agent tab. It ends by printing the cockpit URL, and there is nothing left to run by hand.
 
@@ -102,7 +102,7 @@ First boot takes **~7-9 minutes** for a 27B target (CUDA graph capture + kernel 
 - **Any OpenAI client**: `http://<host>:30001/v1/chat/completions`, model `qwen3.8-27b` (flash: `qwen3.8-flash-next`), Bearer key from `~/.config/qwen38/api-key`
 - **Anthropic protocol**: `http://<host>:30001/v1/messages` (`Authorization: Bearer` only, not `x-api-key`)
 - Both are the **keepalive proxy**, not the engine: it relays every route the engine serves and adds the guards for the requests SGLang dies on rather than refuses. Since v1.17 the engine itself binds `127.0.0.1` and `:30000` answers on the box only ([docs/clients.md](docs/clients.md), [SECURITY.md](SECURITY.md))
-- **Don't want a systemd service?** `./install.sh --no-service && ./run.sh`: same config, foreground, no sudo, Ctrl+C and it's gone (27B targets; flash is service-only in this release).
+- **Don't want a systemd service?** `./install.sh --no-service && ./run.sh`: the native unit's pins and flags, foreground, no sudo, Ctrl+C and it's gone (27B targets; flash is service-only in this release). That path has no proxy: clients talk to the engine on `:30000`, without the guards, and `run.sh` serves it on `127.0.0.1` like the units (`ENGINE_BIND=0.0.0.0 ./run.sh` puts it on every interface).
 - Everything is **pinned twice** (base image digest + checkpoint revisions at download, and the same `--revision` passed to the server itself, so an upstream push to a checkpoint repo can never change what you serve; plus sha256-verified overlay files for the flash lane's rollback image, `flash-sglang/ATTRIBUTION.md`). It still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
 - Since 2026-08-21 this same combination (DFLASH2, draft depth 16 since v1.9) is the **official recipe in the
   [SGLang cookbook](https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.8-27B)**, and since v1.14 both lanes
@@ -133,7 +133,7 @@ Combinations that make sense:
 
 ```bash
 # one-liner forms (variables on the bash side, flags after "bash -s --")
-curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash                                  # everything: 27B stock, native, service, opencode, cockpit
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash                                  # everything: 27B stock, 1M context, service, opencode, cockpit
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | CONTEXT_MODE=native bash              # the 262144 window instead
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=uncensored bash           # abliterated 27B, 1M context
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | MODEL_CHOICE=flash bash               # Flash-Next lane (service only)
@@ -344,7 +344,9 @@ boot 10 min 40 s, KV pool 473,664 tokens, decode 45.4-46.4 tok/s on code,
 canaries 4/4, needle 1/1 exact at 120K, prefix caching x5.9, and **0 refusals out
 of 5** deliberately blunt probes, which is the point of the variant. Safety
 refusals are removed, which moves the guardrails onto you: filtering, human
-review and access control are yours to supply, and the lane binds to `0.0.0.0`.
+review and access control are yours to supply, and the proxy in front of the
+lane listens on every interface by default, with the API key as its only gate
+(`PROXY_BIND=127.0.0.1` keeps it on the box).
 Two alternatives were rejected for stated reasons, both worth knowing if you go
 looking: `orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4` is a different
 packaging (18 shards, 170.9 GiB, no `hf_quant_config`, a separate
@@ -543,6 +545,7 @@ journalctl -u qwen38-keepalive -f       # one line per proxied request (bytes, f
 ./uninstall.sh                          # removes services + config; prints reclaim commands for data it found
 ./uninstall.sh --yes                    # same, and deletes ~/.config/qwen38 (API key) without asking; opencode's config loses this box's providers
 # the images the installer pulls by digest are tagged qwen38-pinned:<lane>-<digest>, so a docker image prune leaves them alone
+```
 
 Killing an abandoned generation, reading a dead decode from both sides of the wire, the opt-in
 extras, and what an upgrade from an earlier version actually does:
@@ -575,7 +578,7 @@ question you had when you opened the page.
 
 | Tab | What it answers | What you can do there |
 |---|---|---|
-| **Overview** | Is the box serving, and on what? KV pool held right now, serving lane, unified memory, the last events | Start, stop, restart, switch lane, flush the prefix cache, abort all, smoke probe |
+| **Overview** | Is the box serving, and on what? KV pool held right now, serving lane, unified memory, the last events | Start or stop the lane, switch target, flush the prefix cache, abort all, smoke probe, diagnostics bundle (the bar at the top, on every tab) |
 | **Agent** | opencode's own web interface, framed behind this login | Run a session on the box from a laptop or a phone, no terminal |
 | **Engines** | Which units exist, which one is served, what the probes and containers say | Act on any unit this repo installed |
 | **Requests** | What the engine and the proxy each did with the same traffic: live feed, zombie guard, pool and decode | Read a dead decode from both sides of the wire |
@@ -584,8 +587,8 @@ question you had when you opened the page.
 | **System One** | The typed-decisions endpoint, from a browser: is it served, and what does it answer? | Ask the lane with prefilled examples, copy the matching curl, read the probabilities |
 | **Image** | Qwen-Image 2.1, when it is the serving lane: generation, editing with up to ten references, native RGBA | Generate and edit at the model's defaults (**Reset settings**), start from the sample prompts, follow each stage of a request, copy the matching curl |
 | **Video** | Nothing yet, and it says so | |
-| **Logs** | Live logs, the last 30 events, recent jobs | Run a bench, the 4-canary quality battery, a diagnostics bundle |
-| **Setup** | The repo itself, opencode integration, serving-stack updates, the cockpit's own settings | Regenerate the API key, update the stack, change what the page binds to |
+| **Logs** | Live logs, the last 30 events, recent jobs | Tail or follow a service's log, read what each recent job printed |
+| **Setup** | The repo itself, opencode integration, whether a newer release is out, the cockpit's own settings | Fit opencode's limits to the engine that serves; copy the command that updates the stack, which runs in a terminal because the installer needs an interactive sudo |
 
 The three other screenshots, what each panel does that a terminal does not, how it behaves on a
 phone, and the Agent tab that runs opencode in the browser behind this same login:
