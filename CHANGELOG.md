@@ -352,6 +352,49 @@ count are the ones in front of it.
 - A System One answer whose engine gave no model name named the caller's alias
   (`jev-latest`) instead of the model the alias resolved to.
 
+**Pin watch could not see a deleted repo.** Hugging Face answers an anonymous request with
+401 for a gated repo and for one that does not exist, and `check-pins.sh` filed every 401 or
+403 under "gated", which it never counted: a deleted pinned repo kept the daily watch green.
+It reads `x-error-code` now (a gated repo, which a fresh install cannot download without a
+token, fails under its own name; anything else is a dead pin), sends HF_TOKEN as its advice
+promised (on stdin, never on the command line), and an image it could not ask about fails
+instead of counting in "all resolve".
+
+**The auto-continue plugin no longer relaunches what a relaunch cannot fix.** A relaunch
+resends the whole history plus its own reminder, so after a prompt past what the lane
+serves, or an image the engine cannot decode, it could only fail again, longer: the
+reference box's log shows 210,159, then 210,210, then 210,261 tokens refused against a
+200,000 ceiling on 2026-09-09. opencode compacts on an overflow by itself, and a compaction
+that does not resume is the plugin's other path.
+
+**The System One bench scores a target on all its rows, from one model, or not at all.** The
+public report scored whatever rows were there, although the bench and BENCHMARKS.md say a
+target with missing rows is refused; and a run resumed after a lane switch appended the
+other lane's answers to the same file, each row naming its model and nothing reading it
+back. The reports refuse a partial or mixed target, and a resume stops at the first answer
+from another model. `systemone-check.py` also graded an ordinary streamed completion clean
+as soon as it held "data:", which the proxy's keepalive frames, a cut stream and the
+corrupted-output abort all do: it wants text, a finish_reason, [DONE] and no error event now.
+
+**`mirror-pins.sh` could not have mirrored anything correctly.** Its images lost the
+mirror's host (`MIRROR_REGISTRY=registry.example.com` pushed to Docker Hub), and a pull and a
+push carry one platform of the pinned multi-platform index under another digest; they are
+copied whole with `docker buildx imagetools` and the mirror is asked for the pinned digest
+afterwards. Its model path called `upload_folder` positionally (keyword-only), asked the
+mirror for a commit id it cannot have, ignored the runbook's venv, listed 6 checkpoints of 9
+and 1 image of 3, gave two owners' checkpoints one name, mirrored repos MIRROR.md calls
+unchecked, and executed on any mode but an exact `--dry-run`. Each pin gets `owner__name`
+and an `upstream-<revision>` tag compared file for file, a checkpoint needs a dated license
+conclusion in MIRROR.md, and the runbook gives the measured 513 GB.
+
+**`OVERLAY_FLASH=1` is retired.** The flash lane's documented rollback served the v1.5 to
+v1.7 overlay image with the launcher of v1.8, which does not fit it: the overlay keeps the
+47.7 GiB PLE table in pinned host RAM unless `SGLANG_QWEN4_PLE_MMAP_DIR` is set, and the
+launcher sets none and passes `--ple-offload-backend file` (sglang#37068) instead. Nothing
+had booted the pair since v1.8, and the CI checked the pins only. The switch is refused with
+the rollback that holds together, v1.7.2, which shipped the overlay with its own launcher
+and pins; `flash-sglang/` stays as the record of what upstream replaced.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash
