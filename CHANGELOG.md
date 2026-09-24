@@ -415,6 +415,18 @@ and pins; `flash-sglang/` stays as the record of what upstream replaced.
   could not be written is a failure, not "installed"; the download hint names
   `DRAFT2_REV`, not the retired `DRAFT_REV`; `--help` gives the FP8 pool as measured.
 
+**Smaller defects of the other scripts.** `./switch-model.sh` with no target switched the
+box to stock, re-enabling the 27B lane; it prints its usage. `get.sh` under `FORCE_UPDATE=1`
+switched to main before stashing, so a change that conflicted with main ended the run
+(git's rc 128) and a commit made on a detached HEAD was left on no branch: it stashes
+first and keeps such a commit on a backup branch, and its advice no longer includes
+`git clean -fd`, which deleted the untracked files it keeps on purpose.
+`install-image.sh` checked `import venv`, which works without python3-venv, and then took a
+venv with no pip for a finished one; it asks for ensurepip, and makes such a venv again. A
+smoke generation that failed at the transport ended it before its message and the
+journal. The image unit's `TimeoutStartSec`, which a `Type=simple` unit never applies, is
+gone.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash
