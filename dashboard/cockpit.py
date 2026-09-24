@@ -218,6 +218,18 @@ def run(argv: list[str], timeout: float = 5.0, merge_err: bool = False) -> str:
         return ""
 
 
+def run_ok(argv: list[str], timeout: float = 5.0) -> tuple[bool, str]:
+    """(True, stdout) when the command ran to a zero exit, else (False, ""): for a reader
+    that must not take the empty answer of a timeout for a fact. run() gives "" either way,
+    and a git status that timed out read as a clean tree, a docker inspect that did as a
+    container without the override (found in review, 2026-09-24)."""
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return out.returncode == 0, out.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False, ""
+
+
 def http_json(url: str, timeout: float = 4.0):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key()}"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -683,9 +695,9 @@ def collect_guard():
         tail = run(["docker", "logs", "--since", ZOMBIE_WINDOW, active], timeout=10,
                    merge_err=True)
         zombies = lc.parse_zombies(tail)
-        env = run(["docker", "inspect", active, "--format",
-                   "{{range .Config.Env}}{{println .}}{{end}}"], timeout=6)
-        override = "SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1" in env
+        ok, env = run_ok(["docker", "inspect", active, "--format",
+                          "{{range .Config.Env}}{{println .}}{{end}}"], timeout=6)
+        override = ("SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1" in env) if ok else None
     # The banner is only printed at startup, so the version needs the whole
     # journal of the unit, not the window the counters are read over. ONE line:
     # journalctl with -g returns its matches NEWEST FIRST (plain -n is
@@ -1064,7 +1076,8 @@ def collect_repo():
     # ONE git status for both facts. run() swallows a timeout into "", so two
     # calls can disagree on a loaded box and the panel would then call a
     # modified tree clean, which is the sentence this split exists to make true.
-    status = (g("status", "--porcelain") or "").splitlines()
+    ok, porcelain = run_ok(["git", "-C", str(REPO_DIR), "status", "--porcelain"])
+    status = porcelain.splitlines()
     return {"node_id": "local",
             "head": g("log", "-1", "--format=%h %s"),
             "branch": g("branch", "--show-current"),
@@ -1074,8 +1087,8 @@ def collect_repo():
             # --porcelain counts both, so a stray screenshot dropped in the
             # checkout used to report the working tree as modified (seen
             # 2026-09-17 with a downloaded .png).
-            "dirty": any(not l.startswith("??") for l in status if l),
-            "untracked": sum(1 for l in status if l.startswith("??")),
+            "dirty": any(not l.startswith("??") for l in status if l) if ok else None,
+            "untracked": sum(1 for l in status if l.startswith("??")) if ok else None,
             "proxy": proxy}
 
 

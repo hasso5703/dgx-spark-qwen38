@@ -503,7 +503,7 @@ function rGuard(d){
   $('zgversion').style.color = old ? 'var(--warn)' : '';
   note('zgversionnote', old ? 'Below v6.14 a client that gives up during prefill leaves a generation the proxy cannot name.'
     : !v ? 'No startup banner in the journal, so the running version is unknown.' : '');
-  setText('zgoverride', d.override === true ? 'yes' : d.override === false ? 'no' : 'no engine');
+  setText('zgoverride', d.override === true ? 'yes' : d.override === false ? 'no' : d.lane ? 'unknown (docker did not answer)' : 'no engine');
   note('zgoverridenote', d.override === false
     ? 'Without SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES the engine keeps its own request id, so an abandoned answer is read to its end instead of aborted. The next engine restart picks the flag up.' : '');
   const acted = [];
@@ -560,7 +560,8 @@ function rRepo(d){
   setText('repotag', d.tag || 'n/a'); setText('repobranch', d.branch || 'n/a');
   const head = d.head || '';
   setShort('repohead', head.split(' ')[0] || 'n/a', head || 'n/a');
-  setText('repodirty', d.dirty ? 'modified (uncommitted changes)'
+  setText('repodirty', d.dirty == null ? 'unknown (git did not answer)'
+    : d.dirty ? 'modified (uncommitted changes)'
     : d.untracked ? `clean (${d.untracked} untracked file${d.untracked > 1 ? 's' : ''})`
     : 'clean');
   setText('proxyver', F.proxy && F.proxy.version ? F.proxy.version + (F.proxy.same_as_repo === false ? ' · deployed file differs from the repo copy' : ' · repo copy') : 'unknown');
