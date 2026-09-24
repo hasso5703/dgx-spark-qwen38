@@ -451,7 +451,7 @@ function rKernel(d){
 }
 // The proxy's row, built once and updated in place. Rebuilt on every state message (up
 // to twice a second), a click whose press and release straddled a refresh landed on a
-// button that was already gone: 25 of 40 clicks registered (found in review, 2026-09-24).
+// button that was already gone, and nothing happened (found in review, 2026-09-24).
 const UNIT_ROWS = new Map();
 function unitRow(name){
   let r = UNIT_ROWS.get(name);

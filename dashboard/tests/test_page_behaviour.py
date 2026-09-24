@@ -174,7 +174,8 @@ class TheSelectorFollowsTheLaneAgain(unittest.TestCase):
 class ControlsSurviveARefresh(unittest.TestCase):
     """The keepalive stop/start button and the job history's log buttons were rebuilt on
     every state message, up to twice a second, so a click whose press and release straddled
-    a refresh landed on a node that no longer existed (25 of 40 clicks registered)."""
+    a refresh landed on a node that no longer existed (the review counted 25 of 40 clicks
+    registered)."""
 
     def test_the_proxy_button_is_the_same_node(self):
         r = run(self, r"""
@@ -427,7 +428,7 @@ class TheLogsTabOffersWhatThePageSendsYouTo(unittest.TestCase):
 class TheSessionCardDoesNotHammerADeadRelay(unittest.TestCase):
     """agent-mobile.js, the script the relay injects into opencode's page on a phone,
     fetched the session list again the moment a fetch failed: with the relay unreachable
-    that is a loop, 2,021 requests in 3 s measured in Chromium."""
+    that is a loop, one request per failure (the review counted 2,021 in 3 s in Chromium)."""
 
     MARKUP = ('<html><head><meta name="theme-color" content="#fff"></head>'
               '<body><div id="root"><div>opencode</div></div></body></html>')

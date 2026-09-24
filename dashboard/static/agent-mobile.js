@@ -188,7 +188,7 @@
 
   // One request at a time, and a failed one waits before the next. renderCard asks again
   // whenever nothing is cached, and a failure cached nothing, so an unreachable relay was
-  // a loop: 2,021 fetches in 3 s, measured in Chromium (found in review, 2026-09-24).
+  // a loop of requests, one per failure, as fast as they failed (found in review, 2026-09-24).
   var fetching = false, retryAt = 0, RETRY_MS = 15000;
 
   function fetchSessions(done) {
