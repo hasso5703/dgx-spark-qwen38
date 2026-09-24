@@ -1071,20 +1071,39 @@ class SystemOne(unittest.TestCase):
         request the engine has never seen. Without a second check the branch was sent the
         moment a slot freed: a full prefill for a caller who is gone."""
         cancel = threading.Event()
-        sent = []
+        sent, outcome = [], []
 
         def fake_urlopen(req, timeout=None):
             sent.append(req.full_url)
             raise AssertionError("a cancelled branch reached the engine")
 
-        real = self.mod.urllib.request.urlopen
-        self.mod.urllib.request.urlopen = fake_urlopen
-        try:
-            cancel.set()
-            with self.assertRaises(self.mod.SystemOneGone):
+        def branch():
+            try:
                 self.mod.systemone_call(None, b"{}", "rid-1", cancel)
+                outcome.append("sent")
+            except self.mod.SystemOneGone:
+                outcome.append("gone")
+            except BaseException as e:  # noqa: BLE001 (the thread reports, the test decides)
+                outcome.append(repr(e))
+
+        # The caller leaves WHILE the branch waits for a slot, not before it starts: a
+        # cancel set before the call let a check placed above the wait pass just as well
+        # (found in review, 2026-09-24).
+        real, real_slots = self.mod.urllib.request.urlopen, self.mod._systemone_slots
+        self.mod.urllib.request.urlopen = fake_urlopen
+        self.mod._systemone_slots = slots = threading.BoundedSemaphore(1)
+        slots.acquire()                       # every slot is taken: the branch queues
+        t = threading.Thread(target=branch, daemon=True)
+        try:
+            t.start()
+            time.sleep(0.3)
+            self.assertTrue(t.is_alive(), f"the branch did not wait for its slot: {outcome}")
+            cancel.set()                      # the caller goes during the wait
+            slots.release()                   # and a slot frees
+            t.join(10)
         finally:
-            self.mod.urllib.request.urlopen = real
+            self.mod.urllib.request.urlopen, self.mod._systemone_slots = real, real_slots
+        self.assertEqual(outcome, ["gone"])
         self.assertEqual(sent, [], "the branch was sent after the caller had gone")
 
     def test_the_retry_width_never_reaches_zero(self):

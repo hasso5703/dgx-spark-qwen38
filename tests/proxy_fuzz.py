@@ -294,9 +294,11 @@ class Engine:
 
     def __init__(self):
         self.live = {}
+        self.seen = set()       # every rid a request ever ran under
         self.aborted = []
         self.ignored = []
         self.finished = []
+        self.dropped = []       # a stream closed under the engine without an abort first
         self.outcome = {}       # prompt of a non-streamed request -> "noticed" or "whole"
         self.lock = threading.Lock()
 
@@ -350,6 +352,7 @@ class RelaySimulation(RuleBasedStateMachine):
                 rid = self.headers.get("x-override-rid") or f"engine{time.time_ns()}"
                 with eng.lock:
                     eng.live[rid] = True
+                    eng.seen.add(rid)
                 req = json.loads(body or b"{}")
                 if req.get("stream") is not True:
                     # Written once it is whole; meanwhile SGLang drops the request if its
@@ -401,7 +404,11 @@ class RelaySimulation(RuleBasedStateMachine):
                     pass
                 finally:
                     with eng.lock:
-                        eng.live.pop(rid, None)     # _discard_pending_req_states
+                        # _discard_pending_req_states. Still live and not finished means
+                        # the stream was closed under it with no abort first: the state
+                        # goes, the scheduler decodes on for nobody (sglang#35255)
+                        if eng.live.pop(rid, None) and rid not in eng.finished:
+                            eng.dropped.append(rid)
 
         self.esrv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
         self.esrv.daemon_threads = True
@@ -421,10 +428,20 @@ class RelaySimulation(RuleBasedStateMachine):
         self.opened = 0
 
     def teardown(self):
+        # the last step's streams settle before the servers go, and are checked too
+        end = time.time() + 3.0
+        while time.time() < end:
+            with self.engine.lock:
+                if not self.engine.live:
+                    break
+            time.sleep(0.02)
         self.psrv.shutdown()
         self.psrv.server_close()
         self.esrv.shutdown()
         self.esrv.server_close()
+        with self.engine.lock:
+            dropped, ignored = list(self.engine.dropped), list(self.engine.ignored)
+        assert dropped == [] and ignored == [], f"after the last step: dropped {dropped}, ignored {ignored}"
 
     # ---- client behaviours ----------------------------------------------------
     def _send(self, path, prompt, read_bytes, hard_close, stream=True, linger=0.0):
@@ -472,7 +489,9 @@ class RelaySimulation(RuleBasedStateMachine):
     @rule(path=st.sampled_from(["/v1/chat/completions", "/v1/messages"]))
     def client_stays_to_the_end(self, path):
         got = self._send(path, "hello", 100000, False)
-        assert b"[DONE]" in got or not got, "a staying client lost its stream"
+        # an empty read is a lost stream too: `or not got` let a relay that sent nothing
+        # pass (found in review, 2026-09-24)
+        assert b"[DONE]" in got, f"a staying client lost its stream: {got[-200:]!r}"
 
     @rule(path=st.sampled_from(["/v1/chat/completions", "/v1/messages"]),
           linger=st.sampled_from([0.0, 0.05, 0.25]),
@@ -500,15 +519,22 @@ class RelaySimulation(RuleBasedStateMachine):
         decode for six minutes with nobody listening."""
         with self.engine.lock:
             ignored = list(self.engine.ignored)
+            dropped = list(self.engine.dropped)
         assert ignored == [], f"aborts the engine discarded: {ignored}"
+        # and the other way to leave one generating: closing with no abort at all, which
+        # nothing looked at, so an abort that never reached the engine passed (found in
+        # review, 2026-09-24)
+        assert dropped == [], f"streams closed under the engine without an abort: {dropped}"
 
     @invariant()
     def no_request_is_aborted_with_an_id_the_engine_never_had(self):
         with self.engine.lock:
-            aborted = list(self.engine.aborted)
-            known = set(aborted) | set(self.engine.finished) | set(self.engine.live)
-        for rid in aborted:
-            assert rid in known, f"aborted an unknown rid: {rid}"
+            asked = list(self.engine.aborted) + list(self.engine.ignored)
+            seen = set(self.engine.seen)
+        # against every rid a request ran under: the set this was checked against
+        # contained the aborted rids themselves, so it always held
+        for rid in asked:
+            assert rid in seen, f"aborted an unknown rid: {rid}"
             assert not rid.startswith("msg_"), (
                 f"a locally minted Anthropic id was sent as a rid: {rid}")
 

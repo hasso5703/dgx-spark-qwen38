@@ -154,38 +154,113 @@ class OneJobAtATime(Base):
 
 class SharedStateStaysReadable(Base):
     def test_the_state_snapshot_can_be_serialized_while_collectors_write(self):
-        """The SSE stream json.dumps(STATE) under STATE_LOCK while samplers write
-        into it. A reader that catches a half-updated dict would raise, and the
-        browser would lose its stream."""
-        stop = threading.Event()
-        errors = []
+        """/api/state and the event stream serialise STATE under STATE_LOCK while the
+        samplers write into it. A reader that caught the dict mid-change would raise, and
+        the browser would lose its answer or its stream. Both run here through the real
+        Handler: the test's own threads took the lock on both sides before, and a stream
+        that had dropped it passed (found in review, 2026-09-24). CPython's C encoder
+        copies a dict's items in one step, so the pure-Python encoder stands in for any
+        interpreter that can switch threads mid-serialisation, with a tiny switch interval."""
+        import http.client
+        import socket
+        import types
+        cp = self.cp
 
-        def writer(name):
-            i = 0
+        def py_dumps(obj, **kw):
+            return "".join(json.JSONEncoder(**kw).iterencode(obj, _one_shot=False))
+        fake_json = types.SimpleNamespace(**{k: getattr(json, k) for k in dir(json) if not k.startswith("__")})
+        fake_json.dumps = py_dumps
+        saved_state, saved_json, saved_si = dict(cp.STATE), cp.json, sys.getswitchinterval()
+        srv = cp.Server(("127.0.0.1", 0), cp.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+
+        def cleanup():
+            srv.shutdown()
+            srv.server_close()
+            cp.json = saved_json
+            sys.setswitchinterval(saved_si)
+            with cp.STATE_LOCK:
+                cp.STATE.clear()
+                cp.STATE.update(saved_state)
+        self.addCleanup(cleanup)
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        c.request("POST", "/api/login", json.dumps({"key": "k"}), {"Content-Type": "application/json"})
+        r = c.getresponse()
+        r.read()
+        self.assertEqual(r.status, 200)
+        cookie = r.getheader("Set-Cookie").split(";")[0]
+        c.close()
+        with cp.STATE_LOCK:
+            for i in range(200):
+                cp.STATE[f"seed{i}"] = {"data": {"n": i, "list": list(range(20))}, "ts": time.time()}
+        cp.json = fake_json
+        sys.setswitchinterval(1e-6)
+        stop, errors = threading.Event(), []
+
+        def writer(tag):
+            n = 0
             while not stop.is_set():
-                with self.cp.STATE_LOCK:
-                    self.cp.STATE[name] = {"data": {"n": i, "list": list(range(20))},
-                                           "ts": time.time()}
-                i += 1
+                key = f"probe-{tag}-{n}"
+                with cp.STATE_LOCK:
+                    cp.STATE[key] = {"data": {"n": n}, "ts": time.time()}
+                with cp.STATE_LOCK:
+                    cp.STATE.pop(key, None)
+                with cp.EVENT:
+                    cp.EVENT.notify_all()
+                n += 1
 
-        def reader():
+        def state_reader():
             while not stop.is_set():
                 try:
-                    with self.cp.STATE_LOCK:
-                        json.dumps(self.cp.STATE)
+                    h = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                    h.request("GET", "/api/state", headers={"Cookie": cookie})
+                    resp = h.getresponse()
+                    body = resp.read()
+                    h.close()
+                    if resp.status != 200:
+                        errors.append(f"/api/state answered {resp.status}")
+                    else:
+                        json.loads(body)
                 except Exception as e:          # noqa: BLE001
-                    errors.append(f"{type(e).__name__}: {e}")
+                    errors.append(f"/api/state: {type(e).__name__}: {e}")
 
-        threads = [threading.Thread(target=writer, args=(f"probe{i}",), daemon=True)
-                   for i in range(4)]
-        threads += [threading.Thread(target=reader, daemon=True) for _ in range(4)]
+        def stream_reader():
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            s.sendall(f"GET /api/stream HTTP/1.1\r\nHost: x\r\nCookie: {cookie}\r\n\r\n".encode())
+            buf, events = b"", 0
+            try:
+                while not stop.is_set():
+                    try:
+                        chunk = s.recv(65536)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        errors.append(f"the stream closed after {events} events")
+                        return
+                    buf += chunk
+                    while b"\n\n" in buf:
+                        frame, buf = buf.split(b"\n\n", 1)
+                        if b"data: " in frame:
+                            json.loads(frame.split(b"data: ", 1)[1])
+                            events += 1
+            except Exception as e:              # noqa: BLE001
+                errors.append(f"/api/stream: {type(e).__name__}: {e}")
+            finally:
+                s.close()
+            if events < 3:
+                errors.append(f"the stream sent {events} events")
+
+        threads = [threading.Thread(target=writer, args=(i,), daemon=True) for i in range(3)]
+        threads += [threading.Thread(target=state_reader, daemon=True) for _ in range(2)]
+        threads += [threading.Thread(target=stream_reader, daemon=True) for _ in range(2)]
         for t in threads:
             t.start()
-        time.sleep(1.0)
+        time.sleep(2.0)
         stop.set()
         for t in threads:
-            t.join(timeout=3)
-        self.assertEqual(errors[:5], [], f"{len(errors)} readers failed")
+            t.join(timeout=10)
+        self.assertEqual(errors[:5], [], f"{len(errors)} reads failed")
 
     def test_the_event_ring_survives_concurrent_writers(self):
         stop = threading.Event()

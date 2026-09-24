@@ -168,7 +168,7 @@ sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" -e "s|__HOME__|$HOM
     -e "s|__PATH__|$SVC_PATH|g" -e "s|__OUTPUT_TOKEN_MAX__|$OUT_MAX|g" \
     -e "s|__AUTO_LINE__|$AUTO_LINE|g" \
     "$HERE/opencode-web.service.template" > "$TMP_UNIT"
-grep -q '__[A-Z_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in the unit render"
+grep -q '__[A-Z][A-Z0-9_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in the unit render"
 AGENT_CHANGED=0
 cmp -s "$TMP_UNIT" "/etc/systemd/system/$UNIT" \
   || { sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT"; AGENT_CHANGED=1; }

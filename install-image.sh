@@ -275,7 +275,7 @@ sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" \
     -e "s|__IMAGE_BIND__|$IMAGE_BIND|g" -e "s|__HF_CACHE__|$HF_CACHE|g" \
     -e "s|__HOME__|$HOME|g" \
     "$HERE/$UNIT.template" > "$RENDER"
-grep -q '__[A-Z_]*__' "$RENDER" && die "the unit template still holds an unsubstituted placeholder: $(grep -o '__[A-Z_]*__' "$RENDER" | sort -u | tr '\n' ' ')"
+grep -q '__[A-Z][A-Z0-9_]*__' "$RENDER" && die "the unit template still holds an unsubstituted placeholder: $(grep -o '__[A-Z][A-Z0-9_]*__' "$RENDER" | sort -u | tr '\n' ' ')"
 # 0644 like every other unit, and set explicitly: mktemp creates 0600 and cp keeps the
 # mode, which left this unit readable by root alone. systemd did not mind; everything
 # else that reads the unit did, and failed quietly. switch-model.sh could not find the

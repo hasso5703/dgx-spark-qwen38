@@ -2825,7 +2825,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if name is None and path.startswith("/static/"):
             name = path[len("/static/"):]
         target = (STATIC_DIR / (name or "")).resolve()
-        if not name or not str(target).startswith(str(STATIC_DIR.resolve())) \
+        # by path components: a string prefix let a sibling such as static.bak/ pass for
+        # this directory, served with no session (found in review, 2026-09-24)
+        if not name or not target.is_relative_to(STATIC_DIR.resolve()) \
                 or not target.is_file():
             return self.send_json({"error": "not found"}, 404)
         ctype = {"html": "text/html; charset=utf-8", "css": "text/css",
