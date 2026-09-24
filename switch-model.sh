@@ -257,7 +257,12 @@ fi
 printf '\n\033[1;36m── Verifying/downloading %s @ %s (resumable)\033[0m\n' "$TARGET_REPO" "$TARGET_REV"
 DL_TOKEN_ARGS=()
 [ -n "${HF_TOKEN:-}" ] && DL_TOKEN_ARGS=(-e HF_TOKEN="$HF_TOKEN")
-docker run --rm -i --network host --user "$(id -u):$(id -g)" \
+# --init: the cockpit stops a switch that overruns its job timeout with a TERM to the
+# whole process group, and docker run passes it on to the container, where python3 as
+# PID 1 has no handler for it and ignores it. Measured on the reference box: without
+# --init the container outlived the TERM and then a SIGKILL of its docker client, and
+# went on downloading with nobody attached; with it, both were gone within 6 s.
+docker run --rm -i --init --network host --user "$(id -u):$(id -g)" \
   --entrypoint python3 \
   -e HF_HOME=/hf -e HF_HUB_DOWNLOAD_TIMEOUT=30 -e HF_HUB_DISABLE_XET=1 \
   -e MODEL_REPO="$TARGET_REPO" -e MODEL_REV="$TARGET_REV" \

@@ -399,7 +399,15 @@ def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
                     self.end_headers()
                     return
                 if rewrite:
-                    payload = inject_mobile(resp.read(resp.length))
+                    want = resp.length
+                    raw = resp.read(want)
+                    if len(raw) < want:
+                        # opencode ended the document early (a restart mid-answer), and
+                        # once injected it would read as whole: nothing has been sent
+                        # yet, so the browser gets a 502 it can reload from instead
+                        self._headers_buffer = []
+                        return self.refuse(502, "the agent server cut its answer short; reload the tab")
+                    payload = inject_mobile(raw)
                     self.send_header("Content-Length", str(len(payload)))
                     # opencode sends no Cache-Control (Safari then serves the
                     # document from its heuristic cache and the injection - and
@@ -419,6 +427,16 @@ def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
                         self.wfile.write(data)
                         remaining -= len(data)
                     self.wfile.flush()
+                    if remaining > 0:
+                        # opencode ended early (a restart mid-answer). The browser was
+                        # promised the whole length, and kept this keep-alive connection,
+                        # one of its six to this origin, waiting for the rest: closing it
+                        # is how it learns the answer was cut (found in review, 2026-09-24)
+                        self.close_connection = True
+                        try:
+                            self.connection.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
                     return
                 # unknown length (server-sent events, chunked answers): re-chunk for a
                 # 1.1 client, close-delimit for a 1.0 one; flush every piece so an

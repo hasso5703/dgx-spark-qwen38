@@ -123,6 +123,35 @@ shape, while v6.24 ran, and a box installed since would show "no banner". Its wa
 proxy too old to abort also compared versions as floats, so v6.2 to v6.9 passed for v6.14 or
 later; the versions are compared part by part now.
 
+**The cockpit's panels no longer freeze.** Each tier of its sampler is one thread, and it
+ended at the first exception of any of its collectors; the jobs collector could raise
+whenever a job started or ended under it (22 times in 1.3 s under a churn test), and the
+tier it sits in, every second, is the one that carries the memory floor's abort. That tier
+then stayed frozen until the cockpit restarted. A collector's exception is now its own
+panel's error, and the jobs table is read and changed under one lock. And `/api/state`
+wrote its answer to the socket while holding the lock every sampler publishes under, so a
+reader that stopped mid-answer (a phone losing its network) held them all as long as TCP
+retries, about 15 minutes: the answer is serialised under the lock and written outside it,
+as the event stream already did.
+
+**A job that overruns its timeout is stopped, children included.** The deadline was checked
+only when the job printed a line, so a silent job never timed out and kept the one job lock;
+and at the deadline only the job's own process was killed, so a switch's download container
+went on under a job that said "failed", with the lock free for a second switch. Jobs run in
+their own process group, the deadline no longer waits for output, and the group gets a TERM,
+then a KILL. `switch-model.sh` runs its download container with `--init`: without it,
+measured on the reference box, the container outlived the TERM and a KILL of its docker
+client, since python3 as PID 1 ignores a TERM it has no handler for.
+
+**Two defects of the Agent tab.** An answer opencode cut short (a restart mid-answer) left
+the browser waiting for the rest on one of its six connections to the relay, which had
+forwarded the length and kept the connection: it is closed now, and a cut HTML document is
+a 502 rather than a page that looks whole. And `install.sh` re-runs
+`dashboard/install-agent.sh` at every update, which put opencode's port and the relay's
+port and address back on their defaults and gave the service the caller's PATH: a relay on
+its own address went dark after an update on a box without tailscale. What is installed is
+read back, and the environment still wins.
+
 **A timed-out image call keeps the lane busy.** After its 30-minute read timeout the cockpit
 gave the image lock back while the runtime, which has no abort, went on generating, so a
 second image could start beside the first, the pair that held 90.5 GB and wedged the engine.

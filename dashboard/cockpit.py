@@ -24,6 +24,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socketserver
 import subprocess
 import threading
@@ -1409,6 +1410,7 @@ STATE_LOCK = threading.Lock()
 USABLE_FRAC = round(1.0 - float(os.environ.get("OVERSIZE_MARGIN_FRAC", "0.08")), 3)
 EVENT = threading.Condition()
 
+@guard
 def collect_jobs():
     """1 s tier: the running job (whoever started it) and the recent ones."""
     return job_snapshot()
@@ -1438,10 +1440,17 @@ STATE["config"] = {"data": {"usable_frac": USABLE_FRAC, "version": VERSION, "dry
 
 
 def sampler(period: float, collectors: dict):
+    """One tier. A collector that raises is that collector's error, never the tier's: the
+    thread had no try, so one exception ended it and froze every panel of its tier until
+    the cockpit restarted, the 1 s tier's memory-floor abort included (found in review,
+    2026-09-24: collect_jobs had no @guard and could raise under a job change)."""
     while True:
         t0 = time.time()
         for name, fn in collectors.items():
-            snap = fn()
+            try:
+                snap = fn()
+            except Exception as e:  # noqa: BLE001 (isolation by design, as in guard)
+                snap = {"error": f"{type(e).__name__}: {e}"}
             with STATE_LOCK:
                 STATE[name] = {"data": snap, "ts": time.time()}
         with EVENT:
@@ -1558,26 +1567,33 @@ JOBS: dict[str, Job] = {}
 JOBS_KEEP = 50                # bounded: the audit log is the long-term record
 JOB_LOCK = threading.Lock()   # one mutating job at a time, ever
 JOB_CURRENT: dict = {"id": None}
+# JOBS changes from three threads (a start, a job's end, the 1 s sampler reading it), and
+# iterating it while another thread inserted or pruned raised "dictionary changed size
+# during iteration": 22 times in 1.3 s under a churn test (found in review, 2026-09-24).
+JOBS_MUTEX = threading.Lock()
 
 
 def job_snapshot() -> dict:
     """What every browser tab sees, whoever started the job: the running job with its
     log tail, and the last finished ones. A reload or a second tab never loses a job."""
-    cur = JOBS.get(JOB_CURRENT["id"]) if JOB_CURRENT["id"] else None
+    with JOBS_MUTEX:
+        jobs = list(JOBS.values())
+        cur = JOBS.get(JOB_CURRENT["id"]) if JOB_CURRENT["id"] else None
     if cur and cur.status != "running":
         cur = None
-    hist = sorted((j for j in JOBS.values() if j.status != "running"),
+    hist = sorted((j for j in jobs if j.status != "running"),
                   key=lambda j: j.started, reverse=True)[:5]
     return {"node_id": "local", "current": cur.summary(tail=40) if cur else None,
             "recent": [j.summary() for j in hist], "locked": JOB_LOCK.locked()}
 
 
 def _prune_jobs():
-    if len(JOBS) <= JOBS_KEEP:
-        return
-    for j in sorted(JOBS.values(), key=lambda j: j.started)[:len(JOBS) - JOBS_KEEP]:
-        if j.status != "running":
-            JOBS.pop(j.id, None)
+    with JOBS_MUTEX:
+        if len(JOBS) <= JOBS_KEEP:
+            return
+        for j in sorted(JOBS.values(), key=lambda j: j.started)[:len(JOBS) - JOBS_KEEP]:
+            if j.status != "running":
+                JOBS.pop(j.id, None)
 
 
 def audit(entry: dict):
@@ -1587,6 +1603,36 @@ def audit(entry: dict):
             f.write(json.dumps(entry) + "\n")
     except OSError:
         pass
+
+
+def _end_group(proc, grace: float = 10.0) -> str:
+    """SIGTERM to a job's whole process group, SIGKILL to what is left after `grace`, and
+    what happened, for the job's log. A `docker run` passes the TERM on to its container,
+    where it only acts if PID 1 handles it: switch-model.sh runs its download with --init
+    for that reason (without it, measured on the box, the container outlived the TERM and
+    a SIGKILL of its client). A process that runs as root (the unit verbs go through sudo)
+    cannot be signalled by the cockpit's user, and is said so."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return "the job had already ended"
+    except PermissionError:
+        return "it runs as root, which the cockpit cannot signal: it goes on without the cockpit"
+    deadline = time.time() + grace
+    while time.time() < deadline:
+        proc.poll()                       # reap the leader, so an empty group reads empty
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            return "stopped (SIGTERM)"
+        except PermissionError:
+            return "stopped the rest; a process left in it runs as root and goes on"
+        time.sleep(0.2)
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    return f"killed (SIGKILL after {grace:.0f} s)"
 
 
 def run_job(job: Job):
@@ -1605,19 +1651,39 @@ def run_job(job: Job):
             job.rc = 0 if ok else 1
             job.status = "done" if ok else "failed"
         else:
+            # Its own process group, and a deadline that does not wait for output. The
+            # deadline was checked only when a line arrived, so a silent job never timed
+            # out and held JOB_LOCK; and it killed only the child, so a switch's `docker
+            # run` went on downloading into the cache under a job that said "failed" and
+            # a lock another switch could take (found in review, 2026-09-24).
             proc = subprocess.Popen(job.argv, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True,
-                                    cwd=str(REPO_DIR))
+                                    cwd=str(REPO_DIR), start_new_session=True)
             assert proc.stdout is not None
-            deadline = time.time() + job.timeout
-            for line in proc.stdout:
-                job.append(line.rstrip())
-                if time.time() > deadline:
-                    proc.kill()
-                    job.append("[cockpit] job timeout, killed")
-                    break
+            expired = threading.Event()
+
+            def expire():
+                proc.poll()               # a leader that just ended is not a timeout
+                try:
+                    os.killpg(proc.pid, 0)
+                except ProcessLookupError:
+                    return
+                except PermissionError:
+                    pass
+                expired.set()
+                job.append(f"[cockpit] job timeout after {job.timeout:.0f} s: stopping its process group")
+                job.append(f"[cockpit] {_end_group(proc)}")
+            timer = threading.Timer(job.timeout, expire)
+            timer.daemon = True
+            timer.start()
+            try:
+                for line in proc.stdout:
+                    job.append(line.rstrip())
+            finally:
+                timer.cancel()
+                proc.stdout.close()
             job.rc = proc.wait(timeout=30)
-            job.status = "done" if job.rc == 0 else "failed"
+            job.status = "done" if job.rc == 0 and not expired.is_set() else "failed"
     except Exception as e:  # noqa: BLE001
         job.status = "failed"
         job.append(f"[cockpit] {type(e).__name__}: {e}")
@@ -2271,8 +2337,9 @@ def start_action(name: str, params: dict, origin: str = "ui") -> tuple[int, dict
     try:
         argv = spec["argv"](clean) if spec["argv"] else None
         job = Job(name, argv, spec["timeout"], params=clean, fn=JOB_FUNCS.get(name), origin=origin)
-        JOBS[job.id] = job
-        JOB_CURRENT["id"] = job.id
+        with JOBS_MUTEX:
+            JOBS[job.id] = job
+            JOB_CURRENT["id"] = job.id
         audit({"kind": "job_start", "action": name, "params": clean,
                "argv": argv, "id": job.id, "origin": origin, "dry_run": DRY_RUN})
         add_event("job", f"{job_phrase(name, clean)}: started"
@@ -2516,7 +2583,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
 
     def send_json(self, obj, code=200):
-        body = json.dumps(obj).encode()
+        return self.send_json_text(json.dumps(obj), code)
+
+    def send_json_text(self, text, code=200):
+        body = text.encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -2543,8 +2613,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/":
             return self.serve_static("/index")
         if path == "/api/state":
+            # Serialised under the lock, written outside it, as the event stream does: the
+            # write waits on the client, and every sampler takes this lock to publish, the
+            # 1 s tier's memory floor included. A reader that stops reading mid-answer (a
+            # phone that loses its network: nothing ACKs, and Linux retries for about 15
+            # minutes with tcp_retries2=15) held them all that long (found in review,
+            # 2026-09-24).
             with STATE_LOCK:
-                return self.send_json(STATE)
+                snapshot = json.dumps(STATE)
+            return self.send_json_text(snapshot)
         if path == "/api/actions":
             return self.send_json({n: {"danger": s["danger"],
                                        "params": s["params"]}

@@ -93,6 +93,20 @@ class FakeOpencode(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"%x\r\n%s\r\n" % (len(second), second))
             self.wfile.write(b"0\r\n\r\n")
             return
+        if path in ("/cutlen", "/cuthtml"):
+            # promises a body and dies halfway through it, as opencode does when it
+            # restarts mid-answer
+            html = path == "/cuthtml"
+            body = (b"<html><body>" + b"a" * 2988) if html else bytes(10000)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html" if html else "application/javascript")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body[:len(body) // 2])
+            self.wfile.flush()
+            self.close_connection = True
+            self.connection.shutdown(socket.SHUT_RDWR)
+            return
         if path == "/nobody":
             self.send_response(204)
             self.end_headers()
@@ -226,6 +240,31 @@ class RelayTests(unittest.TestCase):
         except urllib.error.HTTPError as e:
             with e:
                 return e.code, dict(e.headers.items()), e.read()
+
+    # ---- an answer opencode cuts short ----
+    def test_a_cut_fixed_length_answer_ends_the_browsers_connection(self):
+        """The relay forwarded the Content-Length, stopped at opencode's early end, and
+        kept the keep-alive connection: the browser waited on it for bytes that would
+        never come, one of its six connections to the origin (found in review,
+        2026-09-24). It is closed now, which is how a browser learns of the cut."""
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=8)
+        t0 = time.time()
+        try:
+            c.request("GET", "/cutlen", headers={"Cookie": "cockpit=good"})
+            r = c.getresponse()
+            self.assertEqual(r.status, 200)
+            with self.assertRaises(http.client.IncompleteRead):
+                r.read()
+        finally:
+            c.close()
+        self.assertLess(time.time() - t0, 4, "the browser was left waiting for the rest")
+
+    def test_a_cut_html_document_is_not_served_as_whole(self):
+        """The document is read whole before the phone layer is injected, so a short one
+        became a complete-looking page with the tail of the app missing."""
+        code, _, body = self.get("/cuthtml", headers={"Accept": "text/html"})
+        self.assertEqual(code, 502)
+        self.assertIn("cut its answer short", json.loads(body)["error"])
 
     # ---- gate ----
     def test_no_session_is_401_json(self):

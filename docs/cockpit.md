@@ -282,9 +282,12 @@ AGENT_AUTO=1 dashboard/install-agent.sh
 Variables: `OPENCODE_PORT` (4096), `AGENT_PORT` (30091), `AGENT_BIND` (an address,
 or `tailscale`), `AGENT_AUTO` (0 or 1), `AGENT_OUTPUT_TOKEN_MAX` (the output
 ceiling; by default `./oc-limits.sh --max-out`, the largest limit any target asks for), `AGENT_PATH` (the PATH the service gets; yours by
-default). Re-running
-`dashboard/install-dashboard.sh` alone keeps the relay settings, the bind and the
-port it finds in the installed unit. Remove with:
+default, plus the directories of the installed one). A re-run of either script keeps
+what it finds installed unless a variable says otherwise: `install-agent.sh` both
+ports, the relay's address, `AGENT_AUTO` and the service's PATH (since v1.18.7;
+before, every `./install.sh` put them back on the defaults), and
+`dashboard/install-dashboard.sh` the relay settings, the bind and the port. Remove
+with:
 
 ```bash
 sudo systemctl disable --now opencode-web.service

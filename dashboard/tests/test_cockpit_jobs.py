@@ -295,5 +295,133 @@ class JobBookkeeping(Base):
         self.assertLessEqual(len(self.cp.JOBS), self.cp.JOBS_KEEP * 3 + 5)
 
 
+
+class TheSamplerOutlivesItsCollectors(Base):
+    """A tier is one thread. It had no try, so the first collector that raised ended it,
+    and every panel of that tier stayed frozen until the cockpit restarted; the 1 s tier
+    carries the memory floor's abort. collect_jobs had no @guard, and its snapshot could
+    raise whenever a job started or was pruned under it (found in review, 2026-09-24)."""
+
+    def test_a_collector_that_raises_does_not_end_its_tier(self):
+        import threading
+        runs = []
+
+        def boom():
+            raise RuntimeError("dictionary changed size during iteration")
+
+        def alive():
+            runs.append(time.time())
+            return {}
+        th = threading.Thread(target=self.cp.sampler, args=(0.2, {"t_boom": boom, "t_alive": alive}),
+                              daemon=True)
+        th.start()
+        time.sleep(1.2)
+        self.assertTrue(th.is_alive(), "the tier's thread ended on a collector's exception")
+        self.assertGreaterEqual(len(runs), 3, "the next collector of the tier stopped running")
+        with self.cp.STATE_LOCK:
+            self.assertIn("RuntimeError", self.cp.STATE["t_boom"]["data"]["error"])
+
+    def test_the_jobs_snapshot_survives_jobs_changing_under_it(self):
+        import threading
+
+        class J:
+            def __init__(self, i):
+                self.id, self.status, self.started = f"t{i}", "done", float(i)
+
+            def summary(self, tail=0):
+                return {"id": self.id}
+        saved = dict(self.cp.JOBS)
+        self.addCleanup(lambda: (self.cp.JOBS.clear(), self.cp.JOBS.update(saved)))
+        for i in range(60):
+            self.cp.JOBS[f"t{i}"] = J(i)
+        errors, stop = [], threading.Event()
+
+        def churn():
+            i = 1000
+            while not stop.is_set():
+                with self.cp.JOBS_MUTEX if hasattr(self.cp, "JOBS_MUTEX") else _Nothing():
+                    self.cp.JOBS[f"t{i}"] = J(i)
+                self.cp._prune_jobs()
+                i += 1
+        th = threading.Thread(target=churn, daemon=True)
+        th.start()
+        try:
+            end = time.time() + 3.0
+            while time.time() < end:
+                try:
+                    self.cp.job_snapshot()
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"{type(e).__name__}: {e}")
+        finally:
+            stop.set()
+            th.join(5)
+        self.assertEqual(errors[:3], [], f"{len(errors)} snapshots raised while jobs changed")
+
+
+
+class AJobThatOverrunsIsStoppedWhole(Base):
+    """A job's deadline was checked only when it printed a line, so a job that went quiet
+    never timed out and held the one job lock; and at the deadline only the job's own
+    process was killed, so the `docker run` a switch starts went on downloading into the
+    cache under a job that said "failed", with the lock free for another switch (found in
+    review, 2026-09-24)."""
+
+    def run_with_timeout(self, script, timeout=1.0, wait=20):
+        import threading
+        pidfile = self.tmp / f"child-{time.time_ns()}.pid"
+        job = self.cp.Job("t", ["bash", "-c", script.replace("PIDFILE", str(pidfile))], timeout,
+                          params={}, fn=None, origin="test")
+        self.assertTrue(self.cp.JOB_LOCK.acquire(timeout=10), "an earlier job still holds the lock")
+        th = threading.Thread(target=self.cp.run_job, args=(job,), daemon=True)
+        th.start()
+        th.join(wait)
+        self.addCleanup(self.kill_child, pidfile)
+        return job, th, pidfile
+
+    @staticmethod
+    def child_alive(pidfile):
+        try:
+            pid = int(pidfile.read_text())
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except (OSError, ValueError):
+            return False
+        return state != "Z"
+
+    @staticmethod
+    def kill_child(pidfile):
+        try:
+            os.kill(int(pidfile.read_text()), 9)
+        except (OSError, ValueError):
+            pass
+
+    def test_a_silent_job_is_stopped_at_its_deadline(self):
+        job, th, pidfile = self.run_with_timeout("sleep 300 & echo $! > PIDFILE; echo started; wait")
+        self.assertFalse(th.is_alive(), "a job that printed nothing never reached its timeout")
+        self.assertEqual(job.status, "failed")
+        self.assertTrue(any("job timeout" in ln for ln in job.lines), job.lines)
+        time.sleep(0.3)
+        self.assertFalse(self.child_alive(pidfile), "the job's own child outlived it")
+
+    def test_a_talking_job_is_stopped_with_its_children(self):
+        job, th, pidfile = self.run_with_timeout(
+            "sleep 300 & echo $! > PIDFILE; while true; do echo tick; sleep 0.1; done")
+        self.assertFalse(th.is_alive())
+        self.assertEqual(job.status, "failed")
+        time.sleep(0.3)
+        self.assertFalse(self.child_alive(pidfile), "the child of a timed-out job went on")
+
+    def test_a_job_that_ends_in_time_is_done(self):
+        job, th, _ = self.run_with_timeout("echo fine", timeout=10)
+        self.assertFalse(th.is_alive())
+        self.assertEqual((job.status, job.rc), ("done", 0))
+        self.assertIn("fine", job.lines)
+
+class _Nothing:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

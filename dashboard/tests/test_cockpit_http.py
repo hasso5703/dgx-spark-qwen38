@@ -24,6 +24,7 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -133,6 +134,32 @@ class Unauthenticated(Base):
                      "/api/jobs", "/api/config", "/api/systemone"):
             st, _, _ = self.req("GET", path)
             self.assertIn(st, (401, 404), f"{path} answered {st} with no session")
+
+
+class AStalledReaderDoesNotHoldTheState(Base):
+    """/api/state wrote its answer while holding STATE_LOCK, which every sampler takes to
+    publish, the 1 s tier that carries the memory floor's abort included. A reader that
+    stops reading mid-answer held them all until the write gave up: about 15 minutes for
+    a phone that loses its network, Linux retrying with tcp_retries2=15 (found in review,
+    2026-09-24). The state is padded past any socket buffer so the write has to wait."""
+
+    def test_the_lock_is_free_while_a_reader_stalls(self):
+        cookie = self.login()
+        with self.cp.STATE_LOCK:
+            self.cp.STATE["zz_pad"] = {"data": "x" * 16_000_000, "ts": 0}
+        self.addCleanup(self.cp.STATE.pop, "zz_pad", None)
+        s = socket.socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        s.connect(("127.0.0.1", self.port))
+        try:
+            s.sendall(f"GET /api/state HTTP/1.1\r\nHost: x\r\nCookie: {cookie}\r\n\r\n".encode())
+            time.sleep(1.0)                    # the answer is being written, and nobody reads
+            got = self.cp.STATE_LOCK.acquire(timeout=3)
+            if got:
+                self.cp.STATE_LOCK.release()
+        finally:
+            s.close()
+        self.assertTrue(got, "a reader that stalls holds the lock every sampler publishes under")
 
 
 class Login(Base):

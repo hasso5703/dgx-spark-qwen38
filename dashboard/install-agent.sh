@@ -28,12 +28,29 @@
 # "tailscale"), AGENT_AUTO=1 (approve every tool call, like the oc launcher's
 # --yolo; opencode serve has no such flag, so the unit sets OPENCODE_PERMISSION),
 # AGENT_OUTPUT_TOKEN_MAX, AGENT_PATH (the PATH the service gets). A re-run keeps
-# the AGENT_AUTO choice of the installed unit unless you set it again (0 or 1).
+# what is installed unless you set it again: both ports, the relay's address, the
+# AGENT_AUTO choice (0 or 1), and every directory of the service's PATH.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT=opencode-web.service
 DASH_UNIT_PATH=/etc/systemd/system/qwen38-dashboard.service
 ENV_FILE="$HOME/.config/qwen38/opencode-web.env"
+INSTALLED_OC="/etc/systemd/system/$UNIT"
+# install.sh runs this script at every update, and an unset variable used to mean the
+# default (4096, 30091, an address derived from the cockpit's), which install-dashboard.sh
+# then wrote over the cockpit's own record of the relay: a relay on its own port or
+# address went back to the defaults at each update, and without tailscale the Agent tab
+# went dark (found in review, 2026-09-24). What is installed is read back; the
+# environment still wins.
+installed_dash(){ { grep -m1 -E "^Environment=$1=" "$DASH_UNIT_PATH" 2>/dev/null || true; } | cut -d= -f3-; }
+if [ -z "${OPENCODE_PORT:-}" ] && [ -f "$INSTALLED_OC" ]; then
+  OPENCODE_PORT="$(sed -n 's/^ExecStart=.* --port \([0-9][0-9]*\).*/\1/p' "$INSTALLED_OC" | head -1)"
+fi
+RELAY_PORT_INSTALLED="$(installed_dash COCKPIT_AGENT_PORT)"
+if [ -n "$RELAY_PORT_INSTALLED" ] && [ "$RELAY_PORT_INSTALLED" != 0 ]; then
+  AGENT_PORT="${AGENT_PORT:-$RELAY_PORT_INSTALLED}"
+  AGENT_BIND="${AGENT_BIND:-$(installed_dash COCKPIT_AGENT_BIND)}"
+fi
 OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 AGENT_PORT="${AGENT_PORT:-30091}"
 die(){ printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -117,8 +134,11 @@ case "${AGENT_AUTO:-0}" in
 esac
 
 # ── PATH for the service: yours, deduplicated, the opencode dir first ──────
-# (AGENT_PATH= overrides it, for an install run from a wrapper or an odd shell)
-SVC_PATH="${AGENT_PATH:-$(printf '%s:%s' "$(dirname "$OPENCODE_BIN")" "$PATH" | tr ':' '\n' | awk 'NF && !seen[$0]++' | paste -sd: -)}"
+# (AGENT_PATH= overrides it, for an install run from a wrapper or an odd shell), and the
+# installed one's directories after it, so an update run from a shell with a shorter PATH
+# takes no tool away from the agent
+INSTALLED_PATH="$({ grep -m1 -E '^Environment=PATH=' "$INSTALLED_OC" 2>/dev/null || true; } | cut -d= -f3-)"
+SVC_PATH="${AGENT_PATH:-$(printf '%s:%s:%s' "$(dirname "$OPENCODE_BIN")" "$PATH" "$INSTALLED_PATH" | tr ':' '\n' | awk 'NF && !seen[$0]++' | paste -sd: -)}"
 case "$SVC_PATH" in *'|'*|*' '*) die "PATH contains a space or a | character; set PATH to something plain and re-run" ;; esac
 
 # ── render and install the unit ────────────────────────────────────────────
