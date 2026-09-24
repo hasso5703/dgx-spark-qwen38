@@ -38,6 +38,7 @@ not a measurement.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import statistics
@@ -85,22 +86,6 @@ def api_key() -> str:
         die(f"no API key at {path}. Install the stack first, or pass one in QWEN38_API_KEY.")
 
 
-def post(url: str, key: str, body: dict, timeout: float) -> dict:
-    req = urllib.request.Request(
-        url, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:300]
-        die(f"the lane refused a turn: HTTP {exc.code} {detail}\n"
-            f"A refused turn makes the loop unmeasurable. If it is the proxy's prompt "
-            f"ceiling, lower --prefix-tokens or --turns.", 3)
-    except urllib.error.URLError as exc:
-        die(f"cannot reach {url}: {exc.reason}. Is the lane up?", 4)
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -116,6 +101,8 @@ def main() -> None:
     ap.add_argument("--flush", action="store_true",
                     help="flush the engine's prefix cache first (measures the cold shape)")
     ap.add_argument("--think", action="store_true", help="leave reasoning on (default off)")
+    ap.add_argument("--timeout", type=float, default=1200.0,
+                    help="seconds a turn may stay silent before the loop is called unmeasurable")
     ap.add_argument("--pin-work", dest="pin_work", action="store_true", default=True,
                     help="every turn generates exactly --turn-tokens tokens (default)")
     ap.add_argument("--no-pin-work", dest="pin_work", action="store_false",
@@ -138,7 +125,7 @@ def main() -> None:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 model = json.loads(resp.read())["data"][0]["id"]
         except Exception as exc:  # noqa: BLE001
-            die(f"cannot read {base}/v1/models ({exc}); pass --model")
+            die(f"cannot read {base}/v1/models ({exc}); pass --model", 3)
 
     if args.flush:
         try:
@@ -185,7 +172,7 @@ def main() -> None:
         text = []
         usage = {}
         try:
-            with urllib.request.urlopen(req, timeout=1200) as resp:
+            with urllib.request.urlopen(req, timeout=args.timeout) as resp:
                 for raw in resp:
                     line = raw.decode(errors="replace").strip()
                     if not line.startswith("data:"):
@@ -207,7 +194,14 @@ def main() -> None:
                             text.append(piece)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:300]
-            die(f"turn {turn + 1} refused: HTTP {exc.code} {detail}", 3)
+            die(f"turn {turn + 1} refused: HTTP {exc.code} {detail}\n"
+                f"A refused turn makes the loop unmeasurable. If it is the proxy's prompt "
+                f"ceiling, lower --prefix-tokens or --turns.", 3)
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+            # a lane gone mid-loop, a read past --timeout, a dropped connection: that was a
+            # traceback and exit 1 (found in review, 2026-09-24)
+            die(f"turn {turn + 1}: the lane stopped answering ({type(exc).__name__}: {exc}); "
+                f"a partial loop is not a measurement", 3)
         total = time.time() - t0
         answer = "".join(text)
         if not answer:

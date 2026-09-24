@@ -34,6 +34,7 @@ cannot be reached, because a refused case is not a measurement.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -271,6 +272,7 @@ CASES = [
      "tools": [WEATHER, CALC], "call": "calculator",
      "ask": "What is 4891 divided by 7? Use a tool.",
      "check": lambda a: ([] if num(a.get("a")) == 4891.0 else [f"a={a.get('a')!r}"])
+                        + ([] if num(a.get("b")) == 7.0 else [f"b={a.get('b')!r}"])
                         + ([] if text(a.get("op")) == "divide" else [f"op={a.get('op')!r}"])},
     {"name": "an optional argument left out",
      "tools": [LOGS], "call": "get_logs",
@@ -280,7 +282,12 @@ CASES = [
     {"name": "two calls in one turn",
      "tools": [WEATHER], "call": "get_weather", "expect_calls": 2,
      "ask": "Give me the weather in Oslo and in Bergen, both in celsius.",
-     "check": lambda a: [] if "unit" in a else ["unit missing"]},
+     "check": lambda a: [] if text(a.get("unit")) == "celsius" else [f"unit={a.get('unit')!r}"],
+     # every call, not the first one only: Oslo asked twice passed (found in review, 2026-09-24)
+     "check_all": lambda args: ([] if sorted(("oslo" in text(a.get("city"))) + 2 * ("bergen" in text(a.get("city")))
+                                            for a in args) == [1, 2]
+                                else [f"cities={[a.get('city') for a in args]!r}, expected Oslo and Bergen"])
+                               + [f"unit={a.get('unit')!r}" for a in args if text(a.get("unit")) != "celsius"]},
     {"name": "restraint: a question no tool answers",
      "tools": [WEATHER, CALC], "expect_no_call": True,
      "ask": "In one sentence, what is a KV cache?"},
@@ -319,6 +326,10 @@ def post(url: str, key: str, body: dict, timeout: float) -> dict:
         die(f"the lane refused a case: HTTP {exc.code} {detail}", 3)
     except urllib.error.URLError as exc:
         die(f"cannot reach {url}: {exc.reason}. Is the lane up?", 3)
+    except (TimeoutError, OSError, http.client.HTTPException) as exc:
+        # a read that timed out, a connection the engine dropped: the case was not
+        # answered, and that was a traceback and exit 1 (found in review, 2026-09-24)
+        die(f"the lane stopped answering a case ({type(exc).__name__}: {exc}). Is it up?", 3)
 
 
 def main() -> None:
@@ -387,7 +398,9 @@ def main() -> None:
         name = fn.get("name")
         raw = fn.get("arguments")
         try:
-            argd = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+            # an empty string or no arguments at all is not a call anyone can run: every
+            # tool here has required arguments, and "" parsed as {} (found in review)
+            argd = raw if isinstance(raw, dict) else json.loads(raw)
             parsed = isinstance(argd, dict)
         except (TypeError, ValueError):
             argd, parsed = {}, False
@@ -407,6 +420,21 @@ def main() -> None:
                             f"({type(exc).__name__}: {exc})")
         if case.get("expect_calls") and len(calls) < case["expect_calls"]:
             problems.append(f"{len(calls)} call(s), expected {case['expect_calls']}")
+        if case.get("check_all"):
+            every = []
+            for other in calls:
+                f = other.get("function", {}) or {}
+                if f.get("name") != case["call"]:
+                    problems.append(f"a call to {f.get('name')!r}")
+                try:
+                    every.append(json.loads(f.get("arguments")) if not isinstance(f.get("arguments"), dict)
+                                 else f["arguments"])
+                except (TypeError, ValueError):
+                    problems.append(f"arguments are not JSON: {str(f.get('arguments'))[:80]!r}")
+            try:
+                problems += case["check_all"]([a for a in every if isinstance(a, dict)])
+            except Exception as exc:  # noqa: BLE001
+                problems.append(f"arguments have an unexpected shape ({type(exc).__name__}: {exc})")
         if problems:
             print(f"  FAIL  {case['name']}: {'; '.join(problems)}")
         else:

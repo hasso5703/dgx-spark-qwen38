@@ -396,15 +396,20 @@ class BenchAgentTiming(unittest.TestCase):
     def setUpClass(cls):
         cls.ba = load("bench-agent.py")
 
-    def test_the_api_key_comes_from_the_file_and_not_the_environment(self):
-        """The key must never be taken from an env var a caller could set: the
-        file is 0600 and the environment is visible in ps."""
+    def test_api_key_reads_the_file_and_the_environment_is_the_override(self):
+        """api_key() reads the 0600 file and nothing else. The tools take QWEN38_API_KEY
+        first, the override their own refusal offers ("or pass one in QWEN38_API_KEY"):
+        this test used to say the environment is never read, which bench-agent.py and
+        tools-check.py contradict (found in review, 2026-09-24)."""
         os.environ["QWEN38_API_KEY"] = "from-the-environment"
         try:
             got = self.ba.api_key()
         finally:
             os.environ.pop("QWEN38_API_KEY", None)
         self.assertEqual(got, "test-key")
+        for tool in ("bench-agent.py", "tools-check.py"):
+            src = (Path(__file__).resolve().parents[1] / tool).read_text()
+            self.assertIn('key = os.environ.get("QWEN38_API_KEY") or api_key()', src, tool)
 
     def test_a_missing_key_file_exits_with_an_explanation(self):
         """die() puts the code in the exception and the sentence on stderr, so a
