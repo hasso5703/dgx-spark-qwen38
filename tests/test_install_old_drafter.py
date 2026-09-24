@@ -16,7 +16,7 @@ import unittest
 REPO = pathlib.Path(__file__).resolve().parents[1]
 TEXT = (REPO / "install.sh").read_text()
 DEFAULTS = "\n".join(ln for ln in TEXT.splitlines() if re.match(r"DRAFT2_(REPO|REV|QUANT|TOKENS)=\"\$\{DRAFT2_", ln))
-START = TEXT.index('  if [ -z "$_ENV_DRAFT2_REPO$_ENV_DRAFT2_REV$_ENV_DRAFT2_QUANT$_ENV_DRAFT2_TOKENS" ]; then')
+START = TEXT.index('''  CUR_DRAFT="$(grep -oE -- '--speculative-draft-model-path''')
 BLOCK = TEXT[START:TEXT.index('\nfi\nif [ -n "$INSTALLED_CHOICE" ]; then', START)]
 OLD = ("ExecStart=... --speculative-draft-model-path z-lab/Qwen3.8-27B-DFlash2 "
        "--speculative-draft-model-revision 50307d4c4cde6860d4eee73e2547cd786fe8e8a4 "

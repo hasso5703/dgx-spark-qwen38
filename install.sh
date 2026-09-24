@@ -698,32 +698,33 @@ elif [ "$INSTALLED_CHOICE" = "27b" ]; then
     fi
   fi
   # Same promise for the drafter: a box rolled back to the BF16 draft via the
-  # env override keeps it across plain re-runs, the way MODEL_CHOICE is kept.
-  if [ -z "$_ENV_DRAFT2_REPO$_ENV_DRAFT2_REV$_ENV_DRAFT2_QUANT$_ENV_DRAFT2_TOKENS" ]; then
-    CUR_DRAFT="$(grep -oE -- '--speculative-draft-model-path [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
-    CUR_DRAFT_REV="$(grep -oE -- '--speculative-draft-model-revision [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
-    CUR_DRAFT_QUANT="$(grep -oE -- '--speculative-draft-model-quantization [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
-    CUR_DRAFT_TOKENS="$(grep -oE -- '--speculative-num-draft-tokens [0-9]+' "$UNIT_PATH" | head -1 | tr -dc '0-9' || true)"
-    if [ -n "$CUR_DRAFT" ] && [ "$CUR_DRAFT" != "$DRAFT2_REPO" ]; then
-      DEF_DRAFT2="DRAFT2_REPO=$DRAFT2_REPO DRAFT2_REV=$DRAFT2_REV DRAFT2_QUANT=$DRAFT2_QUANT DRAFT2_TOKENS=$DRAFT2_TOKENS"
-      DRAFT2_REPO="$CUR_DRAFT"
-      [ -n "$CUR_DRAFT_REV" ] && DRAFT2_REV="$CUR_DRAFT_REV"
-      [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
-      [ -n "$CUR_DRAFT_TOKENS" ] && DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
-      echo "Keeping the installed drafter: $DRAFT2_REPO (D=$DRAFT2_TOKENS, $DRAFT2_QUANT). Pass DRAFT2_REPO= to change."
-      if [ "$CUR_DRAFT" = "z-lab/Qwen3.8-27B-DFlash2" ]; then
-        # The default of v1.2.3 to v1.8.6, and the documented rollback since: the unit
-        # cannot say which, so it is kept, and a box that was only ever updated never
-        # got v1.9's draft (found in review, 2026-09-24). Said here, with the way over.
-        echo "NOTE: that is the BF16 draft installs used before v1.9. The default since v1.9 drafts from a"
-        echo "      calibrated NVFP4 head, measured +30% there on the reference box (lossless). To move to it:"
-        echo "      $DEF_DRAFT2 ./install.sh"
-      fi
-    elif [ -n "$CUR_DRAFT_TOKENS" ] && [ "$CUR_DRAFT_TOKENS" != "$DRAFT2_TOKENS" ]; then
-      DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
-      [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
-      echo "Keeping the installed draft depth: D=$DRAFT2_TOKENS. Pass DRAFT2_TOKENS= to change."
+  # env override keeps it across plain re-runs, the way MODEL_CHOICE is kept. Each of the
+  # four follows the unit unless it is passed: with any one of them passed, all four fell
+  # back to the defaults, so DRAFT2_TOKENS=8 on a box serving the BF16 draft moved it to the
+  # NVFP4 one without a word (found in review, 2026-09-24). The revision and the
+  # quantization belong to the repo, so they follow the unit only with its repo.
+  CUR_DRAFT="$(grep -oE -- '--speculative-draft-model-path [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+  CUR_DRAFT_REV="$(grep -oE -- '--speculative-draft-model-revision [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+  CUR_DRAFT_QUANT="$(grep -oE -- '--speculative-draft-model-quantization [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+  CUR_DRAFT_TOKENS="$(grep -oE -- '--speculative-num-draft-tokens [0-9]+' "$UNIT_PATH" | head -1 | tr -dc '0-9' || true)"
+  if [ -z "$_ENV_DRAFT2_REPO" ] && [ -n "$CUR_DRAFT" ] && [ "$CUR_DRAFT" != "$DRAFT2_REPO" ]; then
+    DEF_DRAFT2="DRAFT2_REPO=$DRAFT2_REPO DRAFT2_REV=$DRAFT2_REV DRAFT2_QUANT=$DRAFT2_QUANT DRAFT2_TOKENS=$DRAFT2_TOKENS"
+    DRAFT2_REPO="$CUR_DRAFT"
+    [ -z "$_ENV_DRAFT2_REV" ] && [ -n "$CUR_DRAFT_REV" ] && DRAFT2_REV="$CUR_DRAFT_REV"
+    [ -z "$_ENV_DRAFT2_QUANT" ] && [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
+    [ -z "$_ENV_DRAFT2_TOKENS" ] && [ -n "$CUR_DRAFT_TOKENS" ] && DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
+    echo "Keeping the installed drafter: $DRAFT2_REPO (D=$DRAFT2_TOKENS, $DRAFT2_QUANT). Pass DRAFT2_REPO= to change."
+    if [ "$CUR_DRAFT" = "z-lab/Qwen3.8-27B-DFlash2" ]; then
+      # The default of v1.2.3 to v1.8.6, and the documented rollback since: the unit
+      # cannot say which, so it is kept, and a box that was only ever updated never
+      # got v1.9's draft (found in review, 2026-09-24). Said here, with the way over.
+      echo "NOTE: that is the BF16 draft installs used before v1.9. The default since v1.9 drafts from a"
+      echo "      calibrated NVFP4 head, measured +30% there on the reference box (lossless). To move to it:"
+      echo "      $DEF_DRAFT2 ./install.sh"
     fi
+  elif [ -z "$_ENV_DRAFT2_TOKENS" ] && [ -n "$CUR_DRAFT_TOKENS" ] && [ "$CUR_DRAFT_TOKENS" != "$DRAFT2_TOKENS" ]; then
+    DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
+    echo "Keeping the installed draft depth: D=$DRAFT2_TOKENS. Pass DRAFT2_TOKENS= to change."
   fi
 fi
 if [ -n "$INSTALLED_CHOICE" ]; then
@@ -808,6 +809,11 @@ if [ "$NO_OPENCODE" -eq 1 ]; then
 elif [ "$WITH_OPENCODE" -eq 0 ] && [ -f "$OC_OFF_MARK" ]; then
   OPENCODE=0
   echo "Keeping the opencode integration off (your earlier --no-opencode). Pass --with-opencode to re-enable."
+fi
+# Before anything is pulled or downloaded: this was refused at step 7, after the image,
+# the checkpoints and the engine's configs (found in review, 2026-09-24).
+if [ "$OPENCODE" -eq 1 ] && [ -n "$_ENV_OPENCODE_VERSION" ] && [ -z "$_ENV_OPENCODE_SHA256" ]; then
+  die "OPENCODE_VERSION=$OPENCODE_VERSION needs OPENCODE_SHA256 too (GitHub's digest of opencode-linux-arm64.tar.gz for that release): a version with no checksum is not a pin"
 fi
 # The same refusal as the one near the top, once the lane is final: without
 # MODEL_CHOICE that one reads LANE before the convergence has moved it to the
@@ -920,11 +926,13 @@ TOTAL_GB=$(awk '/^MemTotal/{print int($2/1048576)}' /proc/meminfo)
 # and then free space under $HOME says nothing (the error message used to send
 # people there while measuring here).
 mkdir -p "$HF_CACHE" 2>/dev/null || true
-FREE_DISK_GB=$(df -BG --output=avail "$HF_CACHE" 2>/dev/null | tail -1 | tr -dc '0-9')
-# Fresh installs need ~45 GB for the 27B stack (checkpoints + caches) and
-# ~145 GB for Flash-Next (the NVFP4 checkpoint alone is ~136 GB and doubles as
-# the mmap-served PLE table). Upgrades with the big checkpoint already cached
-# only need working room.
+# `|| true` inside: a df that fails (a path it cannot reach) under pipefail ended the
+# install at this line, and the "found unknown GB" below never said why (found in review,
+# 2026-09-24).
+FREE_DISK_GB=$({ df -BG --output=avail "$HF_CACHE" 2>/dev/null || true; } | tail -1 | tr -dc '0-9')
+# Fresh installs need ~45 GB for the 27B stack (checkpoints + caches) and ~180 GB for
+# Flash-Next (its NVFP4 checkpoint alone is ~136 GB), plus ~50 GB for the flash lane's
+# PLE table where PLE_DIR lands; what the cache already holds comes off (below).
 NEED_GB=45; DOCKER_NEED_GB=40; IMG_LABEL="39 GB Docker image"
 if [ "$LANE" = "flash" ]; then
   NEED_GB=180; DOCKER_NEED_GB=35; IMG_LABEL="30 GB Docker image"
@@ -969,7 +977,7 @@ if [ "$LANE" = "flash" ] && ! ls "$PLE_DIR"/ple_table_*.bin >/dev/null 2>&1; the
 fi
 [ -n "$FREE_DISK_GB" ] && [ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free for the checkpoints and caches under $HF_CACHE; found ${FREE_DISK_GB:-unknown} GB. Free some space or set HF_CACHE to another disk."
 DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
-DOCKER_FREE_GB=$(df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')
+DOCKER_FREE_GB=$({ df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null || true; } | tail -1 | tr -dc '0-9')
 # What step 2 pulls, decided here because the room it needs depends on it. An
 # OVERLAY_FLASH=1 install builds on the 2026-08-26 base, not on the image the lane
 # serves by default, so it is that one that has to be here.
@@ -1044,8 +1052,28 @@ pin_tag() {   # $1 lane, $2 image: a digest reference present on this box gets i
     echo "NOTE: could not tag $2; a docker image prune would delete it"
   fi
 }
+# A pin that moves leaves its tag behind, and the tag keeps the retired image out of every
+# prune: 30 to 39 GB per release that bumps a pin (found in review, 2026-09-24). Once the
+# lane's current pin is here and tagged, the lane's other tags go, unless a container still
+# uses their image; the image is then merely dangling, and the usual prune reclaims it.
+unpin_stale() {   # $1 lane, $2 the image the lane is pinned to now
+  local cur tag id
+  cur="$(docker image inspect "$2" --format '{{.Id}}' 2>/dev/null)" || return 0
+  docker images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}' qwen38-pinned 2>/dev/null \
+    | while read -r tag id; do
+        case "$tag" in "qwen38-pinned:$1-"*) ;; *) continue ;; esac
+        if [ "$id" = "$cur" ] || [ -n "$(docker ps -aq --filter "ancestor=$id" 2>/dev/null)" ]; then
+          continue
+        fi
+        if docker rmi "$tag" >/dev/null 2>&1; then
+          echo "untagged $tag, a pin this release no longer uses: a docker image prune can reclaim it"
+        fi
+      done
+}
 pin_tag "$LANE" "$PULLED_IMAGE"
 if [ "$LANE" = "flash" ]; then pin_tag 27b "$IMAGE"; else pin_tag flash "$FLASH_IMAGE"; fi
+unpin_stale "$LANE" "$PULLED_IMAGE" || true
+if [ "$LANE" = "flash" ]; then unpin_stale 27b "$IMAGE" || true; else unpin_stale flash "$FLASH_IMAGE" || true; fi
 
 step "3/10 Verifying the container can see the GPU"
 # --entrypoint: the image ships NVIDIA's own entrypoint script
@@ -1087,7 +1115,7 @@ docker run --rm -i --network host --user "$(id -u):$(id -g)" \
   -e DRAFT2_REPO="$DL_DRAFT2_REPO" -e DRAFT2_REV="$DRAFT2_REV" \
   "${DL_TOKEN_ARGS[@]}" \
   -v "$HF_CACHE":/hf \
-  "$PULLED_IMAGE" - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace throttling of unauthenticated downloads (set HF_TOKEN=<your token>, or re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT_REV=main ./install.sh), or a permission error: if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
+  "$PULLED_IMAGE" - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace throttling of unauthenticated downloads (set HF_TOKEN=<your token>, or re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT2_REV=main ./install.sh), or a permission error: if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
 import os
 import time
 from huggingface_hub import constants, snapshot_download
@@ -1352,9 +1380,6 @@ oc_fetch_pinned(){   # prints the cause of a failure; the caller says what it le
   install -m 755 "$tmp/opencode" "$OC_HOME_BIN.new" && mv -f "$OC_HOME_BIN.new" "$OC_HOME_BIN"
   rm -rf "$tmp"
 }
-if [ -n "$_ENV_OPENCODE_VERSION" ] && [ -z "$_ENV_OPENCODE_SHA256" ]; then
-  die "OPENCODE_VERSION=$OPENCODE_VERSION needs OPENCODE_SHA256 too (GitHub's digest of opencode-linux-arm64.tar.gz for that release): a version with no checksum is not a pin"
-fi
 OC_FOUND="$(command -v opencode || true)"
 OC_ON_PATH="$OC_FOUND"   # what a shell of the user's finds, before the fallback below
 [ -z "$OC_FOUND" ] && [ -x "$OC_HOME_BIN" ] && OC_FOUND="$OC_HOME_BIN"
