@@ -395,6 +395,26 @@ had booted the pair since v1.8, and the CI checked the pins only. The switch is 
 the rollback that holds together, v1.7.2, which shipped the overlay with its own launcher
 and pins; `flash-sglang/` stays as the record of what upstream replaced.
 
+**Smaller installer defects.**
+- Each drafter pin follows the installed unit unless it is passed: with any one
+  `DRAFT2_*` given, the other three fell back to the defaults, so `DRAFT2_TOKENS=8` on a
+  box serving the BF16 draft moved it to the NVFP4 one without a word. The flash lane's
+  `SPEC_TOKEN_MAP_SIZE=0` and `FLASH_REPLAYSSM_SPEC=0` are read back the same way, and no
+  longer come back on at the next run.
+- The `qwen38-pinned` tag of a pin a release replaced is removed once the new pin is here
+  and tagged (unless a container uses its image): it kept 30 to 39 GB out of every prune.
+- `HOME`, `HF_CACHE` and `PLE_DIR` with a space, a colon, a quote, a `$` or a `%`, which
+  broke the unit they were written into, are refused before step 1; `ENGINE_BIND` and
+  `PROXY_BIND` take 127.0.0.1 or 0.0.0.0 only (300.1.1.1 passed, and any other address
+  leaves out the loopback the box reaches both ports on); a busy `PROXY_PORT` is taken
+  for the proxy's own only when the running proxy's unit names it.
+- An `OPENCODE_VERSION` without its sha256 is refused before step 1, not at step 7; a
+  `df` that fails says "found unknown GB" instead of ending the install on its own line;
+  a bad `FLASH_REPLAYSSM_SPEC` exits cleanly; `--with-image --no-image` is refused; a
+  lane kept by `--no-image` is not reported "not installed"; an opencode binary that
+  could not be written is a failure, not "installed"; the download hint names
+  `DRAFT2_REV`, not the retired `DRAFT_REV`; `--help` gives the FP8 pool as measured.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash
