@@ -14,26 +14,28 @@ fails if the output contains the ERR trap's generic wording instead of the
 message: the guard is the failure mode itself, not just the exit code."""
 import os
 import subprocess
-import tempfile
+import sys
 import unittest
 
-REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INSTALL = os.path.join(REPO_DIR, "install.sh")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import installer_wall as wall  # noqa: E402
 
 
 def run_install(**ports):
     """install.sh with only these ports in a minimal environment.
 
     The env is deliberately sparse: PATH and HOME apart, nothing the caller's
-    shell happens to export can change which refusal fires. HOME is a temp dir
-    so the convergence reads (guarded by -r anyway) can never find a real
-    installed unit, and nothing on disk is touched either way: all three
-    refusals exit before the preflight, on any machine."""
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin",
-           "HOME": tempfile.mkdtemp()}
-    env.update({k: str(v) for k, v in ports.items()})
-    r = subprocess.run([INSTALL], capture_output=True, text=True, env=env, timeout=30)
-    return r.returncode, r.stdout + r.stderr
+    shell happens to export can change which refusal fires. The copy that runs
+    ends at a wall before step 1 and reads its units from an empty directory, and
+    the commands that act on the box are fenced: a refusal that stops firing
+    shows up as the wall, and never as a preflight run on the machine."""
+    env, record = wall.fenced_env(**ports)
+    r = subprocess.run([wall.walled()], capture_output=True, text=True, env=env,
+                       cwd=wall.cwd(), timeout=30)
+    out = r.stdout + r.stderr
+    assert wall.WALL not in out, f"the run went past its refusal:\n{out[-800:]}"
+    assert not wall.reached(record), wall.reached(record)
+    return r.returncode, out
 
 
 class PortRefusals(unittest.TestCase):

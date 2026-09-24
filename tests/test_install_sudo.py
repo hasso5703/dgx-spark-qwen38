@@ -16,9 +16,13 @@ import platform
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import installer_wall as wall  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -66,17 +70,25 @@ class SudoTicketRefusal(unittest.TestCase):
         with open(sudo, "w") as f:
             f.write("#!/bin/sh\necho 'stub-sudo refuses' >&2\nexit 1\n")
         os.chmod(sudo, os.stat(sudo).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        # Step 1 runs for real, which is the point: the refusal has to come after a real
+        # preflight. Nothing after it can: the copy ends at a wall where step 1 ends, so a
+        # refusal that moved down stops there instead of pulling, running containers and
+        # writing into the HOME and the HF cache of the box the suite runs on. It used to
+        # replay steps 1 to 7 there, with the developer's own HOME (found in review,
+        # 2026-09-24). HOME is a throwaway one now; the cache step 1 sizes against is named.
         env = dict(os.environ)
         env["PATH"] = stub + ":/usr/local/bin:/usr/bin:/bin"
-        proc = subprocess.run(["./install.sh"], cwd=REPO, env=env,
-                              capture_output=True, text=True, timeout=300)
+        env["HF_CACHE"] = os.environ.get("HF_CACHE", str(Path.home() / ".cache" / "huggingface"))
+        env["HOME"] = tempfile.mkdtemp(prefix="install-sudo-home-")
+        proc = subprocess.run([wall.walled(at=wall.AFTER_STEP_1, after=True, units=wall.REAL_UNITS)],
+                              cwd=wall.cwd(), env=env, capture_output=True, text=True, timeout=300)
         cls.rc = proc.returncode
         cls.out = proc.stdout + proc.stderr
 
     def test_the_refusal_names_sudo_before_anything_is_pulled(self):
         self.assertEqual(self.rc, 1)
         self.assertIn("1/10", self.out)
-        self.assertNotIn("2/10", self.out, "nothing is pulled before sudo is known to work")
+        self.assertNotIn(wall.WALL, self.out, "the run got to the end of step 1: sudo was never refused")
         self.assertIn("sudo -v", self.out)
 
     def test_nothing_privileged_was_touched_first(self):
