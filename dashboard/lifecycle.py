@@ -7,7 +7,8 @@ Every function here is pure so the whole module is unit-testable offline.
 States (a strict superset of what the UI shows):
   stopped, failed, starting, loading-weights, loading-draft, allocating-kv,
   capturing-graphs, warming-up, ready, degraded, stopping
-Flags: rebuild (PLE table rebuild in progress), overdue (stage took > 2x ETA).
+Flags: restarting (a crash loop between two attempts). The cockpit adds overdue (a stage
+that took more than twice the ETA).
 """
 from __future__ import annotations
 
@@ -27,7 +28,6 @@ MARKERS = [
     ("graphs_end", re.compile(_TS + r"Capture .* CUDA graph end\.")),
     ("ready",      re.compile(_TS + r"The server is fired up and ready to roll!")),
 ]
-REBUILD_RE = re.compile(r"rebuilding the PLE table")
 
 # Boot stages in order; parse_boot_log maps marker hits onto these.
 STAGES = ("init", "loading-weights", "loading-draft", "allocating-kv",
@@ -150,15 +150,15 @@ def parse_boot_log(lines: list[str]) -> dict:
             "graphs_done": graphs_done}
 
 
-def journal_flags(lines: list[str]) -> dict:
-    """Flags derivable only from the unit journal (launcher speaks there)."""
-    return {"rebuild": any(REBUILD_RE.search(ln) for ln in lines)}
-
-
 def derive_state(*, unit_active: str, unit_sub: str, container_running: bool,
-                 healthy: bool, boot: dict, rebuild: bool = False) -> dict:
-    """The single source of truth the UI renders. Pure function of facts."""
-    flags = {"rebuild": bool(rebuild)}
+                 healthy: bool, boot: dict) -> dict:
+    """The single source of truth the UI renders. Pure function of facts.
+
+    There was a "rebuild" flag here, raised by a launcher line announcing a PLE table
+    rebuild: since v1.8 the launcher deletes the table before every boot and each boot
+    writes it whole, so no line announces it, the flag never rose, and the boot history
+    kept a "rebuild" series nothing wrote (found in review, 2026-09-24)."""
+    flags: dict = {}
     if container_running and unit_active in ("failed", "inactive", "dead", "?", ""):
         # The unit is down and its container is not: a stop past its timeout (systemd
         # kills the docker client and marks the unit failed, while the container belongs
@@ -267,22 +267,16 @@ def warn_reasons(action: str, params: dict, states: dict,
 
 
 # ── Stage timing: history + ETA (median of real observed durations) ─────────
-def eta_for(history: dict, unit: str, rebuild: bool) -> float | None:
-    """Median full-boot duration for this unit (seconds), rebuild-aware."""
-    key = f"{unit}:rebuild" if rebuild else unit
-    vals = [v for v in history.get(key, []) if isinstance(v, (int, float))]
-    if not vals:
-        vals = [v for v in history.get(unit, [])
-                if isinstance(v, (int, float))]
+def eta_for(history: dict, unit: str) -> float | None:
+    """Median full-boot duration for this unit (seconds)."""
+    vals = [v for v in history.get(unit, []) if isinstance(v, (int, float))]
     return statistics.median(vals) if vals else None
 
 
-def record_boot(history: dict, unit: str, seconds: float,
-                rebuild: bool, keep: int = 12) -> dict:
-    key = f"{unit}:rebuild" if rebuild else unit
-    lst = list(history.get(key, []))
+def record_boot(history: dict, unit: str, seconds: float, keep: int = 12) -> dict:
+    lst = list(history.get(unit, []))
     lst.append(round(float(seconds), 1))
-    history[key] = lst[-keep:]
+    history[unit] = lst[-keep:]
     return history
 
 

@@ -291,7 +291,8 @@ when the scale is above 1 **and** a negative prompt is present. Either alone is 
 byte for byte: three requests differing only in `true_cfg_scale` produced the same SHA-256.
 With both, the request genuinely takes twice as long (88.9 s against 45.4 s), which is the
 second forward pass. On the editing endpoint `flow_shift` is accepted and ignored: five
-values, one output.
+values, one output, and its route declares no such field (nor `max_sequence_length`), so
+the cockpit leaves both out of an edit.
 
 ## Transparency works, and it is the prompt that asks for it
 

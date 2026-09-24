@@ -189,5 +189,35 @@ class OneDiskForBoth(unittest.TestCase):
         self.assertIn("FITS", self.run_block(False, 60))
 
 
+
+class ABadFlashKnobIsRefusedByName(unittest.TestCase):
+    """A FLASH_REPLAYSSM_SPEC that is neither 0 nor 1 is refused with its own message: the
+    refusal returned 1 at a top-level call, so the ERR trap's "Install failed at line ..."
+    came after it. This runs install.sh up to that call, in a throwaway HOME; the lines
+    before it only assign and define."""
+
+    def run_prefix(self, **env):
+        lines = TEXT.splitlines()
+        stop = next(i for i, ln in enumerate(lines) if ln == "resolve_flash_tier_args")
+        d = pathlib.Path(tempfile.mkdtemp(prefix="knob-"))
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        (d / "prefix.sh").write_text("\n".join(lines[:stop + 1]) + '\necho "REACHED $FLASH_TIER_ARGS"\n')
+        return subprocess.run(["bash", str(d / "prefix.sh")], capture_output=True, text=True, timeout=30,
+                              env={"PATH": "/usr/bin:/bin", "HOME": str(d), **env})
+
+    def test_a_bad_value_is_refused_without_the_trap(self):
+        r = self.run_prefix(FLASH_REPLAYSSM_SPEC="2")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("FLASH_REPLAYSSM_SPEC must be 0 or 1 (got: 2)", r.stderr)
+        self.assertNotIn("Install failed at line", r.stderr)
+        self.assertNotIn("REACHED", r.stdout)
+
+    def test_the_good_values_pass(self):
+        for value, flag in (("0", False), ("1", True)):
+            r = self.run_prefix(FLASH_REPLAYSSM_SPEC=value)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual("--enable-linear-replayssm-spec" in r.stdout, flag, value)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

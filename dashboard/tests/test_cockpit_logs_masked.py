@@ -61,5 +61,19 @@ class TheLogs(unittest.TestCase):
             self.assertIn("<masked>", json.loads(body)["lines"][0], name)
 
 
+class TheBundleHasEveryLanesJournal(unittest.TestCase):
+    """The diagnostics bundle carried the 27B's, the flash lane's and the proxy's
+    journals, and left out the image lane's and the Agent tab server's (found in review,
+    2026-09-24)."""
+
+    def test_the_image_and_agent_journals_are_collected(self):
+        src = (DASH / "cockpit.py").read_text()
+        body = src[src.index("def job_diag_bundle("):src.index("with tarfile.open(out", src.index("def job_diag_bundle("))]
+        self.assertIn('"journal-image.txt"', body)
+        self.assertIn('"-u", IMAGE_UNIT', body)
+        self.assertIn('"journal-opencode-web.txt"', body)
+        self.assertIn('"-u", AGENT_UNIT', body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

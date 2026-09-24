@@ -179,6 +179,18 @@ class TheEditingPath(Base):
         self.assertNotIn(b'name="width"', self.spy.body)
         self.assertNotIn(b'name="height"', self.spy.body)
 
+    def test_the_fields_the_edits_endpoint_has_no_form_for_stay_out(self):
+        """edits() declares no flow_shift and no max_sequence_length, so they were sent
+        and dropped unread (found in review, 2026-09-24). A generation still gets both."""
+        self.call({"prompt": "x", "flow_shift": 3.0, "max_sequence_length": 512, "images": [self.PNG]},
+                  editing=True)
+        self.assertNotIn(b'name="flow_shift"', self.spy.body)
+        self.assertNotIn(b'name="max_sequence_length"', self.spy.body)
+        self.assertIn(b'name="prompt"', self.spy.body)
+        self.call({"prompt": "x", "flow_shift": 3.0, "max_sequence_length": 512})
+        body = json.loads(self.spy.body)
+        self.assertEqual((body["flow_shift"], body["max_sequence_length"]), (3.0, 512))
+
     def test_it_posts_to_the_edits_endpoint(self):
         self.call({"prompt": "x", "images": [self.PNG]}, editing=True)
         self.assertTrue(self.spy.url.endswith("/v1/images/edits"), self.spy.url)
@@ -453,7 +465,12 @@ class ARequestCutByAStopSaysSo(Base):
 
     def lives(self, *seq):
         it = iter(seq)
+        saved = (self.ck._image_life, self.ck._image_exit)
+        self.addCleanup(setattr, self.ck, "_image_life", saved[0])
+        self.addCleanup(setattr, self.ck, "_image_exit", saved[1])
         self.ck._image_life = lambda: next(it)
+        # how the run ended, as systemd tells it after a stop (a crash is ACrashIsNotACancel)
+        self.ck._image_exit = lambda: {"SubState": "dead", "Result": "success", "NRestarts": "0"}
 
     def test_a_500_from_a_lane_that_changed_is_an_interruption(self):
         self.fail_with(self.ck.urllib.error.HTTPError("http://x", 500, "Internal Server Error", {}, None))
@@ -481,6 +498,68 @@ class ARequestCutByAStopSaysSo(Base):
         code, out = self.call({"prompt": "p", "width": 512, "height": 512})
         self.assertEqual(code, 502)
         self.assertIn("start it", out["error"])
+
+
+class ACrashIsNotACancel(Base):
+    """A lane that dies under a request also changes (ActiveState, InvocationID), and the
+    cockpit answered that as interrupted: the page said "Cancelled: the lane was stopped or
+    restarted" of a crash (found in review, 2026-09-24). systemd tells the two apart: the
+    unit restarts itself (Restart=on-failure) only after a death nobody asked for."""
+
+    def fail_with(self, exc):
+        def boom(req, timeout=None):
+            raise exc
+        self.ck.urllib.request.urlopen = boom
+
+    def lives(self, *seq):
+        it = iter(seq)
+        self.ck._image_life = lambda: next(it)
+
+    def exits(self, **facts):
+        self.ck._image_exit = lambda: dict(facts)
+
+    def setUp(self):
+        super().setUp()
+        saved = (self.ck._image_life, getattr(self.ck, "_image_exit", None))
+        self.addCleanup(setattr, self.ck, "_image_life", saved[0])
+        self.addCleanup(setattr, self.ck, "_image_exit", saved[1])
+
+    def test_a_death_systemd_restarts_is_a_crash(self):
+        self.fail_with(ConnectionResetError("reset"))
+        self.lives(("active", "run-1"), ("activating", "run-1"))
+        self.exits(SubState="auto-restart", Result="signal", NRestarts="0")
+        code, out = self.call({"prompt": "p", "width": 512, "height": 512})
+        self.assertEqual((code, out.get("crashed"), out.get("interrupted")), (502, True, None))
+        self.assertIn("crashed", out["error"])
+        self.assertIn("Logs tab", out["error"])
+
+    def test_a_500_as_it_died_is_a_crash_too(self):
+        self.fail_with(self.ck.urllib.error.HTTPError("http://x", 500, "Internal Server Error", {}, None))
+        self.lives(("active", "run-1"), ("failed", "run-1"))
+        self.exits(SubState="failed", Result="core-dump", NRestarts="3")
+        code, out = self.call({"prompt": "p", "width": 512, "height": 512})
+        self.assertEqual((code, out.get("crashed")), (502, True))
+
+    def test_a_stop_is_still_a_cancel(self):
+        self.fail_with(ConnectionResetError("reset"))
+        self.lives(("active", "run-1"), ("deactivating", "run-1"))
+        self.exits(SubState="stop-sigterm", Result="success", NRestarts="0")
+        code, out = self.call({"prompt": "p", "width": 512, "height": 512})
+        self.assertEqual((code, out.get("interrupted"), out.get("crashed")), (503, True, None))
+
+    def test_a_stop_that_overran_its_timeout_is_still_a_cancel(self):
+        self.fail_with(ConnectionResetError("reset"))
+        self.lives(("active", "run-1"), ("failed", "run-1"))
+        self.exits(SubState="failed", Result="timeout", NRestarts="0")
+        code, out = self.call({"prompt": "p", "width": 512, "height": 512})
+        self.assertEqual((code, out.get("interrupted")), (503, True))
+
+    def test_a_restart_is_still_a_cancel(self):
+        self.fail_with(ConnectionResetError("reset"))
+        self.lives(("active", "run-1"), ("activating", "run-2"))
+        self.exits(SubState="start", Result="success", NRestarts="0")
+        code, out = self.call({"prompt": "p", "width": 512, "height": 512})
+        self.assertEqual((code, out.get("interrupted")), (503, True))
 
 
 class TheAgentLimitsFollowABoot(Base):

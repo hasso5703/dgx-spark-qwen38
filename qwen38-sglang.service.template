@@ -15,6 +15,9 @@ Type=simple
 User=__USER__
 Group=__GROUP__
 ExecStartPre=-/usr/bin/docker rm -f qwen38-sglang
+# The key goes to the server in a file SGLang merges in memory (see engine-secrets.sh),
+# written again before every start, so it is on no command line.
+ExecStartPre=/bin/bash __HOME__/.config/qwen38/engine-secrets.sh
 ExecStart=/bin/bash -c 'exec /usr/bin/docker run --rm --name qwen38-sglang --gpus all \
   --memory 100g --memory-swap 100g --shm-size 16g --network host --ipc=host \
   -e TORCHINDUCTOR_CACHE_DIR=/cache/inductor \
@@ -41,7 +44,7 @@ ExecStart=/bin/bash -c 'exec /usr/bin/docker run --rm --name qwen38-sglang --gpu
     --enable-metrics \
     --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
     --chat-template /out/chat-template-sglang.jinja \
-    --api-key "$(cat __HOME__/.config/qwen38/api-key)" \
+    --config /out/engine-secrets.yaml \
     --host __ENGINE_BIND__ --port __PORT__'
 ExecStop=-/usr/bin/docker stop -t 20 qwen38-sglang
 Restart=always

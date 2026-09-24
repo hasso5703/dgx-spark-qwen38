@@ -152,8 +152,9 @@ per engine: stopped, failed, starting, loading-weights, loading-draft,
 allocating-kv, capturing-graphs, warming-up, ready, degraded, stopping.
 Facts in: systemd ActiveState/SubState + ActiveEnterTimestampMonotonic,
 container presence, the container log tail (markers are SGLang's own lines),
-/health, and the unit journal (PLE rebuild flag). Boot durations are learned
-per unit (rebuild-aware buckets, median of the last 12) and drive the ETA;
+and /health. Boot durations are learned per unit (median of the last 12) and
+drive the ETA; every flash boot writes its PLE table whole, so there is no
+separate "rebuild" boot to learn apart (there was until v1.8);
 a boot is only recorded if the cockpit witnessed the activation change,
 so a cockpit restart facing a warm engine never records its uptime.
 

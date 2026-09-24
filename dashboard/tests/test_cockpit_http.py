@@ -907,11 +907,24 @@ class SystemOneRoute(Base):
         self.assertEqual(set(seen["body"]), {"state", "questions", "model"})
         self.assertTrue(seen["auth"].startswith("Bearer "))
 
+    def a_text_lane_is_ready(self):
+        """The probe is only sent with a text lane up; without one the answer is its own
+        test (test_page_facts.SystemOneIsAnsweredByATextLane)."""
+        with self.cp.LIFE_LOCK:
+            saved = dict(self.cp.LIFE.get("states", {}))
+            self.cp.LIFE["states"] = {"qwen38-sglang.service": "ready"}
+
+        def restore():
+            with self.cp.LIFE_LOCK:
+                self.cp.LIFE["states"] = saved
+        self.addCleanup(restore)
+
     def test_the_probe_reports_a_proxy_that_does_not_serve_the_route(self):
         """A cockpit whose proxy predates v6.19 must say so rather than look broken."""
         def fake_urlopen(req, timeout=None):
             raise self.cp.urllib.error.HTTPError(req.full_url, 404, "x", {}, None)
 
+        self.a_text_lane_is_ready()
         real = self.cp.urllib.request.urlopen
         self.cp.urllib.request.urlopen = fake_urlopen
         try:
@@ -927,6 +940,7 @@ class SystemOneRoute(Base):
         def fake_urlopen(req, timeout=None):
             raise self.cp.urllib.error.HTTPError(req.full_url, 422, "x", {}, None)
 
+        self.a_text_lane_is_ready()
         real = self.cp.urllib.request.urlopen
         self.cp.urllib.request.urlopen = fake_urlopen
         try:

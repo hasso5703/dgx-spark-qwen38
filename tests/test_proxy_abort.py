@@ -5,7 +5,11 @@ names it and aborts it in time. SGLang's abort_request() returns early when the 
 no longer in TokenizerManager.rid_to_state, and the client disconnect deletes that entry
 first, so an abort that arrives after the socket close is discarded in silence
 (sglang #35255). The fake engine below reproduces exactly that rule: an abort for a rid
-whose state is gone is recorded as ignored, not as an abort.
+whose state is gone is recorded as ignored, not as an abort. And it sees the close when it
+happens, as SGLang does, not at its own next write: a fake that noticed the close only when
+a write failed, up to an event gap later, could not tell an abort sent before the close from
+one sent just after it, and a proxy that closed first passed every test here (found in
+review, 2026-09-24).
 
 Three holes measured on the reference box on 2026-09-09 and closed here:
   - a client that gave up during prefill left a request the proxy could not name,
@@ -42,6 +46,7 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
     ignored = []         # aborts that arrived after the state was gone (the #35255 hole)
     seen_rid_header = []
     drained = []         # requests the engine could write to the very end
+    conns = {}           # rid -> the connection its answer goes out on
     honour = True        # SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES, off by default upstream
     lock = threading.Lock()
 
@@ -62,6 +67,23 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
         that gap and read as discarded, about once in a CI run (seen 2026-09-24)."""
         with self.lock:
             FakeEngine.live[rid] = True
+            FakeEngine.conns[rid] = self.connection
+
+    @staticmethod
+    def _peer_closed(conn):
+        """Whether the proxy has closed this request's connection. The proxy sends nothing
+        more on it once the body is read, so a peek that finds the end of the stream is the
+        close, however long before the next event it came. The proxy reads the abort's
+        answer before it closes, so an abort that arrives while this says True was sent
+        after the close."""
+        if conn is None:
+            return False
+        try:
+            return conn.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
 
     def _write_events(self, rid, ids, prefill=0.0, count=6):
         """Write SSE events until the reader goes away; report which happened. The state
@@ -90,6 +112,8 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
         if path == "/abort_request":
             rid = json.loads(body or b"{}").get("rid")
             with self.lock:
+                if self._peer_closed(FakeEngine.conns.get(rid)):
+                    FakeEngine.live.pop(rid, None)     # the disconnect deleted it first
                 # abort_request(): "rid not in self.rid_to_state -> return"
                 (FakeEngine.aborted if rid in FakeEngine.live else FakeEngine.ignored).append(rid)
                 FakeEngine.live.pop(rid, None)
@@ -141,7 +165,7 @@ class Abort(unittest.TestCase):
     def setUp(self):
         with FakeEngine.lock:
             FakeEngine.live.clear(); FakeEngine.aborted.clear(); FakeEngine.ignored.clear()
-            FakeEngine.seen_rid_header.clear(); FakeEngine.drained.clear()
+            FakeEngine.seen_rid_header.clear(); FakeEngine.drained.clear(); FakeEngine.conns.clear()
             FakeEngine.honour = True
         # what the engine does with the header is learned, never assumed: each test
         # starts from "not known yet", the way the proxy starts.
@@ -164,7 +188,7 @@ class Abort(unittest.TestCase):
         s.close()
         with FakeEngine.lock:
             FakeEngine.live.clear(); FakeEngine.aborted.clear(); FakeEngine.ignored.clear()
-            FakeEngine.seen_rid_header.clear(); FakeEngine.drained.clear()
+            FakeEngine.seen_rid_header.clear(); FakeEngine.drained.clear(); FakeEngine.conns.clear()
 
     # ---- helpers ---------------------------------------------------------------
     def _send(self, path, body, read_bytes=0, hard_close=True):

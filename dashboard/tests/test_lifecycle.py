@@ -70,19 +70,11 @@ class ParseBootLog(unittest.TestCase):
         self.assertEqual(b["stage"], "warming-up")
 
 
-class JournalFlags(unittest.TestCase):
-    def test_rebuild_detected(self):
-        j = ["août 28 18:14:37 gx10 bash[9]: qwen38-flash: previous boot "
-             "never reached health; rebuilding the PLE table"]
-        self.assertTrue(lc.journal_flags(j)["rebuild"])
-        self.assertFalse(lc.journal_flags(["Started qwen38-flash.service"])["rebuild"])
-
-
 class DeriveState(unittest.TestCase):
     def s(self, **kw):
         base = dict(unit_active="active", unit_sub="running",
                     container_running=True, healthy=False,
-                    boot={"stage": None, "fired_up": False}, rebuild=False)
+                    boot={"stage": None, "fired_up": False})
         base.update(kw)
         return lc.derive_state(**base)
 
@@ -126,8 +118,11 @@ class DeriveState(unittest.TestCase):
         got = self.s(boot={"stage": "warming-up", "fired_up": True})
         self.assertEqual(got["state"], "degraded")
 
-    def test_rebuild_flag_carried(self):
-        self.assertTrue(self.s(rebuild=True)["rebuild"])
+    def test_no_rebuild_flag_is_left(self):
+        """Nothing announces a PLE table rebuild since v1.8 (every flash boot writes it
+        whole), so the flag it raised never rose (found in review, 2026-09-24)."""
+        self.assertNotIn("rebuild", self.s())
+        self.assertFalse(hasattr(lc, "journal_flags"))
 
 
 class BlockedReasons(unittest.TestCase):
@@ -328,23 +323,18 @@ class EtaHistory(unittest.TestCase):
     def test_record_and_median(self):
         h = {}
         for v in (698, 755, 966):   # real Started->fired-up durations, s
-            h = lc.record_boot(h, "qwen38-flash.service", v, rebuild=False)
-        self.assertEqual(lc.eta_for(h, "qwen38-flash.service", False), 755)
-
-    def test_rebuild_bucket_separate_with_fallback(self):
-        h = lc.record_boot({}, "qwen38-flash.service", 700, rebuild=False)
-        self.assertEqual(lc.eta_for(h, "qwen38-flash.service", True), 700)
-        h = lc.record_boot(h, "qwen38-flash.service", 966, rebuild=True)
-        self.assertEqual(lc.eta_for(h, "qwen38-flash.service", True), 966)
+            h = lc.record_boot(h, "qwen38-flash.service", v)
+        self.assertEqual(lc.eta_for(h, "qwen38-flash.service"), 755)
+        self.assertEqual(list(h), ["qwen38-flash.service"], "a boot went to a series of its own")
 
     def test_bounded_history(self):
         h = {}
         for i in range(30):
-            h = lc.record_boot(h, "u", 100 + i, rebuild=False)
+            h = lc.record_boot(h, "u", 100 + i)
         self.assertEqual(len(h["u"]), 12)
 
     def test_no_history_gives_none(self):
-        self.assertIsNone(lc.eta_for({}, "u", False))
+        self.assertIsNone(lc.eta_for({}, "u"))
 
 
 class NoMarkerTail(unittest.TestCase):
@@ -832,24 +822,6 @@ class MoreMutantsThatSurvived(unittest.TestCase):
         b = self._boot(self.ARGS, self.WBEGIN, self.WEND, self.KV, self.GBEGIN)
         idx = lc.STAGES.index(b["stage"])
         self.assertEqual(b["done"], list(lc.STAGES[:idx]))
-
-    # ---- journal_flags ------------------------------------------------------
-    def test_a_rebuild_line_anywhere_raises_the_flag(self):
-        """Kills line 105's any(): one line in a long tail is enough."""
-        self.assertTrue(lc.journal_flags(["noise"] * 50
-                                         + ["rebuilding the PLE table"])["rebuild"])
-        self.assertFalse(lc.journal_flags(["noise"] * 50)["rebuild"])
-        self.assertFalse(lc.journal_flags([])["rebuild"])
-
-    # ---- derive_state's rebuild flag ---------------------------------------
-    def test_the_rebuild_flag_is_carried_through_untouched(self):
-        """Kills line 111 bool(rebuild)."""
-        boot = self._boot(self.ARGS, self.WBEGIN)
-        for value in (True, False):
-            got = lc.derive_state(unit_active="active", unit_sub="running",
-                                  container_running=True, healthy=False,
-                                  boot=boot, rebuild=value)
-            self.assertIs(got["rebuild"], value)
 
     # ---- warn_reasons: the flash lane is the only one with a PLE table ------
     def test_only_the_flash_lane_warns_about_the_ple_table(self):

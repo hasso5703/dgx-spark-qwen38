@@ -122,6 +122,40 @@ def main() -> None:
         assert len(restarts) == min(want, 1), (merge_said, restarts)
     m.subprocess.run = real_run
 
+    # 7. main() hands the ceiling the proxy applies to the lane that serves to fit(): the
+    #    main() runs above had a `systemctl show` that answered "", so a main() calling
+    #    fit(pool), or reading the ceiling without the served name, passed (found in
+    #    review, 2026-09-24). The 27B on a 1M window, so no lane pair caps it.
+    info = {"max_total_num_tokens": 914_573, "served_model_name": "qwen3.8-27b",
+            "context_length": 1_010_000, "model_path": "x"}
+    m.engine_info = lambda base: info
+    for env_line, ceiling in (
+            ("Environment=UPSTREAM=http://127.0.0.1:30000 PROMPT_CEILING_TOKENS=300000", 300_000),
+            # the flash lane's own ceiling is not the 27B's
+            ("Environment=PROMPT_CEILING_TOKENS=0 FLASH_PROMPT_CEILING_TOKENS=250000", 0)):
+        merges = []
+
+        def fake(argv, **kw):
+            argv = [str(a) for a in argv]
+            if argv[:2] == ["systemctl", "show"]:
+                return sp.CompletedProcess(argv, 0, stdout=env_line + "\n", stderr="")
+            if any(a.endswith("oc-merge-limits.py") for a in argv):
+                merges.append(argv)
+                return sp.CompletedProcess(argv, 0, stdout="limits: a -> b", stderr="")
+            return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+        m.subprocess.run, home = fake, os.environ["HOME"]
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                m.CONFIG_DIR, os.environ["HOME"] = P(d), d      # and no look at the real one
+                (P(d) / "opencode.json").write_text("{}")
+                assert m.main([]) == 0
+        finally:
+            m.subprocess.run, os.environ["HOME"] = real_run, home
+        want = m.fit(914_573, ceiling, 1_010_000)
+        assert merges and merges[0][-2:] == [str(want[0]), str(want[1])], (env_line, merges, want)
+        if ceiling:
+            assert want[0] <= ceiling - m.CEILING_MARGIN < m.fit(914_573, 0, 1_010_000)[0], want
+
     # 9. The pool is read from /server_info; the deprecated /get_server_info only on an
     #    engine that answers 404 to it (SGLang warns on every call of the old route).
     import http.server

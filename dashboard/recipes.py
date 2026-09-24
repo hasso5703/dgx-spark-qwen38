@@ -392,7 +392,7 @@ def validate(recipe: dict, reserved_ids: tuple = ()) -> list[str]:
                 errs.append(f"drafter.{k}: integer 1 to 16")
     serve = recipe.get("serve")
     if not isinstance(serve, dict) or not serve:
-        errs.append("serve: object with at least context_length")
+        errs.append("serve: an object of engine flags")
     else:
         for k, v in serve.items():
             if k not in FLAGS:
@@ -413,8 +413,9 @@ def validate(recipe: dict, reserved_ids: tuple = ()) -> list[str]:
                 errs.append(f"serve.{k}: number expected")
             elif not rng[0] <= v <= rng[1]:
                 errs.append(f"serve.{k}: {rng[0]} to {rng[1]}")
-        if "context_length" not in serve:
-            errs.append("serve.context_length: required")
+        # No context_length is a native window: a native unit carries no --context-length
+        # (the engine serves its model's own), and requiring one refused every native 27B
+        # builtin (found in review, 2026-09-24).
     switches = recipe.get("switches", {})
     if not isinstance(switches, dict):
         errs.append("switches: object of flag -> true/false")
@@ -450,7 +451,9 @@ def drift(recipe: dict, installed: dict) -> list[dict]:
     cmp("engine.image", recipe["engine"].get("image"), installed["engine"].get("image"))
     cmp("model.repo", recipe["model"].get("repo"), installed["model"].get("repo"))
     cmp("model.revision", recipe["model"].get("revision"), installed["model"].get("revision"))
-    for k in ("algorithm", "repo", "revision", "steps", "draft_tokens"):
+    # the draft's quantization too: a flash launcher without "unquant" loads the BF16 MTP
+    # head as if it were quantized, and showed no drift (found in review, 2026-09-24)
+    for k in ("algorithm", "repo", "revision", "steps", "draft_tokens", "quantization"):
         cmp(f"drafter.{k}", recipe.get("drafter", {}).get(k), installed.get("drafter", {}).get(k))
     keys = set(recipe.get("serve", {})) | set(installed.get("serve", {}))
     for k in sorted(keys):

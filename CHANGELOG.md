@@ -507,6 +507,102 @@ showed the last lines of the engine's container and journal as they were, while 
 ServerArgs line at boot carries the serving key: the key is masked there as the
 diagnostics bundle masks it.
 
+**Three smaller holes before the cockpit's login.** A key with non-ASCII in it ended the
+login's handler thread (`compare_digest` refuses such a str) before the attempt was counted
+or audited, and a NUL in a static path did the same (`resolve()` raises): both are answered
+now. The limit of five failed logins a minute was counted after the reply, so a burst of
+simultaneous attempts was judged far past it (40 of 40 in a test): an attempt is counted
+before it is judged, under a lock, and given back when it succeeds. And SECURITY.md said the
+update check ran at most once every six hours (a failure retries after a minute), that
+downloads go to Hugging Face and the image registry (GitHub too: the clone and the pinned
+opencode), and that every byte is pinned and hash-verified, with nothing said of the image
+lane, whose pip dependencies are resolved from PyPI unpinned.
+
+**Smaller cockpit defects.**
+- A proxy refusing the cockpit's key on the System One tab (an identity wall that does not
+  list it) was relayed as a 401, which the page reads as its own session ending: a
+  signed-in user was sent to the login. It is a gateway error with the proxy's detail.
+- The update check asked GitHub every minute when the latest release was tagged outside
+  semver, the whole anonymous budget of 60 an hour: any answer is an answer now. The
+  cockpit called itself 1.1.2 since v1.7.2; it reads its release from CHANGELOG.md.
+- A `.incomplete` blob an interrupted download left marked its checkpoint "downloading" and
+  its pinned revision absent for good, and a bare snapshot folder counted as a checkpoint:
+  a revision is there when every file its indexes name is (a diffusers layout included),
+  and only a blob written to in the last ten minutes is a download in progress.
+- A wedge's forensics saved the py-spy wrapper's complaint ("py-spy not installed") as the
+  scheduler's stacks; the wrapper's sudoers line allowed any arguments; `DASH_BIND=::` made
+  the unit fail at every start (both servers speak IPv4); a missing config folder failed
+  the unit at its namespace step; the diagnostics bundle left out the image lane's and
+  opencode-web's journals. Each is fixed.
+- GPU driver refusals were reported when their count over the last hour grew, which it does
+  not when as many old ones leave the hour as new ones come; a git status or a docker
+  inspect that timed out read as a clean checkout and a container without the request-id
+  override; in a dry run the memory floor and the pool guard acted in silence instead of
+  being shown acting; a native 27B recipe failed its own validation (no `--context-length`,
+  as a native unit has none). Each is fixed, and two comments that gave wrong numbers are.
+
+**The cockpit page says what is true of the lane it shows.** A wedged engine's banner promised
+"the autoheal belt restarts it after its grace period", and the belt is off unless
+COCKPIT_AUTOHEAL=1: the page now knows whether it is armed and says what happens next. With
+no text engine serving, the generation probe kept its last success, however old, as "ok,
+0.4 s (skipped this round: engine busy)"; it says "no text engine", and a skip names its real
+reason. The Setup tab's limits line compared prompt plus answer with the pool whatever had
+failed, so a flash limit over the proxy's ceiling read "730,000 asked, 827,968 servable"
+under "too large"; it shows the pair that failed. The System One tab probed once per page
+load, and the proxy refuses that probe with or without an engine behind it: with nothing
+serving, or the image lane up, it read "serving qwen3.8-27b", and one refusal disabled Ask
+for good. The cockpit answers "not served" without a ready text lane and keeps an answer
+only as long as its lane, and the tab asks again on each visit and when the lane changes. A
+lane that crashed under an image request read "Cancelled"; systemd tells a crash from a stop
+(auto-restart, or a death by signal or core dump), and the page says the lane crashed. And
+five places sent people to "its journal in the Logs tab", which offered no lane journal at
+all: the three are there, opened by default for the image lane or a failed lane.
+
+**The page stops working for nothing and keeps its controls under a click.** One sight of
+another client's generation kept the Image tab asking /api/image every 2 s for the page's
+whole life, behind any tab, each answer a journalctl on the box; it follows that generation
+on a visible Image tab until it ends. The Agent tab's session card on a phone fetched again
+the moment a fetch failed, a loop with the relay down: one request at a time now, and a
+failure waits 15 s. The proxy's stop/start button and the job log buttons were rebuilt on
+every state message, so a click that straddled a refresh was lost; they are updated in
+place, and the event lists, live regions for screen readers, keep their rows instead of
+being read out whole twice a second. A cancelled or served choice froze the target selector
+for the life of the page. Without localStorage, leaving the Agent tab's fullscreen on a
+phone lasted until the next tick. And the curl shown for an image edit put each reference's
+name in double quotes, where the shell still expands $(...): a reference named
+x$(cmd).png ran cmd for whoever pasted the line.
+
+**The top bar makes room instead of overlapping.** From 981 px to the width where one row
+holds everything, the actions were shrunk and drawn under the connection lamp: 38 px at
+1024 px with a mouse, 68 with a touch screen's buttons, still 6 at 1366. The widths move
+with the lane button's label, the fonts and the pointer, so the page measures the row and
+gives the actions one of their own when they do not fit. A rail collapsed in a wide window
+no longer stays collapsed on a narrow one, where it was 64 px of unlabelled icons with no
+button to open it. The page scripts now run under node in the dashboard suite, on a DOM
+built from index.html, so these are tested by what the page does.
+
+**Keys stay off command lines.** Every lane passed the engine its key as
+`--api-key "$(cat .../api-key)"`, so the key was in the argv of the docker client and of
+the server, which any local user reads in `/proc`; the download's `docker run` carried
+`-e HF_TOKEN=<token>`, and the smoke test's curl the key in a `-H` argument. The units, the
+flash launcher and `run.sh` now hand the server `--config /out/engine-secrets.yaml`, which
+SGLang merges into its arguments in memory (checked in both serving images), written from
+the api-key file by `engine-secrets.sh` before every start, so a key changed by hand still
+reaches the next start, and only when its content changes, so an update that changes
+nothing still restarts nothing. The token goes to docker by name, and the smoke key as a
+header file. The engine restarts once, at the update that brings this.
+
+**Behaviours no test guarded, and one drift the cockpit could not see.** The recipe drift
+did not compare the draft's quantization, and its test rendered a flash launcher without
+"unquant": a launcher that lost it, which loads the BF16 MTP head as if it were quantized,
+showed no drift. It is compared, and the test renders what install.sh renders. And seven
+behaviours passed their suites under a mutant that broke them: the abort sent before the
+close (the fake engine noticed a close only at its next write), get.sh's update and its
+refusal of local commits (its test clone was never behind), the lane ceiling in
+oc-fit-limits' main(), the cockpit's 409 for a second engine, the Agent relay built with
+the cockpit's own session check, and the image routes' CSRF check. Each is driven now, and
+fails under its mutant.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash

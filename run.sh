@@ -106,7 +106,8 @@ GPU_APPS="$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,nohead
 [ -z "$GPU_APPS" ] || die "the GPU is busy. This config needs the machine to itself (unified memory):
 $GPU_APPS"
 
-KEY="$(cat "$CONFIG_DIR/api-key")"
+# the key reaches the server through a file SGLang merges in memory, never the command line
+bash "$REPO_DIR/engine-secrets.sh" "$CONFIG_DIR" || die "could not write the engine's key file from $CONFIG_DIR/api-key"
 mkdir -p "$CONFIG_DIR/sglang-cache"
 echo "Starting in the foreground (first boot ≈ 9 min: torch.compile + CUDA graph capture)."
 echo "  Ready when the log says:  The server is fired up and ready to roll!"
@@ -146,5 +147,5 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
     --chat-template /out/chat-template-sglang.jinja \
     --sleep-on-idle \
     --enable-metrics \
-    --api-key "$KEY" \
+    --config /out/engine-secrets.yaml \
     --host "$ENGINE_BIND" --port "$PORT"

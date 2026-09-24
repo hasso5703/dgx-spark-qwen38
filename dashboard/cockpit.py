@@ -197,6 +197,14 @@ def api_key() -> str:
         return ""
 
 
+class Ran(str):
+    """run()'s answer: the text, and .ok, True when the command ran to a zero exit. The text
+    alone is "" on a timeout, and a git status that timed out read as a clean checkout, a
+    docker inspect that did as a container without the request-id override (found in
+    review, 2026-09-24): a reader that must not take that for a fact checks .ok."""
+    ok = True
+
+
 def run(argv: list[str], timeout: float = 5.0, merge_err: bool = False) -> str:
     """Fixed-argv runner: never a shell, never client input.
 
@@ -213,9 +221,18 @@ def run(argv: list[str], timeout: float = 5.0, merge_err: bool = False) -> str:
         else:
             out = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
-        return out.stdout
+        ran = Ran(out.stdout)
+        ran.ok = out.returncode == 0
+        return ran
     except (OSError, subprocess.TimeoutExpired):
-        return ""
+        ran = Ran("")
+        ran.ok = False
+        return ran
+
+
+def answered(text) -> bool:
+    """Did the command behind this run() answer? A stub's plain str counts as one."""
+    return getattr(text, "ok", True)
 
 
 def http_json(url: str, timeout: float = 4.0):
@@ -453,12 +470,16 @@ def collect_engine_fast():
         MEM_FLOOR["last_abort"] = time.time()
         MEM_FLOOR["aborts"] += 1
         MEM_FLOOR["last_reason"] = reason
+        # A dry run shows the belt acting, as it shows every other: said and audited, not sent.
+        # It raised instead, and the floor's decision was a failed audit line with no event
+        # (found in review, 2026-09-24).
         try:
-            if DRY_RUN:
-                raise RuntimeError("dry run: abort_all not sent")
-            engine_abort_all()
-            audit({"kind": "mem_floor", "avail_gib": avail, "num_reqs": num_reqs, "ok": True})
-            add_event("mem_floor", f"memory floor: {reason}; every generation aborted")
+            if not DRY_RUN:
+                engine_abort_all()
+            audit({"kind": "mem_floor", "avail_gib": avail, "num_reqs": num_reqs, "ok": True,
+                   **({"dry_run": True} if DRY_RUN else {})})
+            add_event("mem_floor", f"memory floor: {reason}; "
+                      + ("dry run: no abort sent" if DRY_RUN else "every generation aborted"))
         except Exception as e:  # noqa: BLE001
             audit({"kind": "mem_floor", "avail_gib": avail, "num_reqs": num_reqs, "ok": False, "err": str(e)[:120]})
             add_event("mem_floor", f"memory floor: {reason}; abort failed: {str(e)[:80]}")
@@ -479,9 +500,16 @@ def collect_kernel():
     lines = [ln for ln in out.splitlines() if "NV_ERR_NO_MEMORY" in ln]
     last = lines[-1].split()[0] if lines else None
     count = len(lines)
-    if KERNEL_LAST["count"] is not None and count > KERNEL_LAST["count"]:
-        add_event("kernel", f"GPU driver refused {count - KERNEL_LAST['count']} allocation(s): memory edge during a prefill")
+    # New lines, not a bigger count: over a window that slides, as many old refusals left
+    # it as new ones came in and the count stood still, with the event unsaid (found in
+    # review, 2026-09-24). The lines seen last time are what "new" is measured against.
+    seen = KERNEL_LAST.get("lines")
+    if KERNEL_LAST["count"] is not None and seen is not None:
+        fresh = [ln for ln in lines if ln not in seen]
+        if fresh:
+            add_event("kernel", f"GPU driver refused {len(fresh)} allocation(s): memory edge during a prefill")
     KERNEL_LAST["count"] = count
+    KERNEL_LAST["lines"] = set(lines)
     return {"node_id": "local", "nvrm_oom_1h": count, "nvrm_last": last}
 
 
@@ -583,9 +611,15 @@ def collect_canary():
     recent = LAST_PROGRESS["ts"] and time.time() - LAST_PROGRESS["ts"] < 60
     # a dry-run instance exists to exercise the UI: it must not make the real engine
     # generate anything, not even two tokens (a second cockpit shares the same box).
-    if DRY_RUN or not ready or JOB_LOCK.locked() or busy or recent:
-        # never queue a probe behind a user's request (max-running-requests 1)
-        return {"node_id": "local", **CANARY, "skipped": True}
+    # The reason travels with the skip: the page printed "engine busy" for all five, next
+    # to the last success however old, with no text engine at all.
+    why = ("this cockpit is a dry run" if DRY_RUN else "no text engine is ready" if not ready
+           else "an action is running" if JOB_LOCK.locked() else "requests are running" if busy
+           else "a client was active in the last minute" if recent else "")
+    if why:
+        # never queue a probe behind a user's request: a scheduler at its cap would make
+        # the probe wait for it, and the canary would read a busy engine as a wedged one
+        return {"node_id": "local", **CANARY, "skipped": True, "why": why}
     body = json.dumps({"model": "canary", "max_tokens": 2, "temperature": 0,
                        "messages": [{"role": "user", "content": "Say OK"}],
                        "chat_template_kwargs": {"enable_thinking": False}}).encode()
@@ -678,7 +712,7 @@ def collect_guard():
         zombies = lc.parse_zombies(tail)
         env = run(["docker", "inspect", active, "--format",
                    "{{range .Config.Env}}{{println .}}{{end}}"], timeout=6)
-        override = "SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1" in env
+        override = ("SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1" in env) if answered(env) else None
     # The banner is only printed at startup, so the version needs the whole
     # journal of the unit, not the window the counters are read over. ONE line:
     # journalctl with -g returns its matches NEWEST FIRST (plain -n is
@@ -755,8 +789,9 @@ def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
     declared do not fit it, through the same action as the Setup tab's button.
 
     A switch writes the target's nominal pair, because the pool is only known once the
-    engine is up, and on the 1M lanes that pair (900,000) is above every pool measured
-    (832,993 to 922,094 over sixteen 27B boots). install.sh fits after its own boot;
+    engine is up, and on the 1M lanes that pair's worst case (923,863: the 680,000
+    compaction point, one agent step of 43,863 and 200,000 of output) is above every pool
+    measured (832,993 to 922,094 over sixteen 27B boots). install.sh fits after its own boot;
     nothing did after a switch and a Start from this page, so every switch left the Agent
     tab asking for more than the pool, under a warning that told the operator to press a
     button (reference box, 2026-09-23, after a switch to the uncensored target).
@@ -1057,7 +1092,9 @@ def collect_repo():
     # ONE git status for both facts. run() swallows a timeout into "", so two
     # calls can disagree on a loaded box and the panel would then call a
     # modified tree clean, which is the sentence this split exists to make true.
-    status = (g("status", "--porcelain") or "").splitlines()
+    porcelain = run(["git", "-C", str(REPO_DIR), "status", "--porcelain"])
+    ok = answered(porcelain)
+    status = porcelain.splitlines()
     return {"node_id": "local",
             "head": g("log", "-1", "--format=%h %s"),
             "branch": g("branch", "--show-current"),
@@ -1067,8 +1104,8 @@ def collect_repo():
             # --porcelain counts both, so a stray screenshot dropped in the
             # checkout used to report the working tree as modified (seen
             # 2026-09-17 with a downloaded .png).
-            "dirty": any(not l.startswith("??") for l in status if l),
-            "untracked": sum(1 for l in status if l.startswith("??")),
+            "dirty": any(not l.startswith("??") for l in status if l) if ok else None,
+            "untracked": sum(1 for l in status if l.startswith("??")) if ok else None,
             "proxy": proxy}
 
 
@@ -1156,7 +1193,6 @@ def collect_lifecycle():
         if is_image and not IMAGE_UNIT_PATH.exists():
             continue                    # not installed: no card, no pill, no gate
         boot = {"stage": None, "fired_up": False, "done": []}
-        rebuild = False
         if is_image:
             st, boot, running = image_engine_state(
                 unit, active=active, sub=d.get("SubState", "?"), prev_state=prev.get(unit),
@@ -1214,8 +1250,7 @@ def collect_lifecycle():
                             and (UNHEALTHY_TICKS[unit] < 3 or progressing))
             st = lc.derive_state(unit_active=active, unit_sub=d.get("SubState", "?"),
                                  container_running=running,
-                                 healthy=(healthy or sticky_ready) and running, boot=boot,
-                                 rebuild=False)
+                                 healthy=(healthy or sticky_ready) and running, boot=boot)
             # degraded means "WAS serving, lost health", not "health probe has
             # not caught up yet": right after fired-up, stay warming-up unless
             # we had already reached ready in this activation.
@@ -1247,17 +1282,21 @@ def collect_lifecycle():
                     and time.time() - LAST_FLUSH["ts"] > cooldown):
                 held, mamba = LAST_USAGE["value"], LAST_USAGE["mamba"]
                 try:
-                    if DRY_RUN:
-                        raise urllib.error.HTTPError(ENGINE_BASE, 400, "dry run: flush not sent", None, None)
-                    req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST",
-                                                 data=b"", headers={"Authorization": f"Bearer {api_key()}"})
-                    urllib.request.urlopen(req, timeout=8).read()
-                    POOL_GUARD_STATE.update(flushes=POOL_GUARD_STATE["flushes"] + 1,
-                                            last=time.time(), fails=0, last_err="")
-                    add_event("guard", f"pool guard: prefix cache flushed while the engine was idle "
-                                       f"({held:.0%} of the pool held, {mamba:.0%} of the mamba slots); "
-                                       f"the next long prompt prefills from scratch")
-                    audit({"kind": "pool_guard", "usage": held, "mamba": mamba})
+                    # in a dry run, said and audited like the real flush, and not sent: it
+                    # raised a fake 400 instead, which reads "not idle after all", and the
+                    # guard stood down in silence (found in review, 2026-09-24)
+                    if not DRY_RUN:
+                        req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST",
+                                                     data=b"", headers={"Authorization": f"Bearer {api_key()}"})
+                        urllib.request.urlopen(req, timeout=8).read()
+                        POOL_GUARD_STATE.update(flushes=POOL_GUARD_STATE["flushes"] + 1,
+                                                last=time.time(), fails=0, last_err="")
+                    add_event("guard", f"pool guard: prefix cache "
+                                       f"{'flush not sent (dry run)' if DRY_RUN else 'flushed'} while the engine "
+                                       f"was idle ({held:.0%} of the pool held, {mamba:.0%} of the mamba slots)"
+                                       + ("" if DRY_RUN else "; the next long prompt prefills from scratch"))
+                    audit({"kind": "pool_guard", "usage": held, "mamba": mamba,
+                           **({"dry_run": True} if DRY_RUN else {})})
                 except urllib.error.HTTPError as e:
                     # 400 = "pending requests": the engine is not idle after all
                     # (a queued request the load endpoint does not show); stand down.
@@ -1317,11 +1356,6 @@ def collect_lifecycle():
                     audit({"kind": "autoheal", "unit": unit, "code": code, "out": out})
             else:
                 WEDGED_SINCE.pop(unit, None)
-        if st["state"] in lc.TRANSITIONAL and running and not is_image:
-            jl = run(["journalctl", "-u", unit, "-n", "40", "--no-pager",
-                      "-o", "cat"], timeout=6).splitlines()
-            rebuild = lc.journal_flags(jl)["rebuild"]
-            st["rebuild"] = rebuild
         elapsed = None
         try:
             mono_us = int(d.get("ActiveEnterTimestampMonotonic", "0"))
@@ -1352,10 +1386,10 @@ def collect_lifecycle():
                 LAST_PROGRESS["ts"] = None
                 READY_SINCE.pop(unit, None)
             witnessed = LIFE["witnessed"].get(unit, False)
-        eta = lc.eta_for(history, unit, rebuild)
+        eta = lc.eta_for(history, unit)
         overdue = bool(eta and elapsed and st["state"] in lc.TRANSITIONAL
                        and elapsed > 2 * eta)
-        engines[unit] = {"state": st["state"], "rebuild": st.get("rebuild", False),
+        engines[unit] = {"state": st["state"],
                          **unit_target(unit),
                          "stage_done": boot.get("done", []),
                          # which stage list this engine walks, and what it is loading
@@ -1373,7 +1407,6 @@ def collect_lifecycle():
                          "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,
                          "eta": eta, "overdue": overdue,
                          "boots": history.get(unit, [])[-5:],
-                         "boots_rebuild": history.get(f"{unit}:rebuild", [])[-3:],
                          "pools": lc.pool_spread(history, unit, unit_target(unit).get("target"))}
         states[unit] = st["state"]
         # transitions: events + boot-duration learning
@@ -1382,7 +1415,7 @@ def collect_lifecycle():
             add_event("state", f"{unit.replace('.service', '')}: {was} \u2192 {st['state']}")
             if st["state"] == "ready" and elapsed and witnessed \
                     and was in lc.TRANSITIONAL:
-                history = lc.record_boot(history, unit, elapsed, rebuild)
+                history = lc.record_boot(history, unit, elapsed)
                 if is_image:
                     # It has no KV pool, and ENGINE_BASE is the text lane's port: reading
                     # a pool here would record the wrong engine's, or nothing.
@@ -1416,7 +1449,9 @@ def collect_lifecycle():
         if r:
             blocked[f"unit:start:{unit}"] = r
             blocked[f"unit:restart:{unit}"] = r
-    for act in ("switch", "update_stack"):
+    # update_stack is no action here (the page gives install.sh's command to run in a
+    # terminal), so no page reads a verdict on it; it was computed on every sample
+    for act in ("switch",):
         r = lc.blocked_reasons(act, {}, states)
         if r:
             blocked[act] = r
@@ -1468,6 +1503,9 @@ PERIODS = {name: period for period, cols in TIERS for name in cols}
 STATE["config"] = {"data": {"usable_frac": USABLE_FRAC, "version": VERSION, "dry_run": DRY_RUN,
                             "repo_dir": str(REPO_DIR), "periods": PERIODS,
                             "agent_port": AGENT_PORT,
+                            # the page says what happens to a wedged engine, and on a default
+                            # install that is nothing: it promised the belt's restart regardless
+                            "autoheal": AUTOHEAL, "autoheal_grace_s": AUTOHEAL_GRACE,
                             "terminal_only": {"update_stack": f"cd {REPO_DIR} && ./install.sh",
                                               "install_agent": f"cd {REPO_DIR} && dashboard/install-agent.sh"}},
                    "ts": time.time()}
@@ -1577,7 +1615,7 @@ class Job:
         self.argv = argv
         self.fn = fn                     # python job (flush, abort, smoke, bundle)
         self.params = params or {}
-        self.origin = origin             # ui | autoheal
+        self.origin = origin             # ui | autoheal | autofit
         self.timeout = timeout
         self.lines: list[str] = []
         self.status = "running"
@@ -1767,11 +1805,30 @@ def systemone_available(max_age: float = 60.0) -> dict:
     answer for? Asked with a request that cannot reach the model: no `state`, which a
     proxy that serves the route refuses at the schema with 422, and a proxy that does not
     relays to the engine, where the path does not exist. So the probe costs no inference
-    either way, and the answer is cached for a minute."""
+    either way, and the answer is cached for a minute.
+
+    The proxy refuses that probe at the schema with or without an engine behind it, and
+    served_model_name() falls back to the 27B's name when no engine gives one: with nothing
+    serving, or the image lane up, the tab read "serving qwen3.8-27b", and a minute of
+    cache carried an answer across a switch (found in review, 2026-09-24). Only a text lane
+    that is ready answers System One, and a cached answer lasts as long as its lane."""
+    with LIFE_LOCK:
+        states = dict(LIFE.get("states", {}))
+    text = next(((u, states[u]) for u in lc.TEXT_UNITS if states.get(u) in lc.BUSY_STATES), None)
+    key = (text, served_model_name() if text else "")
     with SYSTEMONE_LOCK:
-        if SYSTEMONE_CACHE["data"] and time.time() - SYSTEMONE_CACHE["ts"] < max_age:
+        if (SYSTEMONE_CACHE["data"] and SYSTEMONE_CACHE.get("key") == key
+                and time.time() - SYSTEMONE_CACHE["ts"] < max_age):
             return SYSTEMONE_CACHE["data"]
-        out = {"available": False, "lane": served_model_name(), "reason": "", "status": None}
+        if not text or text[1] != "ready":
+            lane = "flash" if text and "flash" in text[0] else "27B"
+            out = {"available": False, "lane": "", "status": None,
+                   "reason": (f"the {lane} lane is {text[1]}: System One answers once it is ready" if text
+                              else "no text lane is serving: System One is answered by the 27B or the "
+                                   "flash lane, so start one of them (the image lane cannot answer it)")}
+            SYSTEMONE_CACHE.update(data=out, ts=time.time(), key=key)
+            return out
+        out = {"available": False, "lane": key[1], "reason": "", "status": None}
         body = json.dumps({"model": "jev-latest", "questions": {}}).encode()
         req = urllib.request.Request(PROXY_BASE + "/v1/systemone", body,
                                      {"Content-Type": "application/json",
@@ -1791,7 +1848,7 @@ def systemone_available(max_age: float = 60.0) -> dict:
                 out["reason"] = f"the proxy answered HTTP {e.code} to the probe"
         except Exception as e:                          # noqa: BLE001 (isolated probe)
             out["reason"] = f"the proxy at {PROXY_BASE} did not answer ({type(e).__name__})"
-        SYSTEMONE_CACHE.update(data=out, ts=time.time())
+        SYSTEMONE_CACHE.update(data=out, ts=time.time(), key=key)
         return out
 
 
@@ -2072,6 +2129,10 @@ IMAGE_ALLOWED = {"prompt", "width", "height", "num_inference_steps", "n", "outpu
                  "response_format", "generator_device", "background", "seed",
                  "true_cfg_scale", "guidance_scale", "flow_shift", "negative_prompt",
                  "size", "max_sequence_length"}
+# The editing endpoint has no form field for these two, so it drops them unread: five
+# flow_shift values made one output on the reference box, and the lane's image_api.py
+# edits() declares neither (found in review, 2026-09-24). They are left out of an edit.
+IMAGE_EDIT_UNREAD = ("flow_shift", "max_sequence_length")
 
 
 def _image_life() -> tuple:
@@ -2084,6 +2145,31 @@ def _image_life() -> tuple:
 
 IMAGE_INTERRUPTED = ("the image lane was stopped or restarted while this image was being made, which is "
                      "the only way this runtime can end a generation early (it has no abort); nothing was kept")
+IMAGE_CRASHED = ("the image lane crashed while this image was being made (systemd: {result}), and nothing "
+                 "was kept. Its journal, in the Logs tab, says why; systemd starts it again by itself.")
+# How a run that ended under a request ended. A stop leaves Result=success, or timeout when
+# it overran TimeoutStopSec, and a restart is a new run: neither goes through auto-restart.
+# A death nobody asked for does (the unit has Restart=on-failure), and these results only
+# ever come from one. exit-code alone is left out: a stop can end with one.
+IMAGE_CRASH_RESULTS = {"signal", "core-dump", "oom-kill", "watchdog"}
+
+
+def _image_exit() -> dict:
+    """SubState and Result of the image unit, asked of systemd once a request was cut."""
+    raw = run(["systemctl", "show", IMAGE_UNIT, "-p", "SubState,Result,NRestarts"], timeout=5)
+    return dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
+
+
+def _image_cut(t0: float) -> tuple[int, dict]:
+    """The answer for a request whose run of the lane ended under it: a crash said as one
+    (the page read every such end as "Cancelled", found in review, 2026-09-24), a stop or a
+    restart as the interruption it is."""
+    ex = _image_exit()
+    secs = round(time.time() - t0, 2)
+    if ex.get("SubState") == "auto-restart" or ex.get("Result") in IMAGE_CRASH_RESULTS:
+        return 502, {"error": IMAGE_CRASHED.format(result=ex.get("Result") or "died"), "crashed": True,
+                     "seconds": secs}
+    return 503, {"error": IMAGE_INTERRUPTED, "interrupted": True, "seconds": secs}
 IMAGE_STILL_RUNNING = ("the image lane is still generating this request: it has no abort, so it goes on after "
                        "this page stopped waiting, and the next request is refused until it ends. Cancel "
                        "restarts the lane if it should not finish.")
@@ -2184,6 +2270,8 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         w, h = fields.pop("width", None), fields.pop("height", None)
         if w and h:
             fields["size"] = f"{w}x{h}"
+        for k in IMAGE_EDIT_UNREAD:
+            fields.pop(k, None)
     # No Authorization header: the diffusion runtime has no --api-key, so the lane cannot
     # check one and the unit binds loopback instead. The gate is this process's own session.
     if not IMAGE_LOCK.acquire(blocking=False):
@@ -2215,7 +2303,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         # that with a bare 500. Whoever sent the stop (this page, another tab, a terminal),
         # the answer is the same fact, so it is told here and not guessed by one client.
         if e.code >= 500 and _image_life() != life0:
-            return 503, {"error": IMAGE_INTERRUPTED, "interrupted": True, "seconds": round(time.time() - t0, 2)}
+            return _image_cut(t0)
         try:
             detail = json.loads(raw.decode())
         except Exception:                               # noqa: BLE001
@@ -2223,7 +2311,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         return e.code, {"refused": detail, "seconds": round(time.time() - t0, 2)}
     except Exception as e:                              # noqa: BLE001 (isolated route)
         if _image_life() != life0:
-            return 503, {"error": IMAGE_INTERRUPTED, "interrupted": True, "seconds": round(time.time() - t0, 2)}
+            return _image_cut(t0)
         if isinstance(e, TimeoutError):
             # A read timeout: the request reached this same run and this process stopped
             # waiting (a connect timeout is a URLError, and means it never got there). The
@@ -2307,6 +2395,10 @@ def job_diag_bundle(job: Job):
         (tdp / "journal-flash.txt").write_text(run(["journalctl", "-u", "qwen38-flash.service", "-n", "400", "--no-pager", "-o", "short-iso"], timeout=15))
         (tdp / "journal-sglang.txt").write_text(run(["journalctl", "-u", "qwen38-sglang.service", "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
         (tdp / "journal-keepalive.txt").write_text(run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
+        # the image lane and the Agent tab's server have journals of their own, which the
+        # bundle left out (found in review, 2026-09-24)
+        (tdp / "journal-image.txt").write_text(run(["journalctl", "-u", IMAGE_UNIT, "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
+        (tdp / "journal-opencode-web.txt").write_text(run(["journalctl", "-u", AGENT_UNIT, "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
         for cont in CONTAINERS:
             (tdp / f"docker-{cont}.txt").write_text(run(["docker", "logs", "--tail", "600", cont], timeout=15, merge_err=True))
         (tdp / "nvidia-smi.txt").write_text(run(["nvidia-smi"], timeout=10))
@@ -2577,6 +2669,7 @@ def registry_snapshot(max_age: float = 300.0) -> dict:
         REGISTRY_CACHE.update(ts=time.time(), data=data)
         return data
 LOGIN_FAILS: dict[str, list] = {}
+LOGIN_LOCK = threading.Lock()
 
 
 def make_token(kind: str) -> str:
@@ -2762,12 +2855,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({"error": "auth"}, 401)
         raw = self.rfile.read(length) if length else b""
         if path == "/api/login":
-            # Rate limit: after 5 failures from one address, lock 60 s.
+            # Rate limit: after 5 failures from one address, lock 60 s. The attempt is counted
+            # before it is judged, under a lock, and given back when it succeeds: counted after
+            # its reply, 200 attempts at once had 107 judged and 5 counted (found in review,
+            # 2026-09-24).
             ip = self.client_address[0]
             now = time.time()
-            fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 60]
-            if len(fails) >= 5:
+            with LOGIN_LOCK:
+                fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 60]
+                locked = len(fails) >= 5
+                if not locked:
+                    fails.append(now)
                 LOGIN_FAILS[ip] = fails
+            if locked:
                 return self.send_json({"error": "too many attempts, wait a minute"}, 429)
             # Shape before content: a body that is valid JSON but not an object
             # ({"key": null}, [], "x", 5) used to reach .get() and compare_digest()
@@ -2782,23 +2882,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(key, str):
                 key = ""
             expected = api_key()
-            if not (expected and hmac.compare_digest(key, expected)):
-                fails.append(now)
-                LOGIN_FAILS[ip] = fails
+            # as bytes: compare_digest raises on a str with non-ASCII in it, and {"key": "é"}
+            # ended the thread before the attempt was counted or audited (found in review,
+            # 2026-09-24)
+            if not (expected and hmac.compare_digest(key.encode("utf-8", "replace"), expected.encode())):
                 audit({"kind": "login_fail", "ip": ip})
                 return self.send_json({"error": "bad key"}, 403)
-            if True:
-                tok = make_token("sess")
-                body = json.dumps({"ok": True}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Set-Cookie",
-                                 f"cockpit={tok}; HttpOnly; SameSite=Strict; Path=/")
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            return self.send_json({"error": "bad key"}, 403)
+            with LOGIN_LOCK:
+                try:
+                    LOGIN_FAILS[ip].remove(now)
+                except (KeyError, ValueError):
+                    pass
+            tok = make_token("sess")
+            body = json.dumps({"ok": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Set-Cookie",
+                             f"cockpit={tok}; HttpOnly; SameSite=Strict; Path=/")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if not self.authed():
             return self.send_json({"error": "auth"}, 401)
         # CSRF: any mutating POST must echo the token bound to the session.
@@ -2830,6 +2934,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "/favicon.ico": "favicon.svg"}.get(path)
         if name is None and path.startswith("/static/"):
             name = path[len("/static/"):]
+        if name and "\x00" in name:
+            # an embedded NUL makes resolve() raise, before the session check (found in
+            # review, 2026-09-24)
+            return self.send_json({"error": "not found"}, 404)
         target = (STATIC_DIR / (name or "")).resolve()
         # by path components: a string prefix let a sibling such as static.bak/ pass for
         # this directory, served with no session (found in review, 2026-09-24)
