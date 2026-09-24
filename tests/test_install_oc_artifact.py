@@ -29,7 +29,8 @@ PINS = "\n".join(line for line in INSTALL.read_text().splitlines()
                  if line.startswith(("FP8_REPO=", "UNCFP8_REPO=")))
 
 
-def generate(lane, mode, unit_ctx=None, flash_unit=False, model="RadixArk/Qwen3.8-27B-NVFP4"):
+def generate(lane, mode, unit_ctx=None, flash_unit=False, model="RadixArk/Qwen3.8-27B-NVFP4",
+             pair=None):
     t = pathlib.Path(tempfile.mkdtemp(prefix="oc-art-"))
     sgl = t / "qwen38-sglang.service"
     if unit_ctx:
@@ -37,9 +38,10 @@ def generate(lane, mode, unit_ctx=None, flash_unit=False, model="RadixArk/Qwen3.
     flash = t / "qwen38-flash.service"
     if flash_unit:
         flash.write_text("x\n")
-    ctx, out = ("205000", "32000") if lane == "flash" else ("700000", "200000")
+    ctx, out = pair or (("205000", "32000") if lane == "flash" else ("700000", "200000"))
     script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n" + PINS + "\n"
               f'LANE={lane}; CONTEXT_MODE={mode}; SGL_UNIT_PATH="{sgl}"; FLASH_UNIT_PATH="{flash}"\n'
+              f'MODEL_CHOICE={"flash" if lane == "flash" else "stock"}\n'
               f'REPO_DIR="{REPO}"; CONFIG_DIR="{t}"; OC_PORT=30001; OC_CTX={ctx}; OC_OUT={out}\n'
               'OC_LABEL=local; OPENCODE_PIN=1\n' + block())
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60,
@@ -72,8 +74,12 @@ class EachLaneKeepsItsOwnLimits(unittest.TestCase):
         self.assertNotIn("qwen38", generate("flash", "native"))
 
     def test_a_27b_install_uses_its_own_numbers(self):
-        lim = generate("27b", "1m", unit_ctx=1010000, flash_unit=True)
-        self.assertEqual(lim["qwen38"]["context"], 700000)
+        # This run's target, not the unit on disk, which step 8 rewrites after this block:
+        # an update from the NVFP4 checkpoint to FP8 still finds the NVFP4 unit here. The
+        # pair must differ from that unit's own for the test to see which one was used
+        # (700000/200000 here was both, found in review, 2026-09-24).
+        lim = generate("27b", "1m", unit_ctx=1010000, flash_unit=True, pair=("480000", "160000"))
+        self.assertEqual(lim["qwen38"], {"context": 480000, "input": 480000, "output": 160000})
         self.assertIn("flashnext", lim)
 
 

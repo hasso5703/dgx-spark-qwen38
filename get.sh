@@ -77,15 +77,10 @@ main() {
 
   # Must be on main (a detached HEAD or a side branch would silently pin an old version).
   CUR=$(git -C "$DIR" symbolic-ref -q --short HEAD || echo DETACHED)
-  if [ "$CUR" != "main" ]; then
-    if [ "${FORCE_UPDATE:-0}" = "1" ]; then
-      echo "── FORCE_UPDATE=1: switching from '$CUR' to main (your branch is kept)"
-      git -C "$DIR" checkout -q main 2>/dev/null || git -C "$DIR" checkout -qb main origin/main
-    else
-      echo "ERROR: $DIR is on '$CUR', not 'main'; refusing to install from it." >&2
-      echo "  rerun with FORCE_UPDATE=1 to switch to main (your branch/commit is kept)" >&2
-      exit 1
-    fi
+  if [ "$CUR" != "main" ] && [ "${FORCE_UPDATE:-0}" != "1" ]; then
+    echo "ERROR: $DIR is on '$CUR', not 'main'; refusing to install from it." >&2
+    echo "  rerun with FORCE_UPDATE=1 to switch to main (your branch/commit is kept)" >&2
+    exit 1
   fi
 
   # Invariant: if this script completes, you ARE on the latest origin/main.
@@ -102,9 +97,24 @@ main() {
       git -C "$DIR" status --short --untracked-files=no | head -10 >&2
       echo "Fix with ONE of:" >&2
       echo "  keep your changes aside :  FORCE_UPDATE=1  then rerun this command (recover later: git -C $DIR stash pop)" >&2
-      echo "  discard your changes    :  git -C $DIR checkout -- . && git -C $DIR clean -fd  then rerun" >&2
+      # not `git clean -fd` as well: it deletes the untracked files this script keeps
+      # on purpose (found in review, 2026-09-24)
+      echo "  discard your changes    :  git -C $DIR checkout -- .  then rerun" >&2
       exit 1
     fi
+  fi
+  # Off main under FORCE_UPDATE, the switch comes after the stash, and a detached HEAD's
+  # commit is put on a branch first. Switched first, a change that conflicted with main
+  # ended the run (rc 128), and a commit made on a detached HEAD was left on no branch
+  # (found in review, 2026-09-24).
+  if [ "$CUR" != "main" ]; then
+    if [ "$CUR" = "DETACHED" ]; then
+      BK="backup-$(git -C "$DIR" rev-parse --short HEAD)"
+      git -C "$DIR" branch -f "$BK" >/dev/null
+      echo "── FORCE_UPDATE=1: the detached commit is kept on branch '$BK'"
+    fi
+    echo "── FORCE_UPDATE=1: switching from '$CUR' to main (your branch is kept)"
+    git -C "$DIR" checkout -q main 2>/dev/null || git -C "$DIR" checkout -qb main origin/main
   fi
   AHEAD=$(git -C "$DIR" rev-list --count origin/main..HEAD 2>/dev/null || echo 1)
   if [ "$AHEAD" != "0" ]; then
@@ -131,7 +141,9 @@ main() {
   echo "── At: $(git -C "$DIR" log -1 --format='%h %s')"
 
   cd "$DIR"
-  # exec from a real file: sudo prompts on the tty, and stdin is no longer the pipe.
+  # exec from a real file. stdin is still the pipe this script came through (read to
+  # its end by now), so nothing in install.sh may read from it; sudo prompts on the tty
+  # it opens itself.
   exec bash ./install.sh "$@"
 }
 

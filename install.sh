@@ -8,8 +8,8 @@
 # SGLang image with nothing added and this script builds nothing by default: the
 # flash lane crossed over in v1.8, the 27B lane followed once the two reasons it
 # had stayed behind were measured rather than restated (see the IMAGE pin below).
-# OVERLAY_FLASH=1 rebuilds the flash lane's old local image, the one rollback
-# this repo still carries (see flash-sglang/ATTRIBUTION.md).
+# The flash lane's old overlay files stay in flash-sglang/ as the record of what
+# upstream replaced; nothing builds them since v1.18.7 (see OVERLAY_FLASH below).
 set -euo pipefail
 trap 'printf "\n\033[1;31mInstall failed at line %s (command: %s).\033[0m\nRe-running ./install.sh is safe: completed steps are skipped.\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
@@ -69,7 +69,7 @@ _ENV_PORT="${PORT:-}"; _ENV_HF_CACHE="${HF_CACHE:-}"
 _ENV_CONTEXT_MODE="${CONTEXT_MODE:-}"; _ENV_PROXY_PORT="${PROXY_PORT:-}"
 _ENV_ENGINE_BIND="${ENGINE_BIND:-}"; _ENV_PROXY_BIND="${PROXY_BIND:-}"
 _ENV_PLE_DIR="${PLE_DIR:-}"; FLASH_TIER_ENV="${FLASH_TIER:-}"
-_ENV_SERVE_IMAGE="${SERVE_IMAGE:-}"; _ENV_FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-}"
+_ENV_SPEC_TOKEN_MAP_SIZE="${SPEC_TOKEN_MAP_SIZE:-}"; _ENV_FLASH_REPLAYSSM_SPEC="${FLASH_REPLAYSSM_SPEC:-}"
 _ENV_DRAFT2_REPO="${DRAFT2_REPO:-}"; _ENV_DRAFT2_REV="${DRAFT2_REV:-}"
 _ENV_DRAFT2_QUANT="${DRAFT2_QUANT:-}"; _ENV_DRAFT2_TOKENS="${DRAFT2_TOKENS:-}"
 
@@ -168,13 +168,8 @@ FLASH_UNC_REV="be794b990578ef3031eccf9f28e675a289a09ee9"
 # KDA QSA sm_121 decode kernel (sglang#36845, replacing the vendored copy), the
 # router fix for the GB10 MTP output collapse (sglang#36811 via #38308/#38290,
 # which is the root cause of the wall of "!" the proxy learned to detect in
-# v1.6), and the mixed-precision loader (sglang#38121). OVERLAY_FLASH=1 rebuilds
-# the old locally-patched image instead.
+# v1.6), and the mixed-precision loader (sglang#38121).
 FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:9d2a843c706c74bc259c0d9abf360551eb2734e1e7d255ab012a6965f10480b6}"  # = lmsysorg/sglang:dev-qwen38-next-local (qwen4-main-squashed 4ccff141db), 2026-09-07
-# The base the flash overlay's files were verified against, kept so the rollback
-# still builds: OVERLAY_FLASH=1 must graft them onto THAT image, not onto the one
-# above, whose module layout they were never diffed against.
-OVERLAY_FLASH_BASE_IMAGE="lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1"  # = lmsysorg/sglang:qwen38flashnext, 2026-08-26
 # Backing store for the flash target's file-backed 47.7 GiB PLE table. The
 # server rewrites it on every boot (~10 min from a fresh sparse file, ~55 min
 # over a populated one), so the launcher deletes the previous file first.
@@ -277,7 +272,7 @@ resolve_flash_tier_args() {
         throughput) echo "NOTE: FLASH_REPLAYSSM_SPEC=1 has no speculation to apply to on the throughput tier; ignored" ;;
         *) FLASH_TIER_ARGS="$FLASH_TIER_ARGS --enable-linear-replayssm-spec" ;;
       esac ;;
-    *) printf 'ERROR: FLASH_REPLAYSSM_SPEC must be 0 or 1 (got: %s)\n' "$FLASH_REPLAYSSM_SPEC" >&2; return 1 ;;
+    *) printf 'ERROR: FLASH_REPLAYSSM_SPEC must be 0 or 1 (got: %s)\n' "$FLASH_REPLAYSSM_SPEC" >&2; exit 1 ;;
   esac
 }
 resolve_flash_tier_args
@@ -370,20 +365,25 @@ fi
 # upstream now, so both lanes serve the pinned official image directly and
 # build nothing. The flash lane crossed over in v1.8; the 27B lane followed in
 # v1.14, once the two things holding it back were measured rather than assumed
-# (see the IMAGE pin above). OVERLAY_FLASH=1 rebuilds the flash lane's old
-# locally-patched image, which is the only overlay this repo still carries.
-OVERLAY_FLASH="${OVERLAY_FLASH:-${OVERLAY:-0}}"
-# The local tag of the flash overlay path. Every line below sits at column 0 and
-# refers only to names defined above it, because run.sh and switch-model.sh read
-# these assignments out of this file and eval them with nothing else bound.
-OVERLAY_FLASH_SERVE_IMAGE="qwen38-flash:v1.6.0-kda"
+# (see the IMAGE pin above).
+#
+# OVERLAY_FLASH=1 used to rebuild the flash lane's old overlay image (v1.5 to v1.7)
+# as its rollback, and serve it with the launcher of v1.8, which does not fit it:
+# the overlay's model code keeps the 47.7 GiB PLE table in pinned host RAM unless
+# SGLANG_QWEN4_PLE_MMAP_DIR is set, the launcher sets no such thing and passes
+# --ple-offload-backend file (sglang#37068, newer than the overlay's base) instead,
+# and it has none of the attention backends and sizes the overlay was validated
+# with. Nothing had booted that pairing since v1.8 (found in review, 2026-09-24).
+# The overlay, its launcher and its pins shipped together in v1.7.2, which is the
+# rollback that holds together.
+if [ "${OVERLAY_FLASH:-${OVERLAY:-0}}" = "1" ]; then
+  die "OVERLAY_FLASH=1 is retired: this release's flash launcher does not fit the overlay image, and the pair cannot boot. The overlay path shipped whole in v1.7.2 (git checkout v1.7.2 && ./install.sh); this release serves the official image (unset OVERLAY_FLASH)."
+fi
+# Every line below sits at column 0 and refers only to names defined above it,
+# because run.sh and switch-model.sh read these assignments out of this file and
+# eval them with nothing else bound.
 SERVE_IMAGE="${SERVE_IMAGE:-$IMAGE}"
 FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-$FLASH_IMAGE}"
-# The non-default overlay choice, applied only when the operator did not name a
-# serving image outright.
-if [ -z "$_ENV_FLASH_SERVE_IMAGE" ] && [ "$OVERLAY_FLASH" = "1" ]; then
-  FLASH_SERVE_IMAGE="$OVERLAY_FLASH_SERVE_IMAGE"
-fi
 # opencode, the client this repo configures and serves in the cockpit's Agent tab, is
 # pinned like everything else. Four things the repo does were read out of this
 # version's own binary and checked against its behaviour: the compaction threshold
@@ -477,8 +477,9 @@ Env overrides (defaults are pinned to the versions validated 2026-09-11):
                                      calibrated NVFP4 draft at depth 16)
   MODEL_CHOICE=uncensored            serve the huihui-abliterated model
                                      (edp1096 NVFP4) instead of the stock base
-  MODEL_CHOICE=fp8                   serve Qwen's own FP8 release (30.9 GB, about
-                                     200k fewer tokens of KV pool, slower decode)
+  MODEL_CHOICE=fp8                   serve Qwen's own FP8 release (30.9 GB, slower
+                                     decode; its 1M pool measured 881,895 tokens
+                                     against 887,797 for NVFP4, 2026-09-18)
   MODEL_CHOICE=uncensored-fp8        the huihui abliteration in that same FP8 format
   MODEL_CHOICE=flash                 serve Qwen3.8-Flash-Next (176B hybrid MoE,
                                      NVFP4, SGLang engine, ~126 GB download; the
@@ -514,8 +515,6 @@ Env overrides (defaults are pinned to the versions validated 2026-09-11):
                                      --no-service are native either way, and a
                                      re-run keeps whatever is already installed
   PROXY_PORT=30001                   keepalive proxy port (default: PORT+1)
-  OVERLAY_FLASH=1                    flash: serve the locally built overlay
-                                     image of v1.7 instead of the official one
   SERVE_IMAGE=ref                    serving image for the 27B lane
   FLASH_SERVE_IMAGE=ref              serving image for the Flash-Next lane
   HF_CACHE=/path                     HuggingFace cache location (~28 GB for a 27B
@@ -564,11 +563,22 @@ done
 # README has said so since v1.5, and it is the one that refuses what the engine cannot.
 ENGINE_BIND="${ENGINE_BIND:-127.0.0.1}"
 PROXY_BIND="${PROXY_BIND:-0.0.0.0}"
-for _b in "$ENGINE_BIND" "$PROXY_BIND"; do
-  case "$_b" in
-    *[!0-9.]*|"") printf 'ERROR: ENGINE_BIND and PROXY_BIND take an IPv4 address (got: %s)\n' "$_b" >&2; exit 1 ;;
-  esac
-done
+# Loopback or every interface, nothing between: the box reaches both ports itself on
+# 127.0.0.1 (the proxy's UPSTREAM, the health checks and the smoke test, opencode's
+# base_url, the cockpit), so a bind that leaves loopback out breaks all of them. The
+# old check took any digits and dots, 300.1.1.1 and ... included (found in review,
+# 2026-09-24). Called again once the installed binds are read back.
+check_binds() {
+  local b
+  for b in "ENGINE_BIND=$ENGINE_BIND" "PROXY_BIND=$PROXY_BIND"; do
+    case "${b#*=}" in
+      127.0.0.1|0.0.0.0) ;;
+      *) printf 'ERROR: %s=%s: this box reaches that port itself on 127.0.0.1 (the proxy, the health checks, opencode), so it binds 127.0.0.1 (this machine only) or 0.0.0.0 (every interface: narrow it with a firewall)\n' "${b%%=*}" "${b#*=}" >&2
+         exit 1 ;;
+    esac
+  done
+}
+check_binds
 
 # Which choice is installed? The flash unit wins only when it is the enabled
 # one; a box can hold both unit files but only one engine serves the port.
@@ -657,6 +667,26 @@ if [ "$INSTALLED_CHOICE" = "flash" ]; then
       done
       resolve_flash_tier_args
     fi
+    # The two speculative-path knobs a box can turn off, read back like the tier: set to
+    # 0 on one run, both came back on at the next (found in review, 2026-09-24). A
+    # launcher that does not speculate carries neither whatever they were, and one
+    # rendered before a knob existed says nothing of it: those keep the defaults. The
+    # markers are comments of the template, since v1.8 and since v1.10.2.
+    if grep -q -- '--speculative-algorithm' "$FLASH_LAUNCH"; then
+      if [ -z "$_ENV_SPEC_TOKEN_MAP_SIZE" ] && grep -q 'Engine since v1.8' "$FLASH_LAUNCH"; then
+        CUR_MAP="$(grep -oE -- '--speculative-token-map /out/token-map-[0-9]+\.pt' "$FLASH_LAUNCH" | head -1 | sed -E 's/.*token-map-([0-9]+)\.pt/\1/' || true)"
+        if [ "${CUR_MAP:-0}" != "$SPEC_TOKEN_MAP_SIZE" ]; then
+          SPEC_TOKEN_MAP_SIZE="${CUR_MAP:-0}"; TOKEN_MAP_NAME="token-map-${SPEC_TOKEN_MAP_SIZE}.pt"
+          echo "Keeping the installed reduced draft vocabulary: SPEC_TOKEN_MAP_SIZE=$SPEC_TOKEN_MAP_SIZE. Pass SPEC_TOKEN_MAP_SIZE= to change."
+        fi
+      fi
+      if [ -z "$_ENV_FLASH_REPLAYSSM_SPEC" ] && [ "$FLASH_REPLAYSSM_SPEC" = "1" ] \
+         && grep -q 'No --allow-auto-truncate' "$FLASH_LAUNCH" \
+         && ! grep -q -- '--enable-linear-replayssm-spec' "$FLASH_LAUNCH"; then
+        FLASH_REPLAYSSM_SPEC=0; resolve_flash_tier_args
+        echo "Keeping the installed MTP verify state: FLASH_REPLAYSSM_SPEC=0. Pass FLASH_REPLAYSSM_SPEC=1 to change."
+      fi
+    fi
     if [ -z "${_ENV_PLE_DIR:-}" ] && [ -n "$CUR_PLE" ] && [ "$CUR_PLE" != "$PLE_DIR" ]; then
       PLE_DIR="$CUR_PLE"
       echo "Keeping the installed PLE table location: $PLE_DIR. Pass PLE_DIR= to change."
@@ -698,32 +728,33 @@ elif [ "$INSTALLED_CHOICE" = "27b" ]; then
     fi
   fi
   # Same promise for the drafter: a box rolled back to the BF16 draft via the
-  # env override keeps it across plain re-runs, the way MODEL_CHOICE is kept.
-  if [ -z "$_ENV_DRAFT2_REPO$_ENV_DRAFT2_REV$_ENV_DRAFT2_QUANT$_ENV_DRAFT2_TOKENS" ]; then
-    CUR_DRAFT="$(grep -oE -- '--speculative-draft-model-path [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
-    CUR_DRAFT_REV="$(grep -oE -- '--speculative-draft-model-revision [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
-    CUR_DRAFT_QUANT="$(grep -oE -- '--speculative-draft-model-quantization [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
-    CUR_DRAFT_TOKENS="$(grep -oE -- '--speculative-num-draft-tokens [0-9]+' "$UNIT_PATH" | head -1 | tr -dc '0-9' || true)"
-    if [ -n "$CUR_DRAFT" ] && [ "$CUR_DRAFT" != "$DRAFT2_REPO" ]; then
-      DEF_DRAFT2="DRAFT2_REPO=$DRAFT2_REPO DRAFT2_REV=$DRAFT2_REV DRAFT2_QUANT=$DRAFT2_QUANT DRAFT2_TOKENS=$DRAFT2_TOKENS"
-      DRAFT2_REPO="$CUR_DRAFT"
-      [ -n "$CUR_DRAFT_REV" ] && DRAFT2_REV="$CUR_DRAFT_REV"
-      [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
-      [ -n "$CUR_DRAFT_TOKENS" ] && DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
-      echo "Keeping the installed drafter: $DRAFT2_REPO (D=$DRAFT2_TOKENS, $DRAFT2_QUANT). Pass DRAFT2_REPO= to change."
-      if [ "$CUR_DRAFT" = "z-lab/Qwen3.8-27B-DFlash2" ]; then
-        # The default of v1.2.3 to v1.8.6, and the documented rollback since: the unit
-        # cannot say which, so it is kept, and a box that was only ever updated never
-        # got v1.9's draft (found in review, 2026-09-24). Said here, with the way over.
-        echo "NOTE: that is the BF16 draft installs used before v1.9. The default since v1.9 drafts from a"
-        echo "      calibrated NVFP4 head, measured +30% there on the reference box (lossless). To move to it:"
-        echo "      $DEF_DRAFT2 ./install.sh"
-      fi
-    elif [ -n "$CUR_DRAFT_TOKENS" ] && [ "$CUR_DRAFT_TOKENS" != "$DRAFT2_TOKENS" ]; then
-      DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
-      [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
-      echo "Keeping the installed draft depth: D=$DRAFT2_TOKENS. Pass DRAFT2_TOKENS= to change."
+  # env override keeps it across plain re-runs, the way MODEL_CHOICE is kept. Each of the
+  # four follows the unit unless it is passed: with any one of them passed, all four fell
+  # back to the defaults, so DRAFT2_TOKENS=8 on a box serving the BF16 draft moved it to the
+  # NVFP4 one without a word (found in review, 2026-09-24). The revision and the
+  # quantization belong to the repo, so they follow the unit only with its repo.
+  CUR_DRAFT="$(grep -oE -- '--speculative-draft-model-path [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+  CUR_DRAFT_REV="$(grep -oE -- '--speculative-draft-model-revision [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+  CUR_DRAFT_QUANT="$(grep -oE -- '--speculative-draft-model-quantization [^ ]+' "$UNIT_PATH" | head -1 | cut -d' ' -f2 || true)"
+  CUR_DRAFT_TOKENS="$(grep -oE -- '--speculative-num-draft-tokens [0-9]+' "$UNIT_PATH" | head -1 | tr -dc '0-9' || true)"
+  if [ -z "$_ENV_DRAFT2_REPO" ] && [ -n "$CUR_DRAFT" ] && [ "$CUR_DRAFT" != "$DRAFT2_REPO" ]; then
+    DEF_DRAFT2="DRAFT2_REPO=$DRAFT2_REPO DRAFT2_REV=$DRAFT2_REV DRAFT2_QUANT=$DRAFT2_QUANT DRAFT2_TOKENS=$DRAFT2_TOKENS"
+    DRAFT2_REPO="$CUR_DRAFT"
+    [ -z "$_ENV_DRAFT2_REV" ] && [ -n "$CUR_DRAFT_REV" ] && DRAFT2_REV="$CUR_DRAFT_REV"
+    [ -z "$_ENV_DRAFT2_QUANT" ] && [ -n "$CUR_DRAFT_QUANT" ] && DRAFT2_QUANT="$CUR_DRAFT_QUANT"
+    [ -z "$_ENV_DRAFT2_TOKENS" ] && [ -n "$CUR_DRAFT_TOKENS" ] && DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
+    echo "Keeping the installed drafter: $DRAFT2_REPO (D=$DRAFT2_TOKENS, $DRAFT2_QUANT). Pass DRAFT2_REPO= to change."
+    if [ "$CUR_DRAFT" = "z-lab/Qwen3.8-27B-DFlash2" ]; then
+      # The default of v1.2.3 to v1.8.6, and the documented rollback since: the unit
+      # cannot say which, so it is kept, and a box that was only ever updated never
+      # got v1.9's draft (found in review, 2026-09-24). Said here, with the way over.
+      echo "NOTE: that is the BF16 draft installs used before v1.9. The default since v1.9 drafts from a"
+      echo "      calibrated NVFP4 head, measured +30% there on the reference box (lossless). To move to it:"
+      echo "      $DEF_DRAFT2 ./install.sh"
     fi
+  elif [ -z "$_ENV_DRAFT2_TOKENS" ] && [ -n "$CUR_DRAFT_TOKENS" ] && [ "$CUR_DRAFT_TOKENS" != "$DRAFT2_TOKENS" ]; then
+    DRAFT2_TOKENS="$CUR_DRAFT_TOKENS"
+    echo "Keeping the installed draft depth: D=$DRAFT2_TOKENS. Pass DRAFT2_TOKENS= to change."
   fi
 fi
 if [ -n "$INSTALLED_CHOICE" ]; then
@@ -758,6 +789,7 @@ if [ -n "$INSTALLED_CHOICE" ]; then
       echo "Keeping the installed proxy bind: $PROXY_BIND. Pass PROXY_BIND= to change."
     fi
   fi
+  check_binds
   if [ "$INSTALLED_CHOICE" = "27b" ] && [ "$LANE" != "flash" ] && [ -z "$_ENV_CONTEXT_MODE" ]; then
     if grep -q -- '--context-length 1010000' "$SGL_UNIT_PATH"; then
       CONTEXT_MODE=1m
@@ -809,6 +841,11 @@ elif [ "$WITH_OPENCODE" -eq 0 ] && [ -f "$OC_OFF_MARK" ]; then
   OPENCODE=0
   echo "Keeping the opencode integration off (your earlier --no-opencode). Pass --with-opencode to re-enable."
 fi
+# Before anything is pulled or downloaded: this was refused at step 7, after the image,
+# the checkpoints and the engine's configs (found in review, 2026-09-24).
+if [ "$OPENCODE" -eq 1 ] && [ -n "$_ENV_OPENCODE_VERSION" ] && [ -z "$_ENV_OPENCODE_SHA256" ]; then
+  die "OPENCODE_VERSION=$OPENCODE_VERSION needs OPENCODE_SHA256 too (GitHub's digest of opencode-linux-arm64.tar.gz for that release): a version with no checksum is not a pin"
+fi
 # The same refusal as the one near the top, once the lane is final: without
 # MODEL_CHOICE that one reads LANE before the convergence has moved it to the
 # installed flash lane, and step 6 then patched YaRN into the flash checkpoint's
@@ -836,6 +873,11 @@ fi
 
 if [ "$NO_COCKPIT" -eq 1 ] && [ "$WITH_COCKPIT" -eq 1 ]; then
   printf -- '--no-cockpit and --with-cockpit contradict each other (drop one flag)\n' >&2; exit 1
+fi
+# The same for the image lane: both were taken, and --no-image won silently at the end of
+# the install (found in review, 2026-09-24).
+if [ "$NO_IMAGE" -eq 1 ] && [ "$WITH_IMAGE" -eq 1 ]; then
+  printf -- '--no-image and --with-image contradict each other (drop one flag)\n' >&2; exit 1
 fi
 
 # --no-start and --no-service both return before the image step, so the flag would be
@@ -898,6 +940,17 @@ stale_since(){
 
 step "1/10 Preflight checks"
 [ "$(uname -m)" = "aarch64" ] || die "This setup targets GB10 (aarch64). Detected: $(uname -m)."
+# These paths are written into the units and the flash launcher: inside a quoted
+# `bash -c` line, in a docker `-v src:dst`, and in systemd's own syntax, where % is a
+# specifier. A space, a colon, a quote, a $ or a % in one was accepted and broke the
+# unit it went into, seen only when that failed to start (found in review, 2026-09-24).
+for _p in "HOME=$HOME" "HF_CACHE=$HF_CACHE" "PLE_DIR=$PLE_DIR"; do
+  case "${_p#*=}" in
+    /*) case "${_p#*=}" in *[!A-Za-z0-9._/+@-]*) die "${_p%%=*}=${_p#*=}: the units this installs cannot carry that path. Use an absolute path of letters, digits and . _ / + @ - only." ;; esac ;;
+    *) die "${_p%%=*}=${_p#*=}: an absolute path is needed (the units carry it as it is)." ;;
+  esac
+done
+unset _p
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found. Is the NVIDIA driver stack installed? (stock on DGX OS)"
 # nvidia-smi says what is wrong when it cannot reach the driver, and exits non-zero:
 # inside a bare $(...) under set -e that ended the install with only "Install failed at
@@ -920,12 +973,15 @@ TOTAL_GB=$(awk '/^MemTotal/{print int($2/1048576)}' /proc/meminfo)
 # and then free space under $HOME says nothing (the error message used to send
 # people there while measuring here).
 mkdir -p "$HF_CACHE" 2>/dev/null || true
-FREE_DISK_GB=$(df -BG --output=avail "$HF_CACHE" 2>/dev/null | tail -1 | tr -dc '0-9')
-# Fresh installs need ~45 GB for the 27B stack (checkpoints + caches) and
-# ~145 GB for Flash-Next (the NVFP4 checkpoint alone is ~136 GB and doubles as
-# the mmap-served PLE table). Upgrades with the big checkpoint already cached
-# only need working room.
-NEED_GB=45; DOCKER_NEED_GB=40; IMG_LABEL="39 GB Docker image"
+# `|| true` inside: a df that fails (a path it cannot reach) under pipefail ended the
+# install at this line, and the "found unknown GB" below never said why (found in review,
+# 2026-09-24).
+FREE_DISK_GB=$({ df -BG --output=avail "$HF_CACHE" 2>/dev/null || true; } | tail -1 | tr -dc '0-9')
+# Fresh installs need ~45 GB for the 27B stack (checkpoints + caches) and ~180 GB for
+# Flash-Next (its NVFP4 checkpoint alone is ~136 GB), plus ~50 GB for the flash lane's
+# PLE table where PLE_DIR lands; what the cache already holds comes off (below).
+# README "Quickstart" states these numbers: keep the two together.
+NEED_GB=45; DOCKER_NEED_GB=40; IMG_LABEL="33 GB Docker image"
 if [ "$LANE" = "flash" ]; then
   NEED_GB=180; DOCKER_NEED_GB=35; IMG_LABEL="30 GB Docker image"
 fi
@@ -969,13 +1025,10 @@ if [ "$LANE" = "flash" ] && ! ls "$PLE_DIR"/ple_table_*.bin >/dev/null 2>&1; the
 fi
 [ -n "$FREE_DISK_GB" ] && [ "$FREE_DISK_GB" -ge "$NEED_GB" ] || die "Need ~${NEED_GB} GB free for the checkpoints and caches under $HF_CACHE; found ${FREE_DISK_GB:-unknown} GB. Free some space or set HF_CACHE to another disk."
 DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
-DOCKER_FREE_GB=$(df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')
-# What step 2 pulls, decided here because the room it needs depends on it. An
-# OVERLAY_FLASH=1 install builds on the 2026-08-26 base, not on the image the lane
-# serves by default, so it is that one that has to be here.
+DOCKER_FREE_GB=$({ df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null || true; } | tail -1 | tr -dc '0-9')
+# What step 2 pulls, decided here because the room it needs depends on it.
 if [ "$LANE" = "flash" ]; then
   PULL_TARGET="$FLASH_IMAGE"
-  [ "$OVERLAY_FLASH" = "1" ] && PULL_TARGET="$OVERLAY_FLASH_BASE_IMAGE"
 else
   PULL_TARGET="$IMAGE"
 fi
@@ -986,6 +1039,14 @@ if docker image inspect "$PULL_TARGET" >/dev/null 2>&1; then
   DOCKER_NEED_GB=5; IMG_LABEL="container (its image is already here)"
 fi
 [ "${DOCKER_FREE_GB:-0}" -ge "$DOCKER_NEED_GB" ] || die "Need ~${DOCKER_NEED_GB} GB free on $DOCKER_ROOT for the $IMG_LABEL; found ${DOCKER_FREE_GB:-?} GB (docker images live there, not under \$HOME)."
+# One disk for both, as on the reference box: the two needs add up there. Checked apart,
+# 45 GB free passed a first 27B install that needs 45 for the checkpoints and 40 for the
+# image on that same disk (found in review, 2026-09-24).
+HF_DEV="$(stat -c %d "$HF_CACHE" 2>/dev/null || true)"; DOCKER_DEV="$(stat -c %d "$DOCKER_ROOT" 2>/dev/null || true)"
+if [ -n "$HF_DEV" ] && [ "$HF_DEV" = "$DOCKER_DEV" ]; then
+  BOTH_GB=$((NEED_GB + DOCKER_NEED_GB))
+  [ "${FREE_DISK_GB:-0}" -ge "$BOTH_GB" ] || die "Need ~${BOTH_GB} GB free on the disk that holds both $HF_CACHE and $DOCKER_ROOT (${NEED_GB} for the checkpoints and caches, ${DOCKER_NEED_GB} for the $IMG_LABEL); found ${FREE_DISK_GB:-unknown} GB. Free some space, or set HF_CACHE to another disk."
+fi
 if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   # The port may be held by either of OUR engines: same-engine reinstall
   # (converge) or a cross-engine switch (the old engine is stopped at step 9).
@@ -999,7 +1060,11 @@ if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   fi
 fi
 if [ "$NO_SERVICE" -eq 0 ] && ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PROXY_PORT\$"; then
-  if systemctl is-active --quiet qwen38-keepalive 2>/dev/null; then
+  # Ours only if the proxy that runs is the one on that port: a running proxy made ANY
+  # busy PROXY_PORT pass, another program's included, which then kept the new unit from
+  # binding (found in review, 2026-09-24).
+  KA_PORT_NOW="$(grep -oE 'keepalive-proxy\.py [0-9]+' /etc/systemd/system/qwen38-keepalive.service 2>/dev/null | head -1 | tr -dc '0-9' || true)"
+  if [ "$KA_PORT_NOW" = "$PROXY_PORT" ] && systemctl is-active --quiet qwen38-keepalive 2>/dev/null; then
     echo "Note: the keepalive proxy is already running on :$PROXY_PORT, re-installing over it."
   else
     die "Port $PROXY_PORT (keepalive proxy) is already in use by another program. Free it, or install with PROXY_PORT=<other>"
@@ -1044,8 +1109,28 @@ pin_tag() {   # $1 lane, $2 image: a digest reference present on this box gets i
     echo "NOTE: could not tag $2; a docker image prune would delete it"
   fi
 }
+# A pin that moves leaves its tag behind, and the tag keeps the retired image out of every
+# prune: 30 to 39 GB per release that bumps a pin (found in review, 2026-09-24). Once the
+# lane's current pin is here and tagged, the lane's other tags go, unless a container still
+# uses their image; the image is then merely dangling, and the usual prune reclaims it.
+unpin_stale() {   # $1 lane, $2 the image the lane is pinned to now
+  local cur tag id
+  cur="$(docker image inspect "$2" --format '{{.Id}}' 2>/dev/null)" || return 0
+  docker images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}' qwen38-pinned 2>/dev/null \
+    | while read -r tag id; do
+        case "$tag" in "qwen38-pinned:$1-"*) ;; *) continue ;; esac
+        if [ "$id" = "$cur" ] || [ -n "$(docker ps -aq --filter "ancestor=$id" 2>/dev/null)" ]; then
+          continue
+        fi
+        if docker rmi "$tag" >/dev/null 2>&1; then
+          echo "untagged $tag, a pin this release no longer uses: a docker image prune can reclaim it"
+        fi
+      done
+}
 pin_tag "$LANE" "$PULLED_IMAGE"
 if [ "$LANE" = "flash" ]; then pin_tag 27b "$IMAGE"; else pin_tag flash "$FLASH_IMAGE"; fi
+unpin_stale "$LANE" "$PULLED_IMAGE" || true
+if [ "$LANE" = "flash" ]; then unpin_stale 27b "$IMAGE" || true; else unpin_stale flash "$FLASH_IMAGE" || true; fi
 
 step "3/10 Verifying the container can see the GPU"
 # --entrypoint: the image ships NVIDIA's own entrypoint script
@@ -1087,7 +1172,7 @@ docker run --rm -i --network host --user "$(id -u):$(id -g)" \
   -e DRAFT2_REPO="$DL_DRAFT2_REPO" -e DRAFT2_REV="$DRAFT2_REV" \
   "${DL_TOKEN_ARGS[@]}" \
   -v "$HF_CACHE":/hf \
-  "$PULLED_IMAGE" - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace throttling of unauthenticated downloads (set HF_TOKEN=<your token>, or re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT_REV=main ./install.sh), or a permission error: if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
+  "$PULLED_IMAGE" - <<'PYEOF' || die "Checkpoint download failed. Causes: no internet, HuggingFace throttling of unauthenticated downloads (set HF_TOKEN=<your token>, or re-run: downloads resume), a pinned revision removed (try MODEL_REV=main DRAFT2_REV=main ./install.sh), or a permission error: if your $HF_CACHE contains root-owned files from other tools, fix with: sudo chown -R \$(id -u):\$(id -g) $HF_CACHE"
 import os
 import time
 from huggingface_hub import constants, snapshot_download
@@ -1146,34 +1231,24 @@ for repo, rev in ((os.environ["MODEL_REPO"], os.environ["MODEL_REV"]),
 print("checkpoints ready", flush=True)
 PYEOF
 
-LANE_OVERLAY=0; [ "$LANE" = "flash" ] && LANE_OVERLAY="$OVERLAY_FLASH"
-if [ "$LANE_OVERLAY" != "1" ]; then
-  # Say the image the unit will actually carry, not the pin it came from: those
-  # are the same thing on a default install and different the moment someone
-  # passes SERVE_IMAGE=, which is the one case where this line is the only
-  # on-screen confirmation that the override took.
-  LANE_SERVE_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_SERVE_IMAGE" || echo "$SERVE_IMAGE")"
-  LANE_PIN_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
-  if [ "$LANE_SERVE_IMAGE" = "$LANE_PIN_IMAGE" ]; then
-    step "5/10 Serving image: the pinned official one, nothing to build"
-    echo "$LANE_SERVE_IMAGE"
-  else
-    step "5/10 Serving image: an operator override, nothing to build"
-    echo "$LANE_SERVE_IMAGE   (SERVE_IMAGE=, instead of the pin $LANE_PIN_IMAGE)"
-    # Step 2 pulls the pin, never an override, and the overlay build that used to
-    # guarantee this tag existed is gone since v1.14. Without this check the
-    # install completes green, writes and enables the unit, and the engine then
-    # loops on an unpullable local tag for the full 20-minute health wait.
-    docker image inspect "$LANE_SERVE_IMAGE" >/dev/null 2>&1 \
-      || die "serving image not present: $LANE_SERVE_IMAGE. Nothing pulls an override, so build or pull it first, or drop SERVE_IMAGE= to serve the pin ($LANE_PIN_IMAGE)."
-  fi
-  if [ "$LANE" = flash ]; then
-    echo "OVERLAY_FLASH=1 ./install.sh rebuilds the local overlay image of v1.7 instead (the rollback)."
-  fi
+# Say the image the unit will actually carry, not the pin it came from: those
+# are the same thing on a default install and different the moment someone
+# passes SERVE_IMAGE=, which is the one case where this line is the only
+# on-screen confirmation that the override took.
+LANE_SERVE_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_SERVE_IMAGE" || echo "$SERVE_IMAGE")"
+LANE_PIN_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
+if [ "$LANE_SERVE_IMAGE" = "$LANE_PIN_IMAGE" ]; then
+  step "5/10 Serving image: the pinned official one, nothing to build"
+  echo "$LANE_SERVE_IMAGE"
 else
-  step "5/10 Building the Flash-Next overlay image (OVERLAY_FLASH=1: pinned base + verified files + gate checks, offline, ~2 min)"
-  BASE_IMAGE="$OVERLAY_FLASH_BASE_IMAGE" TAG="$FLASH_SERVE_IMAGE" "$REPO_DIR/flash-sglang/build-image.sh" \
-    || die "Flash overlay image build failed: see flash-sglang/ATTRIBUTION.md; the checksums and in-image checks run before tagging, so a failure means a corrupted checkout (git status) or an upstream image layout change. The overlay is the rollback path: the default install needs no build."
+  step "5/10 Serving image: an operator override, nothing to build"
+  echo "$LANE_SERVE_IMAGE   (SERVE_IMAGE=, instead of the pin $LANE_PIN_IMAGE)"
+  # Step 2 pulls the pin, never an override, and the overlay build that used to
+  # guarantee this tag existed is gone since v1.14. Without this check the
+  # install completes green, writes and enables the unit, and the engine then
+  # loops on an unpullable local tag for the full 20-minute health wait.
+  docker image inspect "$LANE_SERVE_IMAGE" >/dev/null 2>&1 \
+    || die "serving image not present: $LANE_SERVE_IMAGE. Nothing pulls an override, so build or pull it first, or drop SERVE_IMAGE= to serve the pin ($LANE_PIN_IMAGE)."
 fi
 
 # The reduced draft vocabulary. Built inside the serving image, so the tokenizer
@@ -1204,7 +1279,7 @@ if [ "$LANE" = "flash" ] && [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ]; then
         -v "$HF_CACHE":/root/.cache/huggingface \
         -v "$CONFIG_DIR":/out \
         -v "$REPO_DIR":/repo:ro \
-        "$([ "$OVERLAY_FLASH" = "1" ] && echo "$FLASH_SERVE_IMAGE" || echo "$FLASH_IMAGE")" \
+        "$FLASH_IMAGE" \
         /repo/build-token-map.py \
           --snapshot "/root/.cache/huggingface/hub/models--${MODEL_REPO//\//--}/snapshots/$MAP_REV" \
           --out "/out/$TOKEN_MAP_NAME" --size "$SPEC_TOKEN_MAP_SIZE" $MAP_CORPUS \
@@ -1348,13 +1423,14 @@ oc_fetch_pinned(){   # prints the cause of a failure; the caller says what it le
     rm -rf "$tmp"; echo "NOTE: the opencode $OPENCODE_VERSION archive did not unpack"; return 1
   fi
   mkdir -p "$OC_HOME_DIR"
-  # a new file renamed over the old one: a server still running the old binary keeps it
-  install -m 755 "$tmp/opencode" "$OC_HOME_BIN.new" && mv -f "$OC_HOME_BIN.new" "$OC_HOME_BIN"
-  rm -rf "$tmp"
+  # a new file renamed over the old one: a server still running the old binary keeps it.
+  # Its failure is the function's: the rm after it made every run return 0, and a full
+  # disk read "installed" (found in review, 2026-09-24).
+  local placed=0
+  install -m 755 "$tmp/opencode" "$OC_HOME_BIN.new" && mv -f "$OC_HOME_BIN.new" "$OC_HOME_BIN" && placed=1
+  rm -rf "$tmp" "$OC_HOME_BIN.new"
+  [ "$placed" -eq 1 ] || { echo "NOTE: could not put opencode $OPENCODE_VERSION at $OC_HOME_BIN"; return 1; }
 }
-if [ -n "$_ENV_OPENCODE_VERSION" ] && [ -z "$_ENV_OPENCODE_SHA256" ]; then
-  die "OPENCODE_VERSION=$OPENCODE_VERSION needs OPENCODE_SHA256 too (GitHub's digest of opencode-linux-arm64.tar.gz for that release): a version with no checksum is not a pin"
-fi
 OC_FOUND="$(command -v opencode || true)"
 OC_ON_PATH="$OC_FOUND"   # what a shell of the user's finds, before the fallback below
 [ -z "$OC_FOUND" ] && [ -x "$OC_HOME_BIN" ] && OC_FOUND="$OC_HOME_BIN"
@@ -1484,9 +1560,15 @@ esac
 OC_27B_PAIR="$("$REPO_DIR/oc-limits.sh" "$OC_27B_CHOICE" "$OC_27B_MODE")" \
   || die "oc-limits.sh refused $OC_27B_CHOICE/$OC_27B_MODE (repo bug: please open an issue)"
 OC_27B_CTX="${OC_27B_PAIR%% *}"; OC_27B_OUT="$(echo "$OC_27B_PAIR" | cut -d' ' -f2)"
+# The served entry's name comes from the table oc-point-default.py applies below. The
+# generator wrote a generic one that the call below then renamed, so the file was written
+# twice at every run, and the rename now leaves a backup (found in review, 2026-09-24).
+OC_WINDOW=262144; [ "$CONTEXT_MODE" = "1m" ] && OC_WINDOW=1010000
+OC_SERVED_NAME="$(python3 "$REPO_DIR/oc-point-default.py" --label "$MODEL_CHOICE" "$OC_WINDOW")" \
+  || die "oc-point-default.py --label failed (repo bug: please open an issue)"
 OC_LANE="$LANE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
 OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$OC_27B_MODE" \
-OC_27B_CTX="$OC_27B_CTX" OC_27B_OUT="$OC_27B_OUT" \
+OC_27B_CTX="$OC_27B_CTX" OC_27B_OUT="$OC_27B_OUT" OC_SERVED_NAME="$OC_SERVED_NAME" \
 OC_KEEP="$OC_KEEP" OC_PIN="$OPENCODE_PIN" \
 OC_CONFIG_DIR="$CONFIG_DIR" python3 - <<'PYEOF' || die "could not write the opencode provider config"
 import json
@@ -1501,6 +1583,8 @@ variants = {lvl: {"chat_template_kwargs": {"reasoning_effort": lvl}}
             for lvl in ("lean", "low", "medium", "xhigh")}
 key_ref = f"{{file:{cfg_dir}/api-key}}"
 base_url = f"http://127.0.0.1:{os.environ['OC_PORT']}/v1"
+# the name oc-point-default.py gives the served lane's entry, empty for a target it has none for
+served_name = os.environ.get("OC_SERVED_NAME", "")
 
 def prov(name, model_id, model_name, ctx, out):
     return {
@@ -1540,13 +1624,15 @@ if os.environ["OC_27B"] == "1":
     if os.environ["OC_CONTEXT_MODE"] == "1m":
         ctx, out = fitted("qwen38", "qwen3.8-27b", ctx, out) or (ctx, out)
     providers["qwen38"] = prov("Qwen3.8-27B (DGX Spark)", "qwen3.8-27b",
-                               f"Qwen3.8-27B NVFP4+DFlash2 ({label})", ctx, out)
+                               lane == "27b" and served_name or f"Qwen3.8-27B NVFP4+DFlash2 ({label})",
+                               ctx, out)
 if os.environ["OC_FLASH"] == "1":
     # the flash lane's limits follow the pool math above (OC_CTX/OC_OUT); a 27B
     # install that also lists flash gets the same pool-safe constants
     fctx, fout = (int(os.environ["OC_CTX"]), int(os.environ["OC_OUT"])) if lane == "flash" else (110000, 32000)
     providers["flashnext"] = prov("Qwen3.8-Flash-Next (DGX Spark)", "qwen3.8-flash-next",
-                                  "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)", fctx, fout)
+                                  lane == "flash" and served_name or "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)",
+                                  fctx, fout)
 
 default = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8-27b"
 # Compaction is global in opencode.json, not per-model, so it is sized from the
@@ -1644,8 +1730,8 @@ fi
 # The default model and the served entry's picker name follow the install, not
 # just the limits: an install that changes lane left opencode offering and
 # defaulting to the previous lane (reference box 2026-09-11: flash selected
-# while stock 1M served). Same helper as switch-model.sh, one label table.
-OC_WINDOW=262144; [ "$CONTEXT_MODE" = "1m" ] && OC_WINDOW=1010000
+# while stock 1M served). Same helper as switch-model.sh, one label table; it moves
+# the user's default only when that one is unset or already this box's.
 python3 "$REPO_DIR/oc-point-default.py" "$CONFIG_DIR/opencode.json" "$LANE" "$MODEL_CHOICE" "$OC_WINDOW" \
   || die "could not point the generated opencode config at the installed lane"
 if [ -f "$OC_USER_CFG" ]; then
@@ -2086,21 +2172,16 @@ except Exception as e:
       done
     fi
     while IFS= read -r tagref; do
-      # Never offer to delete what is being served, nor the flash overlay tag:
-      # since v1.8 the flash overlay image IS the rollback for that lane. The 27B
-      # overlay tag is offered, since v1.14 serves the official image instead.
+      # Never offer to delete what is being served. The overlay tags of both lanes
+      # are offered: the 27B one since v1.14 serves the official image, the flash
+      # one since v1.18.7 retired OVERLAY_FLASH=1, its rollback.
       [ -n "$tagref" ] && [ "$tagref" != "$SERVE_IMAGE" ] && [ "$tagref" != "$FLASH_SERVE_IMAGE" ] \
-        && [ "$tagref" != "$OVERLAY_FLASH_SERVE_IMAGE" ] \
         && case "$LEFTOVER_NOTES" in *"'$tagref'"*) ;; *) LEFTOVER_NOTES="${LEFTOVER_NOTES}      docker rmi '$tagref'\n" ;; esac
     done < <({ docker images --format '{{.Repository}}:{{.Tag}}' qwen38-dflash2 2>/dev/null; docker images --format '{{.Repository}}:{{.Tag}}' qwen38-flash 2>/dev/null; } || true)
     if [ -n "$LEFTOVER_NOTES" ]; then
       echo "  Note: earlier versions of this repo left superseded images; reclaim when you like:"
       printf '%b' "$LEFTOVER_NOTES"
       echo "      (full inventory anytime: ./uninstall.sh --list)"
-    fi
-    if [ "$LANE" = "flash" ] && [ "$OVERLAY_FLASH" != "1" ] \
-       && docker image inspect "$OVERLAY_FLASH_SERVE_IMAGE" >/dev/null 2>&1; then
-      echo "  Note: $OVERLAY_FLASH_SERVE_IMAGE is kept as this lane's rollback (OVERLAY_FLASH=1 ./install.sh)."
     fi
     # The 1m limits the generator writes are static, and their worst case
     # (compaction at about 680,000 plus 200,000 of output) sits ABOVE the
@@ -2251,10 +2332,14 @@ except Exception as e:
     [ "$COCKPIT" -eq 0 ] && echo "  cockpit    : off (--no-cockpit); ./install.sh --with-cockpit turns it on"
     if [ "${IMAGE_READY:-0}" -eq 1 ]; then
       echo "  Images     : a third lane; switch to Qwen-Image 2.1 in the cockpit (or ./switch-model.sh image)"
+    elif [ -f /etc/systemd/system/qwen38-image.service ] && [ "${IMAGE_ON:-0}" -eq 0 ]; then
+      # --no-image on a box that has the lane: it is there, only not updated by this run
+      # (it used to read "not installed", found in review, 2026-09-24)
+      echo "  Images     : installed, not updated by this run (--no-image); ./install-image.sh --uninstall removes it"
     elif [ "${IMAGE_ON:-0}" -eq 0 ]; then
       echo "  Images     : not installed; ./install.sh --with-image adds the Qwen-Image 2.1 lane (38 GB)"
     fi
-    [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh  (or the Benchmarks tab of the cockpit)"
+    [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh"
     exit 0
   fi
   ST="$(systemctl is-active "$UNIT_NAME" || true)"

@@ -120,6 +120,83 @@ class TheWiring(unittest.TestCase):
                         self.src.index('step "10/10'))
 
 
+STUB = "#!/bin/sh\necho \"$(basename \"$0\") $*\" >> \"$STUB_LOG\"\nexit \"${1:-0}\"\n"
+
+
+class TheStepRuns(unittest.TestCase):
+    """Step 10 as install.sh writes it, run under install.sh's own shell options against
+    stub installers: the lines above only prove the names are in the file, and a cockpit
+    failure made fatal, or an Agent installer never called, kept them all green (found in
+    review, 2026-09-24). The unit path is rewritten to a throwaway one and systemctl, sudo
+    and tailscale are stubs, so nothing reaches the box."""
+
+    START = '    COCKPIT_URL=""\n    if [ "$COCKPIT" -eq 1 ]; then\n'
+    END = "\n    # ── The image lane"
+
+    def step10(self, dash_rc=0, agent_rc=0, opencode=True, bind="100.64.0.7", cockpit=1):
+        src = pathlib.Path(INSTALL).read_text()
+        block = src[src.index(self.START):src.index(self.END)]
+        t = pathlib.Path(tempfile.mkdtemp(prefix="cockpit-step10-"))
+        unit = t / "qwen38-dashboard.service"
+        unit.write_text(f"[Service]\nEnvironment=COCKPIT_PORT=30090\nEnvironment=COCKPIT_BIND={bind}\n")
+        block = block.replace("/etc/systemd/system/qwen38-dashboard.service", str(unit))
+        self.assertNotIn("/etc/", block)
+        (t / "dashboard").mkdir()
+        (t / "bin").mkdir()
+        for name, rc in (("install-dashboard.sh", dash_rc), ("install-agent.sh", agent_rc)):
+            p = t / "dashboard" / name
+            p.write_text(STUB.replace('"${1:-0}"', str(rc)))
+            p.chmod(0o755)
+        stubs = {"systemctl": "exit 3", "sudo": "exit 1", "tailscale": "echo 100.64.0.9",
+                 "hostname": "echo 10.0.0.2"}
+        if opencode:
+            stubs["opencode"] = "exit 0"
+        for name, body in stubs.items():
+            p = t / "bin" / name
+            p.write_text(f"#!/bin/sh\necho \"{name} $*\" >> \"$STUB_LOG\"\n{body}\n")
+            p.chmod(0o755)
+        log = t / "calls.log"
+        log.write_text("")
+        script = ("set -euo pipefail\n"
+                  "die(){ echo \"DIE: $*\"; exit 1; }\nstep(){ echo \"STEP $*\"; }\n"
+                  f"REPO_DIR={t}; COCKPIT={cockpit}; OPENCODE=1\n" + block
+                  + '\necho "URL=$COCKPIT_URL"\n')
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
+                           env={"PATH": f"{t}/bin:/usr/bin:/bin", "STUB_LOG": str(log), "HOME": str(t)})
+        calls = [c.split()[0] for c in log.read_text().splitlines()]
+        return r.returncode, r.stdout + r.stderr, calls
+
+    def test_it_installs_the_cockpit_then_the_agent_tab_and_names_the_url(self):
+        rc, out, calls = self.step10()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([c for c in calls if c.endswith(".sh")], ["install-dashboard.sh", "install-agent.sh"])
+        self.assertIn("URL=http://100.64.0.7:30090", out)
+
+    def test_a_cockpit_that_fails_to_install_never_fails_the_install(self):
+        rc, out, calls = self.step10(dash_rc=1)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("NOTE: the cockpit did not install. The engine above is up and serving.", out)
+        self.assertNotIn("install-agent.sh", calls, "the Agent tab needs the cockpit it plugs into")
+        self.assertIn("URL=\n", out)
+
+    def test_an_agent_tab_that_fails_costs_that_tab_only(self):
+        rc, out, calls = self.step10(agent_rc=1)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("NOTE: the Agent tab did not install", out)
+        self.assertIn("URL=http://100.64.0.7:30090", out)
+
+    def test_no_opencode_skips_the_agent_tab_and_says_so(self):
+        rc, out, calls = self.step10(opencode=False)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("install-agent.sh", calls)
+        self.assertIn("opencode is not on your PATH", out)
+
+    def test_a_wildcard_bind_prints_an_address_you_can_type(self):
+        rc, out, _ = self.step10(bind="0.0.0.0")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("URL=http://100.64.0.9:30090", out)
+
+
 
 class TheSummaryComesOutOnce(unittest.TestCase):
     """install-agent.sh runs install-dashboard.sh again right after install.sh did, only

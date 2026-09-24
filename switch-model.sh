@@ -36,17 +36,20 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 _ENV_HF_CACHE="${HF_CACHE:-}"      # before the pins below give it install.sh's default
-CHOICE="${1:-${MODEL_CHOICE:-stock}}"
-case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image) ;; *) die "usage: ./switch-model.sh [stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image]" ;; esac
+# No target, no switch: run bare, this used to switch the box to stock, re-enabling the
+# 27B lane and restarting what follows it, where the usage was all anyone wanted (found
+# in review, 2026-09-24). MODEL_CHOICE= still names one, as install.sh takes it.
+CHOICE="${1:-${MODEL_CHOICE:-}}"
+case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image) ;; *) printf 'usage: ./switch-model.sh <stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image>\n' >&2; [ -z "$CHOICE" ] && exit 2; die "unknown target: $CHOICE" ;; esac
 
 
-PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_NVDA_REPO|FLASH_NVDA_REV|FLASH_UNC_REPO|FLASH_UNC_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_SERVE_IMAGE|SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_NVDA_REPO|FLASH_NVDA_REV|FLASH_UNC_REPO|FLASH_UNC_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
 # A count of matched lines was the old check, and adding a pin broke both scripts
 # at once (it did, on 2026-09-08). What matters is not how many lines matched but
 # whether every name this script goes on to use is defined, so that is what is
 # asserted, and a failure says which one.
 eval "$PINS"
-for _v in IMAGE SERVE_IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV FLASH_REPO FLASH_REV FLASH_NVDA_REPO FLASH_NVDA_REV FLASH_UNC_REPO FLASH_UNC_REV FLASH_IMAGE FLASH_SERVE_IMAGE OVERLAY_FLASH_SERVE_IMAGE MODEL_CHOICE HF_CACHE CONFIG_DIR; do
+for _v in IMAGE SERVE_IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV FLASH_REPO FLASH_REV FLASH_NVDA_REPO FLASH_NVDA_REV FLASH_UNC_REPO FLASH_UNC_REV FLASH_IMAGE FLASH_SERVE_IMAGE MODEL_CHOICE HF_CACHE CONFIG_DIR; do
   eval "[ -n \"\${$_v:-}\" ]" || die "install.sh no longer defines $_v (repo layout changed?)"
 done
 unset _v
@@ -427,15 +430,13 @@ else
   # that. So a box that pulled a repo whose image pin moved would keep serving the old
   # one, silently, and the image is where the kernel fixes live (v1.6: the merged
   # sm_121 kernel). Say so instead of letting it pass.
-  # Since v1.8 the launcher names the pinned official image (a digest), and
-  # an OVERLAY_FLASH=1 install still names a local qwen38-flash:tag. Read either.
+  # Since v1.8 the launcher names the pinned official image (a digest); a box
+  # installed with OVERLAY_FLASH=1 before v1.18.7 retired it names a local
+  # qwen38-flash:tag, and is told the same thing: adopt the pin.
   # Same class as OC_WINDOW below: the empty case is handled three lines down
   # ([ -n "$LAUNCH_IMAGE" ]), and without || true set -e never lets it get there.
   LAUNCH_IMAGE="$(grep -oE '^[[:space:]]*(qwen38-flash:[A-Za-z0-9._-]+|lmsysorg/sglang@sha256:[0-9a-f]{64})' "$FLASH_LAUNCH" | tr -d '[:space:]' | head -1 || true)"
-  case "$LAUNCH_IMAGE" in
-    qwen38-flash:*) WANT_IMAGE="${OVERLAY_FLASH_SERVE_IMAGE:-}" ;;   # an OVERLAY_FLASH=1 box
-    *)              WANT_IMAGE="${FLASH_IMAGE:-}" ;;                  # the default: the pinned official image
-  esac
+  WANT_IMAGE="${FLASH_IMAGE:-}"
   if [ -n "$LAUNCH_IMAGE" ] && [ -n "$WANT_IMAGE" ] && [ "$LAUNCH_IMAGE" != "$WANT_IMAGE" ]; then
     printf '\n\033[1;33mWARNING:\033[0m this box serves flash from %s, but this repo pins %s.\n' \
       "$LAUNCH_IMAGE" "$WANT_IMAGE"

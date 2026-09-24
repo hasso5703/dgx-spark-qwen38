@@ -33,12 +33,16 @@ Notes: the server's own `watchdog_timeout=300` is a *hang* detector (kills a gen
 
 **Idle power**: without `--sleep-on-idle`, SGLang's scheduler busy-spins a full CPU core while doing nothing (reported as +10-12 W at the wall by [alef204 and emX0r](https://forums.developer.nvidia.com/t/380257/56), diagnosed in [MiaAI-Lab issue #4](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark/issues/4)). Every serving lane ships the flag, and a CI gate requires it: the 27B units and `run.sh` since v1.2.6, the flash launcher since v1.8.5, where the lane was measured holding a core at 101 % for 12 h 21 min of idle because the launcher had been written without it. A/B on the reference box: scheduler CPU 101 % -> 1.7 % at idle, module power 12.1 -> 10.5 W, and wake-up TTFT unchanged (0.234-0.240 s before, 0.234-0.239 s after, measured after 60 s and 300 s of idle), throughput in family (41.5 tok/s code, 52.8 math).
 
-**Metrics**: every serving lane passes `--enable-metrics`, so Prometheus scrapes
-`http://<box>:<engine-port>/metrics` (request rates, KV usage, acceptance
-lengths under speculative decoding, queue depth). The endpoint is unauthenticated
-on the engine port, the same trust model that port's whole surface already
-assumes (trusted network: loopback, tailnet; see SECURITY.md), and it arrives at
-your next `./install.sh` re-run and engine start.
+**Metrics**: every text lane passes `--enable-metrics` (the image lane exports
+none), so Prometheus scrapes `/metrics` (request rates, KV usage, acceptance
+lengths under speculative decoding, queue depth). Since v1.17 the engine port is
+on loopback, so a scraper on another machine reads `http://<box>:30001/metrics`,
+which the proxy relays like every route; one on the box can read
+`http://127.0.0.1:30000/metrics` directly. The endpoint needs no key on either
+port (with the proxy's per-client identity file set, it needs a listed key like
+every route but `/health`), the same trust model the proxy port's whole surface
+already assumes (trusted network: loopback, tailnet; see SECURITY.md), and it
+arrives at your next `./install.sh` re-run and engine start.
 
 ## Extras (opt-in)
 
@@ -107,8 +111,9 @@ the previous N-gram table file so the next boot writes a fresh one (~12 min), an
 concurrent requests instead of 1. It also raises that lane's one-prompt ceiling from 128,000
 to 200,000 tokens and its opencode limits with it, so an agent client will start sending
 longer conversations: that is measured, not assumed (needle 3/3 at 120K and 1/1 at 200K, host
-memory floor 12.6 GiB). Rollback is `OVERLAY_FLASH=1 ./install.sh`, which rebuilds the v1.7
-image; the v1.7 image is kept on the box for exactly that. **27B boxes were untouched by
+memory floor 12.6 GiB). The rollback was `OVERLAY_FLASH=1 ./install.sh` until v1.18.7, which
+retired it (the launcher of v1.8 does not fit the v1.7 image); the v1.7 path shipped whole in
+v1.7.2. **27B boxes were untouched by
 v1.8**, on purpose at the time; v1.14 moved that lane to the official image too, after
 measuring both reasons it had stayed behind. Upgrading from v1.2.x also removes the deprecated Claude Code warmup drop-in if you had
 installed it, and no longer writes `claude-code.env`: an existing copy keeps working and will

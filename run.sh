@@ -46,6 +46,14 @@ esac
 if [ "${CONTEXT_MODE}" = "1m" ]; then
   die "CONTEXT_MODE=1m needs the systemd path (keepalive proxy + YaRN service units): run CONTEXT_MODE=1m ./install.sh. ./run.sh serves the native 262144 config only."
 fi
+# The engine listens where the service's does: on loopback, unless ENGINE_BIND says
+# otherwise. This path has no proxy in front of it, and it served 0.0.0.0: the engine,
+# with none of the proxy's guards against the fields it dies on, open to anyone on the
+# network who holds the key (found in review, 2026-09-24).
+ENGINE_BIND="${ENGINE_BIND:-127.0.0.1}"
+case "$ENGINE_BIND" in
+  *[!0-9.]*|"") die "ENGINE_BIND takes an IPv4 address (got: $ENGINE_BIND)" ;;
+esac
 # The fix-it command echoed by every check below, carrying the active choices
 # so following it prepares THIS configuration (not the defaults).
 PREP="./install.sh --no-service"
@@ -104,6 +112,7 @@ echo "Starting in the foreground (first boot ≈ 9 min: torch.compile + CUDA gra
 echo "  Ready when the log says:  The server is fired up and ready to roll!"
 echo "  Config: native 262144 window, template defaults (memory fraction 0.50)."
 echo "  A hand-tuned service unit may serve a different fraction: compare like with like."
+echo "  Listening on:             $ENGINE_BIND:$PORT, with no proxy in front (ENGINE_BIND=0.0.0.0 opens it to the network)"
 echo "  Test from another shell:  curl http://127.0.0.1:$PORT/health"
 echo "  opencode:                 provider config at $CONFIG_DIR/opencode.json (README, \"opencode integration\")"
 echo "  Stop:                     Ctrl+C (container removed; compile cache kept for faster next boots)"
@@ -138,4 +147,4 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
     --sleep-on-idle \
     --enable-metrics \
     --api-key "$KEY" \
-    --host 0.0.0.0 --port "$PORT"
+    --host "$ENGINE_BIND" --port "$PORT"

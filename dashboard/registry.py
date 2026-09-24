@@ -6,8 +6,10 @@ inode so a multi-revision model is not double-counted.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
 from pathlib import Path
 
 # Which pin variable serves which checkpoint (kept in lockstep with
@@ -62,27 +64,56 @@ def parse_docker_images(lines: list[str]) -> list[dict]:
     return rows
 
 
+# A blob huggingface_hub is still writing has been written to within this long.
+ACTIVE_S = 600
+
+
+def snapshot_complete(snap: Path) -> bool:
+    """Every weight file each of the snapshot's indexes names is in it (a file appears there
+    only once its blob is whole): the root index of a checkpoint, what install.sh's
+    ckpt_cached checks, or one per component in a diffusers layout. With no index, a weight
+    file at all. A snapshot folder exists before the first byte of its first file."""
+    indexes = list(snap.rglob("*.safetensors.index.json"))
+    if not indexes:
+        return any(snap.rglob("*.safetensors"))
+    for idx in indexes:
+        try:
+            shards = set(json.loads(idx.read_text())["weight_map"].values())
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False
+        if not shards or not all((idx.parent / s).exists() for s in shards):
+            return False
+    return True
+
+
 def scan_hf_cache(root: Path) -> list[dict]:
-    """[{repo_id, disk_bytes, revisions:[{rev, bytes}]}] for models--* dirs.
+    """[{repo_id, disk_bytes, incomplete, active, revisions:[{rev, bytes, complete}]}] for
+    models--* dirs.
 
     disk_bytes = physical blobs (deduped); a revision's bytes resolve its
     snapshot symlinks, so shared blobs count in every revision that uses
     them (logical size) but only once in disk_bytes.
     """
     out = []
+    now = time.time()
     for d in sorted(root.glob("models--*")):
         repo_id = d.name[len("models--"):].replace("--", "/")
         seen: set[int] = set()
         disk = 0
-        incomplete = 0
+        incomplete = active = 0
         blobs = d / "blobs"
         if blobs.is_dir():
             for f in blobs.iterdir():
-                # huggingface_hub writes <sha>.incomplete while a blob is still
-                # arriving: a snapshot directory exists long before it is usable,
-                # so its mere presence must never be read as "the model is here".
+                # huggingface_hub writes <sha>.incomplete while a blob is still arriving.
+                # One that nothing writes to any more is what an interrupted download
+                # left, and it marked the repo "downloading" for good (found in review,
+                # 2026-09-24): only a recent one is a download in progress.
                 if f.name.endswith(".incomplete"):
                     incomplete += 1
+                    try:
+                        active += now - f.stat().st_mtime < ACTIVE_S
+                    except OSError:
+                        pass
                     continue
                 try:
                     st = f.stat()
@@ -103,9 +134,9 @@ def scan_hf_cache(root: Path) -> list[dict]:
                             size += (Path(base) / fn).stat().st_size
                         except OSError:
                             pass
-                revs.append({"rev": rd.name, "bytes": size})
+                revs.append({"rev": rd.name, "bytes": size, "complete": snapshot_complete(rd)})
         out.append({"repo_id": repo_id, "disk_bytes": disk,
-                    "incomplete": incomplete, "revisions": revs})
+                    "incomplete": incomplete, "active": active, "revisions": revs})
     return out
 
 

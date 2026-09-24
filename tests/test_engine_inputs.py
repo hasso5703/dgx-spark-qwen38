@@ -25,9 +25,15 @@ if [ "$1" = image ]; then v=$(grep -F "$5=" "$FAKE_IMAGES" | head -1 | cut -d= -
 [ -n "$v" ] || exit 1
 echo "$v"
 """
+# systemd prints the epoch only when asked for it (--timestamp=unix, systemd >= 248), and a
+# local date otherwise: a fake that always printed the epoch let the flag go unnoticed
+# (found in review, 2026-09-24)
 FAKE_SYSTEMCTL = """#!/bin/sh
 echo "ActiveState=$FAKE_ACTIVE"
-echo "ExecMainStartTimestamp=@$FAKE_STARTED"
+case " $* " in
+  *" --timestamp=unix "*) echo "ExecMainStartTimestamp=@$FAKE_STARTED" ;;
+  *) echo "ExecMainStartTimestamp=$(date -d "@$FAKE_STARTED" '+%a %Y-%m-%d %H:%M:%S %Z')" ;;
+esac
 """
 
 

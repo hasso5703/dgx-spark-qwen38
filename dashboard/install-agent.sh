@@ -55,6 +55,13 @@ OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 AGENT_PORT="${AGENT_PORT:-30091}"
 die(){ printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 note(){ printf 'NOTE: %s\n' "$*"; }
+# As root, every path below moves to /root and what is rendered names root: the
+# opencode server, and every tool call of the Agent tab, would run as root (found in
+# review, 2026-09-24). install.sh and install-image.sh refuse the same way;
+# ALLOW_ROOT=1 is for a box whose only login is root.
+if [ "$(id -u)" = "0" ] && [ "${ALLOW_ROOT:-0}" != "1" ]; then
+  die "run this as the user who will use the box, not as root: it calls sudo itself for the steps that need it${SUDO_USER:+ (your login is $SUDO_USER: drop the sudo)}."
+fi
 
 [[ "$OPENCODE_PORT" =~ ^[0-9]+$ ]] || die "OPENCODE_PORT must be a number"
 [[ "$AGENT_PORT" =~ ^[0-9]+$ ]] || die "AGENT_PORT must be a number"
@@ -161,7 +168,7 @@ sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" -e "s|__HOME__|$HOM
     -e "s|__PATH__|$SVC_PATH|g" -e "s|__OUTPUT_TOKEN_MAX__|$OUT_MAX|g" \
     -e "s|__AUTO_LINE__|$AUTO_LINE|g" \
     "$HERE/opencode-web.service.template" > "$TMP_UNIT"
-grep -q '__[A-Z_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in the unit render"
+grep -q '__[A-Z][A-Z0-9_]*__' "$TMP_UNIT" && die "unsubstituted placeholder in the unit render"
 AGENT_CHANGED=0
 cmp -s "$TMP_UNIT" "/etc/systemd/system/$UNIT" \
   || { sudo install -m 644 "$TMP_UNIT" "/etc/systemd/system/$UNIT"; AGENT_CHANGED=1; }

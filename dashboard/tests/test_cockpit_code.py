@@ -33,8 +33,9 @@ def load_cockpit(from_dir: Path):
     developer's own ~/.config/qwen38. The CI step "The offline suite touches
     nothing outside itself" is what found it.
     """
-    os.environ.setdefault("COCKPIT_CONFIG_DIR",
-                          tempfile.mkdtemp(prefix="cockpit-code-cfg-"))
+    # not setdefault(): its argument is evaluated anyway, and left a directory per call
+    if "COCKPIT_CONFIG_DIR" not in os.environ:
+        os.environ["COCKPIT_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cockpit-code-cfg-")
     os.environ.setdefault("COCKPIT_PORT", "0")
     os.environ.setdefault("COCKPIT_AGENT_PORT", "0")
     spec = importlib.util.spec_from_file_location(
@@ -50,9 +51,31 @@ class Fingerprint(unittest.TestCase):
         cls.ck = load_cockpit(DASH)
 
     def test_importing_the_cockpit_binds_nothing(self):
-        # If importing it started the server, every test here would hold :30090.
-        self.assertFalse(hasattr(self.ck, "_SERVER_STARTED_AT_IMPORT"))
-        self.assertTrue(callable(self.ck.code_fingerprint))
+        # If importing it started the server, every test here would hold :30090. Measured
+        # around a fresh import: the threads it leaves and the sockets it opens. It used to
+        # look for a name nothing defines, so a server started at import passed (found in
+        # review, 2026-09-24).
+        import threading
+
+        def sockets():
+            out = set()
+            for fd in os.listdir("/proc/self/fd"):
+                try:
+                    target = os.readlink(f"/proc/self/fd/{fd}")
+                except OSError:               # the listing's own descriptor, closed since
+                    continue
+                if target.startswith("socket:"):
+                    out.add(target)
+            return out
+        if not os.path.isdir("/proc/self/fd"):
+            self.skipTest("needs /proc to see the sockets a process holds")
+        threads, socks = set(threading.enumerate()), sockets()
+        ck = load_cockpit(DASH)
+        new_threads = set(threading.enumerate()) - threads
+        new_socks = sockets() - socks
+        self.assertEqual(new_threads, set(), "importing cockpit.py started a thread")
+        self.assertEqual(new_socks, set(), "importing cockpit.py opened a socket")
+        self.assertTrue(callable(ck.code_fingerprint))
 
     def test_it_watches_the_files_its_behaviour_comes_from(self):
         fp = self.ck.code_fingerprint()

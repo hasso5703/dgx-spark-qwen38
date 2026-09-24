@@ -286,13 +286,24 @@ class JobBookkeeping(Base):
         self.assertIsInstance(snap, dict)
 
     def test_the_registry_keeps_a_bounded_number_of_finished_jobs(self):
+        # The pruning function is called by its name: behind a hasattr() on a name that
+        # did not exist (prune_jobs, not _prune_jobs) nothing was ever pruned, and the
+        # bound checked was above the number of jobs inserted (found in review, 2026-09-24).
+        saved = dict(self.cp.JOBS)
+        self.addCleanup(lambda: (self.cp.JOBS.clear(), self.cp.JOBS.update(saved)))
+        self.cp.JOBS.clear()
+        oldest = self.cp.Job("smoke", None, 10)
+        oldest.started -= 3600                 # the oldest job of all, and still running
+        self.cp.JOBS[oldest.id] = oldest
         for _ in range(self.cp.JOBS_KEEP * 3):
             job = self.cp.Job("smoke", None, 10)
             job.status, job.ended = "done", time.time()
-            self.cp.JOBS[job.id] = job
-            self.cp.prune_jobs() if hasattr(self.cp, "prune_jobs") else None
+            with self.cp.JOBS_MUTEX:
+                self.cp.JOBS[job.id] = job
+            self.cp._prune_jobs()
         json.dumps(self.cp.job_snapshot())
-        self.assertLessEqual(len(self.cp.JOBS), self.cp.JOBS_KEEP * 3 + 5)
+        self.assertLessEqual(len(self.cp.JOBS), self.cp.JOBS_KEEP + 1)
+        self.assertIn(oldest.id, self.cp.JOBS, "a running job was pruned")
 
 
 

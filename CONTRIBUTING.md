@@ -34,6 +34,10 @@ pip packages, once:
 python3 -m venv .venv-test && .venv-test/bin/pip install coverage hypothesis
 ```
 
+and `ruff`, `shellcheck` and the GitHub CLI `gh` on `PATH`: without them
+`ci-local.sh` reports the steps that name them SKIPPED, which checks nothing
+(TESTING.md says which steps, and how to read the summary line).
+
 Run the gates the way GitHub runs them:
 
 ```bash
