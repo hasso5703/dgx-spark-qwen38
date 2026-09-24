@@ -51,8 +51,8 @@ class TheUnit(unittest.TestCase):
         unit fails to start minutes later, on a box whose engine has just been stopped.
         This is the same gate the engine templates have, for the same reason."""
         tpl = UNIT_TPL.read_text()
-        used = set(re.findall(r"__[A-Z_]+__", tpl))
-        sub = set(re.findall(r'-e "s\|(__[A-Z_]+__)\|', INSTALLER.read_text()))
+        used = set(re.findall(r"__[A-Z][A-Z0-9_]*__", tpl))
+        sub = set(re.findall(r'-e "s\|(__[A-Z][A-Z0-9_]*__)\|', INSTALLER.read_text()))
         self.assertEqual(used - sub, set(), "the installer does not substitute these")
 
     def test_one_engine_at_a_time_is_declared_not_documented(self):
@@ -149,8 +149,26 @@ class TheInstaller(unittest.TestCase):
     def test_it_refuses_root(self):
         """Under sudo the venv, the weights and the key all move to /root, and the unit
         points at paths the real user cannot read. get.sh and install.sh refuse the same
-        way; this one is reachable on its own, so it refuses on its own."""
-        self.assertIn("not as root", INSTALLER.read_text())
+        way; this one is reachable on its own, so it refuses on its own.
+
+        Run under a faked uid 0 (an `id` on PATH, as test_install_root_refusal.py does),
+        with an unknown option: past the wall the run stops at that option, before anything
+        is written, so a wall that no longer refuses shows here. The message alone was
+        checked, and a disabled check that kept it passed (found in review, 2026-09-24)."""
+        fake = pathlib.Path(tempfile.mkdtemp(prefix="img-fake-root-"))
+        (fake / "id").write_text('#!/bin/sh\ncase "$*" in -u) echo 0 ;; -un) echo root ;; '
+                                 '*) exec /usr/bin/id "$@" ;; esac\n')
+        (fake / "id").chmod(0o755)
+        path = f"{fake}:/usr/local/bin:/usr/bin:/bin"
+        rc, out = self.run_it("--wat", PATH=path)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("not as root", out)
+        self.assertNotIn("unknown option", out)
+        # the way out is real, and reaches the next refusal down
+        rc, out = self.run_it("--wat", PATH=path, ALLOW_ROOT="1")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("unknown option: --wat", out)
+        self.assertNotIn("not as root", out)
 
     def test_the_source_overlay_needs_no_rust_toolchain(self):
         """DGX OS ships no cargo, and the pinned source declares Rust extensions that

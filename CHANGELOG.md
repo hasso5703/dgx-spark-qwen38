@@ -395,6 +395,129 @@ had booted the pair since v1.8, and the CI checked the pins only. The switch is 
 the rollback that holds together, v1.7.2, which shipped the overlay with its own launcher
 and pins; `flash-sglang/` stays as the record of what upstream replaced.
 
+**Smaller installer defects.**
+- Each drafter pin follows the installed unit unless it is passed: with any one
+  `DRAFT2_*` given, the other three fell back to the defaults, so `DRAFT2_TOKENS=8` on a
+  box serving the BF16 draft moved it to the NVFP4 one without a word. The flash lane's
+  `SPEC_TOKEN_MAP_SIZE=0` and `FLASH_REPLAYSSM_SPEC=0` are read back the same way, and no
+  longer come back on at the next run.
+- The `qwen38-pinned` tag of a pin a release replaced is removed once the new pin is here
+  and tagged (unless a container uses its image): it kept 30 to 39 GB out of every prune.
+- `HOME`, `HF_CACHE` and `PLE_DIR` with a space, a colon, a quote, a `$` or a `%`, which
+  broke the unit they were written into, are refused before step 1; `ENGINE_BIND` and
+  `PROXY_BIND` take 127.0.0.1 or 0.0.0.0 only (300.1.1.1 passed, and any other address
+  leaves out the loopback the box reaches both ports on); a busy `PROXY_PORT` is taken
+  for the proxy's own only when the running proxy's unit names it.
+- An `OPENCODE_VERSION` without its sha256 is refused before step 1, not at step 7; a
+  `df` that fails says "found unknown GB" instead of ending the install on its own line;
+  a bad `FLASH_REPLAYSSM_SPEC` exits cleanly; `--with-image --no-image` is refused; a
+  lane kept by `--no-image` is not reported "not installed"; an opencode binary that
+  could not be written is a failure, not "installed"; the download hint names
+  `DRAFT2_REV`, not the retired `DRAFT_REV`; `--help` gives the FP8 pool as measured.
+
+**Smaller defects of the other scripts.** `./switch-model.sh` with no target switched the
+box to stock, re-enabling the 27B lane; it prints its usage. `get.sh` under `FORCE_UPDATE=1`
+switched to main before stashing, so a change that conflicted with main ended the run
+(git's rc 128) and a commit made on a detached HEAD was left on no branch: it stashes
+first and keeps such a commit on a backup branch, and its advice no longer includes
+`git clean -fd`, which deleted the untracked files it keeps on purpose.
+`install-image.sh` checked `import venv`, which works without python3-venv, and then took a
+venv with no pip for a finished one; it asks for ensurepip, and makes such a venv again. A
+smoke generation that failed at the transport ended it before its message and the
+journal. The image unit's `TimeoutStartSec`, which a `Type=simple` unit never applies, is
+gone.
+
+**Tests that could not fail now fail on the defect they are named for.** A mutant run
+against each claim a test makes left these green: the uninstall inventory read the last
+assignment of each pin (the help text's moving tag, a later `$CUR_DRAFT`), so the served
+drafter and the 27B digest were never checked, and it matched images by substring and units
+and containers by their presence anywhere in the file; the fake `systemctl` printed an epoch
+whatever it was asked, so a dropped `--timestamp=unix`, which makes every install restart
+the engine on real systemd, went unseen; the native-restore guard's fixture carried a
+`--context-length` no native unit has, and its exit code was thrown away; the opencode
+block's 27B numbers were the table's own, so which pair was used could not be seen;
+`needle.sh`'s 1/1 pass tolerated exit 1; the System One cancel was set before the call, so a
+check placed above the slot wait passed; the image lane's root refusal and the cockpit step's
+wiring were substrings; job pruning was called under a name that did not exist; the audit
+test never read the argv it is named for; "importing binds nothing" looked for a name
+nothing defines; the collectors' hostile-output test asserted only the type of the answer;
+and the state snapshot test ran no product code at all. Each now runs what it names and
+fails on the mutant that used to pass.
+
+**The cockpit's static files stay in their directory.** `/static/` is served before the
+session check, and containment was a string prefix, so a neighbour such as
+`dashboard/static.bak/` passed for the static directory and `/static/../static.bak/x` was
+served to anyone. Path components are compared now.
+
+**More CI gates that could not see what they are for.** A placeholder with a digit in its
+name (the shape `__DRAFT2_REPO__` already has) passed every render gate and the installers'
+own last checks, and would have reached /etc verbatim. The declared-against-ran counts took
+a skipped test for a run one, so a skip decorator on a whole class stayed green, and so did
+the TypeSafe SDK round trip whenever its install failed: a skip now passes only for a reason
+the step lists as the runner's. The relay simulation accepted an empty read as a whole
+stream, never checked that an abort reached the engine, compared aborted ids against a set
+that contained them, and ran under a floor that let one of its checks disappear. And "the
+offline suite touches nothing" compared listening sockets only, which cannot see a
+connection to a port that was already listening, the engine's on the box that runs
+`ci-local.sh`: every python the suite starts now records a connect() to a serving port, with
+the test line that made it.
+
+**The documents say what binds where.** DESIGN.md called the cockpit "opt-in, loopback",
+when `install.sh` has installed it by default since v1.12, on the tailnet address when the
+box has one. SECURITY.md said the engine binds `0.0.0.0` on the reference box, which serves
+it on `127.0.0.1` since v1.17, and that it is not on the network at all, which `./run.sh`
+contradicted until this release. SECURITY.md and ARCHITECTURE.md said TLS and per-client
+identity do not exist, when the proxy has had both, opt-in, since v6.16; the README said the
+flash-uncensored lane binds `0.0.0.0`, when its proxy does; and `docs/operations.md` sent
+Prometheus to the engine port, reachable from the box only since v1.17. `/metrics` is read
+through `:30001`, with no key on either port (checked on the reference box), and the image
+lane exports none.
+
+**What the proxy refuses, and that nothing is truncated.** `docs/clients.md` said the 27B
+units truncate an oversized prompt and the flash ceiling answers 413: no unit or launcher
+passes `--allow-auto-truncate` (a CI gate refuses it), a prompt past the pool share or the
+flash ceiling is a 400 `context_too_long`, and a 413 is only a body over 256 MiB.
+`docs/context-1m.md` planned against an 863K floor and called the 1m pair's worst case
+880,000, under every pool: sixteen boots measured 832,993 to 922,094, and with one agent step
+counted the worst case is 923,863, above all of them, which is why the install fits it to
+the pool. A native re-install also keeps the proxy the page said it removed.
+
+**The README's disk figures are the preflight's.** It announced ~84 GB for a 27B target and
+~225 GB for a flash one, while the installer asks 45 GB on the disk of `HF_CACHE` and 40 on
+Docker's, or 230 and 35 for flash, so a box sized from the README was refused. It states
+those now, per disk and summed for a box with one disk, and a test holds it to install.sh's
+numbers. The one-liner's comment said native where the default is 1M; a code block of the
+Operations section was never closed, so GitHub rendered the cockpit's heading and
+introduction as code (a test now checks every page's code blocks); and the generated
+opencode variants are `lean`, `low`, `medium` and `xhigh`, `lean` being the default.
+
+**The cockpit's pages describe the cockpit that exists.** The README's tab table,
+`docs/cockpit.md` and `dashboard/CAPABILITIES.md` promised a bench job, a 4-canary battery,
+key regeneration, a settings editor, a switch dry-run, one-click reclaim and a template
+panel, none of which exist, and `install.sh`'s summary pointed at a Benchmarks tab the page
+never had. Each now names what the tab does, and a test checks that every tab named in the
+repo is one the page has. ROADMAP.md, frozen at v1.14.0, now lists System One, the release
+check, the engine on loopback, the image lane and the pinned opencode.
+
+**Two more found while fixing the docs.** On a box whose Hugging Face cache and Docker
+share one disk, as on a stock one, the installer checked the checkpoints' 45 GB and the
+image's 40 GB each against the same free space, so 45 GB passed a first 27B install that
+needs 85 there: it asks for the sum when the two are one disk. And the cockpit's Logs tab
+showed the last lines of the engine's container and journal as they were, while SGLang's
+ServerArgs line at boot carries the serving key: the key is masked there as the
+diagnostics bundle masks it.
+
+**Three smaller holes before the cockpit's login.** A key with non-ASCII in it ended the
+login's handler thread (`compare_digest` refuses such a str) before the attempt was counted
+or audited, and a NUL in a static path did the same (`resolve()` raises): both are answered
+now. The limit of five failed logins a minute was counted after the reply, so a burst of
+simultaneous attempts was judged far past it (40 of 40 in a test): an attempt is counted
+before it is judged, under a lock, and given back when it succeeds. And SECURITY.md said the
+update check ran at most once every six hours (a failure retries after a minute), that
+downloads go to Hugging Face and the image registry (GitHub too: the clone and the pinned
+opencode), and that every byte is pinned and hash-verified, with nothing said of the image
+lane, whose pip dependencies are resolved from PyPI unpinned.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash

@@ -73,19 +73,28 @@ enforces the key; the proxy forwards it verbatim.
 Served model names: `qwen3.8-27b` (27B lane, both context modes) and
 `qwen3.8-flash-next` (flash lane). Send the name, not the checkpoint path.
 
-Reasoning effort is a first-class field in both dialects (`low`, `medium`,
-`xhigh`; the template maps `max`/`high` to `xhigh` and `minimal` to `low`,
-see README "Reasoning-effort variants"). Long turns cost time at the
+Reasoning effort is a first-class field in both dialects: `lean`, which a
+request that names no level gets, and Qwen's own `low`, `medium` and `xhigh`
+(the template maps `max`/`high` to `xhigh` and `minimal` to `low`; the levels
+and what each costs are in [LEAN.md](../LEAN.md), and a box installed with
+`LEAN_DEFAULT=0` keeps Qwen's `xhigh` as the default). Long turns cost time at the
 engine's speed, not yours: an `xhigh` turn can stream for minutes on a
 correct answer, and several clients have wall-clock watchdogs that read
 that as a hang. Prefer `medium` for interactive editing, `low` for
 mechanical edits, and keep `xhigh` for the hard turn.
 
-Oversize behavior differs by lane, deliberately: the 27B units pass
-`--allow-auto-truncate` (an oversized prompt is truncated, which is often
-what an agent wanted), the flash lane does not (it refuses instead), and
-the flash proxy carries a 250,000-token ceiling that answers 413 with a
-message naming the ceiling and the retry shape.
+Oversize behavior is the same on every lane: nothing is truncated. No unit or
+launcher passes `--allow-auto-truncate` (a CI gate refuses it), so a prompt a
+lane cannot serve comes back refused rather than silently cut. The proxy
+refuses a prompt past 92% of the lane's KV pool (`OVERSIZE_MARGIN_FRAC`, 0.08)
+with a 400 `context_too_long` (`code: context_length_exceeded`, the code
+opencode compacts on), whose message names the count, the limit and the pool;
+while the flash lane serves, the limit is also held under its one-prompt
+ceiling (`FLASH_PROMPT_CEILING_TOKENS`, 250,000 by default), which keeps a long
+flash prefill off the memory edge. The engine itself refuses a request whose
+prompt plus `max_tokens` passes its window (262,144 tokens, 1,010,000 in 1M
+mode). A 413 means a body over `MAX_BODY_BYTES` (256 MiB), refused before a
+byte of it is read.
 
 ## Measured on the reference box
 

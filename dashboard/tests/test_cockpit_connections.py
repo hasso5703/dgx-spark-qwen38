@@ -241,6 +241,74 @@ class NoBodyIsReadBeforeTheSession(Base):
         self.assertEqual(st, 200)
 
 
+class InputsThatEndedTheHandler(Base):
+    """Two inputs from before the login ended the handler thread with no answer: a key
+    with non-ASCII in it (compare_digest raises on such a str), counted and audited by
+    nobody, and a NUL in a static path (resolve() raises)."""
+
+    def raw(self, port, data):
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        try:
+            s.sendall(data)
+            return s.recv(4096)
+        finally:
+            s.close()
+
+    def test_a_non_ascii_key_is_a_counted_refusal(self):
+        port = self.serve(self.cp.Server, self.cp.Handler)
+        self.cp.LOGIN_FAILS.clear()
+        body = '{"key": "\u00e9t\u00e9"}'.encode()
+        head = self.raw(port, b"POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                        b"Content-Length: %d\r\n\r\n" % len(body) + body)
+        self.assertTrue(head.startswith(b"HTTP/1.1 403"), head[:60])
+        self.assertEqual(sum(len(v) for v in self.cp.LOGIN_FAILS.values()), 1, "the attempt was not counted")
+
+    def test_a_nul_in_a_static_path_is_a_404(self):
+        port = self.serve(self.cp.Server, self.cp.Handler)
+        head = self.raw(port, b"GET /static/app\x00.js HTTP/1.1\r\nHost: x\r\n\r\n")
+        self.assertTrue(head.startswith(b"HTTP/1.1 404"), head[:60])
+
+
+class TheLoginLimitHoldsUnderConcurrency(Base):
+    """Counted after its reply, a burst of simultaneous attempts was judged far past the
+    limit of five: 107 of 200 in the review's run (found in review, 2026-09-24)."""
+
+    def test_a_burst_is_judged_five_times_at_most(self):
+        port = self.serve(type("Wide", (self.cp.Server,), {"max_per_address": 96}), self.cp.Handler)
+        self.cp.LOGIN_FAILS.clear()
+        go, codes, lock = threading.Barrier(40), [], threading.Lock()
+
+        def attempt():
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            try:
+                c.connect()              # connected first: the listen backlog is not the subject
+                go.wait()
+                c.request("POST", "/api/login", b'{"key": "wrong"}', {"Content-Type": "application/json"})
+                with lock:
+                    codes.append(c.getresponse().status)
+            finally:
+                c.close()
+        threads = [threading.Thread(target=attempt) for _ in range(40)]
+        for t in threads:
+            t.start()
+            time.sleep(0.01)
+        for t in threads:
+            t.join(20)
+        self.assertEqual(len(codes), 40)
+        self.assertLessEqual(codes.count(403), 5, sorted(codes))
+        self.assertEqual(codes.count(403) + codes.count(429), 40)
+
+    def test_a_good_key_gives_its_slot_back(self):
+        port = self.serve(self.cp.Server, self.cp.Handler)
+        self.cp.LOGIN_FAILS.clear()
+        for _ in range(4):
+            self.request(port, "POST", "/api/login", {"Content-Type": "application/json"}, b'{"key": "wrong"}')
+        st, _ = self.request(port, "POST", "/api/login", {"Content-Type": "application/json"},
+                             ('{"key": "%s"}' % API_KEY).encode())
+        self.assertEqual(st, 200)
+        self.assertEqual(sum(len(v) for v in self.cp.LOGIN_FAILS.values()), 4, "the success was counted as a failure")
+
+
 class Recorder(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     SEEN: list = []

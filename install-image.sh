@@ -138,7 +138,10 @@ step "1/6 Preflight"
 case "$(uname -m)" in aarch64|arm64) : ;; *) die "this lane is verified on the DGX Spark's ARM64 GB10 only (this box is $(uname -m))." ;; esac
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found: this needs the NVIDIA driver."
 command -v git >/dev/null || die "git is required (stock on DGX OS)."
-python3 -c 'import venv' 2>/dev/null || die "python3-venv is missing. Fix: sudo apt-get install -y python3-venv"
+# ensurepip, not just venv: venv is in python3's standard library either way, and it is
+# python3-venv that ships ensurepip, which gives a venv its pip. Checked on venv alone,
+# a box without the package made a venv with no pip (found in review, 2026-09-24).
+python3 -c 'import venv, ensurepip' 2>/dev/null || die "python3-venv is missing (a venv made without it has no pip). Fix: sudo apt-get install -y python3-venv"
 [ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key. Run ./install.sh first: the cockpit is the authenticated door in front of this lane, and it reads that file."
 # Measured where each part lands, not under $HOME (install.sh had fixed the same bug):
 # the checkpoint goes to HF_CACHE, the runtime and its build to the lane's folder. What the
@@ -168,6 +171,11 @@ mkdir -p "$LANE_DIR"
 if [ ! -x "$VENV/bin/python" ]; then
   python3 -m venv "$VENV" || die "could not create the venv at $VENV"
   echo "venv created on $("$VENV/bin/python" -V)"
+elif ! "$VENV/bin/python" -m pip --version >/dev/null 2>&1; then
+  # A venv made while python3-venv was missing has its python and no pip, and every
+  # later run took it for a finished one, then died on its first pip call.
+  echo "the venv at $VENV has no pip: making it again"
+  python3 -m venv --clear "$VENV" || die "could not make the venv at $VENV again"
 else
   echo "venv already at $VENV ($("$VENV/bin/python" -V))"
 fi
@@ -287,7 +295,7 @@ sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" \
     -e "s|__IMAGE_BIND__|$IMAGE_BIND|g" -e "s|__HF_CACHE__|$HF_CACHE|g" \
     -e "s|__HOME__|$HOME|g" \
     "$HERE/$UNIT.template" > "$RENDER"
-grep -q '__[A-Z_]*__' "$RENDER" && die "the unit template still holds an unsubstituted placeholder: $(grep -o '__[A-Z_]*__' "$RENDER" | sort -u | tr '\n' ' ')"
+grep -q '__[A-Z][A-Z0-9_]*__' "$RENDER" && die "the unit template still holds an unsubstituted placeholder: $(grep -o '__[A-Z][A-Z0-9_]*__' "$RENDER" | sort -u | tr '\n' ' ')"
 # 0644 like every other unit, and set explicitly: mktemp creates 0600 and cp keeps the
 # mode, which left this unit readable by root alone. systemd did not mind; everything
 # else that reads the unit did, and failed quietly. switch-model.sh could not find the
@@ -341,10 +349,17 @@ done
 [ "$READY" -eq 1 ] || { sudo journalctl -u "$UNIT" -n 40 --no-pager; die "the lane did not answer /health within 15 min. The journal above says why."; }
 echo "up after ~$(( (i - 1) * 10 )) s; generating a 512x512 image"   # the first probe comes before any wait
 OUT="$(mktemp)"
+# `|| true`: a transport failure (the lane dying mid-request, the 300 s passing) made curl
+# exit non-zero inside the assignment, and set -e ended the script before the message and
+# the journal below (found in review, 2026-09-24); curl still writes 000 for the code.
 CODE=$(curl -sS -o "$OUT" -w '%{http_code}' -m 300 "http://$IMAGE_BIND:$PORT/v1/images/generations" \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":"A capybara reading a book by candlelight","size":"512x512","num_inference_steps":20,"output_format":"png","response_format":"b64_json","generator_device":"cpu","seed":42}')
-[ "$CODE" = 200 ] || { echo "HTTP $CODE: $(head -c 300 "$OUT")"; die "the lane started but refused the smoke generation."; }
+  -d '{"prompt":"A capybara reading a book by candlelight","size":"512x512","num_inference_steps":20,"output_format":"png","response_format":"b64_json","generator_device":"cpu","seed":42}' || true)
+if [ "$CODE" != 200 ]; then
+  echo "HTTP ${CODE:-000}: $(head -c 300 "$OUT" 2>/dev/null)"
+  sudo journalctl -u "$UNIT" -n 40 --no-pager || true
+  die "the lane started but did not make the smoke image (HTTP ${CODE:-000}); the journal above says why."
+fi
 "$VENV/bin/python" - "$OUT" <<'PY' || die "the lane answered 200 with something that is not a 512x512 image."
 import base64, json, struct, sys
 d = json.load(open(sys.argv[1]))["data"][0]

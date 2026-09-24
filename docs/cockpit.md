@@ -89,17 +89,20 @@ sudo systemctl restart qwen38-dashboard
   of the **running** proxy from its startup banner; and whether the engine accepts the
   proxy's request id at all, because without that an abandoned answer can only be
   drained. See the v1.8.4 and v1.8.5 changelog entries.
-- **Jobs.** Bench runs, the 4-canary quality battery, diagnostics bundles and cache
-  operations run as supervised one-at-a-time jobs with live output, instead of
-  commands you type blind into a terminal.
+- **Jobs.** Every action above, the opencode fit and the diagnostics bundle run
+  as supervised one-at-a-time jobs with live output, instead of commands you
+  type blind into a terminal. Benchmarks are not among them: `./bench.sh` and
+  `./bench-matrix.sh` run in a terminal (BENCHMARKS.md).
 - **Housekeeping.** Inventory of everything the repo ever put on the box and
-  what each item costs in bytes (read-only: the reclaim commands are printed by
-  `./uninstall.sh --list` and by the installer, never run from the page), the
-  opencode integration state (limits per lane, default model, output cap) with
-  the one action that writes there, fitting those limits to the pool the engine
-  actually booted with, the patched chat templates, the API key (masked,
-  regenerable), and the repo itself (version, upstream tag, changelog, update
-  badge).
+  what each item costs in bytes (read-only, from `./uninstall.sh --list`; the
+  reclaim commands are printed by `./uninstall.sh` once it has removed the
+  services, and by the installer for images an earlier version left, never run
+  from the page), the opencode integration state (limits per lane, default
+  model, launcher) with the one action that writes there, fitting those limits
+  to the pool the engine actually booted with, and the repo itself (version,
+  branch, head, a dirty working tree, and whether a newer release is out). There
+  is no panel for the API key, which is what you log in with; the diagnostics
+  bundle masks it.
 
 On a phone the chrome collapses to one identity row plus a swipeable section
 rail, controls are 44 px targets, and the Agent tab opens fullscreen (see "On a

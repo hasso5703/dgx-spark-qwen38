@@ -6,7 +6,6 @@ and kept the unit's bind, and install-agent.sh ran opencode as root, so every to
 of the Agent tab ran as root (found in review, 2026-09-24). Root is faked by an `id` on
 PATH, as in test_install_root_refusal.py; sudo, systemctl and visudo are stubs that
 record and refuse, so even a script with no refusal cannot change anything here."""
-import os
 import pathlib
 import shutil
 import subprocess

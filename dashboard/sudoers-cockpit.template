@@ -36,5 +36,5 @@ __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-image.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
 __USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 __HOME__/.config/qwen38/qwen38-sglang.service.switch-stage /etc/systemd/system/qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 -D __HOME__/.config/qwen38/keepalive-ceiling.conf.switch-stage /etc/systemd/system/qwen38-keepalive.service.d/ceiling.conf
-__USER__ ALL=(root) NOPASSWD: /usr/local/bin/qwen38-pyspy-scheduler
+__USER__ ALL=(root) NOPASSWD: /usr/local/bin/qwen38-pyspy-scheduler ""
 __USER__ ALL=(root) NOPASSWD: /usr/bin/journalctl -k --since -1h --no-pager -o short-iso

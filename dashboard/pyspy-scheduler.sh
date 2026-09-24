@@ -9,7 +9,9 @@ PYSPY=""
 for c in /usr/local/bin/py-spy /usr/bin/py-spy /root/.local/bin/py-spy; do
   [ -x "$c" ] && PYSPY="$c" && break
 done
-[ -n "$PYSPY" ] || { echo "py-spy not installed (pip install py-spy, or copy the binary to /usr/local/bin/py-spy)"; exit 3; }
+# What went wrong goes to stderr, and only a dump to stdout: the cockpit saved this line as
+# "scheduler stacks" when it came on stdout (found in review, 2026-09-24).
+[ -n "$PYSPY" ] || { echo "py-spy not installed (pip install py-spy, or copy the binary to /usr/local/bin/py-spy)" >&2; exit 3; }
 for cont in qwen38-flash qwen38-sglang; do
   pid="$(docker top "$cont" -o pid,comm 2>/dev/null | awk '/schedul/{print $1}' | head -1 || true)"
   if [ -n "$pid" ]; then
@@ -18,4 +20,4 @@ for cont in qwen38-flash qwen38-sglang; do
     exit 0
   fi
 done
-echo "no serving container running"; exit 4
+echo "no serving container running" >&2; exit 4

@@ -5,7 +5,28 @@ so that "on the roadmap" means a checkbox with a definition of done, not a
 mood. Statuses: shipped, in progress, planned, considered (considered items
 have a reason they are not yet planned, stated here or in an issue).
 
-## Shipped, current: v1.14.0
+## Shipped, current: v1.18
+
+Since v1.14 the stack gained a third lane and closed its engine port:
+
+- **Typed decisions** (v1.15.0): `POST /v1/systemone`, the wire contract of
+  TypeSafe's Jev answered by the lane on this box, with a cockpit tab of its
+  own and its measured comparison in BENCHMARKS.md.
+- **The release check** (v1.15.3), on by default: the cockpit says when a
+  newer release is out, and `COCKPIT_UPDATE_CHECK=0` turns it off.
+- **The engine on loopback** (v1.16.0 as a choice, v1.17.0 by default): the
+  proxy on `:30001` is the one door from the network, and `ENGINE_BIND=0.0.0.0`
+  reopens the engine port for a box that wants it.
+- **Qwen-Image 2.1, a third lane** (v1.18.0, opt-in with `--with-image`),
+  switched and started like the text lanes, on loopback with the cockpit as its
+  gate, since the runtime has no API key.
+- **One pinned opencode on every box** (v1.18.3): 1.18.32, checked by sha256,
+  installed or upgraded by `install.sh` unless `OPENCODE_PIN=0`.
+- v1.18.4 to v1.18.7: a fresh box's opencode stays on the box's own model, the
+  image lane installs without Rust, an update restarts only what it changed,
+  and a line-by-line review of v1.18.6 fixed with a test per defect.
+
+## The stack at v1.14.0
 
 Two lanes (27B NVFP4/FP8 with DFlash2 drafting; 176B flash-next with NEXTN
 and the PLE table on NVMe), seven switchable targets, the cockpit, the
@@ -19,7 +40,7 @@ old overlay (`OVERLAY_FLASH=1`) was retired in v1.18.7: the launcher of v1.8 on
 did not fit its image and nothing had booted the pair since, so its rollback is
 the release that shipped it whole, v1.7.2.
 
-## Shipped this cycle: v1.13.0 and v1.14.0
+## Shipped in v1.13.0 and v1.14.0
 
 `lean`, a fourth reasoning-effort level measured on 7,008 runs and made the
 default: 0.71x the thinking tokens of `medium` with no detectable quality
@@ -85,7 +106,7 @@ the cockpit drift panel says so, per lane, until it is.
   the honest next step is per-label ceilings and a journal-derived quota,
   designed as an issue with measured motivation, not bolted on.
 - **A cockpit panel that reads the Prometheus endpoint** now that it exists
-  on every lane: the panel's own canary stays the source of truth for
+  on every text lane: the panel's own canary stays the source of truth for
   "is this lane alive", the metrics join as history, not as a second
   opinion about life.
 
@@ -99,8 +120,11 @@ the cockpit drift panel says so, per lane, until it is.
 - **A GUI for anything the cockpit does not already do**: the cockpit is
   what an operator needs (state, switch, logs, bundles); new surfaces have
   to earn their maintenance cost the way features do.
-- **Hosted or telemetry components**: none, by design (SECURITY.md); the
-  telemetry question is answered by the Prometheus endpoint staying local.
+- **Hosted or telemetry components**: none, by design (SECURITY.md). The one
+  request the stack makes that nobody typed is the release check above, which
+  sends nothing but the cockpit's version and can be turned off; the telemetry
+  question is answered by the Prometheus endpoint, which the box serves and
+  never sends anywhere.
 - **GGUF fine-tune serving**: `extras/gguf/README.md` carries the
   measured llama.cpp numbers and the sharp edges; a full lane would compete
   with SGLang on the battery before earning a lane, per issue #12.

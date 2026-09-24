@@ -29,18 +29,23 @@ daily since 2026-08-22:
   boots in the v1.3 era reported **917K-1019K** tokens; three around 2026-08-30
   reported **863,398, 893,479 and 913,334** for the same checkpoint; four on the
   official image at 0.76, on 2026-09-17 and 18, reported **902,398, 889,131,
-  889,722 and 887,797**. The ranges do not overlap, so treat **863K as the floor
-  to plan against** until a fresh campaign settles it. DFlash2 acceptance is unchanged either way, and a real 690K-token
+  889,722 and 887,797**. Over sixteen 27B boots here the pool ranged from
+  **832,993 to 922,094 tokens**, so no campaign's floor is the floor: plan against
+  the pool your own boot reports, which is what the fit below does. DFlash2
+  acceptance is unchanged either way, and a real 690K-token
   request has been served (cold prefill 40 min, then cached).
 - **The limits are fitted to your own boot, automatically.** The generated
-  opencode limits below are static, and their 1m worst case (compaction at ~680K
-  plus 200K of output) sits **above the 863,398 floor**: on an unlucky boot a long
-  session can meet a proxy refusal mid-conversation, which is the field case that
-  produced this tool. Since v1.12.1, `install.sh` runs `oc-fit-limits.py` itself at
+  opencode limits below are static, and their 1m worst case (compaction at 680K,
+  one agent step of up to 43,863 tokens after it, and 200K of output: 923,863)
+  sits **above every pool measured here**, so left as is a long session can
+  outgrow the pool mid-conversation, which is the field case that produced this
+  tool. Since v1.12.1, `install.sh` runs `oc-fit-limits.py` itself at
   the end of every 1m install, once the engine is up: it reads the pool your boot
   actually got and rewrites the limits to fit it, up or down. Run it by hand (or
-  press the cockpit's button) after any later reboot you want re-fitted. The FP8 targets ship lower static limits already, because their pool is
-  about 92,000 tokens smaller.
+  press the cockpit's button) after any later reboot you want re-fitted. The FP8 targets ship lower static limits (480,000/160,000),
+  set when their pool measured about 92,000 tokens smaller; on the official image
+  the gap all but closed (881,895 against 887,797 on 2026-09-18), so theirs are
+  conservative now.
 - **The keepalive proxy becomes load-bearing.** Every service install ships it (see
   "opencode integration"), but at 1M it is not optional: a cold 690K-token prefill can
   keep the wire silent for tens of minutes. The proxy injects the official Anthropic
@@ -85,8 +90,10 @@ daily since 2026-08-22:
   **every** request of the session (measured 2026-09-09 against Claude Code 2.1.266 and
   its `Artifact` tool). The proxy removes only the patterns Python cannot compile, only
   inside tool parameter schemas, and forwards every other body untouched and unparsed.
-- The generated opencode config switches to `context/input 700000, output 200000`
-  (compaction fires at 680000; worst case 880000, under the worst measured pool).
+- The generated opencode config starts from `context/input 700000, output 200000`
+  (compaction fires at 680000; with one worst agent step and the answer on top,
+  923,863, above every pool measured here), and the fit at the end of the install
+  lowers it to the pool the boot got.
 
 Quality past the native 262144 window is not formally evaluated here: treat it as an
 experimental preset. Proof it holds up operationally, one continuous **opencode** session
@@ -97,8 +104,8 @@ prompt by YouTuber Bijan Bowen:
 - **~360K tokens generated**, 239 agent steps, 274 tool calls, no retry, no manual rescue
 - Result, single HTML file: **https://subway-fps.vercel.app**
 
-Back to native: `CONTEXT_MODE=native ./install.sh` (removes the proxy service and
-restores the pre-YaRN `config.json.pre-yarn` originals over the patched
+Back to native: `CONTEXT_MODE=native ./install.sh` (keeps the proxy, which every
+service install ships, and restores the pre-YaRN `config.json.pre-yarn` originals over the patched
 target and draft configs; a native server crashes at load on a patched config,
 so `run.sh` refuses a patched cache early instead of ten minutes into the
 boot, and the installer refuses with a re-download fix-it when a backup is
