@@ -6,6 +6,7 @@ comes with python3-venv. The preflight checked `import venv`, so a box without t
 package made a venv with a python and no pip, and every later run took it for finished
 and died on its first pip call (found in review, 2026-09-24). This runs install-image.sh's
 own lines against a venv whose python has no pip."""
+import os
 import pathlib
 import shutil
 import subprocess
@@ -32,7 +33,11 @@ class TheVenv(unittest.TestCase):
         (venv / "bin" / "python").chmod(0o755)
         script = ('set -euo pipefail\ndie(){ echo "DIE: $*"; exit 1; }\n'
                   f'VENV="{venv}"\n' + BLOCK + '\n"$VENV/bin/python" -m pip --version\n')
-        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=240)
+        # The system PATH only: pip runs `rustc --version` for its user agent when it finds
+        # one, and a rustup rustc writes ~/.rustup/settings.toml into the HOME it is given,
+        # which the offline-suite gate caught in its witness HOME.
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=240,
+                           env={**os.environ, "PATH": "/usr/local/bin:/usr/bin:/bin"})
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("has no pip: making it again", r.stdout)
         self.assertIn("pip ", r.stdout)
