@@ -42,12 +42,14 @@ class FakeBox:
     def __init__(self, table=None):
         self.table = dict(table or {})
         self.calls = []
+        self.hits = dict.fromkeys(self.table, 0)   # which answers were ever given
 
     def __call__(self, argv, timeout=5.0, merge_err=False):
         self.calls.append(list(argv))
         joined = " ".join(argv)
         for key, val in self.table.items():
             if key in joined:
+                self.hits[key] += 1
                 return val
         return ""
 
@@ -252,13 +254,14 @@ class Parse(Base):
         self.box({"docker ps --format": fixture("docker-ps.txt"),
                   "docker stats": fixture("docker-stats.txt"),
                   "systemctl show": fixture("systemctl-show.txt"),
-                  "docker logs": fixture("engine-log-tail.txt"),
-                  "journalctl": fixture("keepalive-journal.txt"),
-                  "docker images": fixture("docker-images.txt")})
+                  "journalctl": fixture("keepalive-journal.txt")})
         for name, fn in self.collectors().items():
             with self.subTest(collector=name):
                 out = fn()
                 self.assertIsInstance(out, dict, name)
+        # and every captured output in the table reached a collector: one no collector
+        # asks for is a fixture that tests nothing (found in review, 2026-09-24)
+        self.assertEqual([k for k, n in self.cp.run.hits.items() if not n], [])
 
 
 class Survive(Base):

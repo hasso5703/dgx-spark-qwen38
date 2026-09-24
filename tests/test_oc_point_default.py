@@ -78,6 +78,19 @@ def main() -> None:
     assert cfg["model"] == "flashnext/qwen3.8-flash-next"
     assert cfg["provider"]["flashnext"]["models"]["qwen3.8-flash-next"]["name"] == \
         "Qwen3.8-Flash-Next NVFP4 abliterated + MTP (local, 262K)"
+    # 2b. The flash lane over a 27B-era config: both defaults follow it, and nothing else in
+    # the file moves. small_model was never checked on this side, so a small model left on
+    # the 27B passed (found in review, 2026-09-24).
+    doc = stale_fp8_config()
+    doc["model"] = doc["small_model"] = "qwen38/qwen3.8-27b"
+    p = write(tmp, doc)
+    rc, out = run(p, "flash", "flash", "262144")
+    assert rc == 0, out
+    cfg = read(p)
+    assert (cfg["model"], cfg["small_model"]) == ("flashnext/qwen3.8-flash-next",) * 2, cfg
+    for d in (cfg, doc):
+        del d["model"], d["small_model"], d["provider"]["flashnext"]["models"]["qwen3.8-flash-next"]["name"]
+    assert cfg == doc, "something else in the file moved"
     p = write(tmp, stale_fp8_config())
     rc, _ = run(p, "27b", "fp8", "")
     assert rc == 0
