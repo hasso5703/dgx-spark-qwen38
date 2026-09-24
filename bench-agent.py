@@ -254,8 +254,14 @@ def main() -> None:
         # tokens. It was 1,000 alone until v1.18.7, which printed seconds per 1k as
         # milliseconds, so a cache that was never hit read as one reused (found in
         # review, 2026-09-24; tests/test_bench_agent_slope.py).
-        per_1k = 1_000_000.0 * growth / (loop[-1]["prompt"] - loop[0]["prompt"])
-        print(f"TTFT per 1k added prompt tokens  {per_1k:+.0f} ms")
+        added = loop[-1]["prompt"] - loop[0]["prompt"]
+        per_1k = 1_000_000.0 * growth / added
+        # The loop's own TTFT spread bounds what this figure can resolve: over a small
+        # growth, a few milliseconds of jitter read as a steep slope (a 4-turn run on the
+        # reference box added 98 tokens and printed -115 ms, all of it jitter).
+        spread = 1_000_000.0 * (max(ttfts) - min(ttfts)) / added
+        print(f"TTFT per 1k added prompt tokens  {per_1k:+.0f} ms "
+              f"(+/- {spread:.0f} ms: the loop's TTFT spread over +{added} tokens)")
         print("A prefix cache that is being reused keeps this near zero: the added "
               "tokens are\nthe only ones prefilled. A number that tracks the full "
               "prompt means the cache is\nnot being hit, which is what to check before "

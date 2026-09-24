@@ -75,8 +75,11 @@ the banner sent people to it. A test now asks app.js for a handler of every acti
 outside the action bar.
 
 **`bench-agent.py` printed its TTFT slope 1,000 times too small** (seconds per 1k shown as ms),
-so a cache that is never hit read as one reused. The figures published from it are replaced by
-the bound the measured TTFT ranges set.
+so a cache that is never hit read as one reused. It also prints, next to it, the bound the
+loop's own TTFT spread sets on that figure: on the reference box a 4-turn run grew by 98 tokens
+and read -115 ms, all of it jitter, and the default 8-turn run read -2,704 ms because one turn
+took 1.68 s against 0.23 s for the others. The figures published from it are replaced by the
+bound the measured TTFT ranges set.
 
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
