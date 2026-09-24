@@ -497,6 +497,27 @@ class StaticFiles(Base):
             self.assertNotIn(b"SESSION_SECRET", body)
             self.assertNotIn(b"root:", body)
 
+    def test_a_sibling_named_like_the_directory_is_outside_it(self):
+        """/static/ is served before the session check, and containment was a string
+        prefix: a neighbour such as dashboard/static.bak/ passed for the static directory,
+        and /static/../static.bak/x was served to anyone (found in review, 2026-09-24).
+        A throwaway static directory with such a neighbour, for this test only."""
+        root = Path(tempfile.mkdtemp(prefix="cockpit-static-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "static").mkdir()
+        (root / "static" / "login.html").write_text("<p>the page</p>")
+        (root / "static.bak").mkdir()
+        (root / "static.bak" / "notes.txt").write_text("NOT-FOR-ANYONE")
+        saved = self.cp.STATIC_DIR
+        self.cp.STATIC_DIR = root / "static"
+        self.addCleanup(setattr, self.cp, "STATIC_DIR", saved)
+        st, _, body = self.req("GET", "/static/login.html")
+        self.assertEqual((st, body), (200, b"<p>the page</p>"), "the throwaway directory is not the one served")
+        for path in ("/static/../static.bak/notes.txt", "/static/./../static.bak/notes.txt"):
+            st, _, body = self.req("GET", path)
+            self.assertEqual(st, 404, f"{path} was served ({len(body)} bytes)")
+            self.assertNotIn(b"NOT-FOR-ANYONE", body)
+
     def test_security_headers_are_on_every_kind_of_answer(self):
         for path in ("/login", "/api/health"):
             _, hdrs, _ = self.req("GET", path)
@@ -763,6 +784,10 @@ class ActionRegistry(Base):
     def test_no_action_interpolates_a_parameter_into_one_argument(self):
         """A parameter must BE an argument, never a piece of one: that is what
         makes the closed enum a real boundary."""
+        # The checkout's own path is not a parameter: a clone under a folder named like a
+        # target (~/image-lab/...) failed here on unchanged code (found in review,
+        # 2026-09-24). What follows it is still checked.
+        repo = str(self.cp.REPO_DIR)
         for name, spec in self.cp.ACTIONS.items():
             if not spec["argv"]:
                 continue
@@ -772,7 +797,8 @@ class ActionRegistry(Base):
                     if not isinstance(val, str):
                         continue
                     for a in argv:
-                        if val in a:
+                        rest = a[len(repo):] if a.startswith(repo + "/") else a
+                        if val in rest:
                             self.assertEqual(a, val,
                                              f"{name}: {val!r} is embedded inside {a!r}")
 
@@ -854,6 +880,11 @@ class ActionValidation(Base):
         self.assertTrue(starts, added)
         self.assertEqual(starts[0]["action"], "fit_opencode")
         self.assertTrue(starts[0]["dry_run"], "the audit line does not say it was a dry run")
+        # the argv itself, which the name promises and nothing read (found in review,
+        # 2026-09-24): an audit that recorded None passed
+        self.assertEqual(starts[0]["argv"],
+                         ["python3", str(self.cp.REPO_DIR / "oc-fit-limits.py"), "--restart-agent"])
+        self.assertEqual(starts[0]["argv"], out["argv"], "the audit and the answer disagree")
 
 
 class UpdateCheck(Base):
@@ -864,10 +895,10 @@ class UpdateCheck(Base):
 
     def setUp(self):
         super().setUp()
-        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0)
+        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0, answered=False)
 
     def tearDown(self):
-        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0)
+        self.cp._RELEASE.update(latest=None, ts=0.0, fails=0, answered=False)
         self.cp.UPDATE_CHECK = True
 
     def test_a_version_number_is_read_as_numbers_not_as_a_string(self):

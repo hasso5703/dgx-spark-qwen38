@@ -6,16 +6,19 @@ What this box trusts, what it does not, and how to report a hole in that line.
 
 A serving stack one operator installs on a machine they own and administer:
 a Docker engine behind a Python proxy, a cockpit web UI that reaches systemd
-through an exact-argv sudo allowlist, and an opt-in relay that puts opencode's
-web interface behind the cockpit login. There is no telemetry and no
+through an exact-argv sudo allowlist, and a relay, installed with the cockpit
+when opencode is there, that puts opencode's web interface behind the cockpit
+login. There is no telemetry and no
 phone-home: every byte that leaves the box is a download the installer names
-(Hugging Face, the image registry) or a request you sent. One exception, added in
-v1.15.2 and named here because it is one: the cockpit asks GitHub's public releases
-endpoint, at most once every six hours, whether a newer release exists, so that a box
-running an old version is told rather than left to find out. It sends nothing but the
+(Hugging Face, the image registry, and GitHub: the one-liner's clone and the pinned
+opencode release) or a request you sent. One exception, added in v1.15.2 and named here
+because it is one: the cockpit asks GitHub's public releases endpoint whether a newer
+release exists, so that a box running an old version is told rather than left to find
+out. Once it has an answer it asks again six hours later; a check that fails is retried
+after one minute, then two, four, eight and so on up to six hours. It sends nothing but the
 cockpit's version in a `User-Agent`, it reads a public URL that needs no credential, and
 `COCKPIT_UPDATE_CHECK=0` turns it off, after which the cockpit says nothing about
-releases at all. A check that fails backs off instead of retrying. That includes the typed
+releases at all. That includes the typed
 decisions route (`POST /v1/systemone`, v6.19): it speaks the wire contract of a hosted
 service, and it is answered by the engine on this box and nothing else; the proxy
 calls no address but its upstream.
@@ -66,13 +69,16 @@ unconstrained in the served release, checked in the image, and all of them
 are reachable from an ordinary chat request.
 
 The proxy refuses all of them with a 400. **That protects the clients that go
-through it, and nothing else.** On this box the engine binds `0.0.0.0:30000`
-with no firewall in front of it, so anything on the LAN or the tailnet that
-holds the serving API key can reach the engine directly and end it, exactly
-as it could before these guards existed. The key is the boundary there, not
-the proxy. **Since v1.17 the engine binds `127.0.0.1` by default**, so on a fresh
-install the proxy's guards are the only door and the engine is not on the
-network at all. Nothing is lost by it: the proxy is a full pass-through of
+through it, and nothing else.** Whatever reaches the engine's own port with the
+serving API key reaches the scheduler with none of these guards. **Since v1.17
+the engine binds `127.0.0.1` by default**, so on a box installed that way its
+port answers on the box only and the proxy is the one door from the network.
+One setting still puts the engine itself on the network: `ENGINE_BIND=0.0.0.0`,
+given to `./install.sh`, or to `./run.sh`, the foreground path of `--no-service`,
+which has no proxy at all (and serves `127.0.0.1` without it, like the units,
+since v1.18.7). With it, anything on the LAN or the tailnet that holds the key can
+reach the engine directly and end it, exactly as it could before these guards
+existed: the key is the boundary there, not the proxy. Nothing is lost by the default: the proxy is a full pass-through of
 every route the engine serves, so a client that used `:30000` from another
 machine uses `:30001` and gets the guards with it. `ENGINE_BIND=0.0.0.0`
 restores the old behaviour, `PROXY_BIND` does the same for the proxy, and an
@@ -80,11 +86,19 @@ installed choice is kept across updates in both directions, so neither a
 hardened box nor one that deliberately exposed its engine is changed by an
 update nobody read about.
 
-**The cockpit (`dashboard/`, :30090)** reaches root through exactly one
-surface: the NOPASSWD sudoers lines rendered from
-`dashboard/sudoers-cockpit.template`. The allowlist is exact argv with no
-wildcards on purpose (a glob on `sed` arguments is still root), and two CI
-steps hold it: no `*` on any allowlist line, and every privileged call in
+**The cockpit (`dashboard/`, :30090)** runs as the user who installed the box,
+and that user is already root-equivalent: `install.sh` requires it to be in the
+`docker` group, and a member of that group can start a container with the host's
+`/` mounted. The NOPASSWD sudoers lines rendered from
+`dashboard/sudoers-cockpit.template` add no privilege to that, and they are no
+boundary either: two of them `install` a file the user writes
+(`~/.config/qwen38/*.switch-stage`) into `/etc/systemd/system`, and with
+`daemon-reload` and `restart` allowed beside them, whoever writes that file runs
+what it says as root. So the cockpit's user, its API key and a session on it are
+root on this machine, and the defences that count are the ones in front of it:
+the key, the bind, the session cookie. The allowlist is still exact argv with
+no wildcards (a glob on `sed` arguments is root without any file to write), and
+two CI steps hold it: no `*` on any allowlist line, and every privileged call in
 `switch-model.sh` cross-checked against the template. The cockpit process
 runs unprivileged; login is the serving API key; a per-session HMAC cookie
 gates everything else; the diagnostic bundle masks the API key in every
@@ -100,8 +114,11 @@ names, header hygiene) are property-tested.
 
 **The installer (`install.sh`, `dashboard/install-*.sh`)** runs things you
 sudo. Every pinned byte is hash-verified: images by digest, checkpoints by
-pinned revision, vendored overlay files by sha256 manifest (a modified
-overlay refuses to build). The engine enforces `--api-key` (the file is
+pinned revision, the opencode release by its sha256. The image lane
+(`--with-image`) is the one part with unpinned bytes: its SGLang wheel and source
+commit are pinned, but pip resolves the wheel's dependency tree from PyPI at install
+time, with no hash checked, and its checkpoint is downloaded at the repo's current
+revision rather than a pinned one. The engine enforces `--api-key` (the file is
 created 0600) and the chat template and launcher are regenerated from the
 repo on every install.
 
@@ -110,14 +127,19 @@ repo on every install.
 Read these before reporting; a report against one of them is a design
 discussion, not a disclosure.
 
-- **Plain HTTP.** The proxy, cockpit and relay serve HTTP because they are
-  meant for loopback or a tailnet, and the cockpit warns when a non-loopback
-  bind has no key. TLS in front is the operator's reverse proxy. If you need
-  to expose any of it to a LAN you do not control, that is the design's
-  stated edge, not a hole.
-- **One API key, one trust realm.** Every client that holds the key is the
-  same principal: same quota, same ceiling, same lane. Per-client identity
-  does not exist yet.
+- **Plain HTTP by default.** The cockpit and the relay serve HTTP only, and so
+  does the proxy until it is given a certificate (`QWEN38_TLS_CERT`, proxy
+  v6.16, see docs/clients.md): all three are meant for loopback or a tailnet.
+  The cockpit says in its journal when it binds anything but loopback, and with
+  no key file no login succeeds. TLS in front of the cockpit and the relay is
+  the operator's reverse proxy. If you need to expose any of it to a LAN you do
+  not control, that is the design's stated edge, not a hole.
+- **One API key, one trust realm, by default.** Every client that holds the key
+  is the same principal: same quota, same ceiling, same lane. The proxy can
+  name clients instead (`QWEN38_CLIENT_KEYS_FILE`, proxy v6.16: one bearer per
+  client, a 401 for an unlisted one on every route but `/health`, the label on
+  every journal line of its requests), and naming is all it does: there are no
+  per-client quotas or ceilings, and the engine behind it still has one key.
 - **`AGENT_AUTO=1` is deliberate escalation.** It sets opencode to allow
   every tool call in the Agent tab, behind the cockpit login, on this
   machine, by the operator's own choice. The explicit deny rules of your
@@ -126,11 +148,17 @@ discussion, not a disclosure.
   `uncensored-fp8` and `flash-uncensored` exist as pinned checkpoints
   because the operator asked for them; nothing in the serving stack filters
   or vets what they answer.
-- **`/metrics` is open on the engine port.** Since the Prometheus flag ships on
-  every lane, request rates and queue depths are readable by anything that can
-  reach the engine port. That is the port's existing trust model (a trusted
-  network by design, see the plain HTTP edge above); the metrics endpoint adds
-  counters to it, not a new surface to authenticate against.
+- **`/metrics` needs no key.** Every text lane passes the Prometheus flag, and
+  the engine serves `/metrics` without the API key (checked on the reference
+  box: 200 with no key, where `/v1/models` answers 401). Since v1.17 the engine
+  port is on loopback, so from another machine the counters are read through
+  the proxy on `:30001`, which relays that route like any other, with no key
+  either; with the per-client identity file set, it needs a listed key like
+  every route but `/health`. Request rates and queue depths are therefore
+  readable by anything that can reach the proxy port. That is the port's
+  existing trust model (a trusted network by design, see the plain HTTP edge
+  above); the metrics endpoint adds counters to it, not a new surface to
+  authenticate against. The image lane exports no metrics.
 - **The cockpit assumes one admin user.** The sudo allowlist covers this
   repo's argv, but a hostile local user with your shell can do what you can
   do: this box is yours, and it is not a multi-tenant host.

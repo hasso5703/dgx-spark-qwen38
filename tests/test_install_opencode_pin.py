@@ -193,10 +193,23 @@ class TheOpencodePin(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(self.version_of(self.home_bin), "1.18.27")
 
-    def test_a_version_without_its_checksum_is_refused(self):
-        rc, out, _ = self.run_block(env_version="1.18.40", env_sha="")
-        self.assertEqual(rc, 1)
-        self.assertIn("needs OPENCODE_SHA256 too", out)
+    def test_a_version_without_its_checksum_is_refused_before_step_1(self):
+        """It was refused at step 7, after the image, the checkpoints and the engine's
+        configs (found in review, 2026-09-24)."""
+        text = INSTALL.read_text()
+        i = text.index("needs OPENCODE_SHA256 too")
+        start = text.rindex("\nif ", 0, i) + 1
+        refusal = text[start:text.index("\nfi\n", i) + 4]
+        self.assertLess(i, text.index('step "1/10 Preflight checks"'))
+        for opencode, version, sha, rc in (("1", "1.18.40", "", 1), ("1", "1.18.40", "ab" * 32, 0),
+                                           ("0", "1.18.40", "", 0), ("1", "", "", 0)):
+            script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
+                      f'OPENCODE={opencode}; OPENCODE_VERSION="{version or PINNED}"\n'
+                      f'_ENV_OPENCODE_VERSION="{version}"; _ENV_OPENCODE_SHA256="{sha}"\n' + refusal)
+            r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, rc, (opencode, version, sha, r.stdout))
+            if rc:
+                self.assertIn("needs OPENCODE_SHA256 too", r.stdout)
 
 
 class TheConfigStopsSelfUpdating(unittest.TestCase):

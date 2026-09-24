@@ -710,7 +710,7 @@ class TheCapOnTheseTwoRoutes(Base):
 
     def test_the_raised_cap_applies_to_the_image_routes_and_nothing_else(self):
         text = (DASH / "cockpit.py").read_text()
-        self.assertIn('cap = IMAGE_MAX_POST if raised else 65536', text)
+        self.assertIn('cap = IMAGE_MAX_POST if raised else ', text)
         self.assertIn('raised = path in ("/api/image/edit", "/api/image/generate")', text)
 
     def test_the_raised_cap_authenticates_before_it_buffers(self):
@@ -719,8 +719,10 @@ class TheCapOnTheseTwoRoutes(Base):
         text = (DASH / "cockpit.py").read_text()
         i = text.index("raised = path in (")
         body = text[i:i + 1200]
-        self.assertIn("if raised and not self.authed():", body)
-        self.assertLess(body.index("if raised and not self.authed():"),
+        # every route but the login authenticates before it reads (a behaviour test of it
+        # is in test_cockpit_connections.py)
+        self.assertIn('if path != "/api/login" and not self.authed():', body)
+        self.assertLess(body.index('if path != "/api/login" and not self.authed():'),
                         body.index("raw = self.rfile.read(length)"))
 
 

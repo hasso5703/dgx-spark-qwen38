@@ -11,11 +11,32 @@ configs) all call this, so a new target cannot update one spelling and
 forget the other two. A config without the lane's provider is left untouched
 with a NOTE (it predates the target: re-run ./install.sh to regenerate it).
 
-Exit 0 on success and on a missing provider (nothing to point at); exit 2 on
-usage errors, exit 3 when the file is not usable JSON.
+The file is edited the way oc-merge-limits.py edits it, whose reader and writer
+this uses: only "model", "small_model" and the served entry's "name" change, by a
+targeted edit, after a backup, in one step. And "model" and "small_model" follow the
+lane only when they are unset or already name one of this box's providers: a default
+the user pointed elsewhere (another provider, a hosted model) is theirs, and is kept.
+The whole file used to be rewritten by json.dump at every install and switch, with no
+backup and in place: every non-ASCII character came back as an escape, every comment
+made the file unreadable to it (exit 3, and the default no longer followed the lane),
+and any other default model was replaced (found in review, 2026-09-24).
+
+Usage: oc-point-default.py --label <choice> <window> prints the served entry's name,
+for install.sh's generator to write the same one.
+
+Exit 0 on success and on a missing provider (nothing to point at); exit 1 when the edit
+could not be written; exit 2 on usage errors, exit 3 when the file is not usable JSON(C).
 """
+import copy
+import importlib.util
 import json
+import os
 import sys
+
+_spec = importlib.util.spec_from_file_location(
+    "oc_merge_limits", os.path.join(os.path.dirname(os.path.abspath(__file__)), "oc-merge-limits.py"))
+ocm = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ocm)
 
 # The served-model-names are shared per lane (three 27B targets serve
 # qwen3.8-27b, three flash targets serve qwen3.8-flash-next), so opencode
@@ -52,6 +73,9 @@ def label_for(choice: str, window: str) -> str | None:
 
 
 def main() -> None:
+    if len(sys.argv) == 4 and sys.argv[1] == "--label":
+        print(label_for(sys.argv[2], sys.argv[3]) or "")
+        return
     if len(sys.argv) != 5:
         print(__doc__.strip(), file=sys.stderr)
         sys.exit(2)
@@ -59,28 +83,53 @@ def main() -> None:
     want = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8-27b"
     prov, mid = want.split("/")
     try:
-        with open(path, encoding="utf-8") as f:
-            cfg = json.load(f)
+        text = ocm.read(path)
+        cfg = ocm.load(text)
+        if not isinstance(cfg, dict):
+            raise ValueError("the document is not an object")
     except (OSError, ValueError) as e:
         print(f"could not read {path}: {e}")
         sys.exit(3)
-    if prov not in cfg.get("provider", {}):
+    if not isinstance(cfg.get("provider"), dict) or prov not in cfg["provider"]:
         print(f"NOTE: provider '{prov}' is not in {path} (config predates this target);")
         print("      re-run ./install.sh once to regenerate it, keeping your choices.")
         return
-    cfg["model"] = want
-    cfg["small_model"] = want
+    new = copy.deepcopy(cfg)
+    new_text = text
+    kept = []
+    for key in ("model", "small_model"):
+        cur = cfg.get(key)
+        if cur == want:
+            continue
+        if isinstance(cur, str) and cur.split("/", 1)[0] not in ocm.OURS:
+            kept.append((key, cur))
+            continue
+        if cur is None and key == "small_model" and new.get("model") != want:
+            continue            # unset under a default kept elsewhere: opencode derives it from that one
+        new[key] = want
+        new_text = ocm.set_member(new_text, [], key, json.dumps(want))
     shown = ""
     name = label_for(choice, window)
-    if name:
-        m = cfg["provider"][prov].get("models", {}).get(mid)
-        if isinstance(m, dict):
-            m["name"] = name
-            shown = f", shown as {name!r}"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
-    print(f"opencode default model -> {want} ({path}){shown}")
+    m = ocm._dig(cfg, "provider", prov, "models", mid)
+    if name and isinstance(m, dict):
+        shown = f", shown as {name!r}"
+        if m.get("name") != name:
+            new["provider"][prov]["models"][mid]["name"] = name
+            new_text = ocm.set_member(new_text, ["provider", prov, "models", mid], "name", json.dumps(name))
+    moved = cfg.get("model") != new.get("model") or cfg.get("small_model") != new.get("small_model")
+    if new_text == text:
+        print(f"opencode default model {'left as it is' if kept else 'already ' + want} "
+              f"({path}){shown}: unchanged")
+    else:
+        saved, bad = ocm.commit(path, new_text, new)
+        if bad:
+            print(f"could not update {path}: {bad}")
+            sys.exit(1)
+        what = f"opencode default model -> {want}" if moved else f"opencode entry {want}"
+        print(f"{what} ({path}){shown} (backup {saved})")
+    for key, cur in kept:
+        print(f"NOTE: {key} in {path} is {cur}, not this box's: left as it is. This box serves")
+        print(f"      {want}; pick it in opencode, or set \"{key}\" to it yourself.")
 
 
 if __name__ == "__main__":

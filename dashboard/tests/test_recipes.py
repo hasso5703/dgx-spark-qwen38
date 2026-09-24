@@ -37,7 +37,7 @@ class ParseAssignments(unittest.TestCase):
     def test_real_install_pins(self):
         for k in ("STOCK_REPO", "STOCK_REV", "UNC_REPO", "UNC_REV", "FLASH_REPO",
                   "FLASH_REV", "FLASH_NVDA_REPO", "FLASH_NVDA_REV", "FLASH_TIER",
-                  "FLASH_MEM_FRACTION", "PLE_RSS_BUDGET_GB", "OVERLAY_FLASH_SERVE_IMAGE",
+                  "FLASH_MEM_FRACTION", "PLE_RSS_BUDGET_GB",
                   "FLASH_SERVE_IMAGE", "FLASH_IMAGE", "SERVE_IMAGE", "DRAFT2_REPO",
                   "DRAFT2_REV", "DRAFT2_QUANT", "DRAFT2_TOKENS"):
             self.assertIn(k, ASSIGNS, k)

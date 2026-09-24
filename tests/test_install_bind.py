@@ -108,18 +108,21 @@ class TheDefaults(unittest.TestCase):
     def test_the_old_behaviour_is_one_variable_away(self):
         """A box that wants the engine on the network says so, and is not argued with."""
         _, out = run(STOP, script=fresh_box(), ENGINE_BIND="0.0.0.0", **STOCK)
-        self.assertNotIn("take an IPv4 address", out)
+        self.assertNotIn("this box reaches that port itself", out)
 
     def test_a_value_that_is_not_an_address_is_refused_by_name(self):
         """A bad bind writes a unit that fails to start minutes later, on a box whose
         engine has just been stopped. It is refused here instead, before anything moves."""
-        for bad in ("localhost", "0.0.0.0:30000", "not-an-ip", "::1"):
+        # 300.1.1.1 and ... passed the old digits-and-dots check, and an address that
+        # leaves loopback out breaks what reaches these ports on 127.0.0.1 (found in
+        # review, 2026-09-24)
+        for bad in ("localhost", "0.0.0.0:30000", "not-an-ip", "::1", "300.1.1.1", "...", "192.168.1.10"):
             code, out = run(STOP, ENGINE_BIND=bad, **STOCK)
             self.assertNotEqual(code, 0, bad)
-            self.assertIn("ENGINE_BIND and PROXY_BIND take an IPv4 address", out, bad)
-        code, out = run(STOP, PROXY_BIND="nope", **STOCK)
+            self.assertIn(f"ENGINE_BIND={bad}: this box reaches that port itself on 127.0.0.1", out, bad)
+        code, out = run(STOP, PROXY_BIND="100.64.0.1", **STOCK)
         self.assertNotEqual(code, 0)
-        self.assertIn("ENGINE_BIND and PROXY_BIND take an IPv4 address", out)
+        self.assertIn("PROXY_BIND=100.64.0.1: this box reaches that port itself", out)
 
     def test_an_address_is_accepted_and_the_run_continues(self):
         _, out = run(STOP, ENGINE_BIND="127.0.0.1", PROXY_BIND="127.0.0.1", **STOCK)

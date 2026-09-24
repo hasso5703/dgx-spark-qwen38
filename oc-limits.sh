@@ -83,18 +83,16 @@ fi
 # reserves. Rounded to 1,000. Sized from the INSTALLED target because the key is
 # global in opencode.json while the threshold is per-target: install.sh and
 # switch-model.sh rewrite it with the limits, so it always tracks the lane that
-# serves. A value at or above the threshold would make select() keep everything
-# and summarise the lot, which is the failure this avoids, so it is capped at
-# a third of the threshold.
+# serves (and oc-fit-limits.py with them, when it fits the context to the pool). A
+# value at or above the threshold would make select() keep everything and summarise
+# the lot, which a quarter never is: the cap at a third this carried could not apply,
+# and is gone (found in review, 2026-09-24).
 if [ "$CHOICE" = "--preserve" ]; then
   CTX_IN="${2:-}"
   case "$CTX_IN" in ''|*[!0-9]*) printf 'oc-limits: --preserve needs a context size\n' >&2; exit 2 ;; esac
   THRESH=$(( CTX_IN - 20000 ))
   [ "$THRESH" -gt 0 ] || { printf '0\n'; exit 0; }
-  KEEP=$(( THRESH / 4 ))
-  CAP=$(( THRESH / 3 ))
-  [ "$KEEP" -gt "$CAP" ] && KEEP="$CAP"
-  printf '%s\n' "$(( KEEP / 1000 * 1000 ))"
+  printf '%s\n' "$(( THRESH / 4 / 1000 * 1000 ))"
   exit 0
 fi
 SECOND="${2:-}"

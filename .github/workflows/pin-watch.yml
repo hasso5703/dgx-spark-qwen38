@@ -57,8 +57,10 @@ jobs:
             cat /tmp/pins.txt
             echo '```'
             echo
-            echo 'First, confirm it is real: gated repos answer 401/403 and'
-            echo 'are not failures, and a flaky endpoint retries. Then re-pin'
+            echo 'First, confirm it is real: a pin that could not be asked'
+            echo 'about (an endpoint down, no registry token) counts as a'
+            echo 'failure and passes on a retry; a gated repo is one a fresh'
+            echo 'install cannot download without a token. Then re-pin'
             echo 'install.sh to a surviving revision with the bench and'
             echo 'quality cycle the target table demands, or mirror the bytes.'
           } > /tmp/pin-body.md

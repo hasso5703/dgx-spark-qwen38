@@ -176,9 +176,14 @@ exactly as upstream's own adopter keeps it.
 ## v1.8 (2026-09-08): the overlay is retired, upstream serves this box
 
 Everything in this directory is now in an official image, and the flash lane
-serves that image directly. `install.sh` builds nothing unless you ask for the
-old path with `OVERLAY_FLASH=1`, which is kept working and CI-checked as the
-rollback. The 27B lane had its own overlay until v1.14, when measurement retired it: the
+serves that image directly. Until v1.18.7 `install.sh` rebuilt the old path
+with `OVERLAY_FLASH=1`, and served it with the launcher of v1.8, which does not
+fit it: this directory's `qwen4_exp.py` keeps the PLE table in pinned host RAM
+unless `SGLANG_QWEN4_PLE_MMAP_DIR` is set, which that launcher never sets, and it
+passes `--ple-offload-backend file` instead (sglang#37068, newer than the base
+these files were diffed against). The CI checked the pins, not the pairing, and
+nothing booted it, so v1.18.7 retired the switch: the overlay path shipped whole
+in v1.7.2, and this directory stays as the record of what upstream replaced. The 27B lane had its own overlay until v1.14, when measurement retired it: the
 fix it was kept for (the mrope kernel, sglang#34446) turned out to be in the
 official release, checked inside the image rather than inferred from dates.
 

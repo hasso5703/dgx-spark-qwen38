@@ -16,7 +16,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import http.cookies
 import http.server
 import importlib.util
 import json
@@ -25,7 +24,6 @@ import re
 import secrets
 import shutil
 import signal
-import socketserver
 import subprocess
 import threading
 import time
@@ -55,7 +53,24 @@ AGENT_BIND = os.environ.get("COCKPIT_AGENT_BIND", "tailscale")
 AGENT_UPSTREAM = os.environ.get("COCKPIT_AGENT_UPSTREAM", "http://127.0.0.1:4096")
 AGENT_UNIT = "opencode-web.service"
 STATIC_DIR = HERE / "static"
-VERSION = "1.1.2"
+
+
+def _release() -> str:
+    """The release this checkout is, as CHANGELOG.md's first heading names it. A constant
+    here said 1.1.2 from v1.7.2 on, in the badge, the Server header and the User-Agent of
+    the update check (found in review, 2026-09-24)."""
+    try:
+        with open(REPO_DIR / "CHANGELOG.md", encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"^## v(\d+\.\d+(?:\.\d+)?)\b", line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return "unknown"
+
+
+VERSION = _release()
 # Dry run: every mutating action and every automatic belt is logged, audited and
 # shown exactly as usual, but nothing is executed. This is how the click-storm test
 # (tests/monkey-check.mjs) exercises the whole UI against a second cockpit instance.
@@ -854,9 +869,8 @@ AGENT_BINARY: dict = {"key": None, "version": None}
 
 
 def cookie_authed(cookie_header: str | None) -> bool:
-    c = http.cookies.SimpleCookie(cookie_header or "")
-    tok = c.get("cockpit")
-    return bool(tok and check_token(tok.value, "sess"))
+    # every "cockpit" value counts: a browser can hold a stale one beside the fresh one
+    return any(check_token(v, "sess") for v in ar.cookie_values(cookie_header, "cockpit"))
 
 
 def agent_config() -> "ar.RelayConfig":
@@ -971,7 +985,7 @@ def agent_relay_thread():
 # nothing but the cockpit's version in a User-Agent; COCKPIT_UPDATE_CHECK=0 turns it off
 # and the cockpit then says nothing about releases at all. SECURITY.md states both.
 UPDATE_CHECK = os.environ.get("COCKPIT_UPDATE_CHECK", "1") != "0"
-_RELEASE = {"latest": None, "ts": 0.0, "fails": 0}
+_RELEASE = {"latest": None, "ts": 0.0, "fails": 0, "answered": False}
 
 
 def _semver(tag):
@@ -1003,15 +1017,19 @@ def collect_update():
     # likely to find no route, and an hour-scale first step left a box that had just
     # rebooted unable to learn about an update for two hours. A minute, then two, four,
     # eight, up to six hours.
-    age = 21600.0 if _RELEASE["latest"] else min(60.0 * 2 ** max(0, _RELEASE["fails"] - 1), 21600.0)
+    # An answer is a success whatever its tag says: a release tagged outside semver left
+    # the check neither answered nor failed, so it asked again every minute, the whole of
+    # GitHub's anonymous budget of 60 an hour (found in review, 2026-09-24).
+    age = 21600.0 if _RELEASE["answered"] else min(60.0 * 2 ** max(0, _RELEASE["fails"] - 1), 21600.0)
     if now - _RELEASE["ts"] >= age:
         _RELEASE["ts"] = now
         try:
             j = _get_json("https://api.github.com/repos/hasso5703/"
                           "dgx-spark-qwen38/releases/latest", timeout=8.0)
             tag = (j.get("tag_name") or "").strip()
+            _RELEASE.update(answered=True, fails=0)
             if _semver(tag):
-                _RELEASE.update(latest=tag, fails=0)
+                _RELEASE["latest"] = tag
         except Exception:  # noqa: BLE001 (an update check must never be a failure mode)
             _RELEASE["fails"] += 1
     out["latest"] = _RELEASE["latest"]
@@ -1267,9 +1285,20 @@ def collect_lifecycle():
                 if plan["first"]:
                     audit({"kind": "wedge", "unit": unit, "canary_fails": CANARY["fails"],
                            "num_reqs": num_reqs, "progress_age": age})
-                    # forensics before any restart: the scheduler's Python stacks
-                    dump = "" if DRY_RUN else run(["sudo", "-n", "/usr/local/bin/qwen38-pyspy-scheduler"],
-                                                  timeout=40, merge_err=True)
+                    # forensics before any restart: the scheduler's Python stacks. The exit
+                    # status decides, not whether text came back: "py-spy not installed" was
+                    # saved as the stacks (found in review, 2026-09-24).
+                    dump, why = "", ""
+                    if not DRY_RUN:
+                        try:
+                            r = subprocess.run(["sudo", "-n", "/usr/local/bin/qwen38-pyspy-scheduler"],
+                                               capture_output=True, text=True, timeout=40)
+                            if r.returncode == 0:
+                                dump = r.stdout
+                            else:
+                                why = (r.stderr or r.stdout).strip()[:200] or f"exit {r.returncode}"
+                        except (OSError, subprocess.TimeoutExpired) as e:
+                            why = type(e).__name__
                     if dump.strip():
                         f = CONFIG_DIR / f"wedge-{time.strftime('%Y%m%d-%H%M%S')}.txt"
                         try:
@@ -1277,6 +1306,8 @@ def collect_lifecycle():
                             add_event("forensics", f"scheduler stacks saved: {f.name}")
                         except OSError:
                             pass
+                    elif why:
+                        add_event("forensics", f"no scheduler stacks: {why}")
                 if plan["restart"]:
                     LAST_HEAL["ts"] = time.time()
                     add_event("autoheal", f"{unit} wedged (health ok, {CANARY['fails']} "
@@ -1796,7 +1827,11 @@ def systemone_call(payload: dict) -> tuple[int, dict]:
             detail = json.loads(raw.decode())
         except Exception:                               # noqa: BLE001
             detail = {"detail": raw[:400].decode("utf-8", "replace")}
-        return e.code, {"refused": detail, "seconds": round(time.time() - t0, 3)}
+        # The proxy refusing the cockpit's key is not the browser's session ending, and the
+        # page reads a 401 as that: it sent a signed-in user to the login (found in review,
+        # 2026-09-24). A refusal of the key reaches the page as the gateway error it is.
+        code = 502 if e.code in (401, 403) else e.code
+        return code, {"refused": detail, "upstream_status": e.code, "seconds": round(time.time() - t0, 3)}
     except Exception as e:                              # noqa: BLE001 (isolated route)
         return 502, {"error": f"{type(e).__name__}: {str(e)[:200]}",
                      "seconds": round(time.time() - t0, 3)}
@@ -2272,6 +2307,10 @@ def job_diag_bundle(job: Job):
         (tdp / "journal-flash.txt").write_text(run(["journalctl", "-u", "qwen38-flash.service", "-n", "400", "--no-pager", "-o", "short-iso"], timeout=15))
         (tdp / "journal-sglang.txt").write_text(run(["journalctl", "-u", "qwen38-sglang.service", "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
         (tdp / "journal-keepalive.txt").write_text(run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
+        # the image lane and the Agent tab's server have journals of their own, which the
+        # bundle left out (found in review, 2026-09-24)
+        (tdp / "journal-image.txt").write_text(run(["journalctl", "-u", IMAGE_UNIT, "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
+        (tdp / "journal-opencode-web.txt").write_text(run(["journalctl", "-u", AGENT_UNIT, "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
         for cont in CONTAINERS:
             (tdp / f"docker-{cont}.txt").write_text(run(["docker", "logs", "--tail", "600", cont], timeout=15, merge_err=True))
         (tdp / "nvidia-smi.txt").write_text(run(["nvidia-smi"], timeout=10))
@@ -2542,6 +2581,7 @@ def registry_snapshot(max_age: float = 300.0) -> dict:
         REGISTRY_CACHE.update(ts=time.time(), data=data)
         return data
 LOGIN_FAILS: dict[str, list] = {}
+LOGIN_LOCK = threading.Lock()
 
 
 def make_token(kind: str) -> str:
@@ -2557,7 +2597,8 @@ def check_token(tok: str, kind: str, max_age: int = 12 * 3600) -> bool:
                         hashlib.sha256).hexdigest()[:32]
         return (k == kind and hmac.compare_digest(sig, good)
                 and time.time() - int(ts) < max_age)
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError):
+        # TypeError: compare_digest refuses a non-ASCII str, and a cookie is anyone's to set
         return False
 
 
@@ -2565,6 +2606,9 @@ def check_token(tok: str, kind: str, max_age: int = 12 * 3600) -> bool:
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "SparkCockpit/" + VERSION
     protocol_version = "HTTP/1.1"
+    # a client silent this long is let go, as on the relay (see ar.CLIENT_TIMEOUT); the
+    # event stream writes every 2 s, so only a reader that stopped reading reaches it
+    timeout = ar.CLIENT_TIMEOUT
 
     # ---- plumbing ----
     def log_message(self, fmt, *args):  # quiet by default, errors still surface
@@ -2673,6 +2717,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                            "--no-pager", "-o", "cat"], timeout=8)
             else:
                 return self.send_json({"error": "unknown source"}, 404)
+            # The key's value, masked as the bundle masks it: SGLang prints its ServerArgs at
+            # boot, 'api_key' included, and for the first minutes of a boot that line was in
+            # what this tab showed (found in review, 2026-09-24).
+            key = api_key()
+            if key:
+                txt = txt.replace(key, "<masked>")
             return self.send_json({"name": name,
                                    "lines": txt.splitlines()[-120:]})
         if path.startswith("/api/jobs/"):
@@ -2703,26 +2753,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({"error": "bad Content-Length"}, 400)
         length = int(declared)
         # Ten reference images do not fit in 64 KiB and never will. The cap is raised for
-        # the two image routes and for nothing else.
+        # the two image routes and for nothing else; a login is a key in a JSON object.
         raised = path in ("/api/image/edit", "/api/image/generate")
-        cap = IMAGE_MAX_POST if raised else 65536
+        cap = IMAGE_MAX_POST if raised else 4096 if path == "/api/login" else 65536
         if length > cap:
             self.close_connection = True
             return self.send_json({"error": "body too large"}, 413)
-        # On the raised-cap routes, authenticate BEFORE buffering the body: otherwise an
-        # unauthenticated client can make this process hold 40 MB in a thread just by
-        # declaring a Content-Length, which the 64 KiB cap used to bound.
-        if raised and not self.authed():
+        # Authenticate BEFORE reading the body, on every route but the login: a body is
+        # read only for someone who may send one. Checked on the raised-cap routes alone,
+        # the others read up to 64 KiB for anyone first (found in review, 2026-09-24).
+        if path != "/api/login" and not self.authed():
             self.close_connection = True
             return self.send_json({"error": "auth"}, 401)
         raw = self.rfile.read(length) if length else b""
         if path == "/api/login":
-            # Rate limit: after 5 failures from one address, lock 60 s.
+            # Rate limit: after 5 failures from one address, lock 60 s. The attempt is counted
+            # before it is judged, under a lock, and given back when it succeeds: counted after
+            # its reply, 200 attempts at once had 107 judged and 5 counted (found in review,
+            # 2026-09-24).
             ip = self.client_address[0]
             now = time.time()
-            fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 60]
-            if len(fails) >= 5:
+            with LOGIN_LOCK:
+                fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 60]
+                locked = len(fails) >= 5
+                if not locked:
+                    fails.append(now)
                 LOGIN_FAILS[ip] = fails
+            if locked:
                 return self.send_json({"error": "too many attempts, wait a minute"}, 429)
             # Shape before content: a body that is valid JSON but not an object
             # ({"key": null}, [], "x", 5) used to reach .get() and compare_digest()
@@ -2737,23 +2794,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(key, str):
                 key = ""
             expected = api_key()
-            if not (expected and hmac.compare_digest(key, expected)):
-                fails.append(now)
-                LOGIN_FAILS[ip] = fails
+            # as bytes: compare_digest raises on a str with non-ASCII in it, and {"key": "é"}
+            # ended the thread before the attempt was counted or audited (found in review,
+            # 2026-09-24)
+            if not (expected and hmac.compare_digest(key.encode("utf-8", "replace"), expected.encode())):
                 audit({"kind": "login_fail", "ip": ip})
                 return self.send_json({"error": "bad key"}, 403)
-            if True:
-                tok = make_token("sess")
-                body = json.dumps({"ok": True}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Set-Cookie",
-                                 f"cockpit={tok}; HttpOnly; SameSite=Strict; Path=/")
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            return self.send_json({"error": "bad key"}, 403)
+            with LOGIN_LOCK:
+                try:
+                    LOGIN_FAILS[ip].remove(now)
+                except (KeyError, ValueError):
+                    pass
+            tok = make_token("sess")
+            body = json.dumps({"ok": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Set-Cookie",
+                             f"cockpit={tok}; HttpOnly; SameSite=Strict; Path=/")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if not self.authed():
             return self.send_json({"error": "auth"}, 401)
         # CSRF: any mutating POST must echo the token bound to the session.
@@ -2785,8 +2846,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "/favicon.ico": "favicon.svg"}.get(path)
         if name is None and path.startswith("/static/"):
             name = path[len("/static/"):]
+        if name and "\x00" in name:
+            # an embedded NUL makes resolve() raise, before the session check (found in
+            # review, 2026-09-24)
+            return self.send_json({"error": "not found"}, 404)
         target = (STATIC_DIR / (name or "")).resolve()
-        if not name or not str(target).startswith(str(STATIC_DIR.resolve())) \
+        # by path components: a string prefix let a sibling such as static.bak/ pass for
+        # this directory, served with no session (found in review, 2026-09-24)
+        if not name or not target.is_relative_to(STATIC_DIR.resolve()) \
                 or not target.is_file():
             return self.send_json({"error": "not found"}, 404)
         ctype = {"html": "text/html; charset=utf-8", "css": "text/css",
@@ -2817,12 +2884,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     payload = json.dumps(STATE)
                 self.wfile.write(b"data: " + payload.encode() + b"\n\n")
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
+        except OSError:
+            # gone, reset, or no longer reading (the write timed out): nothing to answer
+            self.close_connection = True
             return
 
 
-class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    daemon_threads = True
+class Server(ar.BoundedThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 

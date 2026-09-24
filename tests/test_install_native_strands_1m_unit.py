@@ -53,11 +53,17 @@ def run_guard(unit_text: str, *, tmp, lane="27b", no_service=1, no_start=0):
               f'LANE={lane}\nSGL_UNIT_PATH={shlex.quote(str(unit))}\n'
               f'NO_SERVICE={no_service}\nNO_START={no_start}\n' + guard())
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+    # the guard only ever warns: an exit here is the installer dying mid-restore
+    if r.returncode != 0:
+        raise AssertionError(f"the guard exited {r.returncode}: {r.stdout + r.stderr!r}")
     return r.stdout + r.stderr
 
 
 ONE_M = "ExecStart=... --context-length 1010000 --model-path X ...\n"
-NATIVE = "ExecStart=... --context-length 262144 --model-path X ...\n"
+# A native unit carries no --context-length at all (qwen38-sglang.service.template): the
+# fixture had one, so the grep that finds nothing on a real native unit always matched
+# here, and a dropped `|| true` stayed green (found in review, 2026-09-24).
+NATIVE = "ExecStart=... --model-path X --mem-fraction-static 0.76 ...\n"
 
 
 class Guard(unittest.TestCase):

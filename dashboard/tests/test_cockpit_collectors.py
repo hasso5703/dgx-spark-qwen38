@@ -331,6 +331,37 @@ class Survive(Base):
                         self.fail(f"{name} raised on {label}: {type(e).__name__}: {e}")
                     self.assertIsInstance(out, dict, f"{name} on {label}")
 
+    def test_no_hostile_output_becomes_a_plausible_value(self):
+        """The half of the contract the test above cannot see, since @guard makes every
+        answer a dict: no refusal counted, no watt or degree read, no unit state made up
+        out of garbage. Only the type was asserted, so a kernel collector that counted
+        every journal line as a driver refusal passed (found in review, 2026-09-24)."""
+        for label, text in self.HOSTILE.items():
+            self.assertNotIn("NV_ERR_NO_MEMORY", text)
+            self.assertNotIn("ActiveState=", text)
+            with self.subTest(output=label):
+                self.box({"": text})
+                self.cp.KERNEL_LAST["count"] = None
+                k = self.cp.collect_kernel()
+                self.assertEqual((k.get("nvrm_oom_1h"), k.get("nvrm_last")), (0, None), k)
+                g = self.cp.collect_gpu()
+                if "error" not in g:
+                    self.assertEqual((g["power_w"], g["temp_c"]), (None, None), g)
+                u = self.cp.collect_units()
+                if "error" not in u:
+                    for unit, st in u["units"].items():
+                        self.assertEqual((st["active"], st["sub"], st["enabled"]), ("?", "?", "?"), unit)
+
+    def test_the_kernel_collector_counts_driver_refusals_only(self):
+        self.box({"journalctl": (
+            "2026-09-24T10:00:01+0200 spark kernel: usb 1-1: new device\n"
+            "2026-09-24T10:00:02+0200 spark kernel: NVRM: nvAssertFailed NV_ERR_NO_MEMORY\n"
+            "2026-09-24T10:00:03+0200 spark kernel: EXT4-fs (nvme0n1p2): re-mounted\n"
+            "2026-09-24T10:00:04+0200 spark kernel: NVRM: alloc NV_ERR_NO_MEMORY\n")})
+        self.cp.KERNEL_LAST["count"] = None
+        k = self.cp.collect_kernel()
+        self.assertEqual((k["nvrm_oom_1h"], k["nvrm_last"]), (2, "2026-09-24T10:00:04+0200"))
+
     def test_a_collector_that_cannot_parse_says_so_instead_of_guessing(self):
         """The contract of @guard: a failure is a named error in the payload, which
         the UI renders as a stale panel, never as a fresh zero."""
