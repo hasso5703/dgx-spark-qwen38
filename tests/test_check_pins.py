@@ -13,6 +13,7 @@ These run the script as written against a fake curl that answers like the real s
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -51,6 +52,7 @@ if fmt is not None:
 class TheCheckPins(unittest.TestCase):
     def setUp(self):
         self.t = pathlib.Path(tempfile.mkdtemp(prefix="check-pins-"))
+        self.addCleanup(shutil.rmtree, self.t, ignore_errors=True)
         self.bin = self.t / "fakebin"
         self.bin.mkdir()
         (self.bin / "curl").write_text(FAKE_CURL)
