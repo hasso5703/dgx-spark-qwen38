@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Build the Flash-Next SGLang serving image: pinned official base + the two
-# sha256-verified overlay files (see ATTRIBUTION.md). Deterministic and offline
-# (the base image must already be pulled by install.sh). After the copy, the
-# build verifies both modules still parse and that the two QSA resolver gates
-# are the patched ones; the tag is refused otherwise.
+# Build the v1.5 to v1.7 Flash-Next overlay image: a base image plus exactly the files
+# MANIFEST.sha256 verifies (see ATTRIBUTION.md). Nothing runs this since v1.18.7 retired
+# OVERLAY_FLASH=1; it stays as the record, and runs by hand on a base you pulled
+# yourself. Offline and deterministic. After the copy, the build verifies the modules
+# still parse and that the QSA resolver gates are the patched ones; the tag is refused
+# otherwise.
 # Usage: BASE_IMAGE=<pinned digest ref> TAG=<local tag> ./build-image.sh
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,8 +16,13 @@ docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 || { echo "base image not pre
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
-cp "$DIR/qwen4_exp.py" "$DIR/qwen_sparse_attn_backend.py" "$DIR/sm121_varlen.py" "$STAGE/"
-cp -r "$DIR/kda_kernels" "$STAGE/kda_kernels"
+# Exactly the verified files: a whole-directory copy took along anything else in
+# kda_kernels, and a hash-checked .pyc in a __pycache__ there is imported instead of the
+# verified kernel.py (found in review, 2026-09-24).
+while read -r _sum f; do
+  mkdir -p "$STAGE/$(dirname "$f")"
+  cp "$DIR/$f" "$STAGE/$f"
+done < "$DIR/MANIFEST.sha256"
 cat > "$STAGE/Dockerfile" <<'DEOF'
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
