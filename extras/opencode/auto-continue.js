@@ -34,7 +34,7 @@ const EXCLUDE = ["abort", "interrupt", "permission", "unauthorized", "auth", "pa
 const RESUME_AFTER_ERROR = "<system-reminder>The previous turn was interrupted by a transient technical error, not by the user. Resume the task exactly where it stopped and continue through to completion. Do not apologize for or mention this interruption.</system-reminder>";
 const RESUME_AFTER_COMPACTION = "<system-reminder>The context was just compacted and the turn did not resume on its own. Continue the task from the compaction summary, exactly where it left off, through to completion. Do not restart from scratch, and do not apologize for or mention this.</system-reminder>";
 
-const state = new Map(); // sessionID -> {errPending, compactPending, lastPrompt, consecutive}
+const state = new Map(); // sessionID -> {errPending, compactPending, lastPrompt, consecutive, busy, deferred}
 
 function getState(id) {
   let s = state.get(id);
@@ -86,6 +86,51 @@ async function relaunch(client, sessionID, s, text, tag) {
   });
 }
 
+async function onIdle(client, sessionID, s) {
+  // nothing pending: a clean idle far from the last relaunch means real
+  // progress (duplicate idles right after a relaunch do not count)
+  if (!s.errPending && !s.compactPending) {
+    if (Date.now() - s.lastPrompt > THROTTLE_MS) s.consecutive = 0;
+    return;
+  }
+  const wait = THROTTLE_MS - (Date.now() - s.lastPrompt);
+  if (wait > 0) {
+    // Too soon after the last relaunch, so the next one waits, and is not dropped: this
+    // idle can be the session's last event. On the reference box an error kept two
+    // seconds after a relaunch (09:02:30 UTC) was never relaunched, and nothing followed
+    // until opencode restarted an hour later (found in review, 2026-09-24).
+    if (!s.deferred) {
+      s.deferred = setTimeout(() => {
+        s.deferred = null;
+        if (s.busy) return;             // it moved on meanwhile; its next idle decides
+        onIdle(client, sessionID, s).catch((e) => log("plugin internal error: " + String(e).slice(0, 200)));
+      }, wait + 50);
+    }
+    return;
+  }
+  if (s.consecutive >= MAX_CONSECUTIVE) {
+    await log(`STOP (${sessionID.slice(0, 12)}): ${MAX_CONSECUTIVE} relaunches without progress`);
+    s.errPending = false;
+    s.compactPending = false;
+    return;
+  }
+
+  // the error takes priority (a hard break); otherwise a stuck compaction
+  if (s.errPending) {
+    s.errPending = false;
+    await relaunch(client, sessionID, s, RESUME_AFTER_ERROR, "err");
+    return;
+  }
+  if (s.compactPending) {
+    s.compactPending = false;
+    if (await stuckAfterCompaction(client, sessionID)) {
+      await relaunch(client, sessionID, s, RESUME_AFTER_COMPACTION, "compact");
+    } else {
+      await log(`compaction OK, resumed on its own (${sessionID.slice(0, 12)}): no relaunch`);
+    }
+  }
+}
+
 const plugin = async ({ client }) => {
   await log("auto-continue plugin loaded (v2: errors + compaction)");
   return {
@@ -112,41 +157,21 @@ const plugin = async ({ client }) => {
           return;
         }
 
+        // the session's own state as opencode publishes it: a deferred relaunch fires
+        // only on a session that is still idle
+        if (event.type === "session.status") {
+          const s = state.get(event.properties?.sessionID);
+          if (s) s.busy = event.properties?.status?.type !== "idle";
+          return;
+        }
+
         if (event.type === "session.idle") {
           const sessionID = event.properties?.sessionID;
           if (!sessionID) return;
           const s = state.get(sessionID);
           if (!s) return;
-
-          // nothing pending: a clean idle far from the last relaunch means real
-          // progress (duplicate idles right after a relaunch do not count)
-          if (!s.errPending && !s.compactPending) {
-            if (Date.now() - s.lastPrompt > THROTTLE_MS) s.consecutive = 0;
-            return;
-          }
-          if (Date.now() - s.lastPrompt < THROTTLE_MS) return;
-          if (s.consecutive >= MAX_CONSECUTIVE) {
-            await log(`STOP (${sessionID.slice(0, 12)}): ${MAX_CONSECUTIVE} relaunches without progress`);
-            s.errPending = false;
-            s.compactPending = false;
-            return;
-          }
-
-          // the error takes priority (a hard break); otherwise a stuck compaction
-          if (s.errPending) {
-            s.errPending = false;
-            await relaunch(client, sessionID, s, RESUME_AFTER_ERROR, "err");
-            return;
-          }
-          if (s.compactPending) {
-            s.compactPending = false;
-            if (await stuckAfterCompaction(client, sessionID)) {
-              await relaunch(client, sessionID, s, RESUME_AFTER_COMPACTION, "compact");
-            } else {
-              await log(`compaction OK, resumed on its own (${sessionID.slice(0, 12)}): no relaunch`);
-            }
-            return;
-          }
+          s.busy = false;
+          await onIdle(client, sessionID, s);
         }
       } catch (e) {
         await log("plugin internal error: " + String(e).slice(0, 200));
