@@ -3,8 +3,9 @@
 The pins are the contract: a revision or digest that upstream deletes turns
 every future install into a failure on the machines that do not hold the
 bytes yet (the pin-watch workflow sounds the alarm daily). A mirror is the
-extinguisher. This file is the runbook; `./mirror-pins.sh --dry-run` prints
-the plan it executes.
+extinguisher. This file is the runbook; `./mirror-pins.sh` with no argument
+prints the plan it executes, and reads the license table below to decide what
+it may copy.
 
 ## The license check comes first, and a script does not get to answer it
 
@@ -13,8 +14,10 @@ Hugging Face" is not a license. Before a repo earns a row in
 `mirror-pins.sh`'s model list, a human reads its license (and its
 provenance note when the repo is derived, which abliterations and quants
 are), and the conclusion goes into the table below with the date it was
-checked. An unchecked repo stays unmirrored; the mirror is not a backup of
-whatever happens to exist.
+checked, as `(YYYY-MM-DD)`. The script mirrors a checkpoint only when its row
+here says something other than "not yet checked" and carries that date: an
+unchecked repo stays unmirrored; the mirror is not a backup of whatever
+happens to exist.
 
 | pin | source | license conclusion (date checked) |
 |---|---|---|
@@ -27,7 +30,7 @@ whatever happens to exist.
 | flash-unc | dealignai/...-ABLITERATED-NVFP4 | not yet checked: verify both layers |
 | draft | RadixArk/Qwen3.8-27B-DSpark | not yet checked |
 | draft2 | maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal | not yet checked: verify both layers |
-| images (4) | lmsysorg/sglang@sha256:... | pull-by-digest, retag, push: the Apache-2.0 SGLang images carry their license inside; keep it there |
+| images (3) | lmsysorg/sglang@sha256:... | copied whole by digest: the Apache-2.0 SGLang images carry their license inside; keep it there |
 
 No row is a conclusion until this table says one, with a date.
 
@@ -42,24 +45,38 @@ plan-only and nothing in this repo pretends otherwise.
 ## How, once the decision exists
 
 ```bash
-python3 -m venv .venv-mirror && .venv-mirror/bin/pip install huggingface_hub  # the tool the script drives
+python3 -m venv .venv-mirror && .venv-mirror/bin/pip install huggingface_hub  # the script uses this venv when it exists
 export HF_TOKEN=hf_...            # a write token scoped to the mirror org
 export HF_MIRROR_ORG=dgx-spark-qwen38-mirror
-./mirror-pins.sh                    # models: resumable, skips revisions already mirrored
-./mirror-pins.sh --images           # images: docker pull by digest, retag, push
+./mirror-pins.sh --models           # checkpoints: resumable, skips pins already tagged on the mirror
+docker login registry.example.com   # the registry MIRROR_REGISTRY names
+export MIRROR_REGISTRY=registry.example.com/dgx-spark-qwen38
+./mirror-pins.sh --images           # images: copied whole by digest, then asked for by digest
 ```
 
-Images pulled **by digest** cannot silently drift: the digest is the
-identity, and what lands on the mirror has the same digest by construction
-(verify once per image with `docker inspect --format '{{index .RepoDigests 0}}'`).
-Model revisions are re-uploaded at the same revision id; the script treats
-"the mirror already answers that revision's `config.json`" as done, which
-makes the whole run resumable across interruptions and re-runs.
+Each checkpoint gets a repo of its own on the mirror, named after its owner and
+its name (`RadixArk__Qwen3.8-Flash-Next-NVFP4`: two owners publish a checkpoint
+of that name), and the pinned revision becomes the tag `upstream-<revision>`.
+A commit id cannot be carried over, since the mirror's commit is a new one: the
+tag is what names the pin there: a re-pin to the mirror sets that pin's
+`_REPO` line in install.sh to the mirror repo and its `_REV` line to the tag. After the upload the
+script compares the tag with the upstream revision file for file (name, size,
+content hash) and fails on any difference; a pin already tagged is compared
+and skipped, which makes the run resumable.
 
-Cost honesty: the model pins are ~150 GB of downloads and the same again
-in uploads, from whatever machine runs this, once per re-pin and once to
-seed. A cheap cloud box with fast egress does the seeding in hours instead
-of days, and the dry-run plan above is what you hand it.
+An image pinned by digest is a multi-platform index (the three pinned here
+each list amd64 and arm64 manifests). A `docker pull` and `docker push` carry
+only the platform of the machine that ran them, under that platform's digest,
+so an install pinned to the index digest would not find it on the mirror.
+The script copies the index whole with `docker buildx imagetools create`, then
+asks the mirror for the pinned digest and fails when it does not answer it.
+
+Cost honesty: the nine checkpoint pins are 513 GB at their pinned revisions
+(measured 2026-09-24: 106 GB for the four 27B checkpoints, 403 GB for the
+three flash ones, 4 GB for the two drafters), downloaded and uploaded again
+from whatever machine runs this, once to seed and once per re-pin. A cheap
+cloud box with fast egress does the seeding in hours instead of days, and the
+plan above is what you hand it.
 
 ## After the first seed
 
