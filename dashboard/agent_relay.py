@@ -25,6 +25,7 @@ import select
 import socket
 import socketserver
 import subprocess
+import threading
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -49,6 +50,12 @@ CHUNK = 64 * 1024
 CONNECT_TIMEOUT = 5.0
 HANDSHAKE_LIMIT = 64 * 1024
 INJECT_LIMIT = 256 * 1024         # an HTML document we rewrite must stay this small (the SPA index is ~3 KB)
+# A client that sends nothing for this long, mid-request or between two, is let go. With
+# no limit a request sent in part held its thread, and a descriptor, for good: 100 of
+# them held 100 threads, in a process whose 1,024 descriptors its collectors and memory
+# floor need too (found in review, 2026-09-24). Only waits on the client count: a stream
+# this side is writing, or a tunnel both ends are quiet on, never times out here.
+CLIENT_TIMEOUT = 30
 
 # The cockpit's mobile comfort layer for opencode's interface (phone typography,
 # touch targets, safe areas, theme default). opencode's own files are never
@@ -91,6 +98,23 @@ def origin_allowed(origin: str | None, host_header: str | None) -> bool:
     o = origin.strip().lower()
     host = (host_header or "").strip().lower()
     return bool(host) and o in (f"http://{host}", f"https://{host}")
+
+
+def cookie_values(header: str | None, name: str) -> list[str]:
+    """Every value the Cookie header gives `name`, read the way browsers send it (`a=b;
+    c=d`) and nothing more. http.cookies.SimpleCookie gives up at the first pair it has no
+    grammar for, and raises on a name such as `a/b`: another app's cookie on this host (a
+    JSON value, a space in one) hid the session, or ended the connection with no answer
+    (found in review, 2026-09-24)."""
+    out = []
+    for part in (header or "").split(";"):
+        key, sep, value = part.partition("=")
+        if sep and key.strip() == name:
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1]
+            out.append(value)
+    return out
 
 
 def basic_auth(user: str, password: str) -> str:
@@ -283,6 +307,7 @@ def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
         protocol_version = "HTTP/1.1"
         server_version = "SparkCockpitRelay/" + RELAY_VERSION
         sys_version = ""
+        timeout = CLIENT_TIMEOUT
 
         def log_message(self, fmt, *args):   # quiet: a chatty relay hides the real journal lines
             pass
@@ -298,7 +323,11 @@ def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
             host = self.headers.get("Host")
             if not origin_allowed(self.headers.get("Origin"), host):
                 return self.refuse(403, "origin not allowed")
-            public = self.command == "GET" and self.path.split("?", 1)[0] in PUBLIC_PATHS
+            # a manifest fetch carries no body: one that does is not that fetch, and went to
+            # opencode with the Basic credentials and no session, up to MAX_BODY of it
+            public = (self.command == "GET" and self.path.split("?", 1)[0] in PUBLIC_PATHS
+                      and not self.headers.get("Transfer-Encoding")
+                      and (self.headers.get("Content-Length") or "0").strip() == "0")
             if not public and not cfg.is_authed(self.headers.get("Cookie")):
                 return self.refuse(401, "cockpit session required")
             asset = injected_asset(self.path) if self.command in ("GET", "HEAD") else None
@@ -532,8 +561,51 @@ def pump(a: socket.socket, b: socket.socket):
                 return
 
 
-class RelayServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+class BoundedThreadingMixIn(socketserver.ThreadingMixIn):
+    """A thread per connection, as ThreadingMixIn, and a bounded number of them: past
+    `max_connections` in all, or `max_per_address` from one address, a new connection is
+    closed before any thread starts for it. A browser holds six per origin at most."""
     daemon_threads = True
+    max_connections = 96
+    max_per_address = 24
+
+    def __init__(self, *args, **kwargs):
+        self._cap_lock = threading.Lock()
+        self._cap_open: dict[str, int] = {}
+        super().__init__(*args, **kwargs)
+
+    def _cap_release(self, addr: str) -> None:
+        with self._cap_lock:
+            n = self._cap_open.get(addr, 0) - 1
+            if n > 0:
+                self._cap_open[addr] = n
+            else:
+                self._cap_open.pop(addr, None)
+
+    def process_request(self, request, client_address):
+        addr = str(client_address[0]) if client_address else ""
+        with self._cap_lock:
+            full = (sum(self._cap_open.values()) >= self.max_connections
+                    or self._cap_open.get(addr, 0) >= self.max_per_address)
+            if not full:
+                self._cap_open[addr] = self._cap_open.get(addr, 0) + 1
+        if full:
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._cap_release(addr)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._cap_release(str(client_address[0]) if client_address else "")
+
+
+class RelayServer(BoundedThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
     request_queue_size = 128
 

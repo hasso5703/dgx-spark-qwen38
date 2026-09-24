@@ -16,7 +16,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import http.cookies
 import http.server
 import importlib.util
 import json
@@ -25,7 +24,6 @@ import re
 import secrets
 import shutil
 import signal
-import socketserver
 import subprocess
 import threading
 import time
@@ -854,9 +852,8 @@ AGENT_BINARY: dict = {"key": None, "version": None}
 
 
 def cookie_authed(cookie_header: str | None) -> bool:
-    c = http.cookies.SimpleCookie(cookie_header or "")
-    tok = c.get("cockpit")
-    return bool(tok and check_token(tok.value, "sess"))
+    # every "cockpit" value counts: a browser can hold a stale one beside the fresh one
+    return any(check_token(v, "sess") for v in ar.cookie_values(cookie_header, "cockpit"))
 
 
 def agent_config() -> "ar.RelayConfig":
@@ -2557,7 +2554,8 @@ def check_token(tok: str, kind: str, max_age: int = 12 * 3600) -> bool:
                         hashlib.sha256).hexdigest()[:32]
         return (k == kind and hmac.compare_digest(sig, good)
                 and time.time() - int(ts) < max_age)
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError):
+        # TypeError: compare_digest refuses a non-ASCII str, and a cookie is anyone's to set
         return False
 
 
@@ -2565,6 +2563,9 @@ def check_token(tok: str, kind: str, max_age: int = 12 * 3600) -> bool:
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "SparkCockpit/" + VERSION
     protocol_version = "HTTP/1.1"
+    # a client silent this long is let go, as on the relay (see ar.CLIENT_TIMEOUT); the
+    # event stream writes every 2 s, so only a reader that stopped reading reaches it
+    timeout = ar.CLIENT_TIMEOUT
 
     # ---- plumbing ----
     def log_message(self, fmt, *args):  # quiet by default, errors still surface
@@ -2703,16 +2704,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({"error": "bad Content-Length"}, 400)
         length = int(declared)
         # Ten reference images do not fit in 64 KiB and never will. The cap is raised for
-        # the two image routes and for nothing else.
+        # the two image routes and for nothing else; a login is a key in a JSON object.
         raised = path in ("/api/image/edit", "/api/image/generate")
-        cap = IMAGE_MAX_POST if raised else 65536
+        cap = IMAGE_MAX_POST if raised else 4096 if path == "/api/login" else 65536
         if length > cap:
             self.close_connection = True
             return self.send_json({"error": "body too large"}, 413)
-        # On the raised-cap routes, authenticate BEFORE buffering the body: otherwise an
-        # unauthenticated client can make this process hold 40 MB in a thread just by
-        # declaring a Content-Length, which the 64 KiB cap used to bound.
-        if raised and not self.authed():
+        # Authenticate BEFORE reading the body, on every route but the login: a body is
+        # read only for someone who may send one. Checked on the raised-cap routes alone,
+        # the others read up to 64 KiB for anyone first (found in review, 2026-09-24).
+        if path != "/api/login" and not self.authed():
             self.close_connection = True
             return self.send_json({"error": "auth"}, 401)
         raw = self.rfile.read(length) if length else b""
@@ -2817,12 +2818,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     payload = json.dumps(STATE)
                 self.wfile.write(b"data: " + payload.encode() + b"\n\n")
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
+        except OSError:
+            # gone, reset, or no longer reading (the write timed out): nothing to answer
+            self.close_connection = True
             return
 
 
-class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    daemon_threads = True
+class Server(ar.BoundedThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 
