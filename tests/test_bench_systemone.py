@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import re
 import shutil
 import tempfile
 import threading
@@ -128,6 +129,73 @@ class ARunOfTwoModels(unittest.TestCase):
         for r in rows.values():
             r["model"] = "jev-1.13.0"
         self.assertNotIn("not scored", bs.report_gdpr(items, {"jev": rows}))
+
+
+class TheFanout(unittest.TestCase):
+    """A first call is cold only when the engine says nothing was cached: every question
+    count after the first reuses the state the one before sent."""
+
+    def test_only_a_first_call_with_nothing_cached_is_cold(self):
+        data = pathlib.Path(tempfile.mkdtemp(prefix="bench-so-fan-"))
+        self.addCleanup(shutil.rmtree, data, ignore_errors=True)
+        (data / "raw").mkdir()
+        (data / "raw" / f"gdpr-{bs.GDPR_REVISION}.txt").write_text("GDPR " * 200)
+        calls = []
+
+        def fake_post(target, payload, model, timeout):
+            calls.append(payload)
+            cached = "0" if len(calls) == 1 else "40"       # only the very first call is cold
+            return {"usage": {"input_tokens": 60}}, 0.1, {"x-systemone-cached-tokens": cached}, 0
+
+        args = types.SimpleNamespace(data=str(data), target="ours", state_chars="100", questions="1,4",
+                                     repeats=2, offset=0, model="jev-latest", timeout=5.0)
+        out = io.StringIO()
+        with mock.patch.object(bs, "post_systemone", fake_post), redirect_stdout(out):
+            bs.cmd_fanout(args)
+        rows = [ln.split("|")[1:4] for ln in out.getvalue().splitlines() if ln.startswith("| 100 |")]
+        labels = {(q.strip(), run.strip()) for _, q, run in rows}
+        self.assertIn(("1", "cold"), labels, out.getvalue())
+        self.assertIn(("4", "first"), labels, out.getvalue())
+        self.assertNotIn(("4", "cold"), labels, out.getvalue())
+
+
+class ThePublishedMethod(unittest.TestCase):
+    def test_the_log_loss_floor_benchmarks_md_states_is_the_one_the_code_uses(self):
+        text = (REPO / "BENCHMARKS.md").read_text()
+        floors = re.findall(r"log loss of the probability\s+given to the gold answer \(clipped at ([0-9.e-]+)", text)
+        self.assertEqual(floors, [repr(bs.LOGLOSS_FLOOR)], "BENCHMARKS.md states another floor than LOGLOSS_FLOOR")
+
+
+class TheGdprReport(unittest.TestCase):
+    """It exists to say whether batching moves an answer, and for a choice it showed the
+    top probability only, which does not say which option was chosen."""
+
+    def rows(self, single_choice):
+        def answer(key, q, mode):
+            if q["type"] == "noul":
+                return {"type": "noul", "noul": 0.9}
+            if q["type"] == "choice":
+                pick = single_choice if (mode == "single" and key == "instrument_type") else next(iter(q["criteria"]))
+                return {"type": "choice", "choice": pick,
+                        "probabilities": {k: (0.9 if k == pick else 0.1 / (len(q["criteria"]) - 1)) for k in q["criteria"]}}
+            return {"type": "score", "score": 1, "legend": q["criteria"]}
+        items = [{"id": f"g{i}", "mode": "batched" if i % 2 else "single"} for i in range(10)]
+        rows = {it["id"]: {"id": it["id"], "model": "jev-1.13.0", "latency_s": 1.0, "usage": {"input_tokens": 100},
+                           "answers": {k: answer(k, q, it["mode"]) for k, q in bs.GDPR_QUESTIONS.items()}}
+                for it in items}
+        return items, rows
+
+    def test_a_choice_that_batching_moves_is_reported(self):
+        items, rows = self.rows("Directive")
+        rep = bs.report_gdpr(items, {"jev": rows})
+        line = next(ln for ln in rep.splitlines() if ln.startswith("| instrument_type |"))
+        self.assertIn("Directive", line, rep)
+        self.assertIn("moved", rep)
+        self.assertIn("1 of 13: instrument_type", rep)
+
+    def test_nothing_moved_says_so(self):
+        items, rows = self.rows("Regulation")
+        self.assertIn("0 of 13", bs.report_gdpr(items, {"jev": rows}))
 
     def test_a_resume_on_another_model_stops_before_writing_its_answers(self):
         items = boolq_items(6)

@@ -679,8 +679,9 @@ def report_gdpr(items, runs):
         if mixed_models(rows):
             lines.append(f"## {name}: rows from more than one model, {mixed_models(rows)}, not scored")
             continue
-        lines += [f"## {name}", "", "| question | type | batched mean (sd) | single mean (sd) | reference |", "|---|---|---:|---:|---|"]
-        tracked = {}
+        lines += [f"## {name}", "", "| question | type | batched mean (sd) | single mean (sd) | batched answers | single answers | reference |",
+                  "|---|---|---:|---:|---|---|---|"]
+        tracked, said = {}, {}
         for r in got:
             it = by_id[r["id"]]
             for key, a in r["answers"].items():
@@ -691,10 +692,20 @@ def report_gdpr(items, runs):
                 else:
                     v = a["score"] / (len(a["legend"]) - 1)
                 tracked.setdefault((key, it["mode"]), []).append(v)
+                # The value above is a choice's top probability, which does not say which
+                # option it is: batched "Regulation" at 0.9 and single "Directive" at 0.9
+                # read as the same 0.900 (found in review, 2026-09-24). The answers are
+                # listed too, and compared.
+                said.setdefault((key, it["mode"]), []).append(_verdict(a))
+        moved = []
         for key, q in GDPR_QUESTIONS.items():
             b = tracked.get((key, "batched"), []); s = tracked.get((key, "single"), [])
             f = lambda xs: f"{statistics.mean(xs):.3f} ({statistics.pstdev(xs):.3f})" if xs else "-"
-            lines.append(f"| {key} | {q['type']} | {f(b)} | {f(s)} | {GDPR_GOLD.get(key, '')} |")
+            sb, ss = said.get((key, "batched"), []), said.get((key, "single"), [])
+            g = lambda vs: ", ".join(f"{v} x{vs.count(v)}" for v in sorted(set(vs), key=lambda v: (-vs.count(v), str(v)))) or "-"
+            if set(sb) != set(ss):
+                moved.append(key)
+            lines.append(f"| {key} | {q['type']} | {f(b)} | {f(s)} | {g(sb)} | {g(ss)} | {GDPR_GOLD.get(key, '')} |")
         lat_b = [r["latency_s"] for r in got if by_id[r["id"]]["mode"] == "batched"]
         lat_s = [r["latency_s"] for r in got if by_id[r["id"]]["mode"] == "single"]
         tok_b = [int((r.get("usage") or {}).get("input_tokens") or 0) for r in got if by_id[r["id"]]["mode"] == "batched"]
@@ -713,6 +724,8 @@ def report_gdpr(items, runs):
                 a = r["answers"][key]
                 hits += (a["noul"] >= 0.5) == gold if a["type"] == "noul" else a["choice"] == gold
         lines.append(f"- reference answers (10 questions with one right answer, 5 batched runs): {hits} of {10 * 5} right")
+        lines.append(f"- answers batching moved (an answer given one way and not the other): {len(moved)} of {n}"
+                     + (f": {', '.join(moved)}" if moved else ""))
     return "\n".join(lines)
 
 
@@ -720,7 +733,10 @@ def cmd_fanout(args):
     """Latency and cache reuse against the number of questions and the size of the state:
     one call per (state size, question count), repeated, on one target. The x-systemone-
     cached-tokens header (when the engine reports it) says how much of each call's prefill
-    the radix cache served; the first call of a size is the cold one and is listed as such."""
+    the radix cache served. A first call is labeled "cold" only when that header says
+    nothing was cached: a state is the prefix of every question count after the first,
+    and a shorter state the prefix of a longer one, so most first calls are warm, and were
+    labeled cold (found in review, 2026-09-24)."""
     raw = Path(args.data) / "raw" / f"gdpr-{GDPR_REVISION}.txt"
     if not raw.exists():
         sys.exit("fanout uses the cached GDPR article as filler text: run prepare --task gdpr first")
@@ -742,8 +758,10 @@ def cmd_fanout(args):
             qs = {f"q{i}": {"type": "noul", "instructions": f"Does the text mention {words[i % len(words)]}?"} for i in range(n)}
             for run in range(args.repeats):
                 resp, dt, headers, _ = post_systemone(target, {"state": state, "questions": qs}, args.model, args.timeout)
-                print(f"| {chars} | {n} | {'cold' if run == 0 else run} | {dt:.3f}s | {resp['usage']['input_tokens']} | "
-                      f"{headers.get('x-systemone-cached-tokens', '-')} | {headers.get('x-systemone-label-mass', '-')} |", flush=True)
+                cached = headers.get("x-systemone-cached-tokens", "-")
+                label = run if run else ("cold" if cached == "0" else "first")
+                print(f"| {chars} | {n} | {label} | {dt:.3f}s | {resp['usage']['input_tokens']} | "
+                      f"{cached} | {headers.get('x-systemone-label-mass', '-')} |", flush=True)
 
 
 def fit_temperature(recs):
