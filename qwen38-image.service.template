@@ -44,8 +44,9 @@ ExecStart=__IMAGE_VENV__/bin/sglang serve \
   --host __IMAGE_BIND__ --port __IMAGE_PORT__
 Restart=on-failure
 RestartSec=15
-# Loading 31 GB of weights takes ~77 s from a warm page cache and longer from cold NVMe.
-TimeoutStartSec=900
+# No TimeoutStartSec: systemd counts a Type=simple unit started once its process runs,
+# so the setting never bounded the ~77 s it takes to load 31 GB of weights (found in
+# review, 2026-09-24). install-image.sh and the cockpit wait on /health for that.
 TimeoutStopSec=60
 
 [Install]
