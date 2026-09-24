@@ -555,9 +555,12 @@ jobs:
           # The replayssm-spec knob: off by default, on for speculating tiers,
           # refused with throughput (no speculation there) and on bad values.
           # Sourced as a function so the gate exercises the real code path.
+          # In a subshell, so a refusal that exits (install.sh refuses a bad value by name
+          # and exits, which keeps the ERR trap's "Install failed at line" off it) is read
+          # as its status like one that returns.
           knob() { FLASH_TIER="$1" FLASH_REPLAYSSM_SPEC="$2" bash -c '
             eval "$(sed -n "/^resolve_flash_tier_args() {/,/^}/p" install.sh)"
-            resolve_flash_tier_args >/dev/null 2>&1; echo "rc=$?|$FLASH_TIER_ARGS"'; }
+            args=$(resolve_flash_tier_args >/dev/null 2>&1 || exit; printf %s "$FLASH_TIER_ARGS"); echo "rc=$?|$args"'; }
           case "$(knob context 0)" in rc=0*"replayssm"*) echo "replayssm on at explicit off"; exit 1;; esac
           knob context 0 | grep -q "rc=0" || { echo "context/off must succeed"; exit 1; }
           knob context 1 | grep -q "enable-linear-replayssm-spec" || { echo "context/on must carry the flag"; exit 1; }
