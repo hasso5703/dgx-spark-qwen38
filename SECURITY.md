@@ -80,11 +80,19 @@ installed choice is kept across updates in both directions, so neither a
 hardened box nor one that deliberately exposed its engine is changed by an
 update nobody read about.
 
-**The cockpit (`dashboard/`, :30090)** reaches root through exactly one
-surface: the NOPASSWD sudoers lines rendered from
-`dashboard/sudoers-cockpit.template`. The allowlist is exact argv with no
-wildcards on purpose (a glob on `sed` arguments is still root), and two CI
-steps hold it: no `*` on any allowlist line, and every privileged call in
+**The cockpit (`dashboard/`, :30090)** runs as the user who installed the box,
+and that user is already root-equivalent: `install.sh` requires it to be in the
+`docker` group, and a member of that group can start a container with the host's
+`/` mounted. The NOPASSWD sudoers lines rendered from
+`dashboard/sudoers-cockpit.template` add no privilege to that, and they are no
+boundary either: two of them `install` a file the user writes
+(`~/.config/qwen38/*.switch-stage`) into `/etc/systemd/system`, and with
+`daemon-reload` and `restart` allowed beside them, whoever writes that file runs
+what it says as root. So the cockpit's user, its API key and a session on it are
+root on this machine, and the defences that count are the ones in front of it:
+the key, the bind, the session cookie. The allowlist is still exact argv with
+no wildcards (a glob on `sed` arguments is root without any file to write), and
+two CI steps hold it: no `*` on any allowlist line, and every privileged call in
 `switch-model.sh` cross-checked against the template. The cockpit process
 runs unprivileged; login is the serving API key; a per-session HMAC cookie
 gates everything else; the diagnostic bundle masks the API key in every

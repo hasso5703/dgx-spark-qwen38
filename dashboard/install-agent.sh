@@ -55,6 +55,13 @@ OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 AGENT_PORT="${AGENT_PORT:-30091}"
 die(){ printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 note(){ printf 'NOTE: %s\n' "$*"; }
+# As root, every path below moves to /root and what is rendered names root: the
+# opencode server, and every tool call of the Agent tab, would run as root (found in
+# review, 2026-09-24). install.sh and install-image.sh refuse the same way;
+# ALLOW_ROOT=1 is for a box whose only login is root.
+if [ "$(id -u)" = "0" ] && [ "${ALLOW_ROOT:-0}" != "1" ]; then
+  die "run this as the user who will use the box, not as root: it calls sudo itself for the steps that need it${SUDO_USER:+ (your login is $SUDO_USER: drop the sudo)}."
+fi
 
 [[ "$OPENCODE_PORT" =~ ^[0-9]+$ ]] || die "OPENCODE_PORT must be a number"
 [[ "$AGENT_PORT" =~ ^[0-9]+$ ]] || die "AGENT_PORT must be a number"

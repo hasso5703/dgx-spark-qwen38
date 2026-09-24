@@ -23,6 +23,14 @@ UNIT=qwen38-dashboard.service
 INSTALLED="/etc/systemd/system/$UNIT"
 die(){ printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# As root, every path below moves to /root and what is rendered names root: the
+# cockpit would run as root, on /root's key, with the allowlist handed to root, and
+# keep a 0.0.0.0 bind (found in review, 2026-09-24). install.sh and install-image.sh refuse the same way;
+# ALLOW_ROOT=1 is for a box whose only login is root.
+if [ "$(id -u)" = "0" ] && [ "${ALLOW_ROOT:-0}" != "1" ]; then
+  die "run this as the user who will use the box, not as root: it calls sudo itself for the steps that need it${SUDO_USER:+ (your login is $SUDO_USER: drop the sudo)}."
+fi
+
 # What the installed unit says, so a re-run without variables changes nothing.
 installed(){ { grep -m1 -E "^Environment=$1=" "$INSTALLED" 2>/dev/null || true; } | cut -d= -f3-; }
 PORT="${DASH_PORT:-$(installed COCKPIT_PORT)}"; PORT="${PORT:-30090}"

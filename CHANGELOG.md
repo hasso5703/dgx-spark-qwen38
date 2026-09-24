@@ -286,6 +286,51 @@ degraded when it also loses its health. The warning for a flash stop mid-boot sa
 boot would rebuild the PLE table, as if that were the cost: every flash boot writes it from
 scratch, so what the stop loses is the boot under way.
 
+**The opencode config is edited the way opencode reads it, and only where it has to be.**
+opencode parses its config as JSONC (comments anywhere, `/* */` blocks, trailing commas:
+jsonc-parser with allowTrailingComma, read in the 1.18.32 binary), and the merge helper
+knew whole-line `//` comments only. Any other form made every edit refuse behind `|| true`:
+the limits stayed where they were, and at uninstall the provider reading the deleted key
+file stayed too, after which opencode does not start; the same happened when the box's
+provider was the last one under a comment line. The default-model helper rewrote the whole
+file with json.dump at every install and switch: non-ASCII came back as `\u` escapes, one
+comment made it give up, a default pointed at another provider was replaced, and there was
+no backup. Both now find each member by walking the document, change only what they must,
+keep comments, line endings and symlinks, and write in one step after a backup, so a full
+disk leaves the file whole. Each backup has its own name: five edits within one second
+kept one, which was no longer the original. The default model follows the lane only when
+it is unset or already one of this box's. And the generated config is written once per
+run, not twice: the generator now gives the served entry the name the helper applies next.
+
+**The cockpit and the Agent relay bound what a client can hold before it signs in.** Both
+started a thread per connection with no timeout and no limit, so a request sent in part
+held a thread and a descriptor for good: 100 of them held 100 threads, in the process
+whose 1,024 descriptors the collectors and the memory floor need. A client silent for 30 s
+is now let go (the event stream, which writes every 2 s, is not cut), and each server takes
+96 connections, 24 per address. A POST is refused before its body is read unless it carries
+a session (a login's body is capped at 4 KiB), and the relay's one public path,
+`/site.webmanifest`, no longer takes a body to opencode with the Basic credentials. The
+session cookie was read with `http.cookies.SimpleCookie`, which gives up at the first pair
+it has no grammar for: another app's cookie on the same host with a JSON value or a space
+hid the session (401 in a loop, in the cockpit and in the Agent tab), and a name like `a/b`
+raised and dropped the connection unanswered. The header is split the way browsers send it.
+
+**`run.sh` serves the engine on loopback.** It passed `--host 0.0.0.0` with no proxy in
+front, so the engine, without the guards against the fields it dies on, was on the network
+for anyone holding the key, while SECURITY.md said it was not on the network at all. It
+follows `ENGINE_BIND` as the units do, 127.0.0.1 by default.
+
+**The cockpit's installers refuse root**, as `install.sh` and `install-image.sh` do: under
+sudo, `install-dashboard.sh` rendered `User=root` with root's sudoers allowlist and kept a
+0.0.0.0 bind, and `install-agent.sh` ran opencode, and so every tool call of the Agent tab,
+as root. SECURITY.md also said the cockpit reached root "through exactly one surface", its
+sudoers lines. Its user is in the docker group, which `install.sh` requires and which is
+root by itself, and two of those lines install a file that user writes into
+`/etc/systemd/system`, beside `daemon-reload` and `restart`. A root wrapper checking that
+file would guard nothing the docker group does not already open, so the page says it as
+it is: the cockpit's user, key and session are root on this machine, and the defences that
+count are the ones in front of it.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash
