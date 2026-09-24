@@ -325,7 +325,11 @@ jobs:
           done
           PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)"
           eval "$PINS"
-          [ -n "$UNC_REV" ] && [ -n "$STOCK_REV" ] && [ "$MODEL_CHOICE" = "stock" ]
+          # one test per line: under bash -e an && list fails the step on its last test only,
+          # so two empty revisions went through (found in review, 2026-09-24)
+          [ -n "$UNC_REV" ] || { echo "UNC_REV is empty in install.sh"; exit 1; }
+          [ -n "$STOCK_REV" ] || { echo "STOCK_REV is empty in install.sh"; exit 1; }
+          [ "$MODEL_CHOICE" = "stock" ] || { echo "MODEL_CHOICE defaults to $MODEL_CHOICE, not stock"; exit 1; }
           # CONTEXT_MODE is deliberately EMPTY here since v1.12.1. The pins at
           # the top of install.sh are read by run.sh and switch-model.sh, which
           # is why this block evals them, and the context mode is no longer one
@@ -1462,6 +1466,11 @@ jobs:
 
       - name: House typography (no em/en dashes in tracked files)
         run: |
-          if git ls-files -z | xargs -0 grep -nP '[\x{2014}\x{2013}\x{2212}]' 2>/dev/null; then
+          # In a locale that is not UTF-8, grep -P refuses these escapes with exit 2, and the
+          # `if` read that as "no dash" (found in review, 2026-09-24): the grep runs in
+          # C.UTF-8, and first proves on a real em dash that it can see one.
+          printf 'a\xe2\x80\x94b\n' | LC_ALL=C.UTF-8 grep -qP '[\x{2014}\x{2013}\x{2212}]' \
+            || { echo "grep -P cannot see an em dash here: the check would read everything as clean"; exit 1; }
+          if git ls-files -z | LC_ALL=C.UTF-8 xargs -0 grep -nP '[\x{2014}\x{2013}\x{2212}]' 2>/dev/null; then
             echo "em/en dash found (house style forbids them)"; exit 1
           fi
