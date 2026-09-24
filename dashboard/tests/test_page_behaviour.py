@@ -494,5 +494,104 @@ class TheEditCommandCannotRunAFileName(unittest.TestCase):
         self.assertEqual(args[args.index("-F") + 1], 'image[]=@"it\'s \\"a\\"; b.png";type=image/png')
 
 
+def css_rules(markup):
+    """(selector, [enclosing @media conditions], declarations) for every rule of the page's
+    <style>, comments dropped."""
+    import re
+    css = re.sub(r"/\*.*?\*/", "", markup[markup.index("<style>") + 7:markup.index("</style>")], flags=re.S)
+    out, stack, buf, i = [], [], "", 0
+    while i < len(css):
+        ch = css[i]
+        if ch == "{":
+            head = buf.strip()
+            buf = ""
+            if head.startswith("@"):
+                stack.append(head)
+            else:
+                end = css.index("}", i)
+                out.append((head, list(stack), css[i + 1:end].strip()))
+                i = end
+        elif ch == "}":
+            stack.pop()
+            buf = ""
+        else:
+            buf += ch
+        i += 1
+    return out
+
+
+class TheTopBarMakesRoomInsteadOfOverlapping(unittest.TestCase):
+    """Between 981 px and the widths where one row holds everything, the actions were shrunk
+    inside the bar and slid under the connection lamp: measured in headless Chrome, 38 px
+    at 1024 with a mouse and 68 px with a touch screen's buttons, and still 6 px at 1366
+    (an iPad Pro in landscape). The page now measures the row and gives the actions one of
+    their own when they do not fit."""
+
+    GEOMETRY = r"""
+    const bar = document.querySelector('header.top'), act = $('actbar'), pill = $('lanepill');
+    let room = 1100, pillShown = false;
+    Object.defineProperty(bar, 'clientWidth', {get: () => room});
+    const width = (e, w) => { e.getBoundingClientRect = () => ({width: w, height: 30, top: 0, left: 0, right: w, bottom: 30}); };
+    width($('railbtn'), 34); width(document.querySelector('.top .brand'), 250); width(document.querySelector('.top .conn'), 100);
+    [...act.children].forEach((g, i) => width(g, [300, 120, 330][i]));
+    getComputedStyle = e => ({display: e === pill && !pillShown ? 'none' : 'flex', columnGap: e === act ? '8px' : '12px',
+                              paddingLeft: '12px', paddingRight: '16px', minWidth: e === pill ? '144px' : '0px',
+                              getPropertyValue: () => ''});
+    const wrapped = () => bar.classList.contains('topwrap');
+    // brand, lamp and menu button 384, their three gaps 36, the actions 750 and two gaps 16,
+    // the padding 28: 1,214 px without the pill, 1,370 with it at its minimum and its gap
+    """
+
+    def test_it_wraps_when_the_row_cannot_hold_the_actions(self):
+        r = run(self, self.GEOMETRY + r"""
+        const seen = [];
+        for (const w of [1100, 1214, 1213, 1210, 1226, 1300, 1212]){ room = w; fitTopbar(); seen.push([w, wrapped()]); }
+        report(seen);
+        """)
+        self.assertEqual(r, [[1100, True], [1214, True], [1213, True], [1210, True], [1226, False],
+                             [1300, False], [1212, True]])
+
+    def test_the_pill_counts_at_its_minimum(self):
+        r = run(self, self.GEOMETRY + r"""
+        pillShown = true; room = 1300; fitTopbar(); const a = wrapped();
+        room = 1400; fitTopbar(); report([a, wrapped()]);
+        """)
+        self.assertEqual(r, [True, False])
+
+    def test_a_phone_keeps_its_own_layout(self):
+        r = run(self, self.GEOMETRY + r"""
+        room = 1000; fitTopbar(); const a = wrapped();
+        document.documentElement.style.setProperty('--top', '120px');
+        room = 1500; fitTopbar();
+        report([a, wrapped(), document.documentElement.style.getPropertyValue('--top')]);
+        """)
+        self.assertEqual(r[:2], [True, False])
+        self.assertEqual(r[2], "", "a bar back on one row does not keep the height of two")
+        r = run(self, self.GEOMETRY + r"""
+        room = 700; fitTopbar(); report(wrapped());
+        """, opts={"media": {"(max-width:980px)": True}})
+        self.assertFalse(r)
+
+    def test_the_wrapped_bar_puts_the_actions_on_their_own_row(self):
+        rules = {sel: (media, decl) for sel, media, decl in css_rules((pagejs.STATIC / "index.html").read_text())}
+        self.assertIn("flex-wrap:wrap", rules[".top.topwrap"][1].replace(" ", ""))
+        self.assertIn("flex:1 0 100%", rules[".top.topwrap .actbar"][1])
+        self.assertIn("order:3", rules[".top.topwrap .actbar"][1].replace(" ", ""))
+
+
+class TheCollapsedRailIsADesktopThing(unittest.TestCase):
+    """A rail collapsed in a wide window stayed collapsed on a narrow one, where the rail is
+    a row of tabs and its button is hidden: 64 px of unlabelled icons and no way to open
+    them, measured at 390 and 800 px in headless Chrome."""
+
+    def test_every_collapsed_rail_rule_is_scoped_above_980_px(self):
+        rules = [(sel, media) for sel, media, _ in css_rules((pagejs.STATIC / "index.html").read_text())
+                 if "body.railmin" in sel]
+        self.assertTrue(rules, "the page has collapsed-rail rules")
+        for sel, media in rules:
+            with self.subTest(sel=sel):
+                self.assertTrue(any("min-width:981px" in m.replace(" ", "") for m in media), media)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -155,12 +155,42 @@ $('railbtn').addEventListener('click', () => setRail(!document.body.classList.co
 // then the lane button), but a narrow window or a page zoom can still push it to two:
 // without this the second row is drawn above the viewport and the strip sits under it.
 const topbar = document.querySelector('header.top');
+// One row while the actions fit beside everything but the pill, which gives way first;
+// a row of their own otherwise (.topwrap in index.html). Measured rather than set at a
+// breakpoint: the widths move with the lane button's label, the fonts and a touch
+// screen's larger buttons, and shrunk inside one row the actions slid under the
+// connection lamp anywhere from 981 to about 1,440 px (found in review, 2026-09-24).
+function fitTopbar(){
+  const act = $('actbar'), pill = $('lanepill');
+  if (!topbar || !act) return;
+  const wrapped = topbar.classList.contains('topwrap');
+  if (window.matchMedia('(max-width:980px)').matches){ if (wrapped) setTopwrap(false); return; }
+  const cs = getComputedStyle(topbar), px = v => parseFloat(v) || 0, wd = e => e.getBoundingClientRect().width;
+  const shown = e => !!e && getComputedStyle(e).display !== 'none';
+  const others = [...topbar.children].filter(c => c !== act && c !== pill && shown(c));
+  const groups = [...act.children].filter(shown);
+  const need = others.reduce((s, c) => s + wd(c), 0) + px(cs.columnGap) * others.length
+    + (shown(pill) ? px(getComputedStyle(pill).minWidth) + px(cs.columnGap) : 0)
+    + groups.reduce((s, g) => s + wd(g), 0) + px(getComputedStyle(act).columnGap) * Math.max(0, groups.length - 1)
+    + px(cs.paddingLeft) + px(cs.paddingRight);
+  // a margin on the way back, so a width on the edge does not flip it at every tick
+  const wrap = need > topbar.clientWidth - (wrapped ? 12 : 0);
+  if (wrap !== wrapped) setTopwrap(wrap);
+}
+function setTopwrap(on){
+  topbar.classList.toggle('topwrap', on);
+  // the bar's min-height is --top, which follows its height: kept, a bar back on one row
+  // would keep the height of two
+  if (!on) document.documentElement.style.removeProperty('--top');
+}
 if (topbar && window.ResizeObserver){
   new ResizeObserver(() => {
+    fitTopbar();
     const h = Math.round(topbar.getBoundingClientRect().height);
     if (h) document.documentElement.style.setProperty('--top', h + 'px');
   }).observe(topbar);
 }
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitTopbar);
 
 // The visual viewport is the part of the page a person can actually see. On iOS
 // the software keyboard shrinks it and offsets it without touching the layout
@@ -1254,6 +1284,7 @@ function apply(state){
   lastAges = ages; lastErrors = errors;
   freshness();
   banners(state, errors);
+  fitTopbar();   // the lane button's label may have changed its width
   document.querySelectorAll('.skel').forEach(e => { if (e.textContent.trim() !== '...') e.classList.remove('skel'); });
 }
 function freshness(){
