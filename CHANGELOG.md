@@ -541,6 +541,46 @@ lane, whose pip dependencies are resolved from PyPI unpinned.
   being shown acting; a native 27B recipe failed its own validation (no `--context-length`,
   as a native unit has none). Each is fixed, and two comments that gave wrong numbers are.
 
+**The cockpit page says what is true of the lane it shows.** A wedged engine's banner promised
+"the autoheal belt restarts it after its grace period", and the belt is off unless
+COCKPIT_AUTOHEAL=1: the page now knows whether it is armed and says what happens next. With
+no text engine serving, the generation probe kept its last success, however old, as "ok,
+0.4 s (skipped this round: engine busy)"; it says "no text engine", and a skip names its real
+reason. The Setup tab's limits line compared prompt plus answer with the pool whatever had
+failed, so a flash limit over the proxy's ceiling read "730,000 asked, 827,968 servable"
+under "too large"; it shows the pair that failed. The System One tab probed once per page
+load, and the proxy refuses that probe with or without an engine behind it: with nothing
+serving, or the image lane up, it read "serving qwen3.8-27b", and one refusal disabled Ask
+for good. The cockpit answers "not served" without a ready text lane and keeps an answer
+only as long as its lane, and the tab asks again on each visit and when the lane changes. A
+lane that crashed under an image request read "Cancelled"; systemd tells a crash from a stop
+(auto-restart, or a death by signal or core dump), and the page says the lane crashed. And
+five places sent people to "its journal in the Logs tab", which offered no lane journal at
+all: the three are there, opened by default for the image lane or a failed lane.
+
+**The page stops working for nothing and keeps its controls under a click.** One sight of
+another client's generation kept the Image tab asking /api/image every 2 s for the page's
+whole life, behind any tab, each answer a journalctl on the box; it follows that generation
+on a visible Image tab until it ends. The Agent tab's session card on a phone fetched again
+the moment a fetch failed, a loop with the relay down: one request at a time now, and a
+failure waits 15 s. The proxy's stop/start button and the job log buttons were rebuilt on
+every state message, so a click that straddled a refresh was lost; they are updated in
+place, and the event lists, live regions for screen readers, keep their rows instead of
+being read out whole twice a second. A cancelled or served choice froze the target selector
+for the life of the page. Without localStorage, leaving the Agent tab's fullscreen on a
+phone lasted until the next tick. And the curl shown for an image edit put each reference's
+name in double quotes, where the shell still expands $(...): a reference named
+x$(cmd).png ran cmd for whoever pasted the line.
+
+**The top bar makes room instead of overlapping.** From 981 px to the width where one row
+holds everything, the actions were shrunk and drawn under the connection lamp: 38 px at
+1024 px with a mouse, 68 with a touch screen's buttons, still 6 at 1366. The widths move
+with the lane button's label, the fonts and the pointer, so the page measures the row and
+gives the actions one of their own when they do not fit. A rail collapsed in a wide window
+no longer stays collapsed on a narrow one, where it was 64 px of unlabelled icons with no
+button to open it. The page scripts now run under node in the dashboard suite, on a DOM
+built from index.html, so these are tested by what the page does.
+
 **Keys stay off command lines.** Every lane passed the engine its key as
 `--api-key "$(cat .../api-key)"`, so the key was in the argv of the docker client and of
 the server, which any local user reads in `/proc`; the download's `docker run` carried
@@ -551,6 +591,17 @@ the api-key file by `engine-secrets.sh` before every start, so a key changed by 
 reaches the next start, and only when its content changes, so an update that changes
 nothing still restarts nothing. The token goes to docker by name, and the smoke key as a
 header file. The engine restarts once, at the update that brings this.
+
+**Behaviours no test guarded, and one drift the cockpit could not see.** The recipe drift
+did not compare the draft's quantization, and its test rendered a flash launcher without
+"unquant": a launcher that lost it, which loads the BF16 MTP head as if it were quantized,
+showed no drift. It is compared, and the test renders what install.sh renders. And seven
+behaviours passed their suites under a mutant that broke them: the abort sent before the
+close (the fake engine noticed a close only at its next write), get.sh's update and its
+refusal of local commits (its test clone was never behind), the lane ceiling in
+oc-fit-limits' main(), the cockpit's 409 for a second engine, the Agent relay built with
+the cockpit's own session check, and the image routes' CSRF check. Each is driven now, and
+fails under its mutant.
 
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
