@@ -518,6 +518,40 @@ downloads go to Hugging Face and the image registry (GitHub too: the clone and t
 opencode), and that every byte is pinned and hash-verified, with nothing said of the image
 lane, whose pip dependencies are resolved from PyPI unpinned.
 
+**Smaller cockpit defects.**
+- A proxy refusing the cockpit's key on the System One tab (an identity wall that does not
+  list it) was relayed as a 401, which the page reads as its own session ending: a
+  signed-in user was sent to the login. It is a gateway error with the proxy's detail.
+- The update check asked GitHub every minute when the latest release was tagged outside
+  semver, the whole anonymous budget of 60 an hour: any answer is an answer now. The
+  cockpit called itself 1.1.2 since v1.7.2; it reads its release from CHANGELOG.md.
+- A `.incomplete` blob an interrupted download left marked its checkpoint "downloading" and
+  its pinned revision absent for good, and a bare snapshot folder counted as a checkpoint:
+  a revision is there when every file its indexes name is (a diffusers layout included),
+  and only a blob written to in the last ten minutes is a download in progress.
+- A wedge's forensics saved the py-spy wrapper's complaint ("py-spy not installed") as the
+  scheduler's stacks; the wrapper's sudoers line allowed any arguments; `DASH_BIND=::` made
+  the unit fail at every start (both servers speak IPv4); a missing config folder failed
+  the unit at its namespace step; the diagnostics bundle left out the image lane's and
+  opencode-web's journals. Each is fixed.
+- GPU driver refusals were reported when their count over the last hour grew, which it does
+  not when as many old ones leave the hour as new ones come; a git status or a docker
+  inspect that timed out read as a clean checkout and a container without the request-id
+  override; in a dry run the memory floor and the pool guard acted in silence instead of
+  being shown acting; a native 27B recipe failed its own validation (no `--context-length`,
+  as a native unit has none). Each is fixed, and two comments that gave wrong numbers are.
+
+**Keys stay off command lines.** Every lane passed the engine its key as
+`--api-key "$(cat .../api-key)"`, so the key was in the argv of the docker client and of
+the server, which any local user reads in `/proc`; the download's `docker run` carried
+`-e HF_TOKEN=<token>`, and the smoke test's curl the key in a `-H` argument. The units, the
+flash launcher and `run.sh` now hand the server `--config /out/engine-secrets.yaml`, which
+SGLang merges into its arguments in memory (checked in both serving images), written from
+the api-key file by `engine-secrets.sh` before every start, so a key changed by hand still
+reaches the next start, and only when its content changes, so an update that changes
+nothing still restarts nothing. The token goes to docker by name, and the smoke key as a
+header file. The engine restarts once, at the update that brings this.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash

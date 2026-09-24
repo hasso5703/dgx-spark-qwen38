@@ -277,7 +277,9 @@ DL_FREE_GB="$(dl_free_gb)"
 [ "${DL_FREE_GB:-0}" -ge "$DL_NEED_GB" ] \
   || die "not enough room for $TARGET_REPO under HF_CACHE=$HF_CACHE: ${DL_FREE_GB:-?} GB free, about $DL_NEED_GB GB needed (nothing was changed). Free some space first."
 DL_TOKEN_ARGS=()
-[ -n "${HF_TOKEN:-}" ] && DL_TOKEN_ARGS=(-e HF_TOKEN="$HF_TOKEN")
+# by name: docker takes the value from its own environment, so the token is not in the
+# docker client's argv, which any local user can read in /proc (found in review, 2026-09-24)
+if [ -n "${HF_TOKEN:-}" ]; then export HF_TOKEN; DL_TOKEN_ARGS=(-e HF_TOKEN); fi
 # --init: the cockpit stops a switch that overruns its job timeout with a TERM to the
 # whole process group, and docker run passes it on to the container, where python3 as
 # PID 1 has no handler for it and ignores it. Measured on the reference box: without

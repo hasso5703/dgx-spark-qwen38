@@ -41,6 +41,9 @@ class Base(unittest.TestCase):
                                            "served_model_name": "qwen3.8-27b", "model_path": "x"}
         self.calls = []
         real = self.m.subprocess.run
+        # self.m.subprocess is the process's own subprocess module: put run() back, or every
+        # test after this one gets these fakes instead of real processes
+        self.addCleanup(setattr, self.m.subprocess, "run", real)
 
         def fake(argv, **kw):
             joined = " ".join(map(str, argv))

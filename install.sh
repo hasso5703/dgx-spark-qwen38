@@ -1159,7 +1159,9 @@ if [ "$LANE" = "flash" ]; then DL_DRAFT2_REPO=""; fi
 # pull stalled at 3.3 GB). A token in $HF_CACHE/token is picked up through the
 # mount; HF_TOKEN in the environment is passed through as well.
 DL_TOKEN_ARGS=()
-[ -n "${HF_TOKEN:-}" ] && DL_TOKEN_ARGS=(-e HF_TOKEN="$HF_TOKEN")
+# by name: docker takes the value from its own environment, so the token is not in the
+# docker client's argv, which any local user can read in /proc (found in review, 2026-09-24)
+if [ -n "${HF_TOKEN:-}" ]; then export HF_TOKEN; DL_TOKEN_ARGS=(-e HF_TOKEN); fi
 # HF_HUB_DISABLE_XET: the hub library's Xet transfer backend stalled silently
 # during the release campaign (ESTAB socket, zero bytes, forever; 0-8 MB/s
 # when moving at all) while the classic CDN path measured 89 MB/s on the same
@@ -1313,6 +1315,12 @@ else
   echo "API key already present, keeping it"
 fi
 KEY="$(cat "$CONFIG_DIR/api-key")"   # used by the step-9 smoke test
+# The engine is handed its key in a file SGLang merges in memory, written by this script
+# before every start (the units, the flash launcher, run.sh): as --api-key "$(cat ...)" it
+# was in the argv of the docker client and of the server (found in review, 2026-09-24).
+cmp -s "$REPO_DIR/engine-secrets.sh" "$CONFIG_DIR/engine-secrets.sh" \
+  || install -m 755 "$REPO_DIR/engine-secrets.sh" "$CONFIG_DIR/engine-secrets.sh"
+bash "$CONFIG_DIR/engine-secrets.sh" || die "could not write the engine's key file from $CONFIG_DIR/api-key (see above)"
 # One patched template per engine file name: the served template always follows
 # the served model (both fixes: reasoning_effort normalization + mid-conversation
 # system messages as <system-reminder> blocks; see patch-template.py).
@@ -2129,9 +2137,11 @@ for i in $(seq 1 150); do
     # kept engine may be in the middle of someone's long prefill, which the smoke request
     # waits behind, so it gets more than a freshly booted one (found in review, 2026-09-24).
     SMOKE_MAX_S=300; [ "$ENGINE_KEEP" -eq 1 ] && SMOKE_MAX_S=1800
+    # The key goes in as a header file (printf is a builtin): on curl's command line it
+    # was readable by any local user in /proc (found in review, 2026-09-24).
     SMOKE_RC=0
     SMOKE_RAW="$(curl -s -m "$SMOKE_MAX_S" "http://127.0.0.1:$PORT/v1/chat/completions" \
-      -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+      -H @<(printf 'Authorization: Bearer %s\n' "$KEY") -H 'Content-Type: application/json' \
       -d '{"model":"'"$SMOKE_MODEL"'","messages":[{"role":"user","content":"Reply with exactly: READY"}],"max_tokens":600}')" \
       || SMOKE_RC=$?
     [ "$SMOKE_RC" -eq 0 ] || die "Server is up but the smoke generation got no answer (curl exit $SMOKE_RC; 28 is its ${SMOKE_MAX_S} s timeout). Check: journalctl -u $UNIT_NAME -n 50"
