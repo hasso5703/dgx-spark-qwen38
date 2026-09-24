@@ -174,7 +174,7 @@ serves (generation, editing with up to ten references, native RGBA; see
 
 ## Being told there is a newer version
 
-A box that runs an old release does not know it. The answer existed from v1.5 in the
+A box that runs an old release does not know it. The answer existed from v1.6 in the
 Models tab, printed after a button press, which means it reached whoever already
 suspected there was news. Since v1.15.2 the cockpit volunteers it: every six hours it
 asks GitHub whether a newer release is published, and if there is one the banner strip
