@@ -197,6 +197,14 @@ def api_key() -> str:
         return ""
 
 
+class Ran(str):
+    """run()'s answer: the text, and .ok, True when the command ran to a zero exit. The text
+    alone is "" on a timeout, and a git status that timed out read as a clean checkout, a
+    docker inspect that did as a container without the request-id override (found in
+    review, 2026-09-24): a reader that must not take that for a fact checks .ok."""
+    ok = True
+
+
 def run(argv: list[str], timeout: float = 5.0, merge_err: bool = False) -> str:
     """Fixed-argv runner: never a shell, never client input.
 
@@ -213,21 +221,18 @@ def run(argv: list[str], timeout: float = 5.0, merge_err: bool = False) -> str:
         else:
             out = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
-        return out.stdout
+        ran = Ran(out.stdout)
+        ran.ok = out.returncode == 0
+        return ran
     except (OSError, subprocess.TimeoutExpired):
-        return ""
+        ran = Ran("")
+        ran.ok = False
+        return ran
 
 
-def run_ok(argv: list[str], timeout: float = 5.0) -> tuple[bool, str]:
-    """(True, stdout) when the command ran to a zero exit, else (False, ""): for a reader
-    that must not take the empty answer of a timeout for a fact. run() gives "" either way,
-    and a git status that timed out read as a clean tree, a docker inspect that did as a
-    container without the override (found in review, 2026-09-24)."""
-    try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return out.returncode == 0, out.stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return False, ""
+def answered(text) -> bool:
+    """Did the command behind this run() answer? A stub's plain str counts as one."""
+    return getattr(text, "ok", True)
 
 
 def http_json(url: str, timeout: float = 4.0):
@@ -465,12 +470,16 @@ def collect_engine_fast():
         MEM_FLOOR["last_abort"] = time.time()
         MEM_FLOOR["aborts"] += 1
         MEM_FLOOR["last_reason"] = reason
+        # A dry run shows the belt acting, as it shows every other: said and audited, not sent.
+        # It raised instead, and the floor's decision was a failed audit line with no event
+        # (found in review, 2026-09-24).
         try:
-            if DRY_RUN:
-                raise RuntimeError("dry run: abort_all not sent")
-            engine_abort_all()
-            audit({"kind": "mem_floor", "avail_gib": avail, "num_reqs": num_reqs, "ok": True})
-            add_event("mem_floor", f"memory floor: {reason}; every generation aborted")
+            if not DRY_RUN:
+                engine_abort_all()
+            audit({"kind": "mem_floor", "avail_gib": avail, "num_reqs": num_reqs, "ok": True,
+                   **({"dry_run": True} if DRY_RUN else {})})
+            add_event("mem_floor", f"memory floor: {reason}; "
+                      + ("dry run: no abort sent" if DRY_RUN else "every generation aborted"))
         except Exception as e:  # noqa: BLE001
             audit({"kind": "mem_floor", "avail_gib": avail, "num_reqs": num_reqs, "ok": False, "err": str(e)[:120]})
             add_event("mem_floor", f"memory floor: {reason}; abort failed: {str(e)[:80]}")
@@ -603,7 +612,8 @@ def collect_canary():
     # a dry-run instance exists to exercise the UI: it must not make the real engine
     # generate anything, not even two tokens (a second cockpit shares the same box).
     if DRY_RUN or not ready or JOB_LOCK.locked() or busy or recent:
-        # never queue a probe behind a user's request (max-running-requests 1)
+        # never queue a probe behind a user's request: a scheduler at its cap would make
+        # the probe wait for it, and the canary would read a busy engine as a wedged one
         return {"node_id": "local", **CANARY, "skipped": True}
     body = json.dumps({"model": "canary", "max_tokens": 2, "temperature": 0,
                        "messages": [{"role": "user", "content": "Say OK"}],
@@ -695,9 +705,9 @@ def collect_guard():
         tail = run(["docker", "logs", "--since", ZOMBIE_WINDOW, active], timeout=10,
                    merge_err=True)
         zombies = lc.parse_zombies(tail)
-        ok, env = run_ok(["docker", "inspect", active, "--format",
-                          "{{range .Config.Env}}{{println .}}{{end}}"], timeout=6)
-        override = ("SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1" in env) if ok else None
+        env = run(["docker", "inspect", active, "--format",
+                   "{{range .Config.Env}}{{println .}}{{end}}"], timeout=6)
+        override = ("SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1" in env) if answered(env) else None
     # The banner is only printed at startup, so the version needs the whole
     # journal of the unit, not the window the counters are read over. ONE line:
     # journalctl with -g returns its matches NEWEST FIRST (plain -n is
@@ -774,8 +784,9 @@ def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
     declared do not fit it, through the same action as the Setup tab's button.
 
     A switch writes the target's nominal pair, because the pool is only known once the
-    engine is up, and on the 1M lanes that pair (900,000) is above every pool measured
-    (832,993 to 922,094 over sixteen 27B boots). install.sh fits after its own boot;
+    engine is up, and on the 1M lanes that pair's worst case (923,863: the 680,000
+    compaction point, one agent step of 43,863 and 200,000 of output) is above every pool
+    measured (832,993 to 922,094 over sixteen 27B boots). install.sh fits after its own boot;
     nothing did after a switch and a Start from this page, so every switch left the Agent
     tab asking for more than the pool, under a warning that told the operator to press a
     button (reference box, 2026-09-23, after a switch to the uncensored target).
@@ -1076,7 +1087,8 @@ def collect_repo():
     # ONE git status for both facts. run() swallows a timeout into "", so two
     # calls can disagree on a loaded box and the panel would then call a
     # modified tree clean, which is the sentence this split exists to make true.
-    ok, porcelain = run_ok(["git", "-C", str(REPO_DIR), "status", "--porcelain"])
+    porcelain = run(["git", "-C", str(REPO_DIR), "status", "--porcelain"])
+    ok = answered(porcelain)
     status = porcelain.splitlines()
     return {"node_id": "local",
             "head": g("log", "-1", "--format=%h %s"),
@@ -1267,17 +1279,21 @@ def collect_lifecycle():
                     and time.time() - LAST_FLUSH["ts"] > cooldown):
                 held, mamba = LAST_USAGE["value"], LAST_USAGE["mamba"]
                 try:
-                    if DRY_RUN:
-                        raise urllib.error.HTTPError(ENGINE_BASE, 400, "dry run: flush not sent", None, None)
-                    req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST",
-                                                 data=b"", headers={"Authorization": f"Bearer {api_key()}"})
-                    urllib.request.urlopen(req, timeout=8).read()
-                    POOL_GUARD_STATE.update(flushes=POOL_GUARD_STATE["flushes"] + 1,
-                                            last=time.time(), fails=0, last_err="")
-                    add_event("guard", f"pool guard: prefix cache flushed while the engine was idle "
-                                       f"({held:.0%} of the pool held, {mamba:.0%} of the mamba slots); "
-                                       f"the next long prompt prefills from scratch")
-                    audit({"kind": "pool_guard", "usage": held, "mamba": mamba})
+                    # in a dry run, said and audited like the real flush, and not sent: it
+                    # raised a fake 400 instead, which reads "not idle after all", and the
+                    # guard stood down in silence (found in review, 2026-09-24)
+                    if not DRY_RUN:
+                        req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST",
+                                                     data=b"", headers={"Authorization": f"Bearer {api_key()}"})
+                        urllib.request.urlopen(req, timeout=8).read()
+                        POOL_GUARD_STATE.update(flushes=POOL_GUARD_STATE["flushes"] + 1,
+                                                last=time.time(), fails=0, last_err="")
+                    add_event("guard", f"pool guard: prefix cache "
+                                       f"{'flush not sent (dry run)' if DRY_RUN else 'flushed'} while the engine "
+                                       f"was idle ({held:.0%} of the pool held, {mamba:.0%} of the mamba slots)"
+                                       + ("" if DRY_RUN else "; the next long prompt prefills from scratch"))
+                    audit({"kind": "pool_guard", "usage": held, "mamba": mamba,
+                           **({"dry_run": True} if DRY_RUN else {})})
                 except urllib.error.HTTPError as e:
                     # 400 = "pending requests": the engine is not idle after all
                     # (a queued request the load endpoint does not show); stand down.
@@ -1436,7 +1452,9 @@ def collect_lifecycle():
         if r:
             blocked[f"unit:start:{unit}"] = r
             blocked[f"unit:restart:{unit}"] = r
-    for act in ("switch", "update_stack"):
+    # update_stack is no action here (the page gives install.sh's command to run in a
+    # terminal), so no page reads a verdict on it; it was computed on every sample
+    for act in ("switch",):
         r = lc.blocked_reasons(act, {}, states)
         if r:
             blocked[act] = r
@@ -1597,7 +1615,7 @@ class Job:
         self.argv = argv
         self.fn = fn                     # python job (flush, abort, smoke, bundle)
         self.params = params or {}
-        self.origin = origin             # ui | autoheal
+        self.origin = origin             # ui | autoheal | autofit
         self.timeout = timeout
         self.lines: list[str] = []
         self.status = "running"

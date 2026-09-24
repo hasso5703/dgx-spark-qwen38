@@ -33,10 +33,12 @@ class Unanswered(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    def test_run_ok_tells_a_timeout_from_an_empty_answer(self):
-        self.assertEqual(self.cp.run_ok(["true"]), (True, ""))
-        self.assertEqual(self.cp.run_ok(["false"]), (False, ""))
-        self.assertEqual(self.cp.run_ok(["sleep", "5"], timeout=0.2), (False, ""))
+    def test_run_tells_a_timeout_from_an_empty_answer(self):
+        for argv, timeout, ok in ((["true"], 5.0, True), (["false"], 5.0, False), (["sleep", "5"], 0.2, False)):
+            out = self.cp.run(argv, timeout=timeout)
+            self.assertEqual(out, "")
+            self.assertIs(self.cp.answered(out), ok, argv)
+        self.assertTrue(self.cp.answered("a stub's plain text"))
 
     def test_a_git_status_that_timed_out_is_not_a_clean_tree(self):
         real = self.cp.subprocess.run
