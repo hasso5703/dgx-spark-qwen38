@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.24). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.25). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -13,7 +13,9 @@ Five roles, nothing else:
    ignore comments and drop the stream after ~140-180 s without a real chunk);
 2. never leave a generation running for a client that is gone: the proxy names every
    request itself (x-override-rid), POSTs /abort_request BEFORE it closes the upstream
-   socket, and drains the answer when the engine offers no rid to abort with;
+   socket, and drains the answer when the engine offers no rid to abort with. The caller
+   of a non-streamed answer, who hears nothing until it is whole, is watched instead: when
+   it leaves, the upstream is ended, and the engine drops the request on its own;
 3. never lull a client on a dead upstream: past MAX_SILENCE_S an EXPLICIT SSE
    error event is sent, then the stream is closed. MAX_SILENCE_S must stay
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
@@ -28,6 +30,16 @@ Five roles, nothing else:
    yes/no probabilities from the model it already runs, with nothing generated and
    nothing parsed. The "System One endpoint" section below carries the design and
    its receipts.
+
+v6.25: a caller that leaves a non-streamed answer stops the generation. The proxy waited
+inside the upstream call for the whole answer, so it never saw that caller go and kept the
+upstream open: the engine worked to the end (measured on the box, a 69k-token prefill and
+its decode ran 53.6 s past the caller), then got an abort that found nothing to abort. The
+caller's socket is watched during that wait now, and at its EOF the upstream is ended:
+SGLang checks its own HTTP client every 4 s for a non-streamed request and drops it (the
+same prefill stopped 4.0 s after the caller left). A non-streamed body the engine ends early
+is no longer relayed as complete: the client sees the cut, as it would from the engine
+itself. Found in review, 2026-09-24.
 
 v6.24: the identity wall covers every route and every method but /health (it looked at
 POST /v1/... only, while the engine's key went upstream on everything relayed, so GET
@@ -1988,6 +2000,28 @@ def systemone_response(req, plan, reads):
 
 
 HOP = {"host", "content-length", "connection", "keep-alive", "transfer-encoding"}
+# Whether the engine answers a request in one piece, read on the raw bytes (a body can be
+# megabytes): every "stream" key says false, or there is none. Any other value, even one
+# SGLang reads as true ("stream": 1), counts as a stream, because _watch_client's remedy
+# is the wrong one for a stream.
+STREAM_KEY = re.compile(rb'"stream"\s*:\s*(\S)')
+
+
+def answered_whole(body):
+    return all(m.group(1) == b"f" for m in STREAM_KEY.finditer(body))
+
+
+class _UpstreamHTTP(urllib.request.HTTPHandler):
+    """urlopen's own HTTP handler, keeping a hand on the connection it opens, so that
+    _watch_client can end it from another thread."""
+    def http_open(self, req):
+        def connection(host, **kw):
+            req.upstream = http.client.HTTPConnection(host, **kw)
+            return req.upstream
+        return self.do_open(connection, req)
+
+
+_UPSTREAM_OPENER = urllib.request.build_opener(_UpstreamHTTP)
 
 # Abort contract (v6.14). SGLang only aborts a request it can still FIND: abort_request()
 # returns early when the rid is no longer in TokenizerManager.rid_to_state, and a client
@@ -2107,11 +2141,12 @@ class H(BaseHTTPRequestHandler):
     def _open(self, body):
         req = urllib.request.Request(UPSTREAM + self.path, data=body,
                                      headers=self._hdrs(), method=self.command)
+        self._upstream_req = req            # _watch_client ends req.upstream
         # GETs are metadata and always fast; a generation may legitimately take
         # tens of minutes before its first byte (cold giant prefill).
         timeout = UPSTREAM_GET_TIMEOUT_S if self.command == "GET" else None
         try:
-            return urllib.request.urlopen(req, timeout=timeout), None, None
+            return _UPSTREAM_OPENER.open(req, timeout=timeout), None, None
         except urllib.error.HTTPError as e:
             return None, e, None
         except (urllib.error.URLError, OSError) as e:
@@ -2282,12 +2317,63 @@ class H(BaseHTTPRequestHandler):
         try:
             self._relay_inner(resp)
         except BaseException:
-            if not self._abort_upstream("client vanished mid-request"):
+            if "text/event-stream" not in (resp.headers.get("Content-Type") or ""):
+                # the engine sends a non-streamed answer once all of it exists: nothing
+                # is generating any more, so there is nothing to abort or drain
+                try: resp.close()
+                except Exception: pass
+            elif not self._abort_upstream("client vanished mid-request"):
                 self._drain_detached(resp)
             else:
                 try: resp.close()
                 except Exception: pass
             raise
+
+    def _watch_client(self, done):
+        """The caller of a non-streamed answer hears nothing until it is whole, so this proxy
+        never wrote to it, never saw it leave, and kept the upstream open: the engine
+        generated to the end for a client that was gone (measured 2026-09-24: 21.6 s of
+        decode after the caller left, then an abort that found nothing left to abort).
+
+        SGLang handles that case itself when it can see the caller go: while a non-streamed
+        request waits it checks its HTTP client every 4 s (SGLANG_REQUEST_STATE_WAIT_TIMEOUT),
+        while it decodes at each output, and then aborts the request with its state still
+        there (TokenizerManager._wait_one_response, "type 1" and "type 3", in both images).
+        Its HTTP client is this proxy, so at the caller's EOF the upstream connection is
+        ended and the engine does the rest. An abort from here would do less: sent while
+        the request is still being tokenized, it reaches the scheduler before the request
+        and is lost, and that is exactly when an early leaver leaves. Like nginx's default,
+        an EOF is read as the caller leaving: a client that half-closes after its request
+        would be taken for gone."""
+        sock = self.connection
+        if isinstance(sock, ssl.SSLSocket):
+            return                       # a peek through TLS is not this simple
+        while not done.is_set():
+            try:
+                readable, _, _ = select.select([sock], [], [], 0.5)
+            except (OSError, ValueError):
+                return
+            if not readable:
+                continue
+            try:
+                if sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT):
+                    return               # the client sent bytes: pipelining, not a goodbye
+            except BlockingIOError:
+                continue
+            except OSError:
+                pass
+            self._caller_left = True
+            while not done.is_set():     # the upstream may not be connected yet (loopback: not for long)
+                conn = getattr(getattr(self, "_upstream_req", None), "upstream", None)
+                up = getattr(conn, "sock", None)
+                if up is not None:
+                    try: up.shutdown(socket.SHUT_RDWR)
+                    except OSError: pass
+                    log(f"{self._peer} client gone before its non-streamed answer: upstream "
+                        f"closed, the engine drops the request at its next disconnect check")
+                    return
+                done.wait(0.05)
+            return
 
     def _drain_detached(self, resp):
         """Read an abandoned response to its end in the background: see DRAIN_MAX_S."""
@@ -2314,6 +2400,7 @@ class H(BaseHTTPRequestHandler):
             # of exclamation marks to be explained later.
             worst = 0
             detached = False
+            cut = None
             try:
                 while True:
                     c = resp.read(65536)
@@ -2326,19 +2413,34 @@ class H(BaseHTTPRequestHandler):
                     try:
                         self._chunk(c)
                     except Exception:
-                        # the client is gone while the engine is still writing an answer
-                        # nobody will read (a non-streamed answer is one long silence for
-                        # the caller, so this is a common way to lose one)
-                        if self._abort_upstream("client gone on a non-streamed answer"):
-                            self._done("CLIENT GONE on write"); return
-                        self._drain_detached(resp); detached = True
-                        self._done("CLIENT GONE on write (draining)"); return
-            except Exception:
-                pass
+                        # the client left while its answer was being relayed. The engine
+                        # sends a non-streamed answer once all of it exists, so nothing is
+                        # generating: the abort sent here until v6.24 always came after the
+                        # request was over, and read like a success in the log
+                        self._done("CLIENT GONE on write"); return
+            except Exception as e:
+                cut = e
             finally:
+                # http.client returns b"" at an early EOF instead of raising (its own comment:
+                # "Ideally, we would raise IncompleteRead"), leaving the bytes still owed in
+                # .length, so a Content-Length the engine did not honour is read there
+                owed = getattr(resp, "length", None)
+                if cut is None and isinstance(owed, int) and owed > 0:
+                    cut = http.client.IncompleteRead(b"", owed)
                 if not detached:
                     try: resp.close()
                     except Exception: pass
+            if cut is not None:
+                # The engine ended mid-body (it died, or dropped the socket). The answer is
+                # re-framed as chunked, so a terminating chunk here handed the client half a
+                # document as a complete one and the journal said "ok" (found in review,
+                # 2026-09-24): the stream ends without it, which the client reads as the
+                # incomplete transfer it is, as it would talking to the engine directly.
+                log(f"{self._peer} the engine cut a non-streamed answer short "
+                    f"({type(cut).__name__}); relayed without its end")
+                try: self.connection.shutdown(socket.SHUT_RDWR)
+                except Exception: pass
+                self._done("UPSTREAM CUT non-sse"); return
             self._finish()
             if worst >= CORRUPTION_RUN:
                 log(f"corrupted output in a non-streamed answer ({worst} marker chars)")
@@ -2600,7 +2702,25 @@ class H(BaseHTTPRequestHandler):
                                                       "param": "messages",
                                                       "message": msg}}).encode())
                     self._done("400 oversize refused"); return
-        resp, herr, cerr = self._open(body)
+        # A non-streamed answer's headers only come once it is whole, so this proxy waits
+        # inside _open for the whole generation and cannot see the caller leave: its socket
+        # is watched for exactly that wait. A stream is not: its relay writes every
+        # KEEPALIVE_S and finds a closed client at the next write.
+        done = threading.Event()
+        if with_body and body and answered_whole(body):
+            threading.Thread(target=self._watch_client, args=(done,), daemon=True).start()
+        try:
+            resp, herr, cerr = self._open(body)
+        finally:
+            done.set()                      # headers, or an error: the generation is over
+        if getattr(self, "_caller_left", False):
+            # the watch ended the upstream, or the answer raced it: either way nobody is
+            # left to answer, and an error here is not the engine's
+            for r in (resp, herr):
+                if r is not None:
+                    try: r.close()
+                    except Exception: pass
+            self._done("CLIENT GONE during non-sse wait"); return
         if cerr is not None:
             invalidate_pool()           # same: the next pool must be read fresh
             self._unavailable(cerr); self._done("503 engine unreachable"); return
@@ -2827,7 +2947,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.24 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.25 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     if CLIENT_KEYS:
         log(f"client keys on: {len(CLIENT_KEYS)} identities ({CLIENT_KEYS_FILE})")
         if UPSTREAM_API_KEY:

@@ -264,7 +264,7 @@ case-sensitively, so a `width` alone or `"2048X2048"` went through unbudgeted.
 answers 504, "still generating": the runtime has no abort and goes on, so the next request
 is refused until this run's journal shows the request ended, the lane restarts (Cancel), or
 another 30 minutes pass. Until v1.18.7 the lock was given back at the timeout and a second
-generation could start beside the first, the 90.5 GB case that stopped the engine.
+generation could start beside the first, the 90.5 GB case that wedged the engine.
 
 **An output format must be sent, always.** Left out, `choose_output_image_ext` falls back
 to `jpg` when the background is not transparent. This model returns RGBA for *everything*

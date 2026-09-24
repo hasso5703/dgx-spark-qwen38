@@ -160,7 +160,9 @@ class Abort(unittest.TestCase):
     def _send(self, path, body, read_bytes=0, hard_close=True):
         """Post a request through the proxy, read what is asked, then vanish."""
         s = socket.create_connection(("127.0.0.1", self.port), timeout=10)
-        raw = json.dumps(body).encode()
+        # FakeEngine answers every request as a stream, so each one asks for a stream:
+        # since v6.25 the proxy reads the flag (a non-streamed answer is watched instead)
+        raw = json.dumps({**body, "stream": True}).encode()
         s.sendall(f"POST {path} HTTP/1.1\r\nHost: p\r\nContent-Type: application/json\r\n"
                   f"Content-Length: {len(raw)}\r\n\r\n".encode() + raw)
         got = b""

@@ -18,11 +18,12 @@ Three kinds of check, in increasing strength:
                       worse bug than the one it fixed.
   SIMULATION          a state machine drives a real proxy against a real fake
                       engine through generated sequences of client behaviour
-                      (read some, vanish, stay, send a second request) and
-                      checks the invariant that matters in production after
-                      every step: the engine is never left generating for a
-                      client that is gone, and a request is never aborted with
-                      an id the engine does not know.
+                      (read some, vanish, stay, send a second request, ask
+                      for a stream or not) and checks the invariant that
+                      matters in production after every step: the engine is
+                      never left generating for a client that is gone, and a
+                      request is never aborted with an id the engine does not
+                      know.
 
 Not named test_*.py: it needs hypothesis, and the discovered suite stays
 stdlib-only. Run it directly; CI installs hypothesis and requires the summary.
@@ -31,6 +32,7 @@ import importlib.util
 import json
 import os
 import re
+import select
 import socket
 import struct
 import sys
@@ -295,7 +297,21 @@ class Engine:
         self.aborted = []
         self.ignored = []
         self.finished = []
+        self.outcome = {}       # prompt of a non-streamed request -> "noticed" or "whole"
         self.lock = threading.Lock()
+
+
+def caller_gone(sock):
+    """What Starlette's request.is_disconnected() learns from the socket."""
+    r, _, _ = select.select([sock], [], [], 0)
+    if not r:
+        return False
+    try:
+        return sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+    except BlockingIOError:
+        return False
+    except OSError:
+        return True
 
 
 class RelaySimulation(RuleBasedStateMachine):
@@ -309,6 +325,7 @@ class RelaySimulation(RuleBasedStateMachine):
         self.engine = Engine()
         eng = self.engine
         EVENTS, GAP = 8, 0.02
+        WHOLE_S = 0.6           # how long a non-streamed answer takes to exist
 
         class Fake(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -333,6 +350,36 @@ class RelaySimulation(RuleBasedStateMachine):
                 rid = self.headers.get("x-override-rid") or f"engine{time.time_ns()}"
                 with eng.lock:
                     eng.live[rid] = True
+                req = json.loads(body or b"{}")
+                if req.get("stream") is not True:
+                    # Written once it is whole; meanwhile SGLang drops the request if its
+                    # HTTP client goes (TokenizerManager._wait_one_response, types 1, 3)
+                    prompt = req["messages"][0]["content"]
+                    try:
+                        end = time.time() + WHOLE_S
+                        while time.time() < end:
+                            if caller_gone(self.connection):
+                                with eng.lock:
+                                    eng.outcome[prompt] = "noticed"
+                                self.close_connection = True
+                                return
+                            time.sleep(0.01)
+                        out = json.dumps({"id": rid, "choices": [
+                            {"message": {"content": "whole answer"}}]}).encode()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(out)))
+                        self.end_headers()
+                        self.wfile.write(out)
+                        with eng.lock:
+                            eng.outcome[prompt] = "whole"
+                            eng.finished.append(rid)
+                    except Exception:
+                        pass
+                    finally:
+                        with eng.lock:
+                            eng.live.pop(rid, None)
+                    return
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Connection", "close")
@@ -380,8 +427,9 @@ class RelaySimulation(RuleBasedStateMachine):
         self.esrv.server_close()
 
     # ---- client behaviours ----------------------------------------------------
-    def _send(self, path, prompt, read_bytes, hard_close):
-        raw = json.dumps({"messages": [{"role": "user", "content": prompt}]}).encode()
+    def _send(self, path, prompt, read_bytes, hard_close, stream=True, linger=0.0):
+        raw = json.dumps({"messages": [{"role": "user", "content": prompt}],
+                          "stream": stream}).encode()
         s = socket.create_connection(("127.0.0.1", self.port), timeout=10)
         s.sendall(f"POST {path} HTTP/1.1\r\nHost: p\r\nContent-Type: application/json\r\n"
                   f"Content-Length: {len(raw)}\r\n\r\n".encode() + raw)
@@ -396,11 +444,22 @@ class RelaySimulation(RuleBasedStateMachine):
                     got += c
             except (socket.timeout, TimeoutError, ConnectionResetError):
                 pass
+        if linger:
+            time.sleep(linger)
         if hard_close:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
         s.close()
         self.opened += 1
         return got
+
+    def _outcome(self, prompt, timeout=3.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            with self.engine.lock:
+                if prompt in self.engine.outcome:
+                    return self.engine.outcome[prompt]
+            time.sleep(0.02)
+        return None
 
     @rule(path=st.sampled_from(["/v1/chat/completions", "/v1/messages"]),
           slow=st.booleans(),
@@ -414,6 +473,24 @@ class RelaySimulation(RuleBasedStateMachine):
     def client_stays_to_the_end(self, path):
         got = self._send(path, "hello", 100000, False)
         assert b"[DONE]" in got or not got, "a staying client lost its stream"
+
+    @rule(path=st.sampled_from(["/v1/chat/completions", "/v1/messages"]),
+          linger=st.sampled_from([0.0, 0.05, 0.25]),
+          hard=st.booleans())
+    def client_leaves_before_its_whole_answer(self, path, linger, hard):
+        """A non-streamed answer arrives in one piece, so its caller hears nothing
+        until then: one that leaves meanwhile must be seen leaving by the engine."""
+        prompt = f"whole-{time.time_ns()}"
+        self._send(path, prompt, 0, hard, stream=False, linger=linger)
+        got = self._outcome(prompt)
+        assert got == "noticed", f"the engine generated a whole answer for a caller that was gone ({got})"
+
+    @rule(path=st.sampled_from(["/v1/chat/completions", "/v1/messages"]))
+    def client_waits_for_its_whole_answer(self, path):
+        prompt = f"whole-{time.time_ns()}"
+        got = self._send(path, prompt, 100000, False, stream=False)
+        assert b"whole answer" in got, f"a staying client lost its answer: {got[-200:]!r}"
+        assert self._outcome(prompt) == "whole"
 
     @invariant()
     def the_engine_is_never_left_generating_for_a_client_that_is_gone(self):

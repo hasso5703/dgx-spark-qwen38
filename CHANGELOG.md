@@ -27,8 +27,10 @@ root, which the proxy (it runs as the user) cannot read, and put the engine key 
 `Conflicts=` orders nothing: the box's journal shows the image lane and the 27B running side by
 side for 5, 6.7 and 60 s on 2026-09-23. With the text units in `After=`, systemd finishes the
 stop before the start, both ways (measured with two throwaway units on the box's systemd 255:
-3.0 s of overlap without, 0.02 s after the stop with). And a text unit that is failed or
-inactive while its container still runs (a stop past its timeout) is now an `orphan`, busy for
+3.0 s of overlap without, 0.02 s after the stop with). The two text units had no `Conflicts=`
+at all, not even with each other: both enabled meant both started at boot, and only the scripts
+kept a switch from starting one beside the other. Each now conflicts with every other lane and
+is ordered after it. And a text unit that is failed or inactive while its container still runs (a stop past its timeout) is now an `orphan`, busy for
 the gate that refuses a second engine, instead of a "failed" that let the other lane start.
 
 **The cockpit's generation canary never ran.** Its own `/health` probe, a one-token
@@ -80,6 +82,42 @@ loop's own TTFT spread sets on that figure: on the reference box a 4-turn run gr
 and read -115 ms, all of it jitter, and the default 8-turn run read -2,704 ms because one turn
 took 1.68 s against 0.23 s for the others. The figures published from it are replaced by the
 bound the measured TTFT ranges set.
+
+**A caller that leaves a non-streamed answer stops its generation (proxy v6.25).** The proxy
+waited inside the upstream call for the whole answer, so it never saw that caller go and kept
+the upstream open: the engine worked to the end for nobody, then got an abort that found
+nothing left to abort. Measured on the reference box, a 69k-token prompt whose caller left
+after 5 s was prefilled and decoded for 53.6 s more. The caller's socket is watched during
+that wait now, and when it goes the upstream is ended: SGLang checks its own HTTP client every
+4 s for a non-streamed request and drops it, and the same prefill stopped 4.0 s after the
+caller left. A request that asks for a stream is left to the relay, which aborts before it
+closes. A non-streamed body the engine ended early was also relayed as complete (the proxy
+re-frames it as chunked and wrote the final chunk anyway): the client now sees the cut.
+
+**A timed-out image call keeps the lane busy.** After its 30-minute read timeout the cockpit
+gave the image lock back while the runtime, which has no abort, went on generating, so a
+second image could start beside the first, the pair that held 90.5 GB and wedged the engine.
+It answers 504, "still generating", and holds the lane until the run's journal shows the
+request ended, the lane restarts (Cancel), or another 30 minutes pass.
+
+**The image pixel budget reads a size the way the lane does.** It read `size` only when both
+axes were missing, and case-sensitively, so a `width` alone or `"2048X2048"` went through
+unbudgeted. It follows the lane's own order now (explicit `width`/`height` first, then `size`
+lower-cased, then 1024), refuses what the lane would refuse or fail on, and
+`num_inference_steps` is 1 to 100.
+
+**An engine in a crash loop reads as one.** `Restart=always` with `RestartSec=15` never
+reaches systemd's start limit, so a unit dying at load sits in "activating" between attempts:
+`install.sh` printed "still loading... be patient" for 20 minutes with the journal unread, and
+the cockpit showed a boot in progress. The installer now stops at the first relaunch after
+its own restart (`NRestarts`, which a manual restart does not zero on systemd 255) and prints
+the journal; the cockpit reads the unit as failed and restarting, says it keeps crashing, and
+offers Stop.
+
+**A wedged engine no longer holds a switch back**, since it never settles, and it reads as
+degraded when it also loses its health. The warning for a flash stop mid-boot said the next
+boot would rebuild the PLE table, as if that were the cost: every flash boot writes it from
+scratch, so what the stop loses is the boot under way.
 
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate

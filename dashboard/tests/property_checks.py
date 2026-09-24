@@ -167,6 +167,7 @@ class ClassifiersAreTotal(unittest.TestCase):
 
     @PROFILE
     @given(st.sampled_from(["CLIENT GONE on write", "CLIENT GONE during keepalive",
+                            "CLIENT GONE during non-sse wait",
                             "no outcome (client vanished mid-request)"]),
            st.text(alphabet=" .()", max_size=12))
     def test_a_client_departure_stays_a_departure_however_it_is_decorated(self, base, deco):

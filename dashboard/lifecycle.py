@@ -411,7 +411,7 @@ def outcome_kind(outcome: str) -> str:
         return "unknown"
     if outcome.startswith("ok"):
         return "ok"
-    # "CLIENT GONE on write", "... (draining)", "CLIENT GONE during keepalive",
+    # "CLIENT GONE on write", "... during non-sse wait", "CLIENT GONE during keepalive",
     # "no outcome (client vanished mid-request)": the client is the one who left.
     if "CLIENT GONE" in outcome or "client vanished" in outcome:
         return "gone"

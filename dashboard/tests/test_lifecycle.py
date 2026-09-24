@@ -445,11 +445,14 @@ class FeedOutcomes(unittest.TestCase):
         "ok non-sse": "ok",
         "ok non-sse CORRUPTED": "ok",
         "CLIENT GONE on write": "gone",
-        "CLIENT GONE on write (draining)": "gone",
         "CLIENT GONE during keepalive": "gone",
+        # v6.25: the caller of a non-streamed answer left while the engine worked; the
+        # proxy ended the upstream and the engine dropped the request itself
+        "CLIENT GONE during non-sse wait": "gone",
         "no outcome (client vanished mid-request)": "gone",
         "DROPPED upstream silent": "fail",
         "UPSTREAM CUT": "fail",
+        "UPSTREAM CUT non-sse": "fail",    # v6.25: the engine ended a non-streamed body early
         "REFUSED corrupted output": "fail",
         "400 oversize refused": "fail",
         "400 bad Content-Length": "fail",
@@ -546,7 +549,7 @@ class FeedOutcomes(unittest.TestCase):
     def test_a_client_that_left_is_not_a_failure(self):
         """v6.14 outcomes: the client walked away and the proxy handled it. Reading
         those as 'fail' is what made a quiet lane look broken."""
-        for outcome in ("CLIENT GONE on write", "CLIENT GONE on write (draining)",
+        for outcome in ("CLIENT GONE on write", "CLIENT GONE during non-sse wait",
                         "CLIENT GONE during keepalive",
                         "no outcome (client vanished mid-request)"):
             self.assertIn(outcome, self.outcomes, f"{outcome} is no longer in the proxy")
