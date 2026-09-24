@@ -53,6 +53,27 @@ def tearDownModule():
 
 
 API_KEY = "test-key-not-a-real-one"
+CLOSED = "http://127.0.0.1:1"        # nothing listens there: a request fails at once
+
+
+def offline(url, timeout=5.0):
+    """cockpit._get_json on a box with no route out."""
+    raise OSError(f"offline test: {url}")
+
+
+class FakeBox:
+    """Answers cockpit.run() from a table keyed by a fragment of the argv, and keeps every
+    argv. The routes read the box through run(): with the real one, this suite ran the
+    real uninstall.sh --list, docker, journalctl and systemctl against the reference box,
+    and sent eleven requests to Hugging Face and GitHub (found in review, 2026-09-24)."""
+
+    def __init__(self):
+        self.table, self.calls = {}, []
+
+    def __call__(self, argv, timeout=5.0, merge_err=False):
+        self.calls.append(list(argv))
+        joined = " ".join(argv)
+        return next((out for key, out in self.table.items() if key in joined), "")
 
 
 def load_cockpit(config_dir: Path):
@@ -64,6 +85,10 @@ def load_cockpit(config_dir: Path):
         COCKPIT_PORT="0",
         COCKPIT_AGENT_PORT="0",
         COCKPIT_AUTOHEAL="0",
+        COCKPIT_ENGINE=CLOSED,
+        COCKPIT_PROXY=CLOSED,
+        COCKPIT_IMAGE=CLOSED,
+        HOME=str(config_dir),        # the HF cache and opencode config it reads are there
     )
     sys.path.insert(0, str(DASH))
     spec = importlib.util.spec_from_file_location("cockpit_http_under_test",
@@ -79,6 +104,9 @@ class Base(unittest.TestCase):
         cls.tmp = Path(tempfile.mkdtemp(prefix="cockpit-http-"))
         (cls.tmp / "api-key").write_text(API_KEY + "\n")
         cls.cp = load_cockpit(cls.tmp)
+        cls.box = FakeBox()
+        cls.cp.run = cls.box
+        cls.cp._get_json = offline
         cls.srv = cls.cp.Server(("127.0.0.1", 0), cls.cp.Handler)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.port = cls.srv.server_address[1]
@@ -520,6 +548,42 @@ class ReadRoutes(Base):
             if st == 500:
                 self.assertIn("error", body, path)
 
+    def test_a_box_with_no_route_out_reads_offline_row_by_row(self):
+        """Offline is a status of each row, not a failure of the route."""
+        cookie = self.login()
+        st, body = self.get("/api/upstream?refresh=1", cookie)
+        self.assertEqual(st, 200, body)
+        self.assertTrue(body["models"])
+        for row in body["models"]:
+            self.assertEqual(row["status"], "offline", row)
+            self.assertIn("offline test", row["detail"])
+        self.assertIsNone(body["release"]["latest"])
+
+    def test_a_pin_is_same_or_moved_against_what_upstream_answers(self):
+        pins = self.cp.registry_snapshot(max_age=0.0)["pins"]
+        var, pin = next((v, p) for v, p in pins.items() if v in self.cp.rg.PIN_MODELS)
+        moved = self.cp.rg.PIN_MODELS[var]
+        answers = {"releases/latest": {"tag_name": "v9.9.9"}}
+
+        def fake(url, timeout=5.0):
+            if "api.github.com" in url:
+                return answers["releases/latest"]
+            return {"sha": "0" * 40 if f"/{moved}/" in url else pins[next(
+                v for v, m in self.cp.rg.PIN_MODELS.items() if f"/{m}/" in url)]}
+        self.cp._get_json = fake
+        try:
+            cookie = self.login()
+            st, body = self.get("/api/upstream?refresh=1", cookie)
+        finally:
+            self.cp._get_json = offline
+            self.cp.upstream_snapshot(max_age=0.0)
+        self.assertEqual(st, 200, body)
+        status = {row["var"]: row["status"] for row in body["models"]}
+        self.assertEqual(status.pop(var), "moved")
+        self.assertTrue(status and set(status.values()) == {"same"}, status)
+        self.assertEqual(body["release"]["latest"], "v9.9.9")
+        self.assertEqual(pin[:10], next(r for r in body["models"] if r["var"] == var)["pin"])
+
     def test_refresh_bypasses_the_cache_without_breaking_the_answer(self):
         cookie = self.login()
         for path in ("/api/registry?refresh=1", "/api/recipes?refresh=1"):
@@ -528,15 +592,30 @@ class ReadRoutes(Base):
             self.assertIsInstance(body, dict, path)
 
     def test_the_inventory_is_parsed_into_typed_rows(self):
-        cookie = self.login()
-        st, body = self.get("/api/inventory", cookie)
+        """What uninstall.sh --list prints, read into rows. The listing is canned: the
+        real script reads /etc, docker and the HF caches of the box it runs on."""
+        listing = ("qwen38 install inventory:\n"
+                   "  unit      /etc/systemd/system/qwen38-sglang.service (enabled)\n"
+                   "  drop-ins  /etc/systemd/system/qwen38-keepalive.service.d (switch-model.sh ceiling override)\n"
+                   "  config    /home/u/.config/qwen38 (12M): api-key, patched templates\n"
+                   "  image     lmsysorg/sglang@sha256:abc (39.2GB)\n"
+                   "  weights   /home/u/.cache/huggingface/hub/models--x (18G)\n"
+                   "not a row\n"
+                   "  surprise  something this cockpit does not list\n")
+        self.box.table = {"uninstall.sh --list": listing}
+        try:
+            cookie = self.login()
+            st, body = self.get("/api/inventory", cookie)
+        finally:
+            self.box.table = {}
         self.assertEqual(st, 200)
-        self.assertIn("items", body)
-        for item in body["items"]:
-            self.assertEqual(set(item), {"kind", "what"})
-            self.assertIn(item["kind"], ("unit", "drop-ins", "backup", "config",
-                                         "legacy", "launcher", "image", "weights",
-                                         "ple-file"))
+        self.assertEqual([(i["kind"], i["what"].split()[0]) for i in body["items"]],
+                         [("unit", "/etc/systemd/system/qwen38-sglang.service"),
+                          ("drop-ins", "/etc/systemd/system/qwen38-keepalive.service.d"),
+                          ("config", "/home/u/.config/qwen38"),
+                          ("image", "lmsysorg/sglang@sha256:abc"),
+                          ("weights", "/home/u/.cache/huggingface/hub/models--x")])
+        self.assertIn(["bash", str(REPO / "uninstall.sh"), "--list"], self.box.calls)
 
     def test_only_allowlisted_log_sources_are_readable(self):
         """The name comes from the URL. Anything not on the list is a 404, so a
@@ -557,12 +636,18 @@ class ReadRoutes(Base):
         cookie = self.login()
         known = list(self.cp.CONTAINERS) + list(self.cp.JOURNAL_UNITS)
         self.assertTrue(known)
-        for name in known:
-            st, body = self.get(f"/api/logs/{name}", cookie)
-            self.assertEqual(st, 200, name)
-            self.assertEqual(body["name"], name)
-            self.assertIsInstance(body["lines"], list)
-            self.assertLessEqual(len(body["lines"]), 120, name)
+        long_log = "\n".join(f"line {i}" for i in range(300))
+        self.box.table = {"docker logs": long_log, "journalctl": long_log}
+        try:
+            for name in known:
+                st, body = self.get(f"/api/logs/{name}", cookie)
+                self.assertEqual(st, 200, name)
+                self.assertEqual(body["name"], name)
+                self.assertEqual(body["lines"], [f"line {i}" for i in range(180, 300)], name)
+                argv = self.box.calls[-1]
+                self.assertEqual(argv[-1] if name in self.cp.CONTAINERS else argv[2], name)
+        finally:
+            self.box.table = {}
 
     def test_an_unknown_job_id_is_a_404(self):
         cookie = self.login()
