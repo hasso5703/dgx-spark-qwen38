@@ -402,6 +402,27 @@ class StaticFiles(Base):
             self.assertNotIn(b"SESSION_SECRET", body)
             self.assertNotIn(b"root:", body)
 
+    def test_a_sibling_named_like_the_directory_is_outside_it(self):
+        """/static/ is served before the session check, and containment was a string
+        prefix: a neighbour such as dashboard/static.bak/ passed for the static directory,
+        and /static/../static.bak/x was served to anyone (found in review, 2026-09-24).
+        A throwaway static directory with such a neighbour, for this test only."""
+        root = Path(tempfile.mkdtemp(prefix="cockpit-static-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "static").mkdir()
+        (root / "static" / "login.html").write_text("<p>the page</p>")
+        (root / "static.bak").mkdir()
+        (root / "static.bak" / "notes.txt").write_text("NOT-FOR-ANYONE")
+        saved = self.cp.STATIC_DIR
+        self.cp.STATIC_DIR = root / "static"
+        self.addCleanup(setattr, self.cp, "STATIC_DIR", saved)
+        st, _, body = self.req("GET", "/static/login.html")
+        self.assertEqual((st, body), (200, b"<p>the page</p>"), "the throwaway directory is not the one served")
+        for path in ("/static/../static.bak/notes.txt", "/static/./../static.bak/notes.txt"):
+            st, _, body = self.req("GET", path)
+            self.assertEqual(st, 404, f"{path} was served ({len(body)} bytes)")
+            self.assertNotIn(b"NOT-FOR-ANYONE", body)
+
     def test_security_headers_are_on_every_kind_of_answer(self):
         for path in ("/login", "/api/health"):
             _, hdrs, _ = self.req("GET", path)
@@ -702,6 +723,11 @@ class ActionValidation(Base):
         self.assertTrue(starts, added)
         self.assertEqual(starts[0]["action"], "fit_opencode")
         self.assertTrue(starts[0]["dry_run"], "the audit line does not say it was a dry run")
+        # the argv itself, which the name promises and nothing read (found in review,
+        # 2026-09-24): an audit that recorded None passed
+        self.assertEqual(starts[0]["argv"],
+                         ["python3", str(self.cp.REPO_DIR / "oc-fit-limits.py"), "--restart-agent"])
+        self.assertEqual(starts[0]["argv"], out["argv"], "the audit and the answer disagree")
 
 
 class UpdateCheck(Base):

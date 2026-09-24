@@ -74,7 +74,9 @@ def main() -> None:
         assert "1/1 exact retrievals" in out, f"the ratio counted the refusal:\n{out}"
         assert "refused by the lane's own prompt limit" in out, out
         assert "PORT=30000" in out, "the way past the ceiling is not explained"
-        assert r.returncode == 1 or r.returncode == 0, f"unexpected rc={r.returncode}\n{out}"
+        # the one retrieval attempted succeeded, so this is a pass: tolerating 1 here let a
+        # count of the refused trials as failures through (found in review, 2026-09-24)
+        assert r.returncode == 0, f"1/1 retrieved must exit 0, got rc={r.returncode}\n{out}"
 
         # Every depth refused: nothing was measured, and that is not a pass.
         r = subprocess.run(["bash", NEEDLE, "--model", "m", "--depths", "300000",
