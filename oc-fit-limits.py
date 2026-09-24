@@ -242,7 +242,12 @@ def main(argv: list[str]) -> int:
     if dry:
         print("dry run: nothing written")
         return 0
-    rc, changed = 0, False
+    # The compaction block is sized from the context it goes with, and install.sh sized it
+    # from the table's: a context fitted smaller left it at the table's, up to 53% of the
+    # new threshold instead of a quarter (found in review, 2026-09-24).
+    keep = subprocess.run([str(REPO_DIR / "oc-limits.sh"), "--preserve", str(context)],
+                          capture_output=True, text=True).stdout.strip()
+    rc, changed, merged = 0, False, False
     for target in (CONFIG_DIR / "opencode.json", Path.home() / ".config/opencode/opencode.json"):
         if not target.exists():
             continue
@@ -253,9 +258,25 @@ def main(argv: list[str]) -> int:
         print(f"  {target}: {said.splitlines()[-1] if said else 'no output'}")
         if out.returncode not in (0, 3):
             rc = out.returncode
-        elif out.returncode == 0 and "unchanged" not in said:
-            changed = True
-    if rc == 0 and not changed:
+            continue
+        if out.returncode == 3:
+            continue                              # this config has no entry for the lane
+        merged = True
+        changed = changed or "unchanged" not in said
+        if keep.isdigit() and int(keep) > 0:
+            out = subprocess.run([sys.executable, str(REPO_DIR / "oc-merge-limits.py"), str(target),
+                                  "--compaction", keep], capture_output=True, text=True)
+            said = (out.stdout or out.stderr).strip()
+            print(f"  {target}: {said.splitlines()[-1] if said else 'no output'}")
+            if out.returncode != 0:
+                rc = out.returncode
+            elif "unchanged" not in said:
+                changed = True
+    if rc == 0 and not merged:
+        # nothing was compared, so nothing can be said about what opencode asks for
+        # (it used to say "already asks for no more" here, found in review, 2026-09-24)
+        print(f"no opencode config here has an entry for {provider}/{served}: nothing fitted")
+    elif rc == 0 and not changed:
         print("opencode already asks for no more than this engine can serve: nothing to restart")
     elif rc == 0 and restart:
         print("opencode now asks for no more than this engine can serve")
