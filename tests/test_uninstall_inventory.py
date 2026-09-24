@@ -75,7 +75,10 @@ class UninstallKnowsEveryResidue(unittest.TestCase):
         for u in sorted(written):
             with self.subTest(unit=u):
                 self.assertIn(u, self.units, f"{u} written but not inventoried")
-                self.assertIn(f"/etc/systemd/system/{u}", self.ui_text)
+                # by the variable that names /etc/systemd/system since v1.18.7 (a test runs
+                # the script against a sandbox), or literally
+                self.assertIn("SYSTEMD_DIR=/etc/systemd/system\n", self.ui_text)
+                self.assertTrue(f"$SYSTEMD_DIR/{u}" in self.ui_text or f"/etc/systemd/system/{u}" in self.ui_text, u)
 
     def test_privileged_surfaces_are_listed_and_removed(self):
         for path in ("/etc/sudoers.d/qwen38-cockpit",

@@ -75,8 +75,11 @@ MSG_ANCHOR = (
 )
 MSG_PATCHED = (
     "        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ "
-    "'. Supported types are lean (default), xhigh, medium, and low.') }}"
+    "'. Supported types are @@LEVELS@@.') }}"
 )
+# the refusal names the default the template really has (it said "lean (default)" on a box
+# installed with LEAN_DEFAULT=0, whose default is xhigh)
+MSG_LEVELS = {True: "lean (default), xhigh, medium, and low", False: "lean, xhigh (default), medium, and low"}
 
 SYSTEM_ANCHOR = (
     "    {%- if message.role == \"system\" %}\n"
@@ -120,15 +123,30 @@ def main() -> None:
     tpl = open(chosen, encoding="utf-8").read()
 
     # LEAN_DEFAULT=0 installs the level without making it the default, for a box
-    # that wants Qwen's shipped behaviour until it has run its own numbers.
-    lean_default = os.environ.get("LEAN_DEFAULT", "1") != "0"
+    # that wants Qwen's shipped behaviour until it has run its own numbers. Unset, the
+    # template already installed decides: the choice was read from the environment of
+    # every run, so a box installed with LEAN_DEFAULT=0 went back to lean at its next
+    # ./install.sh or cockpit Switch, neither of which passes it (found in review,
+    # 2026-09-24). LEAN.md presents it as a kept choice.
+    asked = os.environ.get("LEAN_DEFAULT")
+    if asked is not None:
+        lean_default = asked != "0"
+    else:
+        try:
+            with open(out_path, encoding="utf-8") as f:
+                installed = f.read()
+        except OSError:
+            installed = ""
+        lean_default = "reasoning_effort|default('xhigh')" not in installed
     effort_patched = EFFORT_PATCHED.replace("@@DEF@@", "lean" if lean_default else "xhigh")
-    print(f"default reasoning effort: {'lean' if lean_default else 'xhigh'}")
+    msg_patched = MSG_PATCHED.replace("@@LEVELS@@", MSG_LEVELS[lean_default])
+    print(f"default reasoning effort: {'lean' if lean_default else 'xhigh'}"
+          + ("" if asked is not None else " (kept from the installed template)" if installed else ""))
 
     for name, anchor, patched, marker in (
         ("reasoning_effort", EFFORT_ANCHOR, effort_patched, "'minimal'"),
         ("lean", LEAN_ANCHOR, LEAN_PATCHED, "'lean' %}"),
-        ("effort-message", MSG_ANCHOR, MSG_PATCHED, "lean (default)"),
+        ("effort-message", MSG_ANCHOR, msg_patched, "Supported types are lean"),
         ("system-reminder", SYSTEM_ANCHOR, SYSTEM_PATCHED, "<system-reminder>"),
     ):
         if anchor in tpl:

@@ -11,8 +11,21 @@
 #                            the exact reclaim command for each present item is printed
 #   ./uninstall.sh --yes     same, config removed without asking
 set -euo pipefail
-HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 CONFIG_DIR="$HOME/.config/qwen38"
+SYSTEMD_DIR=/etc/systemd/system
+SUDOERS_FILE=/etc/sudoers.d/qwen38-cockpit
+PYSPY_WRAPPER=/usr/local/bin/qwen38-pyspy-scheduler
+# Every cache and PLE folder the installed lanes use, not just the environment's: a box
+# installed with HF_CACHE=/data/hf had 22 to 126 GB of weights and the 48 GB PLE file
+# neither listed nor given a reclaim command (found in review, 2026-09-24).
+unit_mount(){  # $1 = the container path; prints the host side of every -v mounting it
+  grep -hoE -- "-v [^ :]+:$1( |\$|:)" "$SYSTEMD_DIR/qwen38-sglang.service" "$CONFIG_DIR/launch-flash.sh" 2>/dev/null \
+    | sed -e 's/^-v //' -e "s|:$1.*\$||" || true
+}
+HF_CACHES="$( { printf '%s\n' "${HF_CACHE:-}"; unit_mount /root/.cache/huggingface
+               { grep -m1 -E '^Environment=HF_HOME=' "$SYSTEMD_DIR/qwen38-image.service" 2>/dev/null || true; } | cut -d= -f3-
+               printf '%s\n' "$HOME/.cache/huggingface"; } | awk 'NF && !seen[$0]++')"
+PLE_DIRS="$( { printf '%s\n' "${PLE_DIR:-}"; unit_mount /ple; printf '%s\n' "$HOME/flashnext-ple"; } | awk 'NF && !seen[$0]++')"
 # opencode reads all three global names, and creates opencode.jsonc itself on its first
 # start: a provider block pasted into any of them reads the key as much as ours does.
 OC_USER_CFGS=("$HOME/.config/opencode/config.json" "$HOME/.config/opencode/opencode.json" "$HOME/.config/opencode/opencode.jsonc")
@@ -78,19 +91,19 @@ rm_cmd() {
 
 echo "── Inventory (everything any version of this repo may have left here) ──"
 for u in qwen38-sglang.service qwen38-flash.service qwen38-keepalive.service qwen38-dashboard.service qwen38-image.service opencode-web.service; do
-  if [ -f "/etc/systemd/system/$u" ]; then
+  if [ -f "$SYSTEMD_DIR/$u" ]; then
     STATE="$(systemctl is-enabled "$u" 2>/dev/null || true)/$(systemctl is-active "$u" 2>/dev/null || true)"
-    echo "  unit      /etc/systemd/system/$u ($STATE)"
+    echo "  unit      $SYSTEMD_DIR/$u ($STATE)"
   fi
 done
-[ -d /etc/systemd/system/qwen38-sglang.service.d ] && echo "  drop-ins  /etc/systemd/system/qwen38-sglang.service.d (pre-v1.3 warmup lived here)"
-[ -d /etc/systemd/system/qwen38-keepalive.service.d ] && echo "  drop-ins  /etc/systemd/system/qwen38-keepalive.service.d (switch-model.sh ceiling override)"
-[ -d /etc/systemd/system/qwen38-dashboard.service.d ] && echo "  drop-ins  /etc/systemd/system/qwen38-dashboard.service.d (cockpit overrides)"
-[ -f /etc/sudoers.d/qwen38-cockpit ] && echo "  sudoers   /etc/sudoers.d/qwen38-cockpit (cockpit argv allowlist, NOPASSWD)"
-[ -f /usr/local/bin/qwen38-pyspy-scheduler ] && echo "  wrapper   /usr/local/bin/qwen38-pyspy-scheduler (cockpit forensics helper)"
+[ -d "$SYSTEMD_DIR/qwen38-sglang.service.d" ] && echo "  drop-ins  $SYSTEMD_DIR/qwen38-sglang.service.d (pre-v1.3 warmup lived here)"
+[ -d "$SYSTEMD_DIR/qwen38-keepalive.service.d" ] && echo "  drop-ins  $SYSTEMD_DIR/qwen38-keepalive.service.d (switch-model.sh ceiling override)"
+[ -d "$SYSTEMD_DIR/qwen38-dashboard.service.d" ] && echo "  drop-ins  $SYSTEMD_DIR/qwen38-dashboard.service.d (cockpit overrides)"
+[ -f "$SUDOERS_FILE" ] && echo "  sudoers   $SUDOERS_FILE (cockpit argv allowlist, NOPASSWD)"
+[ -f "$PYSPY_WRAPPER" ] && echo "  wrapper   $PYSPY_WRAPPER (cockpit forensics helper)"
 # Read from the unit, not assumed: install-image.sh takes IMAGE_LANE_DIR, so a lane
 # installed elsewhere would be reported clean and left on disk.
-IMAGE_LANE_DIR="${IMAGE_LANE_DIR:-$({ grep -m1 -E '^WorkingDirectory=' /etc/systemd/system/qwen38-image.service 2>/dev/null || true; } | cut -d= -f2-)}"
+IMAGE_LANE_DIR="${IMAGE_LANE_DIR:-$({ grep -m1 -E '^WorkingDirectory=' "$SYSTEMD_DIR/qwen38-image.service" 2>/dev/null || true; } | cut -d= -f2-)}"
 IMAGE_LANE_DIR="${IMAGE_LANE_DIR:-$HOME/.local/share/qwen38-image}"
 [ -d "$IMAGE_LANE_DIR" ] && echo "  runtime   $IMAGE_LANE_DIR ($(dir_size "$IMAGE_LANE_DIR"), image lane venv + pinned SGLang checkout)"
 for f in "$CONFIG_DIR"/*.bak-preupdate; do
@@ -122,13 +135,15 @@ for entry in ${FOUND_IMAGES[@]+"${FOUND_IMAGES[@]}"}; do
   IFS='|' read -r ref size _ <<< "$entry"
   echo "  image     $ref ($size)"
 done
-for repo in $HF_REPOS; do
-  d="$HF_CACHE/hub/models--${repo//\//--}"
-  [ -d "$d" ] && echo "  weights   $d ($(dir_size "$d"))"
-done
-for p in "${PLE_DIR:-}" "$HOME/flashnext-ple"; do
-  [ -n "$p" ] && [ -d "$p" ] && { echo "  ple-file  $p ($(dir_size "$p"), flash mmap backing store)"; break; }
-done
+while IFS= read -r cache; do
+  for repo in $HF_REPOS; do
+    d="$cache/hub/models--${repo//\//--}"
+    if [ -d "$d" ]; then echo "  weights   $d ($(dir_size "$d"))"; fi
+  done
+done <<< "$HF_CACHES"
+while IFS= read -r p; do
+  if [ -n "$p" ] && [ -d "$p" ]; then echo "  ple-file  $p ($(dir_size "$p"), flash mmap backing store)"; fi
+done <<< "$PLE_DIRS"
 echo "──"
 
 if [ "$LIST_ONLY" -eq 1 ]; then
@@ -137,47 +152,65 @@ if [ "$LIST_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-FOUND_ANY=0
-for f in /etc/systemd/system/qwen38-sglang.service /etc/systemd/system/qwen38-flash.service \
-         /etc/systemd/system/qwen38-keepalive.service /etc/systemd/system/qwen38-dashboard.service \
-         /etc/systemd/system/qwen38-image.service /etc/systemd/system/opencode-web.service \
-         /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler "$IMAGE_LANE_DIR"; do
-  [ -e "$f" ] && FOUND_ANY=1
+PRIV=0
+for f in "$SYSTEMD_DIR/qwen38-sglang.service" "$SYSTEMD_DIR/qwen38-flash.service" \
+         "$SYSTEMD_DIR/qwen38-keepalive.service" "$SYSTEMD_DIR/qwen38-dashboard.service" \
+         "$SYSTEMD_DIR/qwen38-image.service" "$SYSTEMD_DIR/opencode-web.service" \
+         "$SYSTEMD_DIR/qwen38-sglang.service.d" "$SYSTEMD_DIR/qwen38-dashboard.service.d" \
+         "$SYSTEMD_DIR/qwen38-keepalive.service.d" "$SUDOERS_FILE" "$PYSPY_WRAPPER"; do
+  [ -e "$f" ] && PRIV=1
 done
-grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null && FOUND_ANY=1
-sudo systemctl disable --now qwen38-sglang.service 2>/dev/null || true
-sudo systemctl disable --now qwen38-flash.service 2>/dev/null || true
-sudo systemctl disable --now qwen38-keepalive.service 2>/dev/null || true
-sudo systemctl disable --now qwen38-dashboard.service 2>/dev/null || true
-sudo systemctl disable --now qwen38-image.service 2>/dev/null || true
-sudo systemctl disable --now opencode-web.service 2>/dev/null || true
-docker rm -f qwen38-sglang qwen38-sglang-run qwen38-flash 2>/dev/null || true
-sudo rm -f /etc/systemd/system/qwen38-sglang.service /etc/systemd/system/qwen38-flash.service /etc/systemd/system/qwen38-keepalive.service /etc/systemd/system/qwen38-dashboard.service /etc/systemd/system/qwen38-image.service /etc/systemd/system/opencode-web.service
-sudo rm -rf /etc/systemd/system/qwen38-sglang.service.d /etc/systemd/system/qwen38-dashboard.service.d /etc/systemd/system/qwen38-keepalive.service.d
-# The cockpit's privileged surface goes with it: a NOPASSWD allowlist left behind
-# after an uninstall is the one leftover that is not merely clutter.
-sudo rm -f /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler
+# What only root can remove, asked for only when some of it is there. A --no-service box has
+# none of it and is the one made for boxes without sudo: sudo was called anyway, and the
+# first refusal ended this script under set -e before it removed any of the user's own files
+# (found in review, 2026-09-24). Refused, the services are left running and untouched, since
+# a container removed under a unit that keeps running is started again by systemd.
+PRIV_DONE=0
+if [ "$PRIV" -eq 1 ]; then
+  if sudo -v; then
+    for u in qwen38-sglang qwen38-flash qwen38-keepalive qwen38-dashboard qwen38-image opencode-web; do
+      sudo systemctl disable --now "$u.service" 2>/dev/null || true
+    done
+    docker rm -f qwen38-sglang qwen38-sglang-run qwen38-flash 2>/dev/null || true
+    sudo rm -f "$SYSTEMD_DIR/qwen38-sglang.service" "$SYSTEMD_DIR/qwen38-flash.service" "$SYSTEMD_DIR/qwen38-keepalive.service" "$SYSTEMD_DIR/qwen38-dashboard.service" "$SYSTEMD_DIR/qwen38-image.service" "$SYSTEMD_DIR/opencode-web.service"
+    sudo rm -rf "$SYSTEMD_DIR/qwen38-sglang.service.d" "$SYSTEMD_DIR/qwen38-dashboard.service.d" "$SYSTEMD_DIR/qwen38-keepalive.service.d"
+    # The cockpit's privileged surface goes with it: a NOPASSWD allowlist left behind
+    # after an uninstall is the one leftover that is not merely clutter.
+    sudo rm -f "$SUDOERS_FILE" "$PYSPY_WRAPPER"
+    sudo systemctl daemon-reload
+    PRIV_DONE=1
+  else
+    echo "NOTE: sudo was refused, so the services, their units and the cockpit's sudoers entry stay,"
+    echo "      running as they were. Re-run ./uninstall.sh where sudo works to remove them."
+  fi
+else
+  docker rm -f qwen38-sglang-run 2>/dev/null || true      # ./run.sh's foreground engine, if one was left
+fi
 # The image lane's runtime is the user's, not root's: no sudo, and the 31 GB checkpoint
 # stays in the HF cache with every other checkpoint, which this script reports separately.
 # Only what install-image.sh put there (venv/ and sglang/): IMAGE_LANE_DIR can be a
 # directory shared with other work, and removing it whole took the rest with it (found in
 # review, 2026-09-24). The directory itself goes only once it is empty.
-if [ -d "$IMAGE_LANE_DIR" ]; then
+# Left alone when sudo was refused: the image lane may still be running from it.
+if [ -d "$IMAGE_LANE_DIR" ] && { [ "$PRIV" -eq 0 ] || [ "$PRIV_DONE" -eq 1 ]; }; then
   rm -rf "$IMAGE_LANE_DIR/venv" "$IMAGE_LANE_DIR/sglang"
   rmdir "$IMAGE_LANE_DIR" 2>/dev/null || echo "kept $IMAGE_LANE_DIR: it holds files the image lane did not put there"
 fi
-sudo systemctl daemon-reload
 # The oc launcher, only if it is ours (never a foreign oc binary)
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
   rm -f "$HOME/.local/bin/oc"
 fi
-if [ "$FOUND_ANY" -eq 1 ]; then
+if [ "$PRIV_DONE" -eq 1 ]; then
   echo "services removed."
-else
-  echo "no service of this repo was installed: nothing to stop or remove."
+elif [ "$PRIV" -eq 0 ]; then
+  echo "no service of this repo was installed: nothing to stop or remove there."
 fi
 
-if [ "$PURGE_CONFIG" -eq 0 ] && [ -t 0 ]; then
+# Nor the config, whose API key the services still running read.
+if [ "$PRIV" -eq 1 ] && [ "$PRIV_DONE" -eq 0 ]; then
+  PURGE_CONFIG=0; KEPT_SAID=1
+  echo "config kept at ~/.config/qwen38: the services still running read the API key in it."
+elif [ "$PURGE_CONFIG" -eq 0 ] && [ -t 0 ]; then
   read -r -p "Also delete ~/.config/qwen38 (API key, patched templates, compile cache)? opencode's config then loses this box's providers. [y/N] " ans
   { [ "${ans:-n}" = "y" ] || [ "${ans:-n}" = "Y" ]; } && PURGE_CONFIG=1 || true
 fi
@@ -195,10 +228,14 @@ if [ "$PURGE_CONFIG" -eq 1 ]; then
   # the first of them under set -e, a thousand "Permission denied" lines in, before
   # the reclaim commands (reference box, 2026-09-23). What it cannot remove, sudo does.
   case "$CONFIG_DIR" in */.config/qwen38) ;; *) echo "refusing to delete $CONFIG_DIR" >&2; exit 1 ;; esac
-  rm -rf "$CONFIG_DIR" 2>/dev/null || sudo rm -rf --one-file-system "$CONFIG_DIR"
-  echo "config removed."
+  if rm -rf "$CONFIG_DIR" 2>/dev/null || sudo rm -rf --one-file-system "$CONFIG_DIR"; then
+    echo "config removed."
+  else
+    echo "NOTE: part of $CONFIG_DIR belongs to root (an engine's compile cache) and sudo was refused:"
+    echo "      remove it where sudo works: sudo rm -rf --one-file-system $CONFIG_DIR"
+  fi
 else
-  echo "config kept at ~/.config/qwen38 (delete manually or re-run with --yes)."
+  [ "${KEPT_SAID:-0}" -eq 1 ] || echo "config kept at ~/.config/qwen38 (delete manually or re-run with --yes)."
   for f in "${OC_USER_CFGS[@]}"; do
     if grep -qsF '.config/qwen38/api-key' "$f"; then
       echo "opencode's config ($f) still lists this box's providers: they answer again after ./install.sh."
@@ -225,10 +262,14 @@ if [ "$UNTAGGED" -eq 1 ]; then
   echo "  # never 'docker image prune' on this box: an image above with no tag looks dangling"
   echo "  # and prune deletes it (then a 30 GB re-pull before the lane reboots); ./install.sh tags them"
 fi
-for repo in $HF_REPOS; do
-  d="$HF_CACHE/hub/models--${repo//\//--}"
-  [ -d "$d" ] && echo "  $(rm_cmd "$d") '$d'    # $(dir_size "$d")"
-done
-for p in "${PLE_DIR:-}" "$HOME/flashnext-ple"; do
-  [ -n "$p" ] && [ -d "$p" ] && { echo "  $(rm_cmd "$p") '$p'    # $(dir_size "$p"), flash PLE backing file"; break; }
-done
+while IFS= read -r cache; do
+  for repo in $HF_REPOS; do
+    d="$cache/hub/models--${repo//\//--}"
+    if [ -d "$d" ]; then echo "  $(rm_cmd "$d") '$d'    # $(dir_size "$d")"; fi
+  done
+done <<< "$HF_CACHES"
+while IFS= read -r p; do
+  # an if, not an && list: as the last command of the script, a false test made the whole
+  # uninstall exit 1 on a box without a PLE folder
+  if [ -n "$p" ] && [ -d "$p" ]; then echo "  $(rm_cmd "$p") '$p'    # $(dir_size "$p"), flash PLE backing file"; fi
+done <<< "$PLE_DIRS"

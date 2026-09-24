@@ -53,6 +53,18 @@ VENV="$LANE_DIR/venv"
 SRC="$LANE_DIR/sglang"
 PORT="${IMAGE_PORT:-$(unit_flag --port)}"; PORT="${PORT:-30020}"
 MODEL="${IMAGE_MODEL:-$(unit_flag --model-path)}"; MODEL="${MODEL:-Qwen/Qwen-Image-2.1}"
+# The installed unit's cache, then the one the text lane mounts, then the default: an
+# update that ignored the unit downloaded 31 GB again into ~/.cache and rewrote HF_HOME on
+# a box whose lane lived on another disk, and a first install beside a text lane on a
+# custom cache put the checkpoint on the system disk (found in review, 2026-09-24).
+installed_env(){ { grep -m1 -E "^Environment=$1=" "$INSTALLED" 2>/dev/null || true; } | cut -d= -f3-; }
+TEXT_UNITS="${TEXT_UNITS:-/etc/systemd/system/qwen38-sglang.service $CONFIG_DIR/launch-flash.sh}"
+text_cache(){
+  # shellcheck disable=SC2086  # a list of paths
+  { grep -hoE -- '-v [^ :]+:/root/\.cache/huggingface' $TEXT_UNITS 2>/dev/null || true; } \
+    | head -1 | sed -e 's/^-v //' -e 's|:/root/\.cache/huggingface$||'
+}
+HF_CACHE="${HF_CACHE:-$(installed_env HF_HOME)}"; HF_CACHE="${HF_CACHE:-$(text_cache)}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 # Qwen-Image 2.1 is in no SGLang release. This is the commit the lane on the reference
 # box was measured against, end to end, on 2026-09-22. SGLANG_DIFFUSION_PIN overrides it
@@ -74,14 +86,33 @@ esac
 case "$IMAGE_BIND" in
   *[!0-9.]*|""|*..*) [ "$IMAGE_BIND" = localhost ] || die "IMAGE_BIND takes an IPv4 address, got: $IMAGE_BIND" ;;
 esac
-NEED_GB=42   # 31 weights + 7 runtime + margin for the pip build tree
+WEIGHTS_GB=31; RUNTIME_GB=11   # the checkpoint; the venv and checkout (7) and the pip build tree
 
 if [ "$ACTION" = uninstall ]; then
   step "Removing the image lane"
   if [ -f "$INSTALLED" ]; then
+    WAS_BOOT=0; systemctl is-enabled --quiet "$UNIT" 2>/dev/null && WAS_BOOT=1
     sudo systemctl disable --now "$UNIT" 2>/dev/null || true
     sudo rm -f "$INSTALLED"; sudo systemctl daemon-reload
     echo "unit removed"
+    # When the image lane was the box's lane at boot, the text lane it replaced was
+    # disabled by that switch: removing it left no engine at all, the next boot included,
+    # and said nothing (found in review, 2026-09-24). The lane before images comes back.
+    TEXT_ENABLED=0
+    for u in qwen38-sglang.service qwen38-flash.service; do
+      systemctl is-enabled --quiet "$u" 2>/dev/null && TEXT_ENABLED=1
+    done
+    if [ "$WAS_BOOT" -eq 1 ] && [ "$TEXT_ENABLED" -eq 0 ]; then
+      BACK="$(cat "$CONFIG_DIR/lane-before-image" 2>/dev/null || true)"
+      if [ -n "$BACK" ] && [ -f "/etc/systemd/system/$BACK" ]; then
+        sudo systemctl enable "$BACK"
+        echo "the text lane $BACK is enabled at boot again, as it was before the image lane;"
+        echo "start it now with: sudo systemctl start $BACK   (or the cockpit)"
+      else
+        echo "NOTE: no engine is enabled at boot any more. Start a text lane from the cockpit, or:"
+        echo "      sudo systemctl enable --now qwen38-sglang.service"
+      fi
+    fi
   fi
   # Only what this script put there: LANE_DIR can be a directory shared with other work,
   # and removing it whole took the rest with it (found in review, 2026-09-24).
@@ -101,13 +132,28 @@ command -v nvidia-smi >/dev/null || die "nvidia-smi not found: this needs the NV
 command -v git >/dev/null || die "git is required (stock on DGX OS)."
 python3 -c 'import venv' 2>/dev/null || die "python3-venv is missing. Fix: sudo apt-get install -y python3-venv"
 [ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key. Run ./install.sh first: the cockpit is the authenticated door in front of this lane, and it reads that file."
-FREE_GB=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
-HAVE_WEIGHTS=0
-[ -d "$HF_CACHE/hub/models--${MODEL//\//--}" ] && HAVE_WEIGHTS=1
-WANT=$NEED_GB; [ "$HAVE_WEIGHTS" -eq 1 ] && WANT=11
-[ "${FREE_GB:-0}" -ge "$WANT" ] \
-  || die "$FREE_GB GB free on \$HOME, this needs about $WANT GB (31 for the checkpoint, 7 for the runtime, the rest for the build). Free some space, or point HF_CACHE at a bigger disk."
-echo "OK: $(uname -m), $FREE_GB GB free, key present, checkpoint $([ $HAVE_WEIGHTS -eq 1 ] && echo 'already cached' || echo 'to download')"
+# Measured where each part lands, not under $HOME (install.sh had fixed the same bug):
+# the checkpoint goes to HF_CACHE, the runtime and its build to the lane's folder. What the
+# cache already holds comes off the checkpoint's share, by bytes: the folder alone said
+# nothing, since huggingface_hub creates it before the first byte (found in review,
+# 2026-09-24).
+existing(){ local p="$1"; while [ ! -e "$p" ]; do p="$(dirname "$p")"; done; printf '%s\n' "$p"; }
+free_gb(){ { df -BG --output=avail "$(existing "$1")" 2>/dev/null || true; } | tail -1 | tr -dc '0-9'; }
+HAVE_B="$({ du -s --apparent-size -B1 "$HF_CACHE/hub/models--${MODEL//\//--}/blobs" 2>/dev/null || true; } | cut -f1)"
+# what is left, in whole GB (a complete 30.86 GiB checkpoint is 0 left, not 1)
+WEIGHTS_NEED=$(( (WEIGHTS_GB * 1073741824 - ${HAVE_B:-0}) / 1073741824 )); [ "$WEIGHTS_NEED" -ge 0 ] || WEIGHTS_NEED=0
+FREE_W="$(free_gb "$HF_CACHE")"; FREE_R="$(free_gb "$LANE_DIR")"
+if [ "$(stat -c %d "$(existing "$HF_CACHE")")" = "$(stat -c %d "$(existing "$LANE_DIR")")" ]; then
+  WANT=$((WEIGHTS_NEED + RUNTIME_GB))
+  [ "${FREE_W:-0}" -ge "$WANT" ] \
+    || die "${FREE_W:-?} GB free on the disk of $HF_CACHE and $LANE_DIR, this needs about $WANT GB ($WEIGHTS_NEED for the checkpoint, $RUNTIME_GB for the runtime and its build). Free some space, or point HF_CACHE or IMAGE_LANE_DIR at a bigger disk."
+else
+  [ "${FREE_W:-0}" -ge "$WEIGHTS_NEED" ] \
+    || die "${FREE_W:-?} GB free under HF_CACHE=$HF_CACHE, the checkpoint needs about $WEIGHTS_NEED GB more. Free some space, or point HF_CACHE at a bigger disk."
+  [ "${FREE_R:-0}" -ge "$RUNTIME_GB" ] \
+    || die "${FREE_R:-?} GB free under $LANE_DIR, the runtime and its build need about $RUNTIME_GB GB. Free some space, or point IMAGE_LANE_DIR at a bigger disk."
+fi
+echo "OK: $(uname -m), key present, checkpoint $([ "$WEIGHTS_NEED" -eq 0 ] && echo 'already cached' || echo "$WEIGHTS_NEED GB to download") into $HF_CACHE"
 
 step "2/6 Runtime ($LANE_DIR)"
 mkdir -p "$LANE_DIR"

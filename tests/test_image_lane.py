@@ -177,9 +177,12 @@ class TheInstaller(unittest.TestCase):
         self.assertIn("--no-deps", text, "the editable overlay must not re-resolve dependencies")
 
     def test_it_checks_for_room_before_downloading_31_gb(self):
+        # where the checkpoint lands, before the download step (the behaviour itself is
+        # in test_image_lane_install_paths.py)
         text = INSTALLER.read_text()
         self.assertIn("df -BG", text)
-        self.assertIn("FREE_GB", text)
+        check = text.index('FREE_W="$(free_gb "$HF_CACHE")"')
+        self.assertLess(check, text.index('step "4/6 Checkpoint'))
 
     def test_an_unknown_option_is_refused_rather_than_ignored(self):
         code, out = self.run_it("--wat")

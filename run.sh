@@ -80,7 +80,7 @@ done
 for PAIR in "$MODEL_REPO=$MODEL_REV" "$DRAFT2_REPO=$DRAFT2_REV"; do
   REPO="${PAIR%%=*}"; REV="${PAIR#*=}"
   CHK_OUT="$(python3 "$REPO_DIR/patch-yarn.py" --check "$HF_CACHE" "$REPO" "$REV" 2>&1)" \
-    || { printf '%s\n' "$CHK_OUT" >&2; die "checkpoint $REPO is YaRN-patched for 1M context (details above). With a backup present, restore the native configs with: CONTEXT_MODE=native $PREP --no-start"; }
+    || { printf '%s\n' "$CHK_OUT" >&2; die "checkpoint $REPO is YaRN-patched for 1M context (details above). With a backup present, restore the native configs with: CONTEXT_MODE=native $PREP"; }
 done
 docker image inspect "$SERVE_IMAGE" >/dev/null 2>&1 || die "serving image $SERVE_IMAGE not built. Run: $PREP"
 

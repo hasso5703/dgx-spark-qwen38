@@ -48,8 +48,9 @@ def run(snippet, d, **names):
 
 class BothPathsRemoveOnlyTheLane(unittest.TestCase):
     CASES = (
-        ("uninstall.sh", lambda: removal(UNINSTALL, 'if [ -d "$IMAGE_LANE_DIR" ]; then'),
-         lambda d: {"IMAGE_LANE_DIR": d}),
+        # since v1.18.7 it also waits for the units to be gone (PRIV_DONE), or for there to be none
+        ("uninstall.sh", lambda: removal(UNINSTALL, 'if [ -d "$IMAGE_LANE_DIR" ] && '),
+         lambda d: {"IMAGE_LANE_DIR": d, "PRIV": "0", "PRIV_DONE": "0"}),
         ("install-image.sh --uninstall", lambda: removal(INSTALL_IMAGE, 'if [ -d "$LANE_DIR" ]; then'),
          lambda d: {"LANE_DIR": d, "VENV": f"{d}/venv", "SRC": f"{d}/sglang"}),
     )

@@ -255,6 +255,20 @@ fi
 
 # 1) checkpoint in cache (docker + pinned image python, same as install.sh step 4)
 printf '\n\033[1;36m── Verifying/downloading %s @ %s (resumable)\033[0m\n' "$TARGET_REPO" "$TARGET_REV"
+# Room first, as install.sh does: a cockpit button can start this, and a download that
+# fills the disk under a serving engine is a failure of everything on it, while the old
+# message blamed an HF_TOKEN (found in review, 2026-09-24). What the cache already holds
+# for the target comes off the lane's need (install.sh's numbers: 45 GB for a 27B
+# checkpoint and its caches, 180 for flash).
+DL_REPO_CACHE="$HF_CACHE/hub/models--${TARGET_REPO//\//--}"
+dl_free_gb(){ local p="$HF_CACHE"; while [ ! -e "$p" ]; do p="$(dirname "$p")"; done
+              { df -BG --output=avail "$p" 2>/dev/null || true; } | tail -1 | tr -dc '0-9'; }
+DL_NEED_GB=45; [ "$TARGET_LANE" = "flash" ] && DL_NEED_GB=180
+DL_HAVE_B="$({ du -s --apparent-size -B1 "$DL_REPO_CACHE/blobs" 2>/dev/null || true; } | cut -f1)"
+DL_NEED_GB=$((DL_NEED_GB - ${DL_HAVE_B:-0} / 1073741824)); [ "$DL_NEED_GB" -ge 10 ] || DL_NEED_GB=10
+DL_FREE_GB="$(dl_free_gb)"
+[ "${DL_FREE_GB:-0}" -ge "$DL_NEED_GB" ] \
+  || die "not enough room for $TARGET_REPO under HF_CACHE=$HF_CACHE: ${DL_FREE_GB:-?} GB free, about $DL_NEED_GB GB needed (nothing was changed). Free some space first."
 DL_TOKEN_ARGS=()
 [ -n "${HF_TOKEN:-}" ] && DL_TOKEN_ARGS=(-e HF_TOKEN="$HF_TOKEN")
 # --init: the cockpit stops a switch that overruns its job timeout with a TERM to the
@@ -268,7 +282,7 @@ docker run --rm -i --init --network host --user "$(id -u):$(id -g)" \
   -e MODEL_REPO="$TARGET_REPO" -e MODEL_REV="$TARGET_REV" \
   "${DL_TOKEN_ARGS[@]}" \
   -v "$HF_CACHE":/hf \
-  "$DL_IMAGE" - <<'PYEOF' || die "download failed (re-run to resume; HuggingFace throttles unauthenticated downloads, set HF_TOKEN=<your token> if it stalls)"
+  "$DL_IMAGE" - <<'PYEOF' || die "download failed ($(dl_free_gb) GB left under $HF_CACHE; if that is near 0 the disk filled up, otherwise re-run to resume: HuggingFace throttles unauthenticated downloads, set HF_TOKEN=<your token> if it stalls)"
 import os
 import time
 from huggingface_hub import constants, snapshot_download
@@ -327,7 +341,14 @@ PYEOF
 if [ "$TARGET_LANE" = "27b" ] && grep -q -- '--context-length 1010000' "$TARGET_UNIT"; then
   python3 "$REPO_DIR/patch-yarn.py" "$HF_CACHE" "$TARGET_REPO" "$TARGET_REV" || die "YaRN patch failed"
 elif [ "$TARGET_LANE" = "27b" ]; then
-  echo "unit does not use the 1M context flag; skipping the YaRN patch"
+  # A native unit crashes at load on a YaRN-patched config, and a target this box served
+  # while it was in 1m keeps its patch in the cache after the box went back to native
+  # (install.sh restores the target it installs, not the others). So the target's config
+  # is restored here, idempotently; the restore refuses, before the unit is touched, when
+  # a patched config lost its backup (found in review, 2026-09-24).
+  echo "unit does not use the 1M context flag: restoring the target's native config if it carries YaRN"
+  python3 "$REPO_DIR/patch-yarn.py" --restore "$HF_CACHE" "$TARGET_REPO" "$TARGET_REV" \
+    || die "the target's config carries the 1M YaRN patch and could not be restored (the switch was NOT applied to the unit yet)"
 fi
 
 # 2b) regenerate the patched chat template FROM the target's own snapshot.

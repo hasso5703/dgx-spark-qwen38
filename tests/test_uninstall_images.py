@@ -60,7 +60,8 @@ def run(tagged, old=False):
     base = next(ln for ln in text.splitlines() if ln.startswith("BASE_IMAGES="))
     local = next(ln for ln in text.splitlines() if ln.startswith("LOCAL_IMAGE_REPOS="))
     tail_start = text.index('echo "To also reclaim disk space')
-    tail = text[tail_start:text.index("for repo in $HF_REPOS; do", tail_start)]
+    # up to the weights, which are read per cache since v1.18.7 (a loop over the caches)
+    tail = text[tail_start:text.index("while IFS= read -r cache; do", tail_start)]
     t = pathlib.Path(tempfile.mkdtemp(prefix="un-img-"))
     (t / "docker").write_text(FAKE_DOCKER)
     (t / "docker").chmod(0o755)

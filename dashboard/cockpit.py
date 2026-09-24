@@ -1486,7 +1486,11 @@ ACTIONS = {
         "params": {"target": ["stock", "uncensored", "fp8", "uncensored-fp8",
                               "flash", "flash-nvda", "flash-uncensored", "image"]},
         "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"]],
-        "timeout": 1800,
+        # A switch can download a whole checkpoint: 124 GB for flash take about 23 min at
+        # the 89 MB/s the reference box gets, so 30 min failed it on any slower link, and
+        # the download went on after the job said "failed" (found in review, 2026-09-24).
+        # Past the timeout the job's whole process group is stopped (run_job).
+        "timeout": 7200,
     },
     # engine cache flush (harmless, engine-level)
     "flush_cache": {

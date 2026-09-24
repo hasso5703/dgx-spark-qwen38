@@ -12,7 +12,11 @@ curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get
 
 Once installed, a plain `./install.sh` keeps it and updates it. `./install-image.sh`
 installs or repairs it on its own, and `./install-image.sh --uninstall` removes the unit
-and the runtime (the checkpoint stays in your HF cache).
+and the runtime (the checkpoint stays in your HF cache); when the image lane was the one
+the box booted on, the text lane it replaced is enabled at boot again. The checkpoint goes
+to the cache the installed unit names (`HF_HOME`), else the one the text lane mounts, else
+`~/.cache/huggingface`, and `HF_CACHE=` picks another; the room it needs is measured on
+that disk and on the one the runtime goes to (`IMAGE_LANE_DIR`).
 
 ## A third lane, switched to like the other two
 

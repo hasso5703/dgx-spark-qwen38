@@ -220,6 +220,33 @@ your opencode config that reads the key, without which opencode refuses to start
 `oc` command at `~/.local/bin/oc` that is not this repo's launcher, OpenShift's CLI for one,
 was overwritten: it is left alone, and the command offered instead carries `OPENCODE_CONFIG`.
 
+**Switching, the image lane and uninstalling, on boxes that are not the reference one.**
+- A switch on a native 27B box restores the target's config when it still carries YaRN: a
+  target served while the box was in 1m kept its patch in the cache, and a native engine
+  crashes at load on it. The restore refuses, before the unit is touched, when the backup is
+  gone.
+- A switch checks for room before it downloads (a cockpit button can start one, and 126 GB
+  can fill a disk under a serving engine), says when a failed download is a full disk rather
+  than blaming HF_TOKEN, and the cockpit gives the job two hours instead of the 30 minutes a
+  flash download nearly takes on its own.
+- The lean level's default is kept: a box installed with `LEAN_DEFAULT=0` went back to lean
+  at its next `./install.sh` or Switch, and the refusal of an unknown level named "lean
+  (default)" whatever the default was.
+- `run.sh` offered `--no-service --no-start` to restore native configs, a pair
+  `install.sh` refuses.
+- `install-image.sh` reads the cache its unit serves from (an update on a box whose lane
+  lived on another disk downloaded 31 GB again into `~/.cache` and rewrote `HF_HOME`), and a
+  first install beside a text lane on a custom cache uses that cache; it measures space
+  where the checkpoint and the runtime land, not under `$HOME`, and counts what is cached by
+  bytes; and `--uninstall` on a box whose boot lane was the image enables the text lane it
+  had replaced again, instead of leaving no engine at all.
+- `uninstall.sh` lists and reclaims the weights and PLE file of every cache the lanes use,
+  not only the environment's. It asks for sudo only when there is something of root's to
+  remove: a box without sudo rights, the one `--no-service` is for, died at its first sudo
+  call before it removed anything of the user's. When sudo is refused the services are left
+  running and whole, the key they read included. It also exited 1 on a box without a PLE
+  folder, after a clean run.
+
 **A timed-out image call keeps the lane busy.** After its 30-minute read timeout the cockpit
 gave the image lock back while the runtime, which has no abort, went on generating, so a
 second image could start beside the first, the pair that held 90.5 GB and wedged the engine.
