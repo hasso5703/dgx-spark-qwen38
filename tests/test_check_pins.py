@@ -117,7 +117,9 @@ class TheCheckPins(unittest.TestCase):
         rc, out = self.run_pins({"no-registry-token": True}, None, "base")
         self.assertEqual(rc, 1, out)
         self.assertNotIn("all resolve", out)
-        self.assertEqual(sum("FAIL" in ln for ln in out.splitlines()), 3, out)
+        images = out.split("Images", 1)[1].split("\n\n", 1)[0].strip().splitlines()
+        self.assertTrue(images, out)
+        self.assertTrue(all("FAIL" in ln for ln in images), out)
 
     def test_a_deleted_image_fails(self):
         rc, out = self.run_pins({"registry-1.docker.io/v2/lmsysorg/sglang/manifests/sha256:d6e7": [404, ""]})

@@ -30,7 +30,7 @@ happens to exist.
 | flash-unc | dealignai/...-ABLITERATED-NVFP4 | not yet checked: verify both layers |
 | draft | RadixArk/Qwen3.8-27B-DSpark | not yet checked |
 | draft2 | maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal | not yet checked: verify both layers |
-| images (3) | lmsysorg/sglang@sha256:... | copied whole by digest: the Apache-2.0 SGLang images carry their license inside; keep it there |
+| images (2) | lmsysorg/sglang@sha256:... | copied whole by digest: the Apache-2.0 SGLang images carry their license inside; keep it there |
 
 No row is a conclusion until this table says one, with a date.
 
@@ -64,7 +64,7 @@ script compares the tag with the upstream revision file for file (name, size,
 content hash) and fails on any difference; a pin already tagged is compared
 and skipped, which makes the run resumable.
 
-An image pinned by digest is a multi-platform index (the three pinned here
+An image pinned by digest is a multi-platform index (the two pinned here
 each list amd64 and arm64 manifests). A `docker pull` and `docker push` carry
 only the platform of the machine that ran them, under that platform's digest,
 so an install pinned to the index digest would not find it on the mirror.

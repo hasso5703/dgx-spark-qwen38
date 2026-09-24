@@ -45,7 +45,7 @@ RC=0
 # asks upstream, this one asks the mirror; both read the one pin block).
 pins="$(grep -E '^(STOCK|UNC|FP8|UNCFP8|FLASH|FLASH_NVDA|FLASH_UNC|DRAFT|DRAFT2)_(REPO|REV)=' "$REPO_DIR/install.sh")"
 eval "$pins"
-img="$(grep -E '^(IMAGE|FLASH_IMAGE|OVERLAY_FLASH_BASE_IMAGE)=' "$REPO_DIR/install.sh")"
+img="$(grep -E '^(IMAGE|FLASH_IMAGE)=' "$REPO_DIR/install.sh")"
 eval "$img"
 
 # The conclusion MIRROR.md records for a pin, or nothing when its table has no row.
@@ -167,6 +167,5 @@ if [ "$MODE" != "--models" ]; then
   echo "Images"
   mirror_image "27b-base"     "$IMAGE"
   mirror_image "flash-base"   "$FLASH_IMAGE"
-  mirror_image "overlay-base" "$OVERLAY_FLASH_BASE_IMAGE"
 fi
 exit $RC

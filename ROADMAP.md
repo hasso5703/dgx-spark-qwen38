@@ -14,9 +14,10 @@ native context presets, four reasoning-effort levels with `lean` as the
 default, opencode out of the box, and the frozen benchmark battery (v1) that
 keeps every number in this repo comparable across years. **Both lanes now
 serve an official upstream image and this repo builds none by default**, which
-is the end of a long habit of carrying vendored engine files. `OVERLAY_FLASH=1`
-still rebuilds the flash lane's old local image: it is that lane's rollback, it
-stays CI-checked, and it is the only build path left.
+is the end of a long habit of carrying vendored engine files. The flash lane's
+old overlay (`OVERLAY_FLASH=1`) was retired in v1.18.7: the launcher of v1.8 on
+did not fit its image and nothing had booted the pair since, so its rollback is
+the release that shipped it whole, v1.7.2.
 
 ## Shipped this cycle: v1.13.0 and v1.14.0
 

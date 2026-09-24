@@ -140,7 +140,7 @@ class TheMirrorPins(unittest.TestCase):
         self.assertEqual(len(set(models)), 9, models)
         images = re.findall(r"^\s+mirror: (\S+@sha256:[0-9a-f]{64})", out, re.M)
         install = (REPO / "install.sh").read_text()
-        pinned = re.findall(r'^(?:IMAGE|FLASH_IMAGE|OVERLAY_FLASH_BASE_IMAGE)="(?:\$\{\w+:-)?[^"@]+@(sha256:[0-9a-f]{64})', install, re.M)
+        pinned = re.findall(r'^(?:IMAGE|FLASH_IMAGE)="(?:\$\{\w+:-)?[^"@]+@(sha256:[0-9a-f]{64})', install, re.M)
         self.assertEqual(sorted(i.split("@")[1] for i in images), sorted(pinned), out)
         self.assertEqual(self.calls(), [], "the plan wrote or called something")
 

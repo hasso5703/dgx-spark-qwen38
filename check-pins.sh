@@ -94,11 +94,10 @@ check_model dflash2-draft  "$DRAFT2_REPO"     "$DRAFT2_REV"
 check_model dspark-draft   "$DRAFT_REPO"      "$DRAFT_REV"
 
 echo "Images"
-img="$(grep -E '^(IMAGE|FLASH_IMAGE|OVERLAY_FLASH_BASE_IMAGE)=' "$REPO_DIR/install.sh")"
+img="$(grep -E '^(IMAGE|FLASH_IMAGE)=' "$REPO_DIR/install.sh")"
 eval "$img"
 check_image 27b-base       "$IMAGE"
 check_image flash-base     "$FLASH_IMAGE"
-check_image overlay-base   "$OVERLAY_FLASH_BASE_IMAGE"
 
 echo
 if [ "$FAIL" -eq 0 ]; then

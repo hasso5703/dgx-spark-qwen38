@@ -259,8 +259,8 @@ jobs:
         run: |
           n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|DRAFT2_QUANT|DRAFT2_TOKENS|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
           [ "$n" -eq 19 ] || { echo "run.sh pin contract broken: $n != 19"; exit 1; }
-          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
-          [ "$n" -eq 17 ] || { echo "switch-model.sh pin contract broken: $n != 17"; exit 1; }
+          n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
+          [ "$n" -eq 16 ] || { echo "switch-model.sh pin contract broken: $n != 16"; exit 1; }
           # This check must mirror the grep switch-model.sh actually runs, or a
           # renamed pin passes CI and breaks the switch at runtime. It did: the
           # four FP8 names were read by the script and guarded by nothing.
@@ -303,16 +303,10 @@ jobs:
           # default decided above the flags that have to shape it.
           [ -z "$CONTEXT_MODE" ] || { echo "CONTEXT_MODE must default to empty, got '$CONTEXT_MODE'"; exit 1; }
           grep -q 'CONTEXT_MODE=1m$' install.sh || { echo "install.sh no longer resolves a 1m default"; exit 1; }
-          PINS_F="$(grep -E '^(FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|OVERLAY_FLASH_BASE_IMAGE)=' install.sh)"
+          PINS_F="$(grep -E '^(FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE)=' install.sh)"
           eval "$PINS_F"
           [ "${#FLASH_REV}" -eq 40 ] || { echo "FLASH_REV is not a 40-char sha"; exit 1; }
           case "$FLASH_IMAGE" in *@sha256:*) ;; *) echo "FLASH_IMAGE is not digest-pinned"; exit 1 ;; esac
-          # The overlay's files were diffed against ONE base image. If the rollback
-          # ever builds on the image the lane serves by default, it grafts them
-          # onto a layout nobody checked them against.
-          case "$OVERLAY_FLASH_BASE_IMAGE" in *@sha256:*) ;; *) echo "OVERLAY_FLASH_BASE_IMAGE is not digest-pinned"; exit 1 ;; esac
-          [ "$OVERLAY_FLASH_BASE_IMAGE" != "$FLASH_IMAGE" ] || { echo "the flash overlay rollback must not build on the image the lane serves"; exit 1; }
-          grep -q 'BASE_IMAGE="$OVERLAY_FLASH_BASE_IMAGE"' install.sh || { echo "the flash overlay build no longer uses its pinned base"; exit 1; }
           # Every flash target must resolve to the flash lane, or install.sh would
           # render a 27B unit for a 126 GiB checkpoint.
           grep -qE '^ *flash\|flash-nvda\|flash-uncensored\) LANE=flash' install.sh \

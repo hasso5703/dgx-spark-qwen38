@@ -107,8 +107,9 @@ the previous N-gram table file so the next boot writes a fresh one (~12 min), an
 concurrent requests instead of 1. It also raises that lane's one-prompt ceiling from 128,000
 to 200,000 tokens and its opencode limits with it, so an agent client will start sending
 longer conversations: that is measured, not assumed (needle 3/3 at 120K and 1/1 at 200K, host
-memory floor 12.6 GiB). Rollback is `OVERLAY_FLASH=1 ./install.sh`, which rebuilds the v1.7
-image; the v1.7 image is kept on the box for exactly that. **27B boxes were untouched by
+memory floor 12.6 GiB). The rollback was `OVERLAY_FLASH=1 ./install.sh` until v1.18.7, which
+retired it (the launcher of v1.8 does not fit the v1.7 image); the v1.7 path shipped whole in
+v1.7.2. **27B boxes were untouched by
 v1.8**, on purpose at the time; v1.14 moved that lane to the official image too, after
 measuring both reasons it had stayed behind. Upgrading from v1.2.x also removes the deprecated Claude Code warmup drop-in if you had
 installed it, and no longer writes `claude-code.env`: an existing copy keeps working and will
