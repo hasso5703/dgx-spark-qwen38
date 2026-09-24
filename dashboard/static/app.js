@@ -707,7 +707,6 @@ function bootBlock(e, unit){
     : learned ? `about ${fmtDur(eta)} left (median of ${(e.boots || []).length} boots)`
     : `about ${fmtDur(eta)} left (measured on the reference box; this box learns its own)`));
   boot.append(lab);
-  if (e.rebuild) boot.append(el('div', 'why warn', 'the flash PLE table is being rebuilt: this boot takes about 12 minutes instead of 9'));
   if (e.overdue) boot.append(el('div', 'why warn', 'this boot is taking more than twice the usual time: check the Logs tab'));
   return boot;
 }
@@ -782,7 +781,7 @@ function rLifecycle(d){
       : e.state === 'failed' ? 'the unit failed: read its journal in the Logs tab, then start it again' : '';
     c.why.className = 'why' + (blocked || e.state === 'failed' || e.state === 'orphan' ? ' warn' : '');
     const boots = (e.boots || []).slice().reverse().map(fmtDur).join(', ');
-    let hist = !TRANSITIONAL.has(e.state) && boots ? 'last boots: ' + boots + ((e.boots_rebuild || []).length ? ` (with table rebuild: ${e.boots_rebuild.slice().reverse().map(fmtDur).join(', ')})` : '') : '';
+    let hist = !TRANSITIONAL.has(e.state) && boots ? 'last boots: ' + boots : '';
     // The KV pool this target won, boot after boot. It is a lottery and it sets
     // what the declared opencode limits can actually be served, so the spread is
     // the number to watch, not any single boot's.

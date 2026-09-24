@@ -1193,7 +1193,6 @@ def collect_lifecycle():
         if is_image and not IMAGE_UNIT_PATH.exists():
             continue                    # not installed: no card, no pill, no gate
         boot = {"stage": None, "fired_up": False, "done": []}
-        rebuild = False
         if is_image:
             st, boot, running = image_engine_state(
                 unit, active=active, sub=d.get("SubState", "?"), prev_state=prev.get(unit),
@@ -1251,8 +1250,7 @@ def collect_lifecycle():
                             and (UNHEALTHY_TICKS[unit] < 3 or progressing))
             st = lc.derive_state(unit_active=active, unit_sub=d.get("SubState", "?"),
                                  container_running=running,
-                                 healthy=(healthy or sticky_ready) and running, boot=boot,
-                                 rebuild=False)
+                                 healthy=(healthy or sticky_ready) and running, boot=boot)
             # degraded means "WAS serving, lost health", not "health probe has
             # not caught up yet": right after fired-up, stay warming-up unless
             # we had already reached ready in this activation.
@@ -1358,11 +1356,6 @@ def collect_lifecycle():
                     audit({"kind": "autoheal", "unit": unit, "code": code, "out": out})
             else:
                 WEDGED_SINCE.pop(unit, None)
-        if st["state"] in lc.TRANSITIONAL and running and not is_image:
-            jl = run(["journalctl", "-u", unit, "-n", "40", "--no-pager",
-                      "-o", "cat"], timeout=6).splitlines()
-            rebuild = lc.journal_flags(jl)["rebuild"]
-            st["rebuild"] = rebuild
         elapsed = None
         try:
             mono_us = int(d.get("ActiveEnterTimestampMonotonic", "0"))
@@ -1393,10 +1386,10 @@ def collect_lifecycle():
                 LAST_PROGRESS["ts"] = None
                 READY_SINCE.pop(unit, None)
             witnessed = LIFE["witnessed"].get(unit, False)
-        eta = lc.eta_for(history, unit, rebuild)
+        eta = lc.eta_for(history, unit)
         overdue = bool(eta and elapsed and st["state"] in lc.TRANSITIONAL
                        and elapsed > 2 * eta)
-        engines[unit] = {"state": st["state"], "rebuild": st.get("rebuild", False),
+        engines[unit] = {"state": st["state"],
                          **unit_target(unit),
                          "stage_done": boot.get("done", []),
                          # which stage list this engine walks, and what it is loading
@@ -1414,7 +1407,6 @@ def collect_lifecycle():
                          "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,
                          "eta": eta, "overdue": overdue,
                          "boots": history.get(unit, [])[-5:],
-                         "boots_rebuild": history.get(f"{unit}:rebuild", [])[-3:],
                          "pools": lc.pool_spread(history, unit, unit_target(unit).get("target"))}
         states[unit] = st["state"]
         # transitions: events + boot-duration learning
@@ -1423,7 +1415,7 @@ def collect_lifecycle():
             add_event("state", f"{unit.replace('.service', '')}: {was} \u2192 {st['state']}")
             if st["state"] == "ready" and elapsed and witnessed \
                     and was in lc.TRANSITIONAL:
-                history = lc.record_boot(history, unit, elapsed, rebuild)
+                history = lc.record_boot(history, unit, elapsed)
                 if is_image:
                     # It has no KV pool, and ENGINE_BASE is the text lane's port: reading
                     # a pool here would record the wrong engine's, or nothing.
