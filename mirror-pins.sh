@@ -47,6 +47,10 @@ pins="$(grep -E '^(STOCK|UNC|FP8|UNCFP8|FLASH|FLASH_NVDA|FLASH_UNC|DRAFT|DRAFT2)
 eval "$pins"
 img="$(grep -E '^(IMAGE|FLASH_IMAGE)=' "$REPO_DIR/install.sh")"
 eval "$img"
+# the image lane's checkpoint, pinned in install-image.sh like the rest (check-pins.sh
+# reads the same lines)
+lane="$(grep -E '^(IMAGE_MODEL_PIN|IMAGE_MODEL_PIN_REV)=' "$REPO_DIR/install-image.sh")"
+eval "$lane"
 
 # The conclusion MIRROR.md records for a pin, or nothing when its table has no row.
 license_of() {  # $1 label
@@ -162,6 +166,7 @@ if [ "$MODE" != "--images" ]; then
   mirror_model "flash-unc"  "$FLASH_UNC_REPO"  "$FLASH_UNC_REV"
   mirror_model "draft"      "$DRAFT_REPO"      "$DRAFT_REV"
   mirror_model "draft2"     "$DRAFT2_REPO"     "$DRAFT2_REV"
+  mirror_model "qwen-image" "$IMAGE_MODEL_PIN" "$IMAGE_MODEL_PIN_REV"
 fi
 if [ "$MODE" != "--models" ]; then
   echo "Images"
