@@ -31,5 +31,27 @@ class TheCockpitsRootIsStatedAsItIs(unittest.TestCase):
             self.assertIn("runs what it says as root", FLAT)
 
 
+class WhatLeavesTheBoxIsStatedAsItIs(unittest.TestCase):
+    """Three sentences of SECURITY.md were false: the update check ran "at most once every
+    six hours" (a failure retries after a minute), downloads went only to Hugging Face and
+    the image registry (GitHub too), and every pinned byte was hash-verified with nothing
+    said of the image lane's unpinned pip dependencies (found in review, 2026-09-24)."""
+
+    def test_github_is_named_while_install_sh_downloads_from_it(self):
+        if "https://github.com/anomalyco/opencode/releases" in (REPO / "install.sh").read_text():
+            self.assertIn("the pinned opencode release", FLAT)
+
+    def test_the_retry_schedule_is_the_code_s(self):
+        ck = (REPO / "dashboard" / "cockpit.py").read_text()
+        if "min(60.0 * 2 ** max(0, _RELEASE[\"fails\"] - 1), 21600.0)" in ck:
+            self.assertNotIn("at most once every six hours", FLAT)
+            self.assertIn("retried after one minute, then two, four, eight", FLAT)
+
+    def test_the_image_lanes_unpinned_bytes_are_named(self):
+        img = (REPO / "install-image.sh").read_text()
+        if "--require-hashes" not in img:
+            self.assertIn("pip resolves the wheel's dependency tree from PyPI", FLAT)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

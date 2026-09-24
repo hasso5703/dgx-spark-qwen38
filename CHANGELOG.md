@@ -507,6 +507,17 @@ showed the last lines of the engine's container and journal as they were, while 
 ServerArgs line at boot carries the serving key: the key is masked there as the
 diagnostics bundle masks it.
 
+**Three smaller holes before the cockpit's login.** A key with non-ASCII in it ended the
+login's handler thread (`compare_digest` refuses such a str) before the attempt was counted
+or audited, and a NUL in a static path did the same (`resolve()` raises): both are answered
+now. The limit of five failed logins a minute was counted after the reply, so a burst of
+simultaneous attempts was judged far past it (40 of 40 in a test): an attempt is counted
+before it is judged, under a lock, and given back when it succeeds. And SECURITY.md said the
+update check ran at most once every six hours (a failure retries after a minute), that
+downloads go to Hugging Face and the image registry (GitHub too: the clone and the pinned
+opencode), and that every byte is pinned and hash-verified, with nothing said of the image
+lane, whose pip dependencies are resolved from PyPI unpinned.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash

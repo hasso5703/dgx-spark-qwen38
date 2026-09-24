@@ -2577,6 +2577,7 @@ def registry_snapshot(max_age: float = 300.0) -> dict:
         REGISTRY_CACHE.update(ts=time.time(), data=data)
         return data
 LOGIN_FAILS: dict[str, list] = {}
+LOGIN_LOCK = threading.Lock()
 
 
 def make_token(kind: str) -> str:
@@ -2762,12 +2763,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({"error": "auth"}, 401)
         raw = self.rfile.read(length) if length else b""
         if path == "/api/login":
-            # Rate limit: after 5 failures from one address, lock 60 s.
+            # Rate limit: after 5 failures from one address, lock 60 s. The attempt is counted
+            # before it is judged, under a lock, and given back when it succeeds: counted after
+            # its reply, 200 attempts at once had 107 judged and 5 counted (found in review,
+            # 2026-09-24).
             ip = self.client_address[0]
             now = time.time()
-            fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 60]
-            if len(fails) >= 5:
+            with LOGIN_LOCK:
+                fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 60]
+                locked = len(fails) >= 5
+                if not locked:
+                    fails.append(now)
                 LOGIN_FAILS[ip] = fails
+            if locked:
                 return self.send_json({"error": "too many attempts, wait a minute"}, 429)
             # Shape before content: a body that is valid JSON but not an object
             # ({"key": null}, [], "x", 5) used to reach .get() and compare_digest()
@@ -2782,23 +2790,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(key, str):
                 key = ""
             expected = api_key()
-            if not (expected and hmac.compare_digest(key, expected)):
-                fails.append(now)
-                LOGIN_FAILS[ip] = fails
+            # as bytes: compare_digest raises on a str with non-ASCII in it, and {"key": "é"}
+            # ended the thread before the attempt was counted or audited (found in review,
+            # 2026-09-24)
+            if not (expected and hmac.compare_digest(key.encode("utf-8", "replace"), expected.encode())):
                 audit({"kind": "login_fail", "ip": ip})
                 return self.send_json({"error": "bad key"}, 403)
-            if True:
-                tok = make_token("sess")
-                body = json.dumps({"ok": True}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Set-Cookie",
-                                 f"cockpit={tok}; HttpOnly; SameSite=Strict; Path=/")
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            return self.send_json({"error": "bad key"}, 403)
+            with LOGIN_LOCK:
+                try:
+                    LOGIN_FAILS[ip].remove(now)
+                except (KeyError, ValueError):
+                    pass
+            tok = make_token("sess")
+            body = json.dumps({"ok": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Set-Cookie",
+                             f"cockpit={tok}; HttpOnly; SameSite=Strict; Path=/")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if not self.authed():
             return self.send_json({"error": "auth"}, 401)
         # CSRF: any mutating POST must echo the token bound to the session.
@@ -2830,6 +2842,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "/favicon.ico": "favicon.svg"}.get(path)
         if name is None and path.startswith("/static/"):
             name = path[len("/static/"):]
+        if name and "\x00" in name:
+            # an embedded NUL makes resolve() raise, before the session check (found in
+            # review, 2026-09-24)
+            return self.send_json({"error": "not found"}, 404)
         target = (STATIC_DIR / (name or "")).resolve()
         # by path components: a string prefix let a sibling such as static.bak/ pass for
         # this directory, served with no session (found in review, 2026-09-24)

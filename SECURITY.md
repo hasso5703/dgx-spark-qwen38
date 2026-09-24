@@ -10,13 +10,15 @@ through an exact-argv sudo allowlist, and a relay, installed with the cockpit
 when opencode is there, that puts opencode's web interface behind the cockpit
 login. There is no telemetry and no
 phone-home: every byte that leaves the box is a download the installer names
-(Hugging Face, the image registry) or a request you sent. One exception, added in
-v1.15.2 and named here because it is one: the cockpit asks GitHub's public releases
-endpoint, at most once every six hours, whether a newer release exists, so that a box
-running an old version is told rather than left to find out. It sends nothing but the
+(Hugging Face, the image registry, and GitHub: the one-liner's clone and the pinned
+opencode release) or a request you sent. One exception, added in v1.15.2 and named here
+because it is one: the cockpit asks GitHub's public releases endpoint whether a newer
+release exists, so that a box running an old version is told rather than left to find
+out. Once it has an answer it asks again six hours later; a check that fails is retried
+after one minute, then two, four, eight and so on up to six hours. It sends nothing but the
 cockpit's version in a `User-Agent`, it reads a public URL that needs no credential, and
 `COCKPIT_UPDATE_CHECK=0` turns it off, after which the cockpit says nothing about
-releases at all. A check that fails backs off instead of retrying. That includes the typed
+releases at all. That includes the typed
 decisions route (`POST /v1/systemone`, v6.19): it speaks the wire contract of a hosted
 service, and it is answered by the engine on this box and nothing else; the proxy
 calls no address but its upstream.
@@ -112,8 +114,11 @@ names, header hygiene) are property-tested.
 
 **The installer (`install.sh`, `dashboard/install-*.sh`)** runs things you
 sudo. Every pinned byte is hash-verified: images by digest, checkpoints by
-pinned revision, vendored overlay files by sha256 manifest (a modified
-overlay refuses to build). The engine enforces `--api-key` (the file is
+pinned revision, the opencode release by its sha256. The image lane
+(`--with-image`) is the one part with unpinned bytes: its SGLang wheel and source
+commit are pinned, but pip resolves the wheel's dependency tree from PyPI at install
+time, with no hash checked, and its checkpoint is downloaded at the repo's current
+revision rather than a pinned one. The engine enforces `--api-key` (the file is
 created 0600) and the chat template and launcher are regenerated from the
 repo on every install.
 
