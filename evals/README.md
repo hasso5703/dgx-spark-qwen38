@@ -20,7 +20,9 @@ so `run_eval --eval-name gsm8k` is fine.
 `openaipublic` dataset the old path used. `humaneval.py` runs the official
 openai/human-eval tree with the multiprocessing start method set to `spawn`, and one
 sample per task instead of the harness default of five: at temperature 0 those five
-are the same answer five times.
+would mostly repeat one answer, not always (this engine is not batch-invariant: LEAN.md
+measured two distinct outputs in five identical greedy calls), so a score carries the
+noise of one greedy sample per task.
 
 ## Running them
 
@@ -29,11 +31,15 @@ containing `'score': <value>`. The engine must already be up.
 
 ```bash
 KEY="$(cat ~/.config/qwen38/api-key)"
+# The image the serving lane runs, already on the box and pinned by digest. :latest
+# pulled another 30 GB image, of an engine these numbers were never measured on.
+IMG="$(docker inspect -f '{{.Config.Image}}' qwen38-flash 2>/dev/null \
+       || docker inspect -f '{{.Config.Image}}' qwen38-sglang)"
 
 # MMLU, 500 questions
 docker run --rm --network host -e OPENAI_API_KEY="$KEY" \
   -v "$PWD/evals/mmlu.py":/d.py:ro --entrypoint python3 \
-  lmsysorg/sglang:latest /d.py qwen3.8-flash-next 500 32
+  "$IMG" /d.py qwen3.8-flash-next 500 32
 
 # HumanEval, 164 problems, pass@1. Fetch the official tree first (pinned), and
 # mount it read only: it executes model-generated code, so nothing else of this
@@ -42,7 +48,7 @@ curl -sL https://github.com/openai/human-eval/archive/6d43fb980f9fee3c892a914eda
   | tar -xz && mv human-eval-6d43fb98* /tmp/human-eval
 docker run --rm --network host -e OPENAI_API_KEY="$KEY" -e PYTHONPATH=/he \
   -v /tmp/human-eval:/he:ro -v "$PWD/evals/humaneval.py":/d.py:ro \
-  --entrypoint python3 lmsysorg/sglang:latest /d.py qwen3.8-flash-next 164 32
+  --entrypoint python3 "$IMG" /d.py qwen3.8-flash-next 164 32
 ```
 
 Replace `qwen3.8-flash-next` with `qwen3.8-27b` for the 27B lane, and add a fourth

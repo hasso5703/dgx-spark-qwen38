@@ -130,5 +130,31 @@ class EvalDrivers(unittest.TestCase):
             self.assertIn("'score':", out)
 
 
+
+class TheReadme(unittest.TestCase):
+    def test_the_commands_run_the_image_the_lane_serves(self):
+        """They ran lmsysorg/sglang:latest, a 30 GB pull of an engine nothing was measured
+        on (found in review, 2026-09-24): the image comes from the running container."""
+        text = (REPO / "evals" / "README.md").read_text()
+        block = text.split("```bash", 1)[1].split("```", 1)[0]
+        self.assertNotIn("sglang:latest", block)
+        runs = [c for c in block.split("docker run")[1:]]
+        self.assertEqual(len(runs), 2, block)
+        for cmd in runs:
+            self.assertIn('"$IMG" /d.py', cmd)
+        self.assertIn("docker inspect -f '{{.Config.Image}}' qwen38-flash", block)
+        self.assertIn("docker inspect -f '{{.Config.Image}}' qwen38-sglang", block)
+
+    def test_no_claim_that_greedy_samples_are_identical(self):
+        """LEAN.md measured two distinct outputs in five identical temperature-0 calls; the
+        driver and this README said the five were the same answer (found in review,
+        2026-09-24)."""
+        self.assertIn("two distinct outputs", (REPO / "LEAN.md").read_text())
+        for f in ("evals/humaneval.py", "evals/README.md"):
+            text = " ".join((REPO / f).read_text().split())
+            self.assertNotIn("five are the same answer", text, f)
+            self.assertNotIn("the same answer five times", text, f)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
