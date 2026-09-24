@@ -23,6 +23,7 @@ import http.client
 import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -144,11 +145,62 @@ class Unauthenticated(Base):
         st, _, _ = self.req("POST", "/api/csrf", {})
         self.assertEqual(st, 401)
 
-    def test_every_other_api_route_is_closed(self):
-        for path in ("/api/registry", "/api/recipes", "/api/upstream", "/api/events",
-                     "/api/jobs", "/api/config", "/api/systemone"):
-            st, _, _ = self.req("GET", path)
-            self.assertIn(st, (401, 404), f"{path} answered {st} with no session")
+    # The routes are read from the handler, so a route added later is swept too. The list
+    # this replaces named three routes that do not exist (/api/events, /api/jobs and
+    # /api/config), took a 404 for a pass, and never asked for /api/stream, which sends the
+    # whole state: moving it above the session check stayed green (found in review,
+    # 2026-09-24).
+    PUBLIC_GET = {"/api/health", "/login", "/favicon.ico", "/static/"}
+    PUBLIC_POST = {"/api/login"}
+
+    def routes(self, handler, until):
+        """(checked before the session gate, checked after it) in one handler's source."""
+        src = (DASH / "cockpit.py").read_text()
+        start = src.index(f"    def {handler}(self")
+        body = src[start:src.index(f"    def {until}(self", start)]
+        gate = body.index("        if not self.authed():")
+        def found(text):
+            out = set(re.findall(r'path(?: == |\.startswith\()"(/[^"]*)"', text))
+            for group in re.findall(r'path in \(([^)]*)\)', text):
+                out.update(re.findall(r'"(/[^"]*)"', group))
+            return out
+        return found(body[:gate]), sorted(found(body[gate:]))
+
+    def status(self, method, path):
+        """The status, and the body only when it is the refusal (a stream never ends)."""
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            c.request(method, path, b"{}" if method == "POST" else None,
+                      {"Content-Type": "application/json"} if method == "POST" else {})
+            r = c.getresponse()
+            return r.status, (r.read() if r.status == 401 else b"")
+        finally:
+            c.close()
+
+    def test_only_the_public_routes_come_before_the_session_check(self):
+        before, _ = self.routes("do_GET", "do_POST")
+        self.assertEqual(before, self.PUBLIC_GET)
+        before, _ = self.routes("do_POST", "serve_static")
+        self.assertEqual(before - {"/api/image/edit", "/api/image/generate"}, self.PUBLIC_POST)
+
+    def test_every_route_behind_the_session_check_refuses_without_one(self):
+        _, get = self.routes("do_GET", "do_POST")
+        _, post = self.routes("do_POST", "serve_static")
+        self.assertIn("/api/stream", get, "the sweep no longer reads the handler it tests")
+        self.assertIn("/api/action", post)
+        for method, paths in (("GET", get), ("POST", post)):
+            for path in paths:
+                if path == "/":
+                    continue                                  # the login page, below
+                target = path + "x" if path.endswith("/") else path
+                st, body = self.status(method, target)
+                self.assertEqual(st, 401, f"{method} {target} answered {st} with no session")
+                self.assertEqual(json.loads(body)["error"], "auth", f"{method} {target}")
+
+    def test_the_root_without_a_session_is_the_login_page(self):
+        st, _, page = self.req("GET", "/")
+        self.assertEqual(st, 200)
+        self.assertEqual(page, (DASH / "static/login.html").read_bytes())
 
 
 class AStalledReaderDoesNotHoldTheState(Base):
