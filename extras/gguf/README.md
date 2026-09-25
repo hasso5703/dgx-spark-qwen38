@@ -24,7 +24,7 @@ temperature 0), llama.cpp tuned with its MTP draft against the SGLang lane:
 | Reasoning (FR) | 27.5 | 41-44 |
 | Free prose EN / FR / DE | 17.7 / 18.2 / 18.0 | 22 / 20 / 17 |
 
-Raw file: [`bench-matrix-llamacpp.json`](../../bench-matrix-llamacpp.json), and the same
+The raw `bench-matrix-llamacpp.json` stayed on the reference box (the repo ignores `bench-matrix-*.json`), and the same
 comparison in context in [BENCHMARKS.md](../../BENCHMARKS.md). Prefill is the other half of the gap, and the one an agent loop
 feels first: the repo's three-way comparison puts the SGLang speculative path about **3x**
 ahead of the stable-MTP engines it was measured against, llama.cpp among them.
@@ -61,7 +61,7 @@ on llama.cpp, pinned the same way this one pins SGLang (one llama.cpp commit, on
 one checksum-verified flag set, 145,408 tokens of context in 16 GB of VRAM). It targets a
 consumer GPU rather than a Spark, so the offload recipe is not transferable, but the
 pinning discipline and the flag reasoning are. The keepalive proxy in this repo is SGLang-shaped (it speaks to `/abort_request`,
-`/get_server_info` and `/tokenize`) and is not meant to sit in front of llama.cpp.
+`/server_info`, `/tokenize` and `/v1/messages/count_tokens`) and is not meant to sit in front of llama.cpp.
 
 ## Would a GGUF lane be added here?
 

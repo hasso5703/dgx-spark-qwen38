@@ -45,6 +45,11 @@ sudo systemctl edit qwen38-dashboard    # [Service] Environment=COCKPIT_BIND=0.0
 sudo systemctl restart qwen38-dashboard
 ```
 
+That moves the page only. The Agent tab's relay keeps its own address,
+`COCKPIT_AGENT_BIND`, which a re-run of `dashboard/install-agent.sh` keeps too: set it in
+the same drop-in (`Environment=COCKPIT_AGENT_BIND=tailscale`, or an address), or re-run
+that script with `AGENT_BIND=`.
+
 ## What it looks like
 
 ![The cockpit's Overview tab: KV pool held, the serving lane with its model, revision, context window and image, unified memory with the driver-refusal counter, and the event stream](img/cockpit-overview.png)
@@ -145,7 +150,8 @@ to see one was curl. The tab is the console for it, and it exercises the whole c
 
 - **five prefilled examples**, one per shape the endpoint is actually used for: routing a
   support ticket, choosing an agent's next tool, moderating a comment, extracting a field,
-  and an eight-option choice that pushes past the single-letter labels
+  and an eight-option choice, the likely cause of an engine crash (labelled A to H: the
+  labels only turn to two letters past 26 options)
 - **an editor for all three question types**, with options and levels you can add and remove,
   so a question you are about to put in production can be tried before it is
 - **the answer drawn as the distribution it is**: a bar per option, the pick and its
@@ -162,11 +168,13 @@ cockpit, and the cockpit calls the proxy with the key it already holds; a test a
 body naming its own path or upstream changes neither. Availability is probed rather than
 assumed, so a box whose proxy predates v6.19 is told why instead of looking broken.
 
-**Image** and **Video** are next to it and say Coming soon, which is the honest state of both.
+**Image** is next to it: since v1.18.0 it drives Qwen-Image 2.1, the third lane, when that lane
+serves (generation, editing with up to ten references, native RGBA; see
+[docs/image-lane.md](image-lane.md)). **Video** says Coming soon, which is its honest state.
 
 ## Being told there is a newer version
 
-A box that runs an old release does not know it. The answer existed from v1.5 in the
+A box that runs an old release does not know it. The answer existed from v1.6 in the
 Models tab, printed after a button press, which means it reached whoever already
 suspected there was news. Since v1.15.2 the cockpit volunteers it: every six hours it
 asks GitHub whether a newer release is published, and if there is one the banner strip
@@ -240,8 +248,11 @@ Two pieces land, and the shape is the security model:
   `~/.config/qwen38/opencode-web.env` (mode 0600). Nothing else ever reaches it,
   and the password never leaves the box. The unit carries your PATH and the same
   output-token cap as the `oc` launcher, so long thinking is not cut at 32,000.
-- **The relay** inside the cockpit process listens on ONE address, the tailnet
-  address by default (`AGENT_BIND=`, port `AGENT_PORT=30091`), never on the LAN.
+- **The relay** inside the cockpit process listens on ONE address (port
+  `AGENT_PORT=30091`). Installed without `AGENT_BIND=`, that is the tailnet address
+  when the cockpit binds every interface or the tailnet, loopback when the cockpit
+  is on loopback, and the cockpit's own address otherwise, so a cockpit bound to a
+  LAN address puts the relay on the LAN too; `AGENT_BIND=` sets any other.
   It answers a request only with a valid cockpit session cookie, refuses any
   foreign `Origin`, strips the cookie before forwarding, adds the credentials,
   and streams everything back: plain answers, the event stream, the WebSocket of

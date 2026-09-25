@@ -1,13 +1,18 @@
 # Flash-Next SGLang overlay: provenance and licenses
 
-Since v1.5 the flash target serves on SGLang (the same engine as the 27B pair).
-The official `lmsysorg/sglang:qwen38flashnext` image cannot serve the model on a
-single GB10 box as shipped: the 51B N-gram (PLE) table wants ~48 GiB of pinned
-host RAM the box cannot spare, and the QSA sparse-decode resolver rejects
-sm_121, which sends decode to a fallback kernel that does not compile there.
-`install.sh` (MODEL_CHOICE=flash) builds the serving image locally: the pinned
+This directory is a record. The overlay the first sections describe served the
+flash lane from v1.5 to v1.7; v1.8 replaced it with an official image (the last
+section), and since v1.18.7 nothing builds it (`OVERLAY_FLASH=1` is refused, and
+v1.7.2 ships the whole overlay path). CI still checks `MANIFEST.sha256`.
+
+From v1.5 the flash target served on SGLang (the same engine as the 27B pair).
+The official `lmsysorg/sglang:qwen38flashnext` image could not serve the model on a
+single GB10 box as shipped: the 51B N-gram (PLE) table wanted ~48 GiB of pinned
+host RAM the box cannot spare, and the QSA sparse-decode resolver rejected
+sm_121, which sent decode to a fallback kernel that does not compile there.
+`install.sh` (MODEL_CHOICE=flash) built the serving image locally: the pinned
 official base plus the two sha256-verified files in this directory.
-`MANIFEST.sha256` is checked before every build.
+`MANIFEST.sha256` was checked before every build.
 
 The two files are the image's own modules with two small patches applied, by
 [hashd1ve](https://github.com/hashd1ve/qwen38-flash-next-one-dgx-spark)
@@ -25,8 +30,9 @@ with house punctuation, AST-verified; 2 more in the 2026-09-03 KDA revision of
   window (measured upstream: ~560x less disk traffic per token). On GB10's
   coherent CPU-GPU memory the gather kernel dereferences the pageable pointer
   directly; the table never has to be resident. Without the env var the file
-  behaves exactly like upstream. The ~48 GiB backing file is written once at
-  first boot and reused afterwards.
+  behaves exactly like upstream. The ~48 GiB backing file was written once at
+  first boot and reused afterwards (since v1.8 the launcher deletes it before
+  every boot, and its comments say why).
 - `qwen_sparse_attn_backend.py` (patch 2, "QSA decode on sm_121"): two resolver
   edits. The decode gate widens from `is_sm100_supported()` to
   `is_sm100_supported() or is_sm120_supported()`, unblocking FlashInfer's
@@ -43,8 +49,8 @@ with house punctuation, AST-verified; 2 more in the 2026-09-03 KDA revision of
   after verifying the dispatcher module exists in the pinned image. When an
   official image ships with that PR merged, this overlay can shrink to patch 1.
 
-Why the serving flags look the way they do (carried in
-`qwen38-flash-launch.sh.template`, guarded by CI):
+Why the serving flags of that launcher looked the way they did (the v1.5 to v1.7
+`qwen38-flash-launch.sh.template`; the flags of v1.8 are in the last section):
 
 - `--prefill-attention-backend triton --decode-attention-backend trtllm_mha`:
   the combined `--attention-backend trtllm_mha` is refused (prefill side is
@@ -236,7 +242,8 @@ Why the serving flags changed, and why some of ours did not survive:
   to what the mamba pool admits, while `/get_server_info` still reports the
   value you asked for. Requests x slots is what makes a tier deliver the
   concurrency it advertises.
-- `--max-running-requests` went from **1 to 8**. One was a memory decision taken
+- `--max-running-requests` went from **1 to 4** on the default `context` tier (8 on
+  `concurrency`, 24 on `throughput`). One was a memory decision taken
   when the table was pinned in the same pool as the weights; with the table out
   of memory entirely there is room for the cookbook's pins.
 - `--max-total-tokens 190000` is **gone**: it pinned the pool against the

@@ -36,8 +36,10 @@ state it in one line, and proceed. If you notice yourself checking something
 twice, or weighing the same options again, stop there and commit.
 ```
 
-74 words. It lives in exactly one place, `LEAN_INSTRUCTIONS` in
-`patch-template.py`, and a test fails if a copy appears anywhere else.
+74 words. The code holds it in one place, `LEAN_INSTRUCTIONS` in
+`patch-template.py` (this page quotes it), and a test fails if a copy appears in
+the four scripts that install or serve it: `install.sh`, `run.sh`,
+`switch-model.sh` and the proxy.
 
 ## Public benchmarks: 364 problems, published scoring
 
@@ -69,9 +71,10 @@ saving.
 ## OpenReq: 58 underspecified requests, 1,218 runs
 
 HumanEval and GSM8K contain no request with two defensible readings, which is
-the only shape that makes this model spiral. `openbench.py` in the research
-directory holds 58 that do, across six families (implement, refactor, review,
-choose, debug, design), every prompt published verbatim. Three repeats each.
+the only shape that makes this model spiral. `openbench.py`, in the research notes
+kept on the reference box and not in this repository, holds 58 that do, across six
+families (implement, refactor, review, choose, debug, design), each prompt written
+out in full. Three repeats each.
 
 | | thinking tokens | median s | usable answer | empty answer | truncated |
 |---|---|---|---|---|---|
@@ -88,7 +91,7 @@ Paired bootstrap over the 58 requests, 90% intervals:
 | usable answers | +1.1 pts [-2.3, +4.6] | **+17.2 pts** [+10.9, +24.1] |
 
 The token ratio and the falsification criterion were written down before these
-runs (`PREREGISTER_OPENREQ.md` in the research directory): false if the ratio's
+runs (`PREREGISTER_OPENREQ.md`, in the same research notes, not in this repository): false if the ratio's
 upper bound exceeded 0.5 or usable answers lost more than 10 points. Neither
 happened.
 
@@ -170,7 +173,7 @@ A 557-problem held-out set (MBPP sanitized 257 + 300 GSM8K questions drawn with
 a different seed and filtered against the design questions, overlap verified 0)
 with a five-arm protocol including an identical twin of `medium` as a null
 control, to measure what the apparatus reports as a difference when there is
-none. The protocol is written in the research directory. It was not run. Until
+none. The protocol is written in those research notes, not in this repository. It was not run. Until
 it is, the quality statement rests on the 364 public problems and the 58
 underspecified ones, which is what the tables above say.
 

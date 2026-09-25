@@ -1,6 +1,6 @@
 # Benchmarks: methodology, full results, and how to reproduce them
 
-Everything here was measured on one ASUS Ascent GX10 (GB10, 128 GB unified, stock DGX OS) on 2026-08-14/15 (v1.0-v1.1 sections) and 2026-08-19/20 (v1.2, the boot-lottery campaign), plus independent reproductions by other GB10 owners. Speeds are **batch-1 decode**; quality was verified identical to a Q8 reference on a deterministic battery (code, logic, language, instruction following); speculative decoding is lossless by construction (the verify step only ever accepts tokens the target model would have emitted).
+Everything here was measured on one ASUS Ascent GX10 (GB10, 128 GB unified, stock DGX OS) between 2026-08-14 and 2026-09-21, each section under its own date and version (2026-08-14/15 for the v1.0-v1.1 sections, 2026-08-19/20 for v1.2's boot-lottery campaign), plus independent reproductions by other GB10 owners. Speeds are **batch-1 decode**; quality was verified identical to a Q8 reference on a deterministic battery (code, logic, language, instruction following); speculative decoding is lossless by construction (the verify step only ever accepts tokens the target model would have emitted).
 
 ## Headline numbers (same box, same day)
 
@@ -85,7 +85,7 @@ Practical reading:
 | Free prose (FR) | 13 | **20.8** | 18.2-18.4 |
 | Free prose (DE) | 12.3 | **18.8** | 17-18 |
 
-Ranges are two independent runs each; the SGLang+MTP column uses the checkpoint's own MTP head (`--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4`, acceptance 3.2-3.6 of 4 drafted measured) with every other flag identical to this repo's service; credit to [MiaAI-Lab's repo](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark) for surfacing that option (their repo also documents a GDN state-pool sizing recipe for 10 concurrent requests and a validated YaRN 1M-context setup, worth reading if you serve multiple users; note it ships `--mem-fraction-static 0.95`, which on GB10 unified memory is exactly the freeze trap described above: use 0.50).
+Ranges are two independent runs each; the SGLang+MTP column uses the checkpoint's own MTP head (`--speculative-algorithm EAGLE --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4`, acceptance 3.2-3.6 of 4 drafted measured) with every other flag identical to this repo's service; credit to [MiaAI-Lab's repo](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark) for surfacing that option (their repo also documents a GDN state-pool sizing recipe for 10 concurrent requests and a validated YaRN 1M-context setup, worth reading if you serve multiple users; note it ships `--mem-fraction-static 0.95`, which on GB10 unified memory is exactly the freeze trap described above: this repo serves 0.50 at the native window and 0.76 in its 1M unit, see [the memory trap](docs/gb10-memory.md)).
 
 Adopted from that comparison into this repo's service (validated on this box: single-stream unchanged at 27.9/13.9 code/prose, 8 truly concurrent streams confirmed in the scheduler logs, aggregate 108.9 tok/s, KV pool slightly larger): `--mamba-radix-cache-strategy extra_buffer_lazy --mamba-ssm-dtype bfloat16 --max-mamba-cache-size 96 --max-running-requests 8`: the GDN state pool no longer silently clamps concurrency at ~6, and bf16 SSM states halve the per-slot memory.
 
@@ -520,8 +520,8 @@ image, against the same `openaipublic` dataset the old path used, and HumanEval 
 official openai/human-eval tree (pinned at `6d43fb98`) with the multiprocessing start
 method set to `spawn`, one sample per task instead of the harness default of five (at
 temperature 0 those five are the same answer five times). GSM8K needed none of this: its
-path in the image still runs in process. Both drivers are ~50 lines and live outside the
-repo; the two quirks above are what they exist for.
+path in the image still runs in process. Both drivers are ~50 lines and live in `evals/`
+(`mmlu.py`, `humaneval.py`); the two quirks above are what they exist for.
 
 So the lane keeps `flash` as its default. Not because the other one is worse,
 which nothing here shows, but because the only measurement outside the noise
@@ -704,6 +704,8 @@ through latency below.
 
 ### The four labeled tasks
 
+| target | n | accuracy [95% CI] | ECE-10 | Brier | log loss (floor 0.005) | mean top p | over-confidence | latency p50 / p95 | input tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | jev | 3270 | 0.9187 [0.9092, 0.9281] | 0.0243 | 0.0643 | 0.2266 | 0.8971 | -0.0215 | 0.612s / 0.787s | 1415745 |
 | ours-perm2 | 3270 | 0.8927 [0.8817, 0.9028] | 0.0120 | 0.0816 | 0.2781 | 0.8898 | -0.0028 | 0.796s / 0.992s | 1694270 |
 | ours | 3270 | 0.8670 [0.8547, 0.8786] | 0.0470 | 0.1055 | 0.3757 | 0.9024 | +0.0354 | 0.434s / 0.550s | 847135 |
@@ -714,6 +716,8 @@ accuracy differences: Jev minus raw +5.2 pts [+4.2, +6.2]; Jev minus two orders 
 on the other half: raw T 1.50 takes ECE 5.0% to 2.7%; two orders fit T 1.00 (already calibrated,
 ECE 1.4% on that half); Jev fits T 0.85 (it is under-confident) and goes 2.6% to 1.3%.
 
+| target | n | accuracy [95% CI] | ECE-10 | Brier | log loss (floor 0.005) | mean top p | over-confidence | latency p50 / p95 | input tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | jev | 1000 | 0.8380 [0.8140, 0.8620] | 0.0720 | 0.1212 | 0.5932 | 0.8097 | -0.0283 | 0.616s / 0.884s | 560475 |
 | ours-perm2 | 1000 | 0.6210 [0.5890, 0.6500] | 0.0421 | 0.1701 | 1.1394 | 0.5974 | -0.0236 | 0.994s / 1.444s | 652148 |
 | ours | 1000 | 0.5810 [0.5510, 0.6110] | 0.0833 | 0.1841 | 1.2554 | 0.6643 | +0.0833 | 0.541s / 0.730s | 326074 |
@@ -726,6 +730,8 @@ Per category, raw against Jev: biology 0.896 / 0.979, psychology 0.852 / 0.869, 
 0.597 / 0.819, history 0.571 / 0.743, engineering 0.556 / 0.802, math 0.485 / 0.883, physics
 0.478 / 0.823, law 0.471 / 0.745, chemistry 0.451 / 0.861, business 0.414 / 0.724.
 
+| target | n | accuracy [95% CI] | ECE-10 | Brier | log loss (floor 0.005) | mean top p | over-confidence | latency p50 / p95 | input tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | jev | 500 | 0.7820 [0.7440, 0.8160] | 0.1216 | 0.1653 | 0.6325 | 0.8917 | +0.1097 | 0.615s / 0.838s | 230552 |
 | ours-perm2 | 500 | 0.7140 [0.6740, 0.7520] | 0.1584 | 0.1982 | 0.7681 | 0.8724 | +0.1584 | 0.819s / 0.859s | 259700 |
 | ours | 500 | 0.7120 [0.6720, 0.7500] | 0.1605 | 0.2054 | 0.8033 | 0.8725 | +0.1605 | 0.451s / 0.474s | 129850 |
@@ -735,6 +741,8 @@ change nothing here (+0.2 pts [-1.6, +2.2]): the over-confidence is the model's,
 position's. Temperature: raw T 2.05 takes ECE 15.0% to 4.5%; Jev itself fits T 1.70 and goes
 15.0% to 8.4%, its calibration does not travel to French either.
 
+| target | n | accuracy [95% CI] | ECE-10 | Brier | log loss (floor 0.005) | mean top p | over-confidence | latency p50 / p95 | input tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | jev | 500 | 0.8740 [0.8460, 0.9020] | 0.0370 | 0.0888 | 0.4066 | 0.8933 | +0.0193 | 0.616s / 0.799s | 240882 |
 | ours-perm2 | 500 | 0.7460 [0.7040, 0.7840] | 0.0434 | 0.1481 | 0.6955 | 0.7731 | +0.0271 | 0.773s / 1.126s | 265548 |
 | ours | 500 | 0.7300 [0.6920, 0.7680] | 0.0984 | 0.1594 | 0.7361 | 0.8212 | +0.0912 | 0.431s / 0.659s | 132774 |
@@ -1236,10 +1244,10 @@ neither drafter reproduces it exactly, and the large-n evals settle the practica
 - **Repeated text prompts** on llama.cpp with a separate `-hfd` draft model replay at chunked-verify speed: 203 tok/s measured on a prompt whose true cold rate was 25. SGLang+DSpark did not show this effect (repeats reproduce within ±0.2 tok/s), but fresh prompts are the only safe protocol for any speculative bench.
 - **The first request after a model load** pays one-time costs (mmap page-in, spec-path warmup) that poison both calls of a delta measurement; `bench-matrix.sh` burns a warmup call and flags any sample whose deltas are too small to trust (its own first version printed a 979 tok/s artifact before this guard existed).
 - **Short answers** (eval-style math) end before the second call's budget and break the two-call delta: measure those with streaming TTFT-separated timing instead (`bench.sh` does).
-- **Renamed streaming fields** silently start a streaming benchmark's clock late: vLLM ≥ 0.27 streams thinking tokens as `delta.reasoning` (SGLang: `reasoning_content`); a client that only recognizes one name times just the visible answer while `usage.completion_tokens` counts the whole generation, inflating tok/s by the think-to-answer ratio. Produced a reported 97 tok/s on a box whose wall-clock rate was 19.9 (issue #2); `bench.sh` fixed in `9cf6b20`, plus a warning above the DSpark block-7 physical ceiling (~90 tok/s here). Wall-clock delta methods (`bench-matrix.sh`) are immune.
+- **Renamed streaming fields** silently start a streaming benchmark's clock late: vLLM ≥ 0.27 streams thinking tokens as `delta.reasoning` (SGLang: `reasoning_content`); a client that only recognizes one name times just the visible answer while `usage.completion_tokens` counts the whole generation, inflating tok/s by the think-to-answer ratio. Produced a reported 97 tok/s on a box whose wall-clock rate was 19.9 (issue #2); `bench.sh` fixed in `9cf6b20`, plus a warning above the speculative physical ceiling (~90 tok/s here: the DSpark block-7 one when it was added, the block-8 draft's since, as `bench.sh` prints it). Wall-clock delta methods (`bench-matrix.sh`) are immune.
 - **Prefill benchmarks whose prompts share a prefix** (each shorter prompt being a prefix of the longer) replay cached KV instead of prefilling: RadixAttention reported 20,262 tokens in 0.202 s, roughly 100,000 tok/s, against a true cold rate of ~2,100 on the same box, a ~50x overstatement from a protocol that looks careful (measured and reported in issue #6). Prefill probes need mutually unrelated prompts.
 - **`eugr/llama-benchy` cannot drive this server**: it sends `return_token_ids=true` with `stream=true`, which SGLang rejects (HTTP 400), so every run fails and writes an empty result file (issue #6). `bench.sh` and `bench-matrix.sh` are the supported instruments.
 - **Omitting sampling parameters does not give you greedy.** When a client sends no temperature/top_p/top_k, both SGLang and vLLM silently adopt the checkpoint's `generation_config.json`; for both checkpoints this repo pins, that means temperature 1.0, top_k 20, top_p 0.95. Verified live here: two parameter-free requests diverge within 15 tokens. Pin sampling explicitly in every benchmark or comparison; `bench.sh` and `bench-matrix.sh` always send `temperature` (surfaced by issue #6).
 - **Multi-turn runs are not reproducible with RadixAttention on.** With the radix cache enabled, identical greedy multi-turn agentic runs diverged on 6 of 34 tasks in a third-party harness; speculation amplifies but does not cause it (3 of 34 without the drafter, 0 of 34 with radix off, either way). `--enable-deterministic-inference` removes the variance for about 11% throughput, and on GB10 it necessarily disables the radix cache as well: the radix-preserving deterministic backends do not run on sm121 (fa4 asserts out, triton fails during CUDA-graph capture). Reproducible multi-turn evals: use the flag. Prefix caching: accept run-to-run variance. Measured and reported by TravisMeyers in issue #6.
 
-Point-in-time note: all numbers are 2026-08-15, image `lmsysorg/sglang:qwen38-27b` (pull digest `febfb971c735…`, image ID `0076dffa60b7…`), checkpoints pinned in `install.sh`. Kernels for sm_121 are young; gaps will move with releases; that is exactly why everything here is pinned and the battery is frozen.
+Point-in-time note: the v1.0-v1.1 numbers are 2026-08-15, image `lmsysorg/sglang:qwen38-27b` (pull digest `febfb971c735…`, image ID `0076dffa60b7…`), checkpoints pinned in `install.sh`; every later section names its own date, image and pins (the 27B lane serves the official `v0.5.19` since v1.14, the flash lane `dev-qwen38-next-local` since v1.8). Kernels for sm_121 are young; gaps will move with releases; that is exactly why everything here is pinned and the battery is frozen.
