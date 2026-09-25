@@ -52,7 +52,15 @@ LANE_DIR="${IMAGE_LANE_DIR:-$(installed WorkingDirectory)}"; LANE_DIR="${LANE_DI
 VENV="$LANE_DIR/venv"
 SRC="$LANE_DIR/sglang"
 PORT="${IMAGE_PORT:-$(unit_flag --port)}"; PORT="${PORT:-30020}"
-MODEL="${IMAGE_MODEL:-$(unit_flag --model-path)}"; MODEL="${MODEL:-Qwen/Qwen-Image-2.1}"
+# The checkpoint and its revision, pinned like the rest: the revision this lane was
+# measured with on 2026-09-22 (its main then, and on 2026-09-24). It was fetched at main,
+# so a push upstream would have changed what a fresh install serves (found in review,
+# 2026-09-24). IMAGE_MODEL_REV overrides it; another IMAGE_MODEL is fetched at
+# IMAGE_MODEL_REV, or main.
+IMAGE_MODEL_PIN="Qwen/Qwen-Image-2.1"
+IMAGE_MODEL_PIN_REV="790c92633540aa0cb11d9abf19eb46d861714758"
+MODEL="${IMAGE_MODEL:-$(unit_flag --model-path)}"; MODEL="${MODEL:-Qwen/Qwen-Image-2.1}"   # = IMAGE_MODEL_PIN
+if [ "$MODEL" = "$IMAGE_MODEL_PIN" ]; then MODEL_REV="${IMAGE_MODEL_REV:-$IMAGE_MODEL_PIN_REV}"; else MODEL_REV="${IMAGE_MODEL_REV:-main}"; fi
 # The installed unit's cache, then the one the text lane mounts, then the default: an
 # update that ignored the unit downloaded 31 GB again into ~/.cache and rewrote HF_HOME on
 # a box whose lane lived on another disk, and a first install beside a text lane on a
@@ -248,23 +256,35 @@ assert "Qwen/Qwen-Image-2.1" in inspect.getsource(registry), "Qwen-Image-2.1 is 
 print(f"   runtime: {src}")
 PY
 
-step "4/6 Checkpoint ($MODEL, ~31 GB, one-time, resumable)"
+step "4/6 Checkpoint ($MODEL at ${MODEL_REV:0:12}, ~31 GB, one-time, resumable)"
 # The same two lessons the LLM lane learned the hard way: the Hub's Xet backend stalls
 # silently on this box (0-8 MB/s against 89 on the classic CDN), and an unauthenticated
 # pull gets throttled, so HF_TOKEN is passed through when it is set.
-HF_HOME="$HF_CACHE" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 MODEL_REPO="$MODEL" \
-  "$VENV/bin/python" - <<'PY' || die "checkpoint download failed. Causes: no internet, HuggingFace throttling an unauthenticated download (set HF_TOKEN=<your token>), or a permission error in the cache. Re-running resumes."
+HF_HOME="$HF_CACHE" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 MODEL_REPO="$MODEL" MODEL_REV="$MODEL_REV" \
+  "$VENV/bin/python" - <<'PY' || die "checkpoint download failed. Causes: no internet, HuggingFace throttling an unauthenticated download (set HF_TOKEN=<your token>), a pinned revision removed upstream (IMAGE_MODEL_REV=main serves the current one), or a permission error in the cache. Re-running resumes."
 import os, time
 from huggingface_hub import snapshot_download
-repo = os.environ["MODEL_REPO"]
+repo, rev = os.environ["MODEL_REPO"], os.environ["MODEL_REV"]
 for attempt in range(1, 5):
     try:
-        print(snapshot_download(repo), flush=True); break
+        path = snapshot_download(repo, revision=rev); print(path, flush=True); break
     except Exception as e:
         if attempt == 4:
             raise
         print(f"   attempt {attempt} stopped ({type(e).__name__}); resuming in 10 s", flush=True)
         time.sleep(10)
+# The unit serves the repo by name with HF_HUB_OFFLINE=1, which resolves refs/main, and a
+# download by commit writes no ref: main is pointed at the pinned commit, which is what
+# is served.
+sha = os.path.basename(path.rstrip("/"))
+ref = os.path.join(os.path.dirname(os.path.dirname(path.rstrip("/"))), "refs", "main")
+if len(sha) == 40 and sha == rev:
+    os.makedirs(os.path.dirname(ref), exist_ok=True)
+    old = open(ref).read().strip() if os.path.exists(ref) else ""
+    if old != sha:
+        with open(ref, "w") as f:
+            f.write(sha)
+        print(f"   refs/main -> {sha[:12]}" + (f" (was {old[:12]})" if old else ""), flush=True)
 PY
 
 step "5/6 Service"

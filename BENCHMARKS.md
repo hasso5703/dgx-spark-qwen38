@@ -681,7 +681,7 @@ target with missing rows. Datasets, all public, at pinned revisions:
 
 Metrics: accuracy (argmax, or P(yes) at 0.5), ECE with 10 equal-width bins on the
 selected answer's probability, Brier on that probability, log loss of the probability
-given to the gold answer (clipped at 1e-15), mean selected probability minus accuracy
+given to the gold answer (clipped at 0.005, half the hosted API's two-decimal resolution), mean selected probability minus accuracy
 as the over-confidence gap, 95% percentile bootstrap intervals (2,000 draws, seed 42),
 and between targets the share of identical verdicts, the mean total-variation distance
 between distributions, and the paired accuracy difference with its bootstrap interval.
@@ -807,9 +807,9 @@ The two-order lever halves the variance by averaging two readouts. SGLang has
 `--enable-deterministic-inference`, a lane flag with a throughput cost that this repo does not
 set; whether it removes the spread is a measurement for the lane's owner, not a default.
 
-### Fan-out and the cache (raw readout, warm-first send on, 3 repeats, cold then warm)
+### Fan-out and the cache (raw readout, warm-first send on, 3 repeats, first call then two more)
 
-| state chars (tokens) | questions | cold | warm 1 | warm 2 |
+| state chars (tokens) | questions | first call | repeat 1 | repeat 2 |
 |---:|---:|---:|---:|---:|
 | 2,000 (554) | 1 | 0.251 s | 0.210 s | 0.207 s |
 | 2,000 | 4 | 0.895 s | 0.503 s | 0.464 s |
@@ -835,9 +835,9 @@ is 554 or 10,799 tokens, which is the radix cache doing its job (over the probe 
 The same probe run again with the warm-first send off (`SYSTEMONE_WARM_CHARS` beyond reach),
 on the now-warm cache: 1 question 0.20 s, 4 questions 0.24 to 0.32 s, 13 questions 0.67 to 0.78 s,
 50 questions 2.5 to 3.3 s, that is 0.2 to 0.3 s less at every count: the extra round trip costs
-what it costs and buys nothing when the prefix is cached. The cold column above is only cold for
+what it costs and buys nothing when the prefix is cached. The first-call column above is only cold for
 the first row of each state size (the later rows had the state cached by the row before), and
-those later "cold" rows are erratic (10.7 s and 13.8 s for 4 and 13 questions on the 53.8k state,
+those later first calls are erratic (10.7 s and 13.8 s for 4 and 13 questions on the 53.8k state,
 5.9 s for 50): something other than the prefill (the mamba state cache of this hybrid
 architecture has 96 slots and checkpoints every 256 tokens, and a burst of 4 to 13 branches may
 not find its state) and the clean experiment is below. 

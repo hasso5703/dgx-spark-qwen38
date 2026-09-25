@@ -46,6 +46,14 @@ teardown() {
   $TC qdisc del dev "$IFB" root 2>/dev/null || true
 }
 
+# A step that fails ends the start, with what was set taken down again: without this the
+# script went on and said "active" over a shaper that was never installed (a refused sudo,
+# a kernel without sch_cake, a RATE_DOWN tc cannot read), and exited 0 (found in review,
+# 2026-09-24).
+must() {
+  "$@" || { echo "cake-ingress: failed: $*" >&2; teardown; exit 1; }
+}
+
 start() {
   [ -e "/sys/class/net/$IF" ] || { echo "cake-ingress: interface $IF does not exist" >&2; exit 1; }
   if [ -z "$RATE_DOWN" ]; then
@@ -53,17 +61,17 @@ start() {
     echo "  examples: 500 Mb/s link -> RATE_DOWN=475Mbit ; 1 Gb/s -> 950Mbit ; 2.5 Gb/s -> 2350Mbit" >&2
     exit 1
   fi
-  $MODPROBE ifb numifbs=1
-  $MODPROBE sch_cake
+  must $MODPROBE ifb numifbs=1
+  must $MODPROBE sch_cake
   $IP link add "$IFB" type ifb 2>/dev/null || true
-  $IP link set "$IFB" up
+  must $IP link set "$IFB" up
   teardown
   # all ingress of $IF is redirected to $IFB, where CAKE can shape it
-  $TC qdisc add dev "$IF" clsact
-  $TC filter add dev "$IF" ingress protocol all matchall \
+  must $TC qdisc add dev "$IF" clsact
+  must $TC filter add dev "$IF" ingress protocol all matchall \
       action mirred egress redirect dev "$IFB"
   # shellcheck disable=SC2086
-  $TC qdisc add dev "$IFB" root cake bandwidth "$RATE_DOWN" $CAKE_DOWN
+  must $TC qdisc add dev "$IFB" root cake bandwidth "$RATE_DOWN" $CAKE_DOWN
   echo "cake-ingress: active  $IF -> $IFB  at $RATE_DOWN  ($CAKE_DOWN)"
 }
 

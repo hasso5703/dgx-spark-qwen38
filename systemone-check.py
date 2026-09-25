@@ -341,6 +341,33 @@ def p(vals, q):
     return s[min(len(s) - 1, int(q * len(s)))]
 
 
+def hosted_parity(rep, base, key, hosted_key=HOSTED_KEY):
+    """Every shape, byte for byte, to the hosted Jev and to this box: the same status, the
+    same answer keys. It sent the first 6 of the 16, which leaves out every edge the
+    contract has (the caps, the one-option choice, the empty and the unicode option names),
+    and it skipped the whole section without a word when the key file was missing, so
+    --hosted could pass having sent nothing (found in review, 2026-09-24)."""
+    print("\nTHE SAME BYTES TO THE HOSTED JEV")
+    if not hosted_key.exists():
+        rep.check("the hosted comparison ran", [f"--hosted was asked for and there is no TypeSafe key at "
+                                                f"{hosted_key}: nothing was sent"])
+        return
+    hkey = hosted_key.read_text().strip()
+    for name, (state, questions) in shapes().items():
+        payload = {"state": state, "model": "jev-latest", "questions": questions}
+        hs, _hh, hb, _ = post(HOSTED, "/v1/systemone", payload, hkey)
+        os_, _oh, ob, _ = post(base, "/v1/systemone", payload, key)
+        bad = []
+        if hs != os_:
+            bad.append(f"hosted {hs}, here {os_}")
+        elif hs == 200:
+            for qid in questions:
+                ha, oa = (hb.get("answers") or {}).get(qid), (ob.get("answers") or {}).get(qid)
+                if set(ha or {}) != set(oa or {}):
+                    bad.append(f"{qid}: keys {sorted(ha or {})} vs {sorted(oa or {})}")
+        rep.check(f"same contract: {name}", bad)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -403,22 +430,8 @@ def main():
                 bad.append(f"answered as {body.get('model')!r}, not the lane {lane!r}")
             rep.check(f"{name} resolves to the lane and the answer says so", bad)
 
-        if args.hosted and HOSTED_KEY.exists():
-            print("\nTHE SAME BYTES TO THE HOSTED JEV")
-            hkey = HOSTED_KEY.read_text().strip()
-            for name, (state, questions) in list(shapes().items())[:6]:
-                payload = {"state": state, "model": "jev-latest", "questions": questions}
-                hs, _hh, hb, _ = post(HOSTED, "/v1/systemone", payload, hkey)
-                os_, _oh, ob, _ = post(base, "/v1/systemone", payload, key)
-                bad = []
-                if hs != os_:
-                    bad.append(f"hosted {hs}, here {os_}")
-                elif hs == 200:
-                    for qid in questions:
-                        ha, oa = (hb.get("answers") or {}).get(qid), (ob.get("answers") or {}).get(qid)
-                        if set(ha or {}) != set(oa or {}):
-                            bad.append(f"{qid}: keys {sorted(ha or {})} vs {sorted(oa or {})}")
-                rep.check(f"same contract: {name}", bad)
+        if args.hosted:
+            hosted_parity(rep, base, key)
 
         if args.levers:
             print("\nLEVERS, each on its own proxy")

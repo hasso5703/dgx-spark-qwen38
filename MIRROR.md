@@ -30,9 +30,14 @@ happens to exist.
 | flash-unc | dealignai/...-ABLITERATED-NVFP4 | not yet checked: verify both layers |
 | draft | RadixArk/Qwen3.8-27B-DSpark | not yet checked |
 | draft2 | maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal | not yet checked: verify both layers |
+| qwen-image | Qwen/Qwen-Image-2.1 | not yet checked |
 | images (2) | lmsysorg/sglang@sha256:... | copied whole by digest: the Apache-2.0 SGLang images carry their license inside; keep it there |
 
 No row is a conclusion until this table says one, with a date.
+
+`check-pins.sh` also watches three pins this script does not copy, since they live on
+GitHub and PyPI rather than on Hugging Face or a registry: the image lane's SGLang commit
+and its `sglang` wheel, and opencode's release asset with its digest.
 
 ## Where the mirror lives
 
@@ -71,9 +76,9 @@ so an install pinned to the index digest would not find it on the mirror.
 The script copies the index whole with `docker buildx imagetools create`, then
 asks the mirror for the pinned digest and fails when it does not answer it.
 
-Cost honesty: the nine checkpoint pins are 513 GB at their pinned revisions
+Cost honesty: the ten checkpoint pins are 546 GB at their pinned revisions
 (measured 2026-09-24: 106 GB for the four 27B checkpoints, 403 GB for the
-three flash ones, 4 GB for the two drafters), downloaded and uploaded again
+three flash ones, 4 GB for the two drafters, 33 GB for Qwen-Image), downloaded and uploaded again
 from whatever machine runs this, once to seed and once per re-pin. A cheap
 cloud box with fast egress does the seeding in hours instead of days, and the
 plan above is what you hand it.

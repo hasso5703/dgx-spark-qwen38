@@ -12,8 +12,12 @@ Four deterministic ordering tasks, greedy, thinking off, exactly one right answe
 each. The serial pass proves the model can do them at all; the concurrent pass is
 the measurement. Any gap between the two is the engine, not the model.
 
-  python3 conc-check.py                      # 60 serial, 304 at concurrency 8
+  python3 conc-check.py                      # 40 serial, 160 at concurrency 8
+  python3 conc-check.py --serial 60 --conc-n 304   # the size of the runs below
   python3 conc-check.py --conc 4 --conc-n 96
+
+Exit status: 0 when every answer was right, 1 when one was wrong or carried another
+request's answer, 3 when a request failed, so part of the run measured nothing.
 
 Measured on the reference box, 2026-09-03, both heads, DFlash2 x8 and
 --max-running-requests 8, on the 1M unit (fp8 KV, mem fraction 0.70, chunk 8192):
@@ -131,16 +135,17 @@ def run(n, conc, model, label, pad=0):
         print(f"      {verdict.upper()} [{name}] {got!r}")
     for e in errs[:3]:
         print(f"      ERR  {e}")
-    return wrong + contam, contam
+    return wrong + contam, contam, len(errs)
 
-if __name__ == "__main__":
+
+def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--serial", type=int, default=40)
     p.add_argument("--conc-n", type=int, default=160)
     p.add_argument("--conc", type=int, default=8)
     p.add_argument("--pad", type=int, default=0,
                    help="approximate filler tokens per request, unique to each request")
-    a = p.parse_args()
+    a = p.parse_args(argv)
     model = None
     for route in ("/model_info", "/get_model_info"):   # the old one is deprecated upstream
         try:
@@ -152,7 +157,14 @@ if __name__ == "__main__":
                 raise
     print(f"modele: {model}\n")
     tag = f", {a.pad} tokens de contexte propre" if a.pad else ""
-    b1, c1 = run(a.serial, 1, model, f"serie (c=1, n={a.serial}{tag})", a.pad)
-    b2, c2 = run(a.conc_n, a.conc, model, f"concurrent (c={a.conc}, n={a.conc_n}{tag})", a.pad)
+    b1, c1, e1 = run(a.serial, 1, model, f"serie (c=1, n={a.serial}{tag})", a.pad)
+    b2, c2, e2 = run(a.conc_n, a.conc, model, f"concurrent (c={a.conc}, n={a.conc_n}{tag})", a.pad)
     print(f"\nverdict: serie {b1} faux/contamines, concurrent {b2} faux/contamines, "
-          f"{c1 + c2} contamination(s) croisee(s)")
+          f"{c1 + c2} contamination(s) croisee(s)" + (f", {e1 + e2} requete(s) en erreur" if e1 + e2 else ""))
+    # The verdict is the exit status too: it exited 0 whatever it found, wrong answers,
+    # contamination and failed requests included (found in review, 2026-09-24).
+    return 3 if e1 + e2 else (1 if b1 + b2 else 0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

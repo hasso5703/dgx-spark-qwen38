@@ -136,8 +136,14 @@ class TheMirrorPins(unittest.TestCase):
         rc, out = self.run_mirror()
         self.assertEqual(rc, 0, out)
         models = re.findall(r"^\s+mirror: (\S+) @ upstream-", out, re.M)
-        self.assertEqual(len(models), 9, out)
-        self.assertEqual(len(set(models)), 9, models)
+        self.assertEqual(len(models), 10, out)       # nine text checkpoints and the image lane's
+        self.assertEqual(len(set(models)), 10, models)
+        # every checkpoint has its license row, and every row names a checkpoint the script copies
+        labels = re.findall(r"^  model\s+(\S+)$", out, re.M)
+        rows = [r for r in re.findall(r"^\| ([a-z0-9-]+) \| [^|]+ \| [^|]+ \|$", self.mirror_md.read_text(), re.M)
+                if r != "pin"]                      # the header row
+        self.assertEqual(sorted(labels), sorted(rows))
+        self.assertNotIn("no row in MIRROR.md", out)
         images = re.findall(r"^\s+mirror: (\S+@sha256:[0-9a-f]{64})", out, re.M)
         install = (REPO / "install.sh").read_text()
         pinned = re.findall(r'^(?:IMAGE|FLASH_IMAGE)="(?:\$\{\w+:-)?[^"@]+@(sha256:[0-9a-f]{64})', install, re.M)

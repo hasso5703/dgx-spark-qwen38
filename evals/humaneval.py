@@ -11,9 +11,11 @@ Two reasons this file exists rather than `run_eval --eval-name humaneval`:
    The start method is spawn here, which never forks. unsafe_execute is a module
    level function, so it pickles.
 
-Also one sample per task instead of the harness default of five: at temperature 0
-the five are the same answer, so they cost 5x the generations and measure pass@1
-anyway.
+Also one sample per task instead of the harness default of five, for pass@1 at a fifth
+of the generations. At temperature 0 the five would mostly be the same answer, not
+always: this engine is not batch-invariant, and LEAN.md measured two distinct outputs in
+five identical greedy calls. The score is one greedy sample per task, and carries that
+noise.
 """
 import multiprocessing
 # Usage: see evals/README.md (it runs inside the serving image, not on the host).

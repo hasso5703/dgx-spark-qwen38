@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import unittest
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -70,6 +71,17 @@ class Fake(http.server.BaseHTTPRequestHandler):
             return {"role": "assistant", "content": None,
                     "tool_calls": [call("get_weather", {"city": 3, "unit": 4,
                                                         "path": 3, "content": 5})]}
+        if mode == "empty":
+            # a call whose arguments came out empty: nothing can run it
+            return {"role": "assistant", "content": None,
+                    "tool_calls": [call("get_weather", "", as_json=False)]}
+        if mode in ("duplicate", "twocities") and "Oslo and in Bergen" in ask:
+            cities = ("Oslo", "Oslo") if mode == "duplicate" else ("Oslo", "Bergen")
+            return {"role": "assistant", "content": None,
+                    "tool_calls": [call("get_weather", {"city": c, "unit": "celsius"}) for c in cities]}
+        if mode in ("wrongb", "rightb") and "divided by 7" in ask:
+            return {"role": "assistant", "content": None,
+                    "tool_calls": [call("calculator", {"a": 4891, "b": 8 if mode == "wrongb" else 7, "op": "divide"})]}
         if mode == "always":
             return {"role": "assistant", "content": None,
                     "tool_calls": [call("get_weather", {"city": "Oslo", "unit": "celsius"})]}
@@ -89,6 +101,12 @@ class Fake(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
         ask = body["messages"][0]["content"]
+        if MODE[0] == "hang":
+            time.sleep(3)                   # past the probe's --timeout 1
+            return self._send(200, {"choices": []})
+        if MODE[0] == "reset":
+            self.close_connection = True    # the engine went away mid-request
+            return
         msg = self._message(ask)
         if msg is None:
             return self._send(400, {"error": {"message": "refused"}})
@@ -169,6 +187,35 @@ class ToolsCheck(unittest.TestCase):
         r = self.probe("refuse")
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertNotIn("TOOLS SUMMARY", r.stdout)
+
+    def case_line(self, out, name):
+        return next(ln for ln in out.splitlines() if name in ln)
+
+    def test_two_identical_calls_are_not_two_calls(self):
+        # found in review, 2026-09-24: Oslo asked twice passed the Oslo-and-Bergen case
+        bad = self.probe("duplicate")
+        self.assertIn("FAIL", self.case_line(bad.stdout, "two calls in one turn"), bad.stdout)
+        good = self.probe("twocities")
+        self.assertIn("ok", self.case_line(good.stdout, "two calls in one turn"), good.stdout)
+
+    def test_the_second_operand_is_checked(self):
+        bad = self.probe("wrongb")
+        self.assertIn("FAIL", self.case_line(bad.stdout, "the right tool out of two"), bad.stdout)
+        good = self.probe("rightb")
+        self.assertIn("ok", self.case_line(good.stdout, "the right tool out of two"), good.stdout)
+
+    def test_empty_arguments_are_not_well_formed(self):
+        r = self.probe("empty")
+        self.assertEqual(self.bucket(r.stdout, "well formed"), "0/12", r.stdout)
+
+    def test_an_engine_that_stops_answering_is_exit_3_not_a_traceback(self):
+        for mode, extra in (("hang", ["--timeout", "1"]), ("reset", [])):
+            MODE[0] = mode
+            r = subprocess.run([sys.executable, PROBE, "--port", str(self.port), *extra],
+                               capture_output=True, text=True, timeout=120,
+                               env=dict(os.environ, QWEN38_API_KEY="not-the-real-key"))
+            self.assertEqual(r.returncode, 3, f"{mode}: {r.stdout}{r.stderr}")
+            self.assertNotIn("Traceback", r.stderr, mode)
 
     def test_min_turns_the_probe_into_a_gate(self):
         """Same measurement, non-zero exit, so a caller can fail a run on it."""

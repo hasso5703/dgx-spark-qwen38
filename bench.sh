@@ -49,9 +49,13 @@ def served_model():
 MODEL = served_model()
 LANE = "flash" if "flash" in MODEL else "27b"
 HEADERS = {
+    # The median is the v1.14 campaign on the official release image (README, CHANGELOG
+    # v1.14.0); the per-probe figures are the last ones published, v1.9's, whose median was
+    # ~65. This line said ~65 after the README moved to 71.4 (found in review, 2026-09-24).
     "27b": ("Qwen3.8-27B NVFP4+DFlash2 benchmark (batch 1 decode)",
-            "reference box (calibrated NVFP4 draft D16, v1.9+): ~65 greedy median "
-            "(code 64-66 / reasoning 65-66 / math peak 57-71 / free prose ~23)"),
+            "reference box (official release image, v1.14+): 71.4 greedy median\n"
+            "  per probe as last published (v1.9, median ~65): code 64-66 / reasoning 65-66 /\n"
+            "  math peak 57-71 / free prose ~23"),
     # Flash-Next, NEXTN + the reduced draft vocabulary. BENCHMARKS.md, "The
     # reduced draft vocabulary": code 47.9, math 47.1, prose EN 29.3; the
     # abliterated target measures 45.4-46.4 / 43.7-46.6 / 27.3-27.7.
@@ -105,16 +109,24 @@ print(title)
 print(f"served model: {MODEL or 'unknown (the engine did not name it)'}")
 print(f"{reference}\n")
 all_greedy = []
+untimed = 0
 for name, temp, prompt, mt in PROBES:
     speeds = [stream(prompt, temp, mt) for _ in range(2)]
     if temp == 0.0 and "worst-case" not in name:
-        all_greedy += speeds
-    print(f"  {name}: {speeds[0]:.1f} / {speeds[1]:.1f} tok/s")
+        # -1 is a run the stream could not time (no token, or one): not a speed, and it went
+        # into the median as one, dragging it down (found in review, 2026-09-24)
+        all_greedy += [x for x in speeds if x > 0]
+        untimed += sum(1 for x in speeds if x <= 0)
+    print(f"  {name}: {' / '.join(f'{x:.1f}' if x > 0 else 'not timed' for x in speeds)} tok/s")
     if max(speeds) > 90:
         print("    ^ above the block-8 speculative physical ceiling for this box (~9x the")
         print("      ~11 tok/s AR floor), almost certainly a measurement artifact, not")
         print("      real speed. Cross-check with bench-matrix.sh (wall-clock method).")
-print(f"\n  greedy median: {statistics.median(all_greedy):.1f} tok/s")
+if not all_greedy:
+    print("\n  greedy median: none, no greedy run could be timed")
+    raise SystemExit(1)
+print(f"\n  greedy median: {statistics.median(all_greedy):.1f} tok/s"
+      + (f" ({untimed} run(s) could not be timed and are left out)" if untimed else ""))
 print("  (numbers vary with content: acceptance length drives everything;")
 if LANE == "27b":
     print("   math/code accept ~3.3-5.6 tokens/step, free prose ~1.5-2.2 in any")

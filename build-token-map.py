@@ -3,7 +3,7 @@
 
 Why this exists. On this box decode is bandwidth bound, and the draft head of a
 speculative step reads the model's `lm_head` in full: `[248320, 2560]` in BF16
-is 1.21 GiB, read once per draft step, three times in an MTP-3 engine step.
+is 1.18 GiB, read once per draft step, three times in an MTP-3 engine step.
 SGLang can serve the draft a *sliced* head instead: pass a list of token ids and
 `eagle_worker_v2.init_lm_head` clones the target head and keeps only those rows
 (`head.data = head.data[hot_token_id]`), while the proposal path maps the draft's
@@ -12,8 +12,8 @@ target still verifies over the full vocabulary, so **output quality is unchanged
 by construction**: a token the draft can no longer propose is not a wrong token,
 it is a draft the target would have had to reject or accept on its own.
 
-At 65,536 rows the same three reads cost 0.31 GiB each instead of 1.21, which is
-2.7 GiB removed from every engine step. Two independent single-Spark
+At 65,536 rows the same three reads cost 0.31 GiB each instead of 1.18, which is
+2.6 GiB removed from every engine step. Two independent single-Spark
 reimplementations of this idea (MiaAI Lab's `MTP_DRAFT_VOCAB`, tonyd2wild's
 "reduced-vocabulary MTP draft") report it as one of their two largest levers,
 around +25% decode. This script is the SGLang-native way to get it: the engine
