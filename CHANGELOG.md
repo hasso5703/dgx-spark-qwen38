@@ -603,6 +603,75 @@ oc-fit-limits' main(), the cockpit's 409 for a second engine, the Agent relay bu
 the cockpit's own session check, and the image routes' CSRF check. Each is driven now, and
 fails under its mutant.
 
+**The cockpit's smaller defects, page side.** A finished job's log stopped at its last
+running snapshot; a new lane was named after the previous engine's checkpoint for up to
+30 s; 539.6 s read "8 min 60"; the Engines badge said "booting" during a stop; "switch to
+uncensored" read the same for the 27B and the flash; GiB were printed GB; a flash stop
+warning said "12 to 15 min" beside a bar that said 13; the text engine's panel read READY
+with only the image lane up; warnings lost their colour outside an engine card; with
+reduced motion an indeterminate bar stood still and full, like a finished one; the top
+bar could grow and never shrink back; the collapsed rail's eleven buttons had no names;
+Restart lost its tooltip at the first refresh. The Setup tab reads opencode's config as
+JSONC, the way opencode does, and says so when it does not parse instead of showing it
+empty. The 4:3 2400x1792 size, 4.30 megapixels against the 4.23 of the largest call
+measured, is no longer offered only to be refused. System One's curl survives an
+apostrophe, a new question takes a free id, two alike are refused before sending, and
+"Twenty options" is "Eight options". On the Image tab a 409 puts the last image back, the
+sample reference rechecks the ten-reference cap, an edit's estimate counts its references
+(ten at 20 steps: 69.6 s measured, 26 s announced), and the loaded example is the lit
+one. The phone's session card is written only when it changed (a tap that straddled the
+500 ms rewrite was lost on iOS), and the update banner names this checkout. The lane
+pill and the job strip were live regions whose text changed every second: a screen
+reader is told one sentence when the lane or the job changes state. The PLE rebuild
+plumbing goes (no boot has announced a rebuild since v1.8, and the cockpit ran a
+journalctl per tick to look for it), and an edit leaves out flow_shift and
+max_sequence_length, which the lane's edits route does not read.
+
+**The tools' smaller defects.** The auto-continue plugin dropped a relaunch that came
+within its throttle, which is what an engine still restarting answers: on the reference
+box an error two seconds after a relaunch was never relaunched. It waits for the
+throttle now and relaunches if opencode still reports the session idle. `tools-check.py`
+passed Oslo asked twice for Oslo and Bergen, never read the divisor of its right-tool
+case and parsed empty arguments as `{}`; it and `bench-agent.py` ended in a traceback and
+exit 1 when the lane stopped answering, and exit 3 with a sentence now. `needle.sh`
+exited 7 with nothing on screen when the engine was down. `cake-ingress start` said
+active over a shaper that was never installed. `conc-check.py` exited 0 whatever it
+found. `bench.sh` counted runs it could not time in its median.
+
+**Pin watch covers what it did not, and the image checkpoint is pinned.**
+`install-image.sh` fetched Qwen-Image 2.1 at main; it is pinned at the revision the lane
+was measured with, and refs/main points there for the offline unit. `check-pins.sh` also
+asks for that checkpoint, the lane's SGLang commit and its 0.5.20 wheel, and whether the
+opencode asset's published digest still equals OPENCODE_SHA256. `mirror-pins.sh` and
+MIRROR.md list the image checkpoint too. The System One bench lists both modes' answers
+for a choice instead of its top probability, fanout no longer calls warm first calls
+cold, and `systemone-check.py --hosted` sends the 16 shapes, not 6, and fails without a
+TypeSafe key instead of skipping.
+
+**Tests that touched the box they ran on.** The cockpit's HTTP, collectors and image
+suites ran the real uninstall.sh --list, docker, journalctl and systemctl and sent
+requests to the serving engine, Hugging Face and GitHub; six test files ran install.sh or
+get.sh whole and counted on one refusal to stop them, and with it disabled got as far as
+`sudo -v` and a docker pull; the proxy fixtures wrote a "test-key" into a missing
+api-key; the browser check copied the real key into a directory it never removed. Each
+now runs against a fake box, stops at a wall it checks was not reached, and, traced,
+runs no program of the box and opens no connection outside itself. Modules hand the
+environment back to the next one, and every unittest file must. `ci-local.sh` skipped a
+step for a tool its text merely named (13 of 61 without gh), and a run where nothing ran
+passed; the per-file loop ignored a file that failed on its own; the dash gate read
+grep's refusal in a C locale as clean; ruff left out two scripts install.sh runs; 17
+steps only re-ran modules already run three times. The binds and the context mode an
+install goes on with are read from the run itself, and the drafter's quantization
+mismatch, the 409 for a second engine, the Agent relay's session check and the image
+routes' CSRF check are driven, not grepped.
+
+**The documents describe the code that exists.** The cockpit, flash, install, client,
+System One, testing and contributing pages, the cockpit's design notes and review log,
+BENCHMARKS.md, the overlay's attribution, LEAN.md and the GGUF page were read against the
+code, and each stale figure, dead link and feature described as existing is corrected; four
+facts of older entries of this file are too, and the v1.2.4 entry folded into v1.2.5 is
+restored.
+
 **CI gates that could not fail.** A negated `grep` under `bash -e` checked nothing; the syntax
 and shellcheck lists left out seven scripts, `install-image.sh` among them; the sudoers gate
 never compared `daemon-reload` and the two `install` calls with the allowlist; and the flash
