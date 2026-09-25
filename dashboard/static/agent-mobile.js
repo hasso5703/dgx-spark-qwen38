@@ -241,7 +241,13 @@
         + (dir ? '<div style="font-size:11px;color:' + (d ? "#8b8b8b" : "#6b6b6b") + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + dir + "</div>" : "")
         + "</a>";
     }).join("");
-    old.innerHTML = head + rows;
+    // written only when it changed: every 500 ms it was written again, and a tap on iOS
+    // that straddles a rewrite is lost (found in review, 2026-09-24)
+    var html = head + rows;
+    if (old._sparkHtml !== html) {
+      old._sparkHtml = html;
+      old.innerHTML = html;
+    }
   }
 
   // ── the keyboard ──────────────────────────────────────────────────────────

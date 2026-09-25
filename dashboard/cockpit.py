@@ -828,6 +828,25 @@ def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
     return "started"
 
 
+_OCM: dict = {}
+
+
+def jsonc_load(text: str):
+    """A config as opencode reads it, comments and trailing commas allowed: with json.loads a
+    commented config read as unreadable, and an unreadable one as empty ("none", "not
+    declared") on the Setup tab (found in review, 2026-09-24). The parser is oc-merge-limits',
+    the one the installer edits these files with."""
+    if "load" not in _OCM:
+        try:
+            spec = importlib.util.spec_from_file_location("ocm_for_cockpit", REPO_DIR / "oc-merge-limits.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _OCM["load"] = mod.load
+        except Exception:                               # noqa: BLE001 (an older checkout)
+            _OCM["load"] = json.loads
+    return _OCM["load"](text)
+
+
 @guard
 def collect_opencode():
     """What the installer and the switch act on: the --no-opencode marker, the config
@@ -850,9 +869,12 @@ def collect_opencode():
         if not path.exists():
             continue
         try:
-            cfg = json.loads(path.read_text())
+            cfg = jsonc_load(path.read_text())
         except (ValueError, OSError) as e:  # noqa: PERF203
             out[key]["error"] = str(e)[:80]
+            continue
+        if not isinstance(cfg, dict):
+            out[key]["error"] = f"not a JSON object but a {type(cfg).__name__}"
             continue
         out[key]["default"] = cfg.get("model")
         if key == "real":

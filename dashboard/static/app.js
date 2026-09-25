@@ -5,7 +5,7 @@
    one server-side job lock, and one job strip visible from every tab and browser. */
 const $ = id => document.getElementById(id);
 const GB = 1024 ** 3;
-const fmtB = b => b == null || isNaN(b) ? '...' : (b / GB).toFixed(1) + ' GB';
+const fmtB = b => b == null || isNaN(b) ? '...' : (b / GB).toFixed(1) + ' GiB';   // 1024 cubed: GiB, not GB
 const fmtN = n => n == null || isNaN(n) ? '...' : Number(n).toLocaleString('en');
 const fmtK = n => n == null ? '?' : Math.round(n / 1000) + 'K';
 // a time of day is ambiguous once the cockpit reloads events written on another day
@@ -15,9 +15,10 @@ const clockTime = ts => {
   if (d.toDateString() === now.toDateString()) return hm;
   return d.toLocaleDateString([], {day: '2-digit', month: '2-digit'}) + ' ' + hm.slice(0, 5);
 };
-const fmtDur = s => s == null ? '?' : s < 90 ? Math.round(s) + ' s'
-  : s < 3600 ? Math.floor(s / 60) + ' min ' + String(Math.round(s % 60)).padStart(2, '0')
-  : Math.floor(s / 3600) + ' h ' + String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+// rounded once, before it is split: minutes floored and seconds rounded read "8 min 60"
+const fmtDur = s => { if (s == null) return '?'; const r = Math.round(s);
+  return r < 90 ? r + ' s' : r < 3600 ? Math.floor(r / 60) + ' min ' + String(r % 60).padStart(2, '0')
+    : Math.floor(r / 3600) + ' h ' + String(Math.floor((r % 3600) / 60)).padStart(2, '0'); };
 const setText = (id, txt) => { const e = $(id); if (e) { e.textContent = txt; e.classList.remove('skel'); } };
 // Short in the column, complete on hover: a definition list stops reading like a
 // definition list once a value wraps over four ragged right-aligned lines.
@@ -47,9 +48,11 @@ const ALL_STAGES = Object.keys(STAGE_LABEL);
 const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B',
                   'qwen38-image.service': 'Qwen-Image'};
 // How long each lane takes to answer after a start, before the box has seen one of its
-// boots. Measured on the reference box: the text lanes load, compile and capture graphs
-// for about nine minutes; the image lane loads 31 GB and warms up in about 70 seconds.
-// Once a lane has booted in front of the cockpit, its own median replaces these.
+// boots. Measured on the reference box: the 27B loads, compiles and captures graphs for
+// about nine minutes, the flash lane for about thirteen (it also writes its 47.7 GiB PLE
+// table); the image lane loads 31 GB and warms up in about 70 seconds. Once a lane has
+// booted in front of the cockpit, its own median replaces these, and every estimate on
+// the page reads readyIn(): the stop warning said "12 to 15 min" beside a bar that said 13.
 const READY_DEFAULT = {'qwen38-sglang.service': 540, 'qwen38-flash.service': 780,
                        'qwen38-image.service': 70};
 function readyIn(unit){
@@ -94,7 +97,10 @@ function laneLabel(unit){
   // F.target comes from the TEXT engine's /server_info and outlives it: a page left
   // open across a switch to images kept "stock" there and labelled the lane "Qwen-Image
   // stock". The image lane's target is always its unit's.
-  const target = (serving && serving[0] === unit && unit !== IMAGE_UNIT && F.target) || cfg.target;
+  // A target of another lane is the previous engine's, read before this one answered (the
+  // engine is asked every 30 s): a flash lane that had just replaced the 27B read "flash
+  // 176B stock" until then (found in review, 2026-09-24).
+  const target = (serving && serving[0] === unit && unit !== IMAGE_UNIT && ownTarget(unit)) || cfg.target;
   const t = target && TARGET_SHORT[target] ? ' ' + TARGET_SHORT[target] : '';
   return base + t;
 }
@@ -167,7 +173,8 @@ function fitTopbar(){
   if (window.matchMedia('(max-width:980px)').matches){ if (wrapped) setTopwrap(false); return; }
   const cs = getComputedStyle(topbar), px = v => parseFloat(v) || 0, wd = e => e.getBoundingClientRect().width;
   const shown = e => !!e && getComputedStyle(e).display !== 'none';
-  const others = [...topbar.children].filter(c => c !== act && c !== pill && shown(c));
+  // the screen reader's sentence is out of the flow (position:absolute), so it takes no room
+  const others = [...topbar.children].filter(c => c !== act && c !== pill && shown(c) && !c.classList.contains('srsay'));
   const groups = [...act.children].filter(shown);
   const need = others.reduce((s, c) => s + wd(c), 0) + px(cs.columnGap) * others.length
     + (shown(pill) ? px(getComputedStyle(pill).minWidth) + px(cs.columnGap) : 0)
@@ -183,12 +190,18 @@ function setTopwrap(on){
   // would keep the height of two
   if (!on) document.documentElement.style.removeProperty('--top');
 }
+// Measured with its min-height let go: the min-height is --top itself, so a bar measured
+// under it could grow and never shrink back (found in review, 2026-09-24).
+function syncTop(){
+  if (!topbar) return;
+  const root = document.documentElement.style;
+  const was = root.getPropertyValue('--top');
+  root.removeProperty('--top');
+  const h = Math.round(topbar.getBoundingClientRect().height);
+  if (h) root.setProperty('--top', h + 'px'); else if (was) root.setProperty('--top', was);
+}
 if (topbar && window.ResizeObserver){
-  new ResizeObserver(() => {
-    fitTopbar();
-    const h = Math.round(topbar.getBoundingClientRect().height);
-    if (h) document.documentElement.style.setProperty('--top', h + 'px');
-  }).observe(topbar);
+  new ResizeObserver(() => { fitTopbar(); syncTop(); }).observe(topbar);
 }
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitTopbar);
 
@@ -412,7 +425,10 @@ function rEngineFast(d){
     push('req', l.num_reqs || 0); drawSpark($('reqspark'), 'req', css('--acc'), 4);
   }
   const serving = servingEngine();
-  setChip('engchip', serving ? STATE_LABEL[serving[1].state] || serving[1].state : 'no engine', serving ? stateChipCls(serving[1].state) : '');
+  // this panel is the text engine's: the image lane serving read READY above "no text engine"
+  const text = serving && serving[0] !== IMAGE_UNIT ? serving : null;
+  setChip('engchip', text ? STATE_LABEL[text[1].state] || text[1].state : serving ? 'no text engine (the image lane serves)' : 'no engine',
+          text ? stateChipCls(text[1].state) : '');
 }
 function rDecode(d){
   const t = d.decode, u = d.usage || {};
@@ -579,12 +595,14 @@ function rGuard(d){
 }
 function rOpencode(d){
   F.ocfit = d.fit || null;
-  const fmtLim = l => l && l.context ? `${fmtN(l.context)} ctx / ${fmtN(l.output || 0)} out` : 'not declared';
+  // a config that does not parse is not an empty one: it read "none" and "not declared"
+  const bad = d.real.error ? 'unknown: the config does not parse' : null;
+  const fmtLim = l => bad || (l && l.context ? `${fmtN(l.context)} ctx / ${fmtN(l.output || 0)} out` : 'not declared');
   setText('oclim27', fmtLim(d.real.limits['qwen38/qwen3.8-27b'])); setText('oclimflash', fmtLim(d.real.limits['flashnext/qwen3.8-flash-next']));
   if (!d.enabled){
     setChip('occhip', 'off', '');
     setText('ocstate', 'off (installed with --no-opencode)' + (d.off_note ? ` · ${d.off_note}` : ''));
-    setText('ocdefault', d.real.present ? (d.real.default || 'none') + ' (your own config, never touched)' : 'no opencode config on this box');
+    setText('ocdefault', d.real.present ? (bad || d.real.default || 'none') + ' (your own config, never touched)' : 'no opencode config on this box');
     setText('oclauncher', d.launcher.present ? (d.launcher.ours ? 'this repo’s oc is still there (stale, remove it)' : 'a foreign oc, not ours') : 'none');
     $('occmd').hidden = true;
     setText('ocnote', 'The switch leaves your opencode default model alone. Turn the integration back on with: ./install.sh --with-opencode');
@@ -592,8 +610,9 @@ function rOpencode(d){
   }
   const ok = d.follows;
   setChip('occhip', ok === true ? 'follows the lane' : ok === false ? 'differs' : 'on', ok === true ? 'ok' : ok === false ? 'warn' : '');
-  setText('ocstate', 'on · config ' + (d.real.present ? 'present' : 'missing (copy ~/.config/qwen38/opencode.json to ~/.config/opencode/)'));
-  setText('ocdefault', (d.real.default || 'none') + ' · ' + d.why);
+  setText('ocstate', 'on · config ' + (d.real.error ? `present, but it does not parse (${d.real.error})`
+    : d.real.present ? 'present' : 'missing (copy ~/.config/qwen38/opencode.json to ~/.config/opencode/)'));
+  setText('ocdefault', (bad || d.real.default || 'none') + ' · ' + d.why);
   $('ocdefault').style.color = ok === false ? 'var(--warn)' : '';
   setText('oclauncher', d.launcher.present
     ? (d.launcher.ours ? `oc, output cap ${d.launcher.cap ? fmtN(d.launcher.cap) : '?'}` : 'a foreign oc command, launcher not installed')
@@ -657,6 +676,8 @@ function enabledUnit(){
 }
 function rLanePill(){
   const s = servingEngine();
+  const say = s ? `${laneLabel(s[0])}: ${STATE_LABEL[s[1].state] || s[1].state}` : 'nothing serving';
+  const box = $('lanesay'); if (box && box.textContent !== say) box.textContent = say;
   if (!s){
     setChip('lanestate', 'no engine', 'err'); setText('lanename', 'nothing serving');
     setText('lanesub', F.units && Object.keys(F.units).length ? `start ${LANE_NAME[enabledUnit()] || 'an engine'} from the actions` : '');
@@ -737,7 +758,7 @@ function engineCard(name){
     // a crash loop is failed between attempts, yet only a stop ends it
     const on = !UNIT_DOWN.has(e.state) || !!e.restarting;
     const warns = [];
-    if (on && TRANSITIONAL.has(e.state) && name.includes('flash')) warns.push('this boot is thrown away: every flash boot writes its 47.7 GiB PLE table from scratch, so the next start takes the full 12 to 15 min again');
+    if (on && TRANSITIONAL.has(e.state) && name.includes('flash')) warns.push('this boot is thrown away: every flash boot writes its 47.7 GiB PLE table from scratch, so the next start takes a whole boot again (' + readyIn(name) + ')');
     if (on && e.state === 'ready') warns.push(name === IMAGE_UNIT
       ? 'an image being generated right now is lost, and the Image tab has nothing to talk to until this lane is back (' + readyIn(name) + ' after a start)'
       : 'clients on :30001 get "engine unavailable" until an engine is back (' + readyIn(name) + ' after a start)');
@@ -843,11 +864,13 @@ function rLifecycle(d){
   const states = Object.values(d.engines || {}).map(e => e.state);
   const bad = states.find(st => st === 'wedged' || st === 'failed' || st === 'degraded' || st === 'orphan');
   const trans = states.find(st => TRANSITIONAL.has(st) || st === 'stopping');
-  badge('engines', bad ? (STATE_BADGE[bad] || 'check') : trans ? 'booting' : '', bad ? 'err' : trans ? 'warn' : '');
+  badge('engines', bad ? (STATE_BADGE[bad] || 'check') : trans ? (trans === 'stopping' ? 'stopping' : 'booting') : '', bad ? 'err' : trans ? 'warn' : '');
   applyBusy();
 }
 // Which unit serves a target, and how that lane is installed when it is not.
 const TARGET_UNIT = t => t === 'image' ? IMAGE_UNIT : t.startsWith('flash') ? 'qwen38-flash.service' : 'qwen38-sglang.service';
+// the text engine's served target, when it is one of this unit's
+const ownTarget = unit => F.target && TARGET_UNIT(F.target) === unit ? F.target : null;
 const LANE_INSTALL = {'qwen38-sglang.service': './install.sh', 'qwen38-flash.service': 'MODEL_CHOICE=flash ./install.sh',
                       'qwen38-image.service': './install.sh --with-image'};
 // An option whose lane has no unit file on this box is shown as such and cannot be
@@ -874,7 +897,7 @@ function syncSelector(){
   const eng = (F.life || {}).engines || {};
   const s = servingEngine();
   const unit = s ? s[0] : enabledUnit();
-  const target = (s && s[0] !== IMAGE_UNIT && F.target) || (eng[unit] || {}).target;
+  const target = (s && s[0] !== IMAGE_UNIT && ownTarget(unit)) || (eng[unit] || {}).target;
   // A choice holds the selector until the lane serves it, and then the selector follows
   // the lane again: it stayed on the first choice for the life of the page, cancelled or
   // served, while the lanes moved under it (found in review, 2026-09-24).
@@ -887,12 +910,14 @@ function syncSelector(){
 function badge(tab, txt, cls){ const b = $('bdg-' + tab); if (b){ b.textContent = txt; b.className = 'bdg ' + (cls || ''); } }
 
 // ── jobs: the strip everybody sees, the history, the busy lock in the UI ─────
-const JOBLINES = {id: null, lines: []};
+const JOBLINES = {id: null, lines: [], final: null};   // final: the job whose last lines were fetched
 // Same vocabulary as the server's event feed: an action reads as a sentence, never
 // as the parameter dict that happens to be its wire format.
 const ACTION_PHRASE = {
   unit: p => `${p.verb || 'act on'} ${String(p.unit || '').replace('.service', '')}`,
-  switch: p => `switch to ${p.target === 'image' ? 'Qwen-Image 2.1' : (TARGET_SHORT[p.target] || p.target || 'flash 176B')}`,
+  // the lane and the checkpoint: "uncensored" alone read the same for the 27B and the flash
+  switch: p => `switch to ${!p.target ? 'a target' : p.target === 'image' ? 'Qwen-Image 2.1'
+    : LANE_NAME[TARGET_UNIT(p.target)] + (TARGET_SHORT[p.target] ? ' ' + TARGET_SHORT[p.target] : '')}`,
   flush_cache: () => 'flush the radix cache',
   abort_all: () => 'abort every generation in flight',
   smoke: () => 'smoke probe through the proxy',
@@ -926,7 +951,10 @@ function rJob(d){
     const r = recent.result || {};
     setText('joblast', r.reply ? `reply: ${r.reply}` : r.path ? `written: ${r.path}` : r.reason === 'busy' ? 'the engine refused: requests still running'
       : recent.status === 'done' ? (recent.argv ? `finished with exit code ${recent.rc}` : 'finished') : `failed${recent.rc != null ? ` (exit code ${recent.rc})` : ''}: open the log`);
-    if (JOBLINES.id !== recent.id){ JOBLINES.id = recent.id; JOBLINES.lines = []; fetchJobLines(recent.id); }
+    if (JOBLINES.id !== recent.id){ JOBLINES.id = recent.id; JOBLINES.lines = []; }
+    // its last lines are fetched once it ended, also when it was watched while it ran: the
+    // log kept the last running snapshot and stopped short of the end (found in review, 2026-09-24)
+    if (JOBLINES.final !== recent.id){ JOBLINES.final = recent.id; fetchJobLines(recent.id); }
     if (lastFinished === undefined) lastFinished = recent.id;        // first sight: adopt, do not act
     else if (lastFinished !== recent.id){
       lastFinished = recent.id;
@@ -938,6 +966,8 @@ function rJob(d){
   } else if (!stripPinned){
     strip.hidden = true;
   }
+  const say = cur ? `${describe(cur)}: running` : recent ? `${describe(recent)}: ${recent.status}` : '';
+  const jb = $('jobsay'); if (jb && jb.textContent !== say) jb.textContent = say;
   $('joblog').textContent = JOBLINES.lines.join('\n') || '(no output yet)';
   if (!$('joblog').hidden) $('joblog').scrollTop = $('joblog').scrollHeight;
   // history panel: one row per job, kept by id and updated in place, for the reason the
@@ -998,7 +1028,9 @@ function applyBusy(){
     if (b.dataset.act === 'unit'){
       const blockedWhy = b.dataset.blocked || '';
       const stopping = b.textContent.startsWith('stopping');
-      b.disabled = !!(why || blockedWhy || stopping); b.title = why || blockedWhy || '';
+      // a button's own tooltip (data-title) comes back once nothing blocks it: the Agent tab's
+      // Restart lost its tooltip at the first refresh (found in review, 2026-09-24)
+      b.disabled = !!(why || blockedWhy || stopping); b.title = why || blockedWhy || b.getAttribute('data-title') || '';
     } else {
       const need = NEEDS_ENGINE.has(b.dataset.act) ? noEngineWhy : '';
       b.disabled = !!(why || need);
@@ -1104,7 +1136,7 @@ function rAgent(d){
     if (d.opencode_found === null)
       agentMessage(`opencode is not installed on this box, and this tab runs it. On the box, re-run the installer: `
                    + `it installs the opencode this repo tests${d.pinned ? ` (${d.pinned})` : ''}, then this tab.`,
-                   'cd ~/dgx-spark-qwen38 && ./install.sh');
+                   ((F.config || {}).terminal_only || {}).update_stack || 'cd ~/dgx-spark-qwen38 && ./install.sh');
     else
       agentMessage('The Agent tab is not installed on this cockpit. opencode is on the box; to add the tab, run on the box:',
                    ((F.config || {}).terminal_only || {}).install_agent || 'dashboard/install-agent.sh');
@@ -1324,7 +1356,8 @@ function banners(state, errors){
   // already says what you did not go looking for.
   const upd = F.update || {};
   if (upd.behind) add('info', `Version ${upd.latest} is out; this box runs ${upd.installed}.`,
-    'Update with: cd ~/dgx-spark-qwen38 && git pull && ./install.sh. It keeps your target, context mode, port and cache, and restarts the engine once. The release notes are on GitHub.');
+    // this checkout's own folder, which the cockpit knows: the banner named the default one
+    `Update with: cd ${(F.config || {}).repo_dir || '~/dgx-spark-qwen38'} && git pull && ./install.sh. It keeps your target, context mode, port and cache, and restarts the engine once. The release notes are on GitHub.`);
   if ((upd.stale_code || []).length) add('warn', 'This cockpit is running older code than the files on disk.',
     `${upd.stale_code.join(', ')} changed under it, so its controls and its checks no longer agree. Restart it: sudo systemctl restart qwen38-dashboard.service`);
   const ocf = F.ocfit;
@@ -1694,7 +1727,7 @@ const S1_EXAMPLES = {
        criteria: [['EUR', 'euro'], ['USD', 'US dollar'], ['GBP', 'pound sterling'], ['other', 'anything else']]},
       {id: 'overdue', type: 'noul', instructions: 'The invoice is past its due date'}
     ]},
-  'Twenty options': {
+  'Eight options': {
     state: 'The engine log ends with: "RuntimeError: selected index k out of range" inside the sampler, then the scheduler exits.',
     questions: [
       {id: 'cause', type: 'choice', instructions: 'The most likely cause',
@@ -1784,7 +1817,8 @@ function s1Curl(){
   const body = JSON.stringify(s1Payload(), null, 2).split('\n').map((l, i) => i ? '  ' + l : l).join('\n');
   box.textContent = "curl -s http://127.0.0.1:30001/v1/systemone \\\n"
     + "  -H \"Authorization: Bearer $(cat ~/.config/qwen38/api-key)\" \\\n"
-    + "  -H 'Content-Type: application/json' -d '" + body + "'";
+    // quoted for the shell: typed as it was, "I'm losing sales" ended the string halfway
+    + "  -H 'Content-Type: application/json' -d '" + body.replace(/'/g, "'\\''") + "'";
 }
 
 function s1Load(name){
@@ -1833,6 +1867,9 @@ async function s1Run(){
   const btn = $('s1run'); const payload = s1Payload();
   if (!payload.state.trim()) { toast('A state is required: that is what the questions are asked about.', 'warn'); return; }
   if (!Object.keys(payload.questions).length) { toast('Add at least one question.', 'warn'); return; }
+  const ids = s1Questions.map(q => (q.id || '').trim()).filter(Boolean);
+  const twice = ids.find((id, i) => ids.indexOf(id) !== i);
+  if (twice) { toast(`Two questions are named "${twice}": the answers are keyed by name, so rename one.`, 'warn'); return; }
   btn.disabled = true; s1Running = true; $('s1status').textContent = 'asking the lane...';
   $('s1answers').textContent = ''; $('s1meta').textContent = ''; s1Chip('s1time', '');
   try{
@@ -1898,7 +1935,11 @@ if ($('s1examples')){
   });
   document.querySelectorAll('[data-addq]').forEach(b => b.addEventListener('click', () => {
     const t = b.dataset.addq;
-    const q = {id: t + (s1Questions.length + 1), type: t, instructions: ''};
+    // a free id: the list's length plus one was taken again after a removal, and the payload,
+    // keyed by id, kept one of the two (found in review, 2026-09-24)
+    const used = new Set(s1Questions.map(x => (x.id || '').trim()));
+    let k = 1; while (used.has(t + k)) k++;
+    const q = {id: t + k, type: t, instructions: ''};
     if (t === 'choice') q.criteria = [['yes', ''], ['no', '']];
     if (t === 'score') q.levels = ['low', 'high'];
     s1Questions.push(q); s1RenderQuestions(); s1Curl();
@@ -1920,9 +1961,11 @@ if ($('s1examples')){
 const IMG_DEFAULTS = {mode: 't2i', size: '1024x1024', w: 1024, h: 1024, steps: 40, n: 1,
                       bg: 'auto', fmt: 'png', seed: '', cfg: '', shift: '', dev: 'cpu',
                       neg: '', prompt: ''};
-// Qwen publishes seven aspect ratios at a 2048 base. Every one is already a multiple of
-// 32, and each is offered twice: at the cookbook's verified 1024-equivalent area, and at
-// the size the model card itself prints. The second costs four times the first.
+// Qwen publishes seven aspect ratios at a 2048 base, every one a multiple of 32. Each is
+// offered at the cookbook's verified 1024-equivalent area, and two also at the size the model
+// card prints (1:1 and 16:9), which costs four times as much. The card's 4:3, 2400x1792, is
+// 4.30 megapixels, over the 4.23 of the largest call measured here (IMG_MAX_PIXELS): the page
+// offered it and refused it every time (found in review, 2026-09-24).
 const IMG_SIZES = [
   ['1024x1024', '1:1  1024x1024  default'],
   ['1184x896', '4:3  1184x896'],
@@ -1934,7 +1977,6 @@ const IMG_SIZES = [
   ['512x512', '1:1  512x512  quick'],
   ['768x768', '1:1  768x768'],
   ['2048x2048', "1:1  2048x2048  Qwen's own, 4x the cost"],
-  ['2400x1792', "4:3  2400x1792  Qwen's own"],
   ['2752x1536', "16:9  2752x1536  Qwen's own"],
   ['custom', 'custom, any multiple of 32'],
 ];
@@ -2008,14 +2050,17 @@ function imgEstimate(req){
   const q = req || imgFormRequest();
   if (!q.w || !q.h || !q.steps) return null;
   const px = (q.w * q.h) / (1024 * 1024);
-  return (1 + q.steps * 0.97 * Math.pow(px, 1.14) + (q.editing ? 6 : 0)) * (q.n || 1);
+  // An edit costs about 4.8 s per reference on top (fitted to the two edits measured on the
+  // reference box: one reference at 40 steps 44.6 s, ten at 20 steps 69.6 s); a flat 6 s
+  // announced 26 s for the second (found in review, 2026-09-24).
+  return (1 + q.steps * 0.97 * Math.pow(px, 1.14) + (q.editing ? 4.8 * Math.max(1, q.refs || 0) : 0)) * (q.n || 1);
 }
 // What the form would send. The request in flight keeps its own copy (IMG_RUN), because
 // the form can change under it, and the sample reference is a request of its own.
 function imgFormRequest(){
   const {w, h} = imgSize();
   return {w, h, steps: Number($('imgsteps').value) || 0, n: Number($('imgn').value) || 1,
-          editing: $('imgmode-edit').getAttribute('aria-pressed') === 'true'};
+          editing: $('imgmode-edit').getAttribute('aria-pressed') === 'true', refs: imgRefs.length};
 }
 
 function imgCost(){
@@ -2191,7 +2236,7 @@ function imgDraw(out, fmt){
   const meta = $('imgmeta'); clear(meta);
   const bytes = imgs.reduce((a, d) => a + (d.b64_json || '').length * 0.75, 0);
   [['images', imgs.length], ['size', (bytes / 1e6).toFixed(1) + ' MB'],
-   ['peak memory', out.peak_memory_mb ? (out.peak_memory_mb / 1024).toFixed(1) + ' GB' : null],
+   ['peak memory', out.peak_memory_mb ? (out.peak_memory_mb / 1024).toFixed(1) + ' GiB' : null],
    ['engine time', out.inference_time_s ? out.inference_time_s.toFixed(1) + ' s' : null],
   ].forEach(([k, v]) => { if (v != null) meta.append(el('span', 'chip', k + ': ' + v)); });
   const dl = el('button', 'btn mini low', 'Download');
@@ -2263,6 +2308,9 @@ async function imgRun(){
   setChip('imgtime', est ? '~' + fmtDur(est) : '');
   const t0 = Date.now();
   imgInflight = t0; IMG_RUN = imgFormRequest(); imgCancelSync();
+  // what was shown comes back when the lane refuses before starting (409: someone else is
+  // generating); the empty frame used to stay in its place (found in review, 2026-09-24)
+  const shown = [[...$('imgout').childNodes], [...$('imgmeta').childNodes]];
   imgFrame(Number($('imgn').value) || 1);
   clear($('imgmeta'));
   imgStageAt = {stage: '', at: 0};
@@ -2297,7 +2345,10 @@ async function imgRun(){
     }
     if (!r.ok){
       const why = out.error || (out.refused ? JSON.stringify(out.refused).slice(0, 300) : 'HTTP ' + r.status);
-      if (r.status === 409){ toast(why, 'warn', 7000); setChip('imgtime', 'lane busy', 'warn'); return; }
+      if (r.status === 409){
+        imgParkBar(); [$('imgout'), $('imgmeta')].forEach((box, i) => { clear(box); box.append(...shown[i]); });
+        toast(why, 'warn', 7000); setChip('imgtime', 'lane busy', 'warn'); return;
+      }
       // 504: this page stopped waiting and the lane goes on (it has no abort); not a refusal
       if (r.status === 504){ imgParkBar(); clear($('imgout')); $('imgout').append(el('p', 'note', why)); setChip('imgtime', 'still generating', 'warn'); return; }
       imgParkBar(); clear($('imgout')); $('imgout').append(el('p', 'note', 'Refused with HTTP ' + r.status + ': ' + why));
@@ -2489,7 +2540,9 @@ function imgInit(){
   });
   Object.keys(IMG_EXAMPLES).forEach((name, i) => {
     const b = el('button', 'btn mini' + (i ? ' low' : ''), name);
-    b.addEventListener('click', () => imgLoadExample(name));
+    // the loaded one is the one lit, as on the System One tab: the first stayed lit whichever was loaded
+    b.addEventListener('click', () => { imgLoadExample(name);
+      document.querySelectorAll('#imgexamples .btn').forEach(x => x.classList.toggle('low', x !== b)); });
     $('imgexamples').append(b);
   });
   ['imgsize', 'imgw', 'imgh', 'imgsteps', 'imgn', 'imgbg', 'imgfmt', 'imgdev',
@@ -2535,9 +2588,11 @@ function imgInit(){
       const first = ((out.image || out).data || [])[0];
       if (!first || !first.b64_json)
         return toast('The lane answered 200 with no image in it.', 'err');
+      imgDraw(out.image || out, 'png');
+      // checked again: references added during the 20 s it took made an eleventh
+      if (imgRefs.length >= 10) return toast('The sample is shown, but ten references is the maximum: it was not added.', 'warn', 7000);
       imgRefs.push({name: 'sample-teapot.png', dataUrl: 'data:image/png;base64,' + first.b64_json,
                     w: 1024, h: 1024});
-      imgDraw(out.image || out, 'png');
       imgDrawRefs();
       toast('Sample added as Picture ' + imgRefs.length + ': a red teapot. The "Local edit" example turns it blue.', 'ok', 5000);
     } catch (e){
