@@ -1342,9 +1342,10 @@
         </section>
 
         <section class="panel s1wide">
-          <h3>What each setting costs <span class="right"><span class="chip">4 s row measured here 2026-09-25, rest cookbook</span></span></h3>
-          <p class="note" style="margin:0 0 10px">The 4 s row is this lane's own measurement (10:52 end to end,
-            denoise at 11.3 s/step, decode 27 s, peak 9242 MB). The other rows are the SGLang cookbook's
+          <h3>What each setting costs <span class="right"><span class="chip">4 s rows measured here 2026-09-25, rest cookbook</span></span></h3>
+          <p class="note" style="margin:0 0 10px">The 4 s rows are this lane's own measurements (480P: 10:52 end to end,
+            denoise at 11.3 s/step, decode 27 s, peak 9242 MB; 720P: about 25 min, peak 82 GB).
+            The other rows are the SGLang cookbook's
             verified DGX Spark figures, not measurements of this lane: about 12.1 s per denoise step steady-state,
             about 40 s of decode, about 12 min per warm request at 480P, with no flags at all. The text encoder
             runs about 5.5 min per request and does not warm up. These rows become this box's numbers the day
@@ -1355,7 +1356,7 @@
               <tbody>
                 <tr><td><b>4 s at 480P (the defaults)</b></td><td class="r num"><b>10:52 measured</b></td><td>video + audio in one MP4, inspected</td></tr>
                 <tr><td>first + last frames, 480P</td><td class="r num">about 11 min, measured</td><td>continued between your frames</td></tr>
-                <tr><td>720P</td><td class="r num">longer, unmeasured</td><td>same call, more pixels</td></tr>
+                <tr><td>4 s 720P (server reports 1280x704)</td><td class="r num">about 25 min, measured</td><td>peak 82 GB against 9 GB at 480P</td></tr>
               </tbody>
             </table>
           </div>

@@ -127,7 +127,10 @@ cookbook's ~12 min for the same shape. A second 4 s 480P the same night complete
 about 10 min with the download proven. The text encoder runs ~5.5 min per request
 and does not warm up (cookbook).
 
-Not yet measured here: 720P times, idle cores, second request while one runs
+Not yet measured here: 15 s durations, idle cores, second request while one runs
 (refused until measured). A 4 s fl2va from a keyframe completed the same night in
-about 11 min with the download proven, continuing the frame's scene. The Video tab's
-cost table keeps the cookbook figures where this file has no row yet.
+about 11 min with the download proven, continuing the frame's scene; a 4 s 720P
+completed in about 25 min (server reports 1280x704 for a 1280x720 ask), peak memory
+81934 MB against 9242 MB at 480P: pixels cost far more than linear here, and 720P is
+near what this box holds. The Video tab's cost table keeps the cookbook figures
+where this file has no row yet.
