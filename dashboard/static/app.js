@@ -2795,6 +2795,14 @@ function vidReadFile(tag, file){
   };
   r.readAsDataURL(file);
 }
+// The lane's refusal arrives as parsed JSON, and 'an object' + '' is "[object
+// Object]" (seen 2026-09-26: the real reason hid behind it). Rendered, truncated:
+// a refusal body can carry the whole schema.
+function vidErr(out, status){
+  const v = out.error || out.refused || status;
+  const s = typeof v === 'string' ? v : JSON.stringify(v);
+  return (s || String(status)).slice(0, 400);
+}
 async function vidRun(){
   if (vidInflight || VID_STATE.busy) return toast('The lane is already generating; one video at a time.', 'warn');
   const p = vidProblem();
@@ -2825,7 +2833,7 @@ async function vidRun(){
     const out = await r.json();
     if (!r.ok && out.crashed) return toast('No video: the lane crashed while making it. ' + out.error, 'err', 9000);
     if (!r.ok && out.interrupted) return toast('Video cancelled: the lane was stopped or restarted.', 'warn');
-    if (!r.ok) return toast(r.status === 409 ? out.error : 'Could not make a video: ' + (out.error || out.refused || r.status),
+    if (!r.ok) return toast(r.status === 409 ? out.error : 'Could not make a video: ' + vidErr(out, r.status),
                             r.status === 409 ? 'warn' : 'err', 7000);
     if (!out.video_id) return toast('The lane answered 200 with no video in it.', 'err');
     const secs2 = Math.round((Date.now() - t0) / 1000);
