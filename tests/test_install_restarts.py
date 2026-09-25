@@ -128,6 +128,31 @@ class TheGeneratedConfigKeepsItsFit(unittest.TestCase):
         self.assertEqual(text, before)
         self.assertEqual(mtime, 1000, "an identical config was written again, and its date moved")
 
+    def keep_after(self, d, mode="1m", lane="27b"):
+        """OC_KEEP as install.sh resolves it for the config in d."""
+        start = INSTALL.index("# On 1m the table gives bounds and the fit to the pool sets the pair")
+        block = INSTALL[start:INSTALL.index("\nfi\n", INSTALL.index("  if [ -n \"$OC_FIT_CTX\" ]; then", start)) + 4]
+        script = (f'set -euo pipefail\ndie(){{ echo "DIE $*"; exit 1; }}\nREPO_DIR="{REPO}"\nCONFIG_DIR="{d}"\n'
+                  f'CONTEXT_MODE={mode}\nLANE={lane}\nOC_CTX=700000\nOC_OUT=200000\nOC_KEEP=170000\n'
+                  + block + 'echo "KEEP=$OC_KEEP"\n')
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return int(r.stdout.strip().rsplit("KEEP=", 1)[1])
+
+    def test_the_compaction_goes_with_the_fitted_pair(self):
+        """Sized from the table's bound, the compaction was set back at every run and the fit
+        at the end set it again: two writes, two backups and two opencode-web restarts per
+        update on the reference box (2026-09-25). A fitted pair keeps its own."""
+        want = int(subprocess.run([str(REPO / "oc-limits.sh"), "--preserve", "560000"],
+                                  capture_output=True, text=True).stdout)
+        self.assertEqual(self.keep_after(self.fitted_dir(560000, 186000)), want)
+        self.assertLess(want, 170000)
+        # the table's own pair, no fit, and the other lanes keep the table's value
+        self.assertEqual(self.keep_after(self.fitted_dir(700000, 200000)), 170000)
+        self.assertEqual(self.keep_after(self.fitted_dir(560000, 186000), mode="native"), 170000)
+        self.assertEqual(self.keep_after(self.fitted_dir(560000, 186000), lane="flash"), 170000)
+        self.assertEqual(self.keep_after(pathlib.Path(tempfile.mkdtemp(prefix="oc-none-"))), 170000)
+
     def test_a_native_install_writes_the_table(self):
         pair, _, _ = self.run_generator(self.fitted_dir(559000, 186000), "native")
         self.assertEqual(pair, (173000, 64000))

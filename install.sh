@@ -1549,6 +1549,27 @@ OC_27B=0; OC_FLASH=0
 # How much of a conversation survives a compaction verbatim, from the same table.
 OC_KEEP="$("$REPO_DIR/oc-limits.sh" --preserve "$OC_CTX")" \
   || die "oc-limits.sh --preserve failed for $OC_CTX (repo bug: please open an issue)"
+# On 1m the table gives bounds and the fit to the pool sets the pair (fitted() below and
+# --keep-lower), so the compaction goes with the fitted pair too: sized from the bound here,
+# it was set back at every run and the fit at the end set it again, two writes, two backups
+# and two opencode-web restarts per update (seen on the reference box, 2026-09-25).
+if [ "$CONTEXT_MODE" = "1m" ] && [ "$LANE" != "flash" ]; then
+  OC_FIT_CTX="$(python3 - "$CONFIG_DIR/opencode.json" "$OC_CTX" "$OC_OUT" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    lim = json.load(open(sys.argv[1]))["provider"]["qwen38"]["models"]["qwen3.8-27b"]["limit"]
+    c, o = int(lim["context"]), int(lim["output"])
+    if 0 < c <= int(sys.argv[2]) and 0 < o <= int(sys.argv[3]):
+        print(c)
+except Exception:
+    pass
+PY
+)"
+  if [ -n "$OC_FIT_CTX" ]; then
+    OC_KEEP="$("$REPO_DIR/oc-limits.sh" --preserve "$OC_FIT_CTX")" \
+      || die "oc-limits.sh --preserve failed for $OC_FIT_CTX (repo bug: please open an issue)"
+  fi
+fi
 # The other engine's limits, for when both providers are present: the 27B block
 # keeps its context-mode limits, flash always serves its native window. A flash install
 # runs in native mode, so the 27B's own mode comes from its unit: taken from this run, a
