@@ -3,7 +3,7 @@
 and the asynchronous call it holds from the create to the download.
 
 The refusals mirror the cookbook's bands, read on 2026-09-25: seconds 4 to 15, one
-video per call on this lane, tasks t2v or fl2va on the fl2va weights, keyframes as
+video per call on this lane, tasks t2va or fl2va on the fl2va weights, keyframes as
 files the lane reads by URI. None of them was measured against the lane: what was
 measured is the shape (create -> poll -> download), and every refusal below names the
 cookbook band it holds, so a wrong one reads as wrong, not as strict.
@@ -169,7 +169,7 @@ class TheRefusals(Base):
     def test_an_unknown_task_is_refused(self):
         code, out = self.call({"prompt": "a cat", "task": "ref2va"})
         self.assertEqual(code, 400)
-        self.assertIn("t2v", out["error"])
+        self.assertIn("t2va", out["error"])
 
     def test_fl2va_named_with_no_frame_is_refused_not_served_as_text(self):
         """fl2va without a keyframe would read as text-only under a conditioning task:
@@ -229,7 +229,7 @@ class TheRefusals(Base):
         self.assertEqual(code, 200)
         body = self.created_body()
         self.assertEqual(body["model"], "MiniMax-H3")
-        self.assertEqual(body["task"], "t2v")
+        self.assertEqual(body["task"], "t2va")
         self.assertEqual(body["target"],
                          {"short_edge": 480, "aspect_ratio": "16:9", "duration_seconds": 4})
 

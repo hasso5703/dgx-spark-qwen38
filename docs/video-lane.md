@@ -91,7 +91,7 @@ until deleted by hand.
 
 ## The call, and what it costs
 
-`POST /v1/videos` creates (prompt, `task` t2v/fl2va, seconds 4 to 15, size, `target`
+`POST /v1/videos` creates (prompt, `task` t2va/fl2va, seconds 4 to 15, size, `target`
 with short edge, aspect ratio and duration, quality, `num_outputs_per_prompt`,
 `num_inference_steps`, `flow_shift`, `audio_flow_shift`, seed), answers 200 with an
 id in a queued state, and `GET /v1/videos` says when it is completed;

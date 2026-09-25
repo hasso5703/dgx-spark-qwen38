@@ -2700,16 +2700,16 @@ def video_call(payload: dict) -> tuple[int, dict]:
             raise
     else:
         # The lane requires a task; named wrong it answers 400 (measured 2026-09-25).
-        # Text-only is t2v, and only t2v: fl2va without a frame would read as text-only
+        # Text-only is t2va, and only t2va: fl2va without a frame would read as text-only
         # under a conditioning task, so it is refused as asked, not served as text.
-        task = fields.get("task", "t2v")
-        if task not in ("t2v", "fl2va"):
-            return 400, {"error": "task is t2v, or fl2va with a first_frame and/or last_frame"}
+        task = fields.get("task", "t2va")
+        if task not in ("t2va", "fl2va"):
+            return 400, {"error": "task is t2va, or fl2va with a first_frame and/or last_frame"}
         if task == "fl2va":
             if variant != "fl2va":
                 return 400, {"error": f"this lane serves the {variant} weights, which take no keyframes"}
             return 400, {"error": "fl2va names first/last-frame conditioning: attach a first_frame and/or last_frame"}
-        fields["task"] = "t2v"
+        fields["task"] = "t2va"
     fields.setdefault("model", "MiniMax-H3")
     # No Authorization header: the diffusion runtime has no --api-key, so the lane
     # cannot check one and the unit binds loopback instead. The gate is this process's
