@@ -186,29 +186,44 @@ class EngineUnreachable(Exception):
     """The engine did not answer /tokenize: stopped, crashed, restarting or still loading."""
 
 
-# The image lane holds the GPU instead of a text engine once the box is switched to it,
-# and a text engine does not come back from that by itself. Asked only on the error path,
-# where the answer changes what the client is told, and at most every 5 s.
+# The image and video lanes hold the GPU instead of a text engine once the box is
+# switched to one of them, and a text engine does not come back from that by itself.
+# Asked only on the error path, where the answer changes what the client is told,
+# and at most every 5 s per lane.
 IMAGE_UNIT = "qwen38-image.service"
 _IMAGE_SEEN = {"ts": -1e9, "active": False}
+VIDEO_UNIT = "qwen38-video.service"
+_VIDEO_SEEN = {"ts": -1e9, "active": False}
+
+
+def _lane_active(unit: str, seen: dict) -> bool:
+    now = time.monotonic()
+    if now - seen["ts"] > 5:
+        try:
+            seen["active"] = subprocess.run(["systemctl", "is-active", "--quiet", unit],
+                                            timeout=2).returncode == 0
+        except Exception:
+            seen["active"] = False
+        seen["ts"] = now
+    return seen["active"]
 
 
 def image_lane_serving():
-    now = time.monotonic()
-    if now - _IMAGE_SEEN["ts"] > 5:
-        try:
-            _IMAGE_SEEN["active"] = subprocess.run(["systemctl", "is-active", "--quiet", IMAGE_UNIT],
-                                                   timeout=2).returncode == 0
-        except Exception:
-            _IMAGE_SEEN["active"] = False
-        _IMAGE_SEEN["ts"] = now
-    return _IMAGE_SEEN["active"]
+    return _lane_active(IMAGE_UNIT, _IMAGE_SEEN)
+
+
+def video_lane_serving():
+    return _lane_active(VIDEO_UNIT, _VIDEO_SEEN)
 
 
 def engine_gone_reason():
     """What an unanswering engine means on this box, and what brings it back."""
     if image_lane_serving():
         return ("This box is serving images right now (qwen38-image.service), and a text engine "
+                "does not come back by itself: switch back to a text lane from the cockpit's "
+                "switcher, or run ./switch-model.sh with a text target")
+    if video_lane_serving():
+        return ("This box is serving video right now (qwen38-video.service), and a text engine "
                 "does not come back by itself: switch back to a text lane from the cockpit's "
                 "switcher, or run ./switch-model.sh with a text target")
     return "It is stopped, restarting or still loading (a restart takes minutes, about 9 on a DGX Spark)"

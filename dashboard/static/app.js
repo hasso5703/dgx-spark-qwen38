@@ -46,15 +46,16 @@ const TRANSITIONAL = new Set(['starting', 'loading-weights', 'loading-draft', 'a
 const STAGE_LABEL = {'init': 'init', 'loading-weights': 'weights', 'loading-draft': 'draft', 'allocating-kv': 'KV', 'capturing-graphs': 'graphs', 'warming-up': 'warmup'};
 const ALL_STAGES = Object.keys(STAGE_LABEL);
 const LANE_NAME = {'qwen38-sglang.service': '27B', 'qwen38-flash.service': 'flash 176B',
-                  'qwen38-image.service': 'Qwen-Image'};
+                  'qwen38-image.service': 'Qwen-Image', 'qwen38-video.service': 'MiniMax-H3'};
 // How long each lane takes to answer after a start, before the box has seen one of its
 // boots. Measured on the reference box: the 27B loads, compiles and captures graphs for
 // about nine minutes, the flash lane for about thirteen (it also writes its 47.7 GiB PLE
-// table); the image lane loads 31 GB and warms up in about 70 seconds. Once a lane has
+// table); the image lane loads 31 GB and warms up in about 70 seconds; the video lane
+// loads the checkpoint (fl2va partition plus shared components) and answers in about 12 min. Once a lane has
 // booted in front of the cockpit, its own median replaces these, and every estimate on
 // the page reads readyIn(): the stop warning said "12 to 15 min" beside a bar that said 13.
 const READY_DEFAULT = {'qwen38-sglang.service': 540, 'qwen38-flash.service': 780,
-                       'qwen38-image.service': 70};
+                       'qwen38-image.service': 70, 'qwen38-video.service': 720};
 function readyIn(unit){
   const e = ((F.life || {}).engines || {})[unit] || {};
   const b = (e.boots || []).slice().sort((a, c) => a - c);
@@ -62,6 +63,13 @@ function readyIn(unit){
   return 'about ' + fmtDur(s);
 }
 const IMAGE_UNIT = 'qwen38-image.service';
+const VIDEO_UNIT = 'qwen38-video.service';
+// The video lane's live facts. Declared up here, not beside the Video tab's code: the
+// lane pill and the action bar read them too, and a const read before its line has run
+// is a ReferenceError that takes the whole page down with it.
+const VID_STATE = {port: 30022, host: '127.0.0.1', available: false, busy: false};
+let vidInflight = null;    // when this page's own request started, or null
+let VID_WATCH = null;
 // The image lane's live facts. Declared up here, not beside the Image tab's code: the
 // lane pill and the action bar read them too, and a const read before its line has run
 // is a ReferenceError that takes the whole page down with it.
@@ -86,7 +94,7 @@ const AGENT_UNIT = 'opencode-web.service';
 const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8',
                       'uncensored-fp8': 'FP8 uncensored', flash: '',
                       'flash-uncensored': 'uncensored', 'flash-nvda': 'NVIDIA export',
-                      image: '2.1'};
+                      image: '2.1', video: 'H3'};
 function laneLabel(unit){
   if (unit === AGENT_UNIT) return 'the opencode web server';
   const base = LANE_NAME[unit] || unit.replace('.service', '');
@@ -130,6 +138,7 @@ function showTab(name, push = true){
   // the lane can be started and stopped from elsewhere in this page, so unlike the
   // System One probe this one re-reads on every visit rather than once
   if (name === 'image' && typeof imgLane === 'function') imgLane();
+  if (name === 'video' && typeof vidLane === 'function') vidLane();
   // at parse time the agent helpers below are not initialised yet; the first state
   // tick mounts the frame in that case, a later click mounts it at once
   if (name === 'agent' && document.readyState === 'complete'){ mountAgent(); applyAgentMax(); }
@@ -365,6 +374,8 @@ function textReady(){
   return servingReady() && !!s && s[0] !== IMAGE_UNIT;
 }
 const imageServing = () => { const s = servingEngine(); return !!s && s[0] === IMAGE_UNIT; };
+const videoServing = () => { const s = servingEngine(); return !!s && s[0] === VIDEO_UNIT; };
+const diffusionServing = () => imageServing() || videoServing();
 function rPool(){
   const l = F.load || {};
   if (!F.pool){ setText('poollab', 'waiting for the engine'); $('poolfill').style.width = '0%'; setText('poolnote', 'the pool size arrives with the engine (max_total_num_tokens at boot)'); return; }
@@ -447,7 +458,8 @@ function rCanary(d){
   // With no text engine the probe has nothing to ask, and its last success, however old,
   // was shown as a reading of what runs now (found in review, 2026-09-24).
   if (d.skipped && !textReady()){
-    txt = imageServing() ? 'no text engine (the image lane serves)' : 'no text engine';
+    txt = imageServing() ? 'no text engine (the image lane serves)'
+        : videoServing() ? 'no text engine (the video lane serves)' : 'no text engine';
     why = d.last_ok ? `The last probe passed at ${clockTime(d.last_ok)}, on the engine that served then.`
                     : 'The probe waits for a text engine that is ready and idle.';
   }
@@ -736,7 +748,9 @@ function stoppingBlock(e){
   const bar = el('div', 'bbar'); bar.append(el('div', 'bfill indet')); boot.append(bar);
   const lab = el('div', 'blab');
   lab.append(el('span', null, `stopping · ${e.state_elapsed != null ? fmtDur(e.state_elapsed) : '…'} elapsed`));
-  lab.append(el('span', null, e.kind === 'image'
+  lab.append(el('span', null, e.kind === 'video'
+    ? 'systemd stops the process (SIGTERM; a generation in flight is cut after 5 s)'
+    : e.kind === 'image'
     ? 'systemd stops the process (SIGTERM; a generation in flight is cut after 5 s)'
     : 'systemd stops the container (SIGTERM, usually under 30 s)'));
   boot.append(lab); return boot;
@@ -822,6 +836,7 @@ function rLifecycle(d){
   // engine facts belong to a lane that is actually up: while it boots, stops or is gone,
   // say so rather than showing the previous lane's model, pool and percentages
   if (!textReady()) rEngineInfoDown(imageServing() ? 'the image lane is serving, so there is no text engine: its facts are in the Image tab'
+                                    : videoServing() ? 'the video lane is serving, so there is no text engine: its facts are in the Video tab'
                                     : s ? 'engine ' + (STATE_LABEL[s[1].state] || s[1].state) : 'no engine running');
   if (!s){
     const p = el('p', 'empty', `No engine is serving. Start ${laneLabel(enabledUnit())} from the action bar (${readyIn(enabledUnit())} to ready), or switch the target first.`);
@@ -868,11 +883,12 @@ function rLifecycle(d){
   applyBusy();
 }
 // Which unit serves a target, and how that lane is installed when it is not.
-const TARGET_UNIT = t => t === 'image' ? IMAGE_UNIT : t.startsWith('flash') ? 'qwen38-flash.service' : 'qwen38-sglang.service';
+const TARGET_UNIT = t => t === 'image' ? IMAGE_UNIT : t === 'video' ? VIDEO_UNIT : t.startsWith('flash') ? 'qwen38-flash.service' : 'qwen38-sglang.service';
 // the text engine's served target, when it is one of this unit's
 const ownTarget = unit => F.target && TARGET_UNIT(F.target) === unit ? F.target : null;
 const LANE_INSTALL = {'qwen38-sglang.service': './install.sh', 'qwen38-flash.service': 'MODEL_CHOICE=flash ./install.sh',
-                      'qwen38-image.service': './install.sh --with-image'};
+                      'qwen38-image.service': './install.sh --with-image',
+                      'qwen38-video.service': './install.sh --with-video'};
 // An option whose lane has no unit file on this box is shown as such and cannot be
 // picked. Picking it used to be allowed, and the switch then failed a second later
 // with "not installed": the image lane is opt-in, so that was the default on most boxes.
@@ -897,7 +913,7 @@ function syncSelector(){
   const eng = (F.life || {}).engines || {};
   const s = servingEngine();
   const unit = s ? s[0] : enabledUnit();
-  const target = (s && s[0] !== IMAGE_UNIT && ownTarget(unit)) || (eng[unit] || {}).target;
+  const target = (s && s[0] !== IMAGE_UNIT && s[0] !== VIDEO_UNIT && ownTarget(unit)) || (eng[unit] || {}).target;
   // A choice holds the selector until the lane serves it, and then the selector follows
   // the lane again: it stayed on the first choice for the life of the page, cancelled or
   // served, while the lanes moved under it (found in review, 2026-09-24).
@@ -917,6 +933,7 @@ const ACTION_PHRASE = {
   unit: p => `${p.verb || 'act on'} ${String(p.unit || '').replace('.service', '')}`,
   // the lane and the checkpoint: "uncensored" alone read the same for the 27B and the flash
   switch: p => `switch to ${!p.target ? 'a target' : p.target === 'image' ? 'Qwen-Image 2.1'
+    : p.target === 'video' ? 'MiniMax-H3'
     : LANE_NAME[TARGET_UNIT(p.target)] + (TARGET_SHORT[p.target] ? ' ' + TARGET_SHORT[p.target] : '')}`,
   flush_cache: () => 'flush the radix cache',
   abort_all: () => 'abort every generation in flight',
@@ -1022,6 +1039,8 @@ function applyBusy(){
   const engineUp = textReady();
   const noEngineWhy = engineUp ? '' : imageServing()
     ? 'the image lane is serving: this acts on the text engine, which is not running'
+    : videoServing()
+    ? 'the video lane is serving: this acts on the text engine, which is not running'
     : `no engine is serving: start one first (it answers in ${readyIn(enabledUnit())})`;
   document.querySelectorAll('[data-act]').forEach(b => {
     if (b.id === 'lanebtn') return;
@@ -1425,6 +1444,8 @@ function askAction(name, params, argv, warns){
   if (offline){ toast('The cockpit is unreachable right now: nothing can be started.', 'err'); return; }
   if (NEEDS_ENGINE.has(name) && !textReady()){ toast(imageServing()
       ? 'The image lane is serving: this action talks to the text engine, which is not running.'
+      : videoServing()
+      ? 'The video lane is serving: this action talks to the text engine, which is not running.'
       : 'No engine is serving: start one first, then this action has something to talk to.', 'warn'); return; }
   if (F.job && F.job.current){ toast(`Another action is running (${F.job.current.action}). Wait for the job strip to finish.`, 'warn'); return; }
   if (!$('modal').hidden) return;
@@ -1435,6 +1456,11 @@ function askAction(name, params, argv, warns){
                        'flash-uncensored': 'flash 176B uncensored (NVFP4)',
                        'flash-nvda': 'flash 176B, NVIDIA export'};
   const TARGET_NOTE = {
+    video: 'The video lane: text to video with joint video-and-audio, plus first/last-frame conditioning. '
+         + 'It is a fourth lane with its own unit and its own venv, and like the others it '
+         + 'takes the box alone: the video checkpoint does not fit beside a serving LLM. It answers in '
+         + 'about 12 min after a start, and a 4 s 480P request takes about as long. The proxy on :30001 '
+         + 'and opencode are text clients and are left exactly as they are.',
     image: 'The image lane: text to image, editing with up to ten references, and native RGBA. '
          + 'It is a third lane with its own unit and its own venv, and like the other two it '
          + 'takes the box alone: 31 GB of weights do not fit beside a serving LLM. It answers in '
@@ -1465,15 +1491,23 @@ function askAction(name, params, argv, warns){
          + 'Like every lane it takes the box alone, so this is only offered once no other engine is running.',
     stop: 'systemd stops the image lane and the 31 GB come back at once. It does not bring a text lane back by itself: start the one you want.',
     restart: `systemd restarts the image lane; it reloads 31 GB and answers again in ${readyIn(IMAGE_UNIT)}.`};
+  const VIDEO_EXPLAIN = {
+    start: `systemd starts the video lane: it loads the checkpoint and answers in ${readyIn(VIDEO_UNIT)}. `
+         + 'Like every lane it takes the box alone, so this is only offered once no other engine is running.',
+    stop: 'systemd stops the video lane and the memory comes back at once. It does not bring another lane back by itself: start the one you want.',
+    restart: `systemd restarts the video lane; it reloads the checkpoint and answers again in ${readyIn(VIDEO_UNIT)}.`};
   const AGENT_EXPLAIN = {stop: 'systemd stops opencode serve: the Agent tab goes dark until the server is started again.',
                          start: 'systemd starts opencode serve on loopback; the Agent tab is back within seconds.',
                          restart: 'systemd restarts opencode serve, which picks up an upgraded binary; the Agent tab reconnects by itself within seconds.'};
   const EXPLAIN = {unit: p => p.unit === AGENT_UNIT ? AGENT_EXPLAIN[p.verb] || ''
                      : p.unit === IMAGE_UNIT ? IMAGE_EXPLAIN[p.verb] || ''
+                     : p.unit === VIDEO_UNIT ? VIDEO_EXPLAIN[p.verb] || ''
                      : p.verb === 'stop' ? 'systemd stops the unit; the container gets SIGTERM and disappears in seconds.' : `systemd starts the unit; the engine loads its weights and is ready in ${readyIn(p.unit)} (watch the boot bar).`,
                    switch: p => (TARGET_NOTE[p.target] ? TARGET_NOTE[p.target] + '\n\n' : '')
                      + (p.target === 'image'
                         ? 'switch-model.sh verifies the checkpoint and makes the image lane the one unit enabled at boot. It never restarts anything: stop the serving lane, then start this one.'
+                        : p.target === 'video'
+                        ? 'switch-model.sh verifies the checkpoint and makes the video lane the one unit enabled at boot. It never restarts anything: stop the serving lane, then start this one.'
                         : 'switch-model.sh rewrites the unit for the chosen target, updates the boot enablement, the proxy ceiling and the opencode default model. It never restarts anything: stop and start the engines afterwards.'),
                    flush_cache: () => 'Empties the radix cache. Harmless; refused by the engine if requests are running.',
                    abort_all: () => 'Every running or queued generation ends now; the clients see their stream end.',
@@ -2613,4 +2647,236 @@ function imgInit(){
   imgLane();
 }
 
+// ── Video tab: MiniMax-H3 ───────────────────────────────────────────────────
+// One request at a time on this lane, watched where the page looks from. Creation is
+// asynchronous lane-side (an id, then minutes of work, then bytes), but this page's
+// fetch simply waits it out: the cockpit holds the call to completed and answers the
+// video id, and the player streams it back through /api/video/content.
+let vidMode = 't2v';
+let vidFrames = {first: null, last: null};   // {name, dataUrl} or null
+async function vidLane(){
+  try{
+    const r = await fetch('/api/video');
+    if (r.status === 401) return;
+    const d = await r.json();
+    VID_STATE.port = d.port || 30022;
+    VID_STATE.host = d.host || '127.0.0.1';
+    VID_STATE.installed = !!d.installed;
+    VID_STATE.model = d.model || 'MiniMaxAI/MiniMax-H3';
+    VID_STATE.variant = d.variant || 'fl2va';
+    const p = d.progress || {};
+    VID_STATE.busy = !vidInflight && !!p.id && p.status !== 'completed';
+    VID_STATE.busyLabel = p.status ? ('generating: ' + p.status) : '';
+    if (VID_STATE.busy) vidWatch(true, 10000);
+    else if (!vidInflight) vidWatch(false);
+    vidRenderLane();
+  } catch (e){ setChip('vidchip', 'unknown', 'warn'); }
+}
+function vidRenderLane(){
+  if (!$('vidctl')) return;
+  setText('vidmodel', VID_STATE.model || 'MiniMaxAI/MiniMax-H3');
+  const e = ((F.life || {}).engines || {})[VIDEO_UNIT];
+  const ctl = $('vidctl'); clear(ctl);
+  const boot = $('vidboot'); clear(boot);
+  const guide = $('vidsteps-guide'); clear(guide); guide.hidden = true;
+  const say = txt => ctl.append(el('span', 'chip', txt));
+  const serving = servingEngine();
+  const other = serving && serving[0] !== VIDEO_UNIT ? serving[0] : null;
+  if (!F.life){
+    setChip('vidchip', 'checking', '');
+  } else if (!e){
+    setChip('vidchip', 'not installed', 'warn');
+    say('install it with:  ./install.sh --with-video');
+    say('about 150 GB of headroom, an hour or more, one command');
+  } else if (e.state === 'ready' || e.state === 'degraded'){
+    setChip('vidchip', VID_STATE.busy ? 'busy: ' + VID_STATE.busyLabel : 'serving on :' + VID_STATE.port,
+            VID_STATE.busy ? 'warn' : 'ok');
+    say(VID_STATE.busy ? 'someone is generating: one video at a time on this lane'
+                       : 'stop it from the action bar at the top, like any lane');
+  } else if (TRANSITIONAL.has(e.state)){
+    setChip('vidchip', STATE_LABEL[e.state] || e.state, 'warn');
+    boot.append(bootBlock(e, VIDEO_UNIT));
+    say('Generate turns on by itself the moment it answers');
+  } else if (e.state === 'stopping'){
+    setChip('vidchip', 'stopping', 'warn');
+    boot.append(stoppingBlock(e));
+  } else {
+    setChip('vidchip', e.state === 'failed' ? 'failed' : 'stopped', e.state === 'failed' ? 'err' : '');
+    if (e.state === 'failed') say('the unit failed: its journal is in the Logs tab');
+    const steps = [];
+    if (enabledUnit() !== VIDEO_UNIT) steps.push('Pick MiniMax-H3 in the switcher, then press Switch');
+    if (other) steps.push(`Stop ${LANE_NAME[other] || other}: it is serving, and two engines never run at once`);
+    steps.push(`Press Start MiniMax-H3 (${readyIn(VIDEO_UNIT)} to ready)`);
+    guide.hidden = false;
+    steps.forEach((s, i) => guide.append(el('li', i === 0 ? 'now' : '', s)));
+  }
+  const ready = !!e && (e.state === 'ready' || e.state === 'degraded');
+  VID_STATE.available = ready;
+  $('vidrun').disabled = !ready || VID_STATE.busy || !!vidInflight || !vidVal('vidprompt')
+    || (vidMode === 'fl2v' && !vidFrames.first && !vidFrames.last);
+  vidCancelSync();
+}
+function vidCancelSync(){
+  const b = $('vidcancel'); if (b) b.hidden = !(vidInflight || VID_STATE.busy);
+}
+function vidCancel(){
+  askAction('unit', {verb: 'restart', unit: VIDEO_UNIT}, ['sudo', '-n', '/usr/bin/systemctl', 'restart', VIDEO_UNIT],
+    ['SGLang Diffusion cannot abort a request, so cancelling restarts the lane: the video being made is lost, '
+     + `and the lane answers again in ${readyIn(VIDEO_UNIT)}.`]);
+}
+function vidVal(id){ const e = $(id); return e ? e.value.trim() : ''; }
+function vidProblem(){
+  const s = parseInt(($('vidseconds') || {}).value, 10);
+  if (!(s >= 4 && s <= 15)) return 'Seconds is a whole number from 4 to 15.';
+  if (!vidVal('vidprompt')) return 'A prompt is required.';
+  if (vidMode === 'fl2v' && !vidFrames.first && !vidFrames.last) return 'Give a first frame, a last frame, or both.';
+  return '';
+}
+function vidSync(){
+  const p = vidProblem();
+  const w = $('vidwarn'); if (w){ w.hidden = !p; if (p) w.textContent = p; }
+  vidRenderLane();
+  const secs = parseInt(($('vidseconds') || {}).value, 10) || 5;
+  const size = ($('vidsize') || {}).value || '864x480';
+  const steps = parseInt(($('vidsteps') || {}).value, 10) || 50;
+  const seed = vidVal('vidseed');
+  const body = {prompt: vidVal('vidprompt'), seconds: secs, size, num_inference_steps: steps};
+  if (seed) body.seed = parseInt(seed, 10);
+  if (vidMode === 'fl2v'){
+    body.task = 'fl2v';
+    if (vidFrames.first) body.first_frame = '[first frame attached]';
+    if (vidFrames.last) body.last_frame = '[last frame attached]';
+  }
+  setText('vidcurl', `curl -s http://127.0.0.1:${VID_STATE.port || 30022}/v1/videos -H 'Content-Type: application/json' -d '${JSON.stringify(body)}'`
+    + `\n# then poll GET /v1/videos to completed, and download GET /v1/videos/<id>/content`);
+  const mins = Math.round(secs * 11 / 4);
+  setText('vidcost', `About ${mins} min for ${secs} s at ${size.split('x')[0] === '864' ? '480P' : '720P'} on this box (measured 4 s 480P in 10:52 on 2026-09-25).`);
+}
+function vidWatch(on, ms){
+  if (on && VID_WATCH && VID_WATCH.ms === ms) return;
+  if (VID_WATCH){ clearInterval(VID_WATCH.id); VID_WATCH = null; }
+  if (on) VID_WATCH = {id: setInterval(vidTick, ms), ms};
+}
+function vidTick(){
+  if (!vidInflight && (document.hidden || activeTab !== 'video')) return vidWatch(false);
+  vidLane();
+}
+function vidDrawRefs(){
+  const box = $('vidrefs'); if (!box) return; clear(box);
+  [['first', vidFrames.first], ['last', vidFrames.last]].forEach(([tag, f]) => {
+    if (!f) return;
+    const d = el('div', 'ref');
+    const im = document.createElement('img'); im.src = f.dataUrl; im.alt = tag;
+    d.append(im); d.append(el('span', 'num', `${tag}: ${f.name}`));
+    const x = el('button', 'btn mini low', 'remove');
+    x.addEventListener('click', () => { vidFrames[tag] = null; vidDrawRefs(); vidSync(); });
+    d.append(x); box.append(d);
+  });
+}
+function vidReadFile(tag, file){
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = () => {
+    // Keyframes are re-encoded to PNG and capped on the long side before they leave
+    // the browser, like the image lane's references: a 12-megapixel phone photo would
+    // be megabytes spent against the 10 MiB the cockpit reads, and PNG is what keeps
+    // the pixels exact.
+    const im = new Image();
+    im.onload = () => {
+      const scale = Math.min(1, 1280 / Math.max(im.width, im.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(im.width * scale); c.height = Math.round(im.height * scale);
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+      vidFrames[tag] = {name: file.name, dataUrl: c.toDataURL('image/png')};
+      vidDrawRefs(); vidSync();
+    };
+    im.onerror = () => toast(`${file.name} is not an image the browser can read.`, 'err');
+    im.src = r.result;
+  };
+  r.readAsDataURL(file);
+}
+async function vidRun(){
+  if (vidInflight || VID_STATE.busy) return toast('The lane is already generating; one video at a time.', 'warn');
+  const p = vidProblem();
+  if (p) return toast(p, 'warn');
+  if (!VID_STATE.available) return toast('The video lane is not serving: start it first.', 'warn');
+  const secs = parseInt($('vidseconds').value, 10);
+  const steps = parseInt($('vidsteps').value, 10) || 50;
+  const seed = vidVal('vidseed');
+  const payload = {prompt: vidVal('vidprompt'), seconds: secs, size: $('vidsize').value,
+                   num_inference_steps: steps};
+  if (seed) payload.seed = parseInt(seed, 10);
+  if (vidMode === 'fl2v'){
+    if (vidFrames.first) payload.first_frame = vidFrames.first.dataUrl;
+    if (vidFrames.last) payload.last_frame = vidFrames.last.dataUrl;
+  }
+  const t0 = Date.now(); vidInflight = t0; vidCancelSync();
+  setText('vidstatus', `generating: about ${Math.round(secs * 11 / 4)} min at this size`);
+  $('vidrunprog').hidden = false;
+  setText('vidrunlab', 'generating'); setText('vidrunpct', '');
+  $('vidrunbar').style.width = '2%';
+  setText('vidtime', ''); $('vidmeta').textContent = '';
+  vidWatch(true, 10000);
+  try{
+    const t = await fetch('/api/csrf', {method: 'POST'}); if (t.status === 401) return login();
+    const tok = (await t.json()).token;
+    const r = await fetch('/api/video/generate', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign({csrf: tok}, payload))});
+    const out = await r.json();
+    if (!r.ok && out.crashed) return toast('No video: the lane crashed while making it. ' + out.error, 'err', 9000);
+    if (!r.ok && out.interrupted) return toast('Video cancelled: the lane was stopped or restarted.', 'warn');
+    if (!r.ok) return toast(r.status === 409 ? out.error : 'Could not make a video: ' + (out.error || out.refused || r.status),
+                            r.status === 409 ? 'warn' : 'err', 7000);
+    if (!out.video_id) return toast('The lane answered 200 with no video in it.', 'err');
+    const secs2 = Math.round((Date.now() - t0) / 1000);
+    setText('vidtime', fmtDur(secs2));
+    $('vidout').innerHTML = '';
+    const v = document.createElement('video');
+    v.controls = true; v.preload = 'metadata'; v.style.width = '100%';
+    v.src = '/api/video/content?id=' + encodeURIComponent(out.video_id);
+    $('vidout').append(v);
+    const a = el('a', 'btn mini', 'Download MP4');
+    a.href = v.src; a.download = out.video_id + '.mp4';
+    $('vidmeta').append(a);
+    $('vidmeta').append(el('span', 'chip', `${out.video_id} in ${fmtDur(secs2)}`));
+    $('vidrunbar').style.width = '100%';
+    toast('Video ready.', 'ok', 4000);
+  } catch (e){
+    toast('Could not make a video: ' + e.message, 'err');
+  } finally {
+    vidInflight = null; vidWatch(false);
+    $('vidrunprog').hidden = true;
+    setText('vidstatus', ''); vidSync(); vidLane();
+  }
+}
+function vidInit(){
+  if (!$('vidsize')) return;
+  ['vidmode-t2v', 'vidmode-fl2v'].forEach(id => $(id).addEventListener('click', () => {
+    vidMode = $(id).dataset.mode;
+    $('vidmode-t2v').setAttribute('aria-pressed', vidMode === 't2v');
+    $('vidmode-fl2v').setAttribute('aria-pressed', vidMode === 'fl2v');
+    $('vidrefbox').hidden = vidMode !== 'fl2v';
+    vidSync();
+  }));
+  $('vidreffirst').addEventListener('change', e => { vidReadFile('first', e.target.files[0]); e.target.value = ''; });
+  $('vidreflast').addEventListener('change', e => { vidReadFile('last', e.target.files[0]); e.target.value = ''; });
+  ['vidseconds', 'vidsize', 'vidsteps', 'vidseed', 'vidprompt'].forEach(id => {
+    const e = $(id); if (e) { e.addEventListener('input', vidSync); e.addEventListener('change', vidSync); }
+  });
+  $('vidreset').addEventListener('click', () => {
+    $('vidseconds').value = 5; $('vidsize').value = '864x480'; $('vidsteps').value = 50; $('vidseed').value = '';
+    vidFrames = {first: null, last: null}; vidDrawRefs(); vidSync();
+    toast('Back to the defaults: 5 s, 480P, 50 steps.', 'ok', 2600); });
+  $('vidrun').addEventListener('click', vidRun);
+  $('vidcancel').addEventListener('click', vidCancel);
+  $('vidcopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('vidcurl').textContent); toast('Copied.', 'ok', 1800); }
+    catch (e) { toast('The browser refused the clipboard; select the text instead.', 'warn'); }
+  });
+  vidSync();
+  vidLane();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && activeTab === 'video') vidLane(); });
+
 imgInit();
+vidInit();

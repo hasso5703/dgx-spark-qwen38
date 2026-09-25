@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased: the MiniMax-H3 video lane (fourth lane, opt-in)
+
+`./install.sh --with-video` adds text-to-video with joint video-and-audio
+(MiniMax-H3, `MiniMaxAI/MiniMax-H3` at `42ed227e`), driven like the other three lanes:
+switcher, stop, start, about 12 min to ready. It serves the SGLang cookbook's MiniMax-H3
+recipe exactly as upstream wrote it at the pinned source commit, with no local patch:
+no placement flags (the cookbook verifies the DGX Spark with none, and the offload flags
+measured 2.1x slower there), `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, loopback
+bind behind the cockpit's Video tab. The tab holds the asynchronous call (create, poll to
+completed, download) and refuses outside the cookbook's bands (4 to 15 s, one video per
+call, t2v/fl2va on the fl2va weights). The cookbook's Spark figures are quoted as the
+cookbook's until the lane proves itself here. Each addition comes with the tests that
+hold it, checked by running the whole offline suite with and without it.
+
 ## v1.18.7 (2026-09-24): a full review of v1.18.6, and the defects it found fixed with a test each
 
 A line-by-line review of the whole repo at v1.18.6 (code, templates, tests, CI and docs)

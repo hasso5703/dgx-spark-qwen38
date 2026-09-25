@@ -466,13 +466,13 @@ class AnUpdateKeepsTheImageLaneAsTheBootLane(unittest.TestCase):
         self.assertIn('[ "$SGL_ENABLED" -eq 0 ] && [ "$FLASH_ENABLED" -eq 0 ]', self.text)
 
     def test_the_text_unit_is_not_enabled_on_that_path(self):
-        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then')
         self.assertIn('sudo systemctl enable "$UNIT_NAME"', self.text[i:i + 120])
         # and that is the ONLY enable of the serving unit: an unguarded one would undo it
         self.assertEqual(self.text.count('sudo systemctl enable "$UNIT_NAME"'), 1)
 
     def test_that_path_ends_before_any_text_engine_is_started(self):
-        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then')
         early = self.text[i:self.text.index("exit 0", i)]
         self.assertNotIn("systemctl start", early)
         self.assertIn("--no-smoke", early, "the smoke test stops and starts the serving lane")
@@ -500,15 +500,15 @@ class TheBootLaneConvergenceHoldsEveryWay(unittest.TestCase):
         self.assertIn("sudo systemctl disable qwen38-image.service", self.text)
 
     def test_the_image_boot_path_restarts_the_proxy_it_rewrote(self):
-        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then')
         early = self.text[i:self.text.index("exit 0", i)]
         self.assertIn('sudo systemctl restart "$KEEPALIVE_UNIT"', early)
 
     def test_the_image_boot_path_respects_no_image(self):
-        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then')
         early = self.text[i:self.text.index("exit 0", i)]
         call = early.index('"$REPO_DIR/install-image.sh" --no-smoke')
-        self.assertIn('if [ "$NO_IMAGE" -eq 0 ]; then', early[:call])
+        self.assertIn('if [ "$NO_IMAGE" -eq 0 ]', early[:call])
 
     def test_the_text_lane_used_before_images_is_the_one_brought_up_to_date(self):
         """A switch to images disables both text units, so enablement cannot say which one
@@ -521,7 +521,7 @@ class TheBootLaneConvergenceHoldsEveryWay(unittest.TestCase):
 
     def test_it_never_points_at_a_switch_target_that_does_not_exist(self):
         """A kept custom model is MODEL_CHOICE=custom, which switch-model.sh rejects."""
-        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ]; then')
+        i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then')
         early = self.text[i:self.text.index("exit 0", i)]
         self.assertIn('if [ "$MODEL_CHOICE" = "custom" ]; then', early)
 
@@ -536,7 +536,7 @@ class ThePageNeverShowsAStaleOrRacingState(unittest.TestCase):
     def test_the_text_engines_target_never_labels_the_image_lane(self):
         # the text engine's target, and only when it is one of this unit's (ownTarget)
         self.assertIn("unit !== IMAGE_UNIT && ownTarget(unit)", self.js)
-        self.assertIn("s[0] !== IMAGE_UNIT && ownTarget(unit)", self.js)
+        self.assertIn('s[0] !== IMAGE_UNIT && s[0] !== VIDEO_UNIT && ownTarget(unit)', self.js)
         self.assertIn("F.target && TARGET_UNIT(F.target) === unit", self.js)
         down = self.js[self.js.index("function rEngineInfoDown("):self.js.index("function showEngineFacts(")]
         self.assertIn("F.target = null", down)

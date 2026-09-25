@@ -33,7 +33,7 @@ Notes: the server's own `watchdog_timeout=300` is a *hang* detector (kills a gen
 
 **Idle power**: without `--sleep-on-idle`, SGLang's scheduler busy-spins a full CPU core while doing nothing (reported as +10-12 W at the wall by [alef204 and emX0r](https://forums.developer.nvidia.com/t/380257/56), diagnosed in [MiaAI-Lab issue #4](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark/issues/4)). Every serving lane ships the flag, and a CI gate requires it: the 27B units and `run.sh` since v1.2.6, the flash launcher since v1.8.5, where the lane was measured holding a core at 101 % for 12 h 21 min of idle because the launcher had been written without it. A/B on the reference box: scheduler CPU 101 % -> 1.7 % at idle, module power 12.1 -> 10.5 W, and wake-up TTFT unchanged (0.234-0.240 s before, 0.234-0.239 s after, measured after 60 s and 300 s of idle), throughput in family (41.5 tok/s code, 52.8 math).
 
-**Metrics**: every text lane passes `--enable-metrics` (the image lane exports
+**Metrics**: every text lane passes `--enable-metrics` (the image and video lanes export
 none), so Prometheus scrapes `/metrics` (request rates, KV usage, acceptance
 lengths under speculative decoding, queue depth). Since v1.17 the engine port is
 on loopback, so a scraper on another machine reads `http://<box>:30001/metrics`,

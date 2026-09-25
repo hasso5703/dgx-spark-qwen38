@@ -698,6 +698,9 @@
         <optgroup label="Images">
           <option value="image">Qwen-Image 2.1</option>
         </optgroup>
+        <optgroup label="Video">
+          <option value="video">MiniMax-H3</option>
+        </optgroup>
       </select>
       <button class="btn mini" data-act="switch">Switch</button>
     </div>
@@ -975,6 +978,7 @@
                 <option value="qwen38-sglang.service">27B lane (journal: why it stopped or failed)</option>
                 <option value="qwen38-flash.service">flash lane (journal: why it stopped or failed)</option>
                 <option value="qwen38-image.service">image lane (journal)</option>
+                <option value="qwen38-video.service">video lane (journal)</option>
                 <option value="qwen38-keepalive.service">keepalive proxy (journal)</option>
                 <option value="opencode-web.service" id="logopt-agent" hidden>opencode web server (journal)</option>
               </select>
@@ -1253,14 +1257,113 @@
 
     <!-- ── Video ── -->
     <div class="tab s1" id="tab-video">
-      <div class="tabhead"><h2>Video</h2><p>generation, on this box</p></div>
-      <section class="panel s1wide">
-        <div class="soon">
-          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="M16 10l5-3v10l-5-3z"/></svg>
-          <div class="t">Coming soon</div>
-          <div class="d">Nothing here yet.</div>
-        </div>
+      <div class="tabhead"><h2>Video</h2><p>MiniMax-H3 on this box: text to video with joint video-and-audio, plus first/last-frame conditioning. No pixel leaves the machine.</p></div>
+
+      <section class="panel s1wide" style="margin-bottom:var(--s3)">
+        <h3>The lane <span class="right"><span class="chip" id="vidchip">checking...</span></span></h3>
+        <p class="note" id="vidnote" style="margin:0 0 10px">Video and audio denoised jointly in one pass and muxed
+          into one MP4. The checkpoint (fl2va partition plus shared components) is why it and every other lane take turns
+          rather than share. About 11 min per 4 s 480P request on this box, with no flags: measured 10:52 on
+          2026-09-25 against the cookbook's ~12 min.</p>
+        <dl class="kv">
+          <dt>Serving</dt><dd class="num" id="vidmodel">MiniMaxAI/MiniMax-H3</dd>
+          <dt>Endpoints</dt><dd class="num">POST /v1/videos · GET /v1/videos · GET /v1/videos/{id}/content</dd>
+          <dt>Licence</dt><dd>MiniMax-H3 licence: read it before commercial use</dd>
+        </dl>
+        <div id="vidctl" class="meta" style="margin-top:12px"></div>
+          <ol class="steps" id="vidsteps-guide" hidden></ol>
+          <div id="vidboot"></div>
       </section>
+
+      <div class="s1grid">
+        <section class="panel">
+          <h3>The call <span class="right"><button class="btn mini ghost" id="vidreset">Reset settings</button></span></h3>
+
+          <div class="seg" role="group" aria-label="What to do" style="margin-bottom:11px">
+            <button id="vidmode-t2v" data-mode="t2v" aria-pressed="true">Text only</button>
+            <button id="vidmode-fl2v" data-mode="fl2v" aria-pressed="false">First + last frames</button>
+          </div>
+
+          <label class="eyebrow" for="vidprompt" style="display:block">Prompt</label>
+          <textarea id="vidprompt" spellcheck="false" aria-label="Prompt"></textarea>
+
+          <div id="vidrefbox" hidden>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin:12px 0 0">
+              <span class="eyebrow">Keyframes (first, last)</span>
+            </div>
+            <div style="display:flex; gap:8px; margin-top:6px">
+              <label class="btn mini low">First frame<input type="file" id="vidreffirst" accept="image/png,image/jpeg,image/webp" hidden></label>
+              <label class="btn mini low">Last frame<input type="file" id="vidreflast" accept="image/png,image/jpeg,image/webp" hidden></label>
+            </div>
+            <div class="refs" id="vidrefs"></div>
+            <p class="note" style="margin:7px 0 0">The lane continues naturally between the frames you give it,
+              with synchronised ambient sound. Files stay in the browser until you press Generate.</p>
+          </div>
+
+          <div class="ctl">
+            <label><span class="eyebrow">Seconds (4-15)</span>
+              <input type="number" id="vidseconds" min="4" max="15" step="1" value="5"></label>
+            <label><span class="eyebrow">Size</span>
+              <select id="vidsize">
+                <option value="864x480">864&times;480 480P (default)</option>
+                <option value="1280x720">1280&times;720 720P</option>
+              </select></label>
+            <label><span class="eyebrow">Steps</span>
+              <input type="number" id="vidsteps" min="1" max="100" step="1" value="50"></label>
+            <label><span class="eyebrow">Seed</span>
+              <input type="text" id="vidseed" placeholder="empty = random" inputmode="numeric"></label>
+          </div>
+
+          <p class="warn" id="vidwarn" hidden></p>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:12px">
+            <button class="btn" id="vidrun">Generate</button>
+            <span class="follow" id="vidstatus"></span>
+          </div>
+          <p class="cost" id="vidcost">About 11 min for 4 s at 480P on this box (measured 10:52 on 2026-09-25).</p>
+        </section>
+
+        <section class="panel">
+          <h3>The video <span class="right"><span class="chip" id="vidtime"></span>
+            <button class="btn mini danger" id="vidcancel" hidden title="SGLang Diffusion cannot abort a request, so cancelling restarts the lane">Cancel</button></span></h3>
+          <div id="vidout"><p class="note" style="margin:0">Write a prompt, then generate.
+            One request at a time on this lane; the bar below follows it where the page looks from.</p></div>
+          <div class="prog" id="vidrunprog" hidden>
+            <div class="lab"><span id="vidrunlab"></span><span class="num" id="vidrunpct"></span></div>
+            <div class="tr"><span class="fl" id="vidrunbar" style="width:0%"></span></div>
+          </div>
+          <div class="meta" id="vidmeta"></div>
+        </section>
+
+        <section class="panel s1wide">
+          <h3>The same call, from a terminal on the box <span class="right"><button class="btn mini ghost" id="vidcopy">Copy</button></span></h3>
+          <p class="note" style="margin:0 0 9px">Exactly what the button above sends, then the poll and the download.
+            The lane listens on loopback and checks no key, so this runs on the box itself.</p>
+          <div class="cmd" id="vidcurl"></div>
+        </section>
+
+        <section class="panel s1wide">
+          <h3>What each setting costs <span class="right"><span class="chip">4 s row measured here 2026-09-25, rest cookbook</span></span></h3>
+          <p class="note" style="margin:0 0 10px">The 4 s row is this lane's own measurement (10:52 end to end,
+            denoise at 11.3 s/step, decode 27 s, peak 9242 MB). The other rows are the SGLang cookbook's
+            verified DGX Spark figures, not measurements of this lane: about 12.1 s per denoise step steady-state,
+            about 40 s of decode, about 12 min per warm request at 480P, with no flags at all. The text encoder
+            runs about 5.5 min per request and does not warm up. These rows become this box's numbers the day
+            the lane proves them here.</p>
+          <div class="tablewrap">
+            <table id="vidbench">
+              <thead><tr><th>request</th><th class="r">time</th><th>result</th></tr></thead>
+              <tbody>
+                <tr><td><b>4 s at 480P (the defaults)</b></td><td class="r num"><b>10:52 measured</b></td><td>video + audio in one MP4, inspected</td></tr>
+                <tr><td>first + last frames, 480P</td><td class="r num">about 11 min, measured</td><td>continued between your frames</td></tr>
+                <tr><td>720P</td><td class="r num">longer, unmeasured</td><td>same call, more pixels</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note" style="margin:10px 0 0">Two things this lane refuses that are worth knowing before a client does:
+            a duration outside 4 to 15 s, and more than one video per call. This page refuses both before they
+            leave the box.</p>
+        </section>
+      </div>
     </div>
 
     <!-- ── Setup ── -->

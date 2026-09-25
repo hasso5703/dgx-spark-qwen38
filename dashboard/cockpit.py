@@ -28,6 +28,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from collections import deque
@@ -80,8 +81,8 @@ DRY_RUN = os.environ.get("COCKPIT_DRY_RUN", "0") == "1"
 MASKED_FIELDS = {"api_key", "admin_api_key"}
 
 UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service",
-         "qwen38-keepalive.service")
-JOURNAL_UNITS = UNITS + (AGENT_UNIT,)   # what the Logs tab may read (UNITS carries the image lane)
+         "qwen38-video.service", "qwen38-keepalive.service")
+JOURNAL_UNITS = UNITS + (AGENT_UNIT,)   # what the Logs tab may read (UNITS carries the image and video lanes)
 CONTAINERS = ("qwen38-sglang", "qwen38-flash")
 
 UNIT2CONT = {"qwen38-sglang.service": "qwen38-sglang",
@@ -567,6 +568,8 @@ LAST_PROGRESS: dict = {"ts": None}
 UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
 IMAGE_READY_ENTER: dict = {}   # image lane: the activation (enter timestamp) it served in
 IMAGE_INVOCATION: dict = {}    # image lane: its current systemd invocation, whose journal is its own
+VIDEO_READY_ENTER: dict = {}   # video lane: the activation (enter timestamp) it served in
+VIDEO_INVOCATION: dict = {}    # video lane: its current systemd invocation, whose journal is its own
 BOOT_SEEN: dict = {}           # text lanes: (activation, last boot parse that had evidence)
 BOOT_HEAD_READ: dict = {}      # text lanes: the activation whose first minutes were read once
 POOL_GUARD = os.environ.get("COCKPIT_POOL_GUARD", "1") == "1"
@@ -1157,6 +1160,11 @@ def unit_target(unit: str) -> dict:
         model = _image_unit_flag("--model-path", "Qwen/Qwen-Image-2.1") \
             if IMAGE_UNIT_PATH.exists() else None
         return {"model": model, "target": "image" if model else None}
+    if unit == "qwen38-video.service":
+        # one checkpoint, one target, same rule as the image lane
+        model = _video_unit_flag("--model-path", "MiniMaxAI/MiniMax-H3") \
+            if VIDEO_UNIT_PATH.exists() else None
+        return {"model": model, "target": "video" if model else None}
     path = UNIT_PATHS.get(unit)
     if not path:
         return {"model": None, "target": None}
@@ -1212,7 +1220,8 @@ def collect_lifecycle():
             states[unit] = "ready" if active == "active" else "stopped"
             continue
         is_image = unit == lc.IMAGE_UNIT
-        if is_image and not IMAGE_UNIT_PATH.exists():
+        is_video = unit == lc.VIDEO_UNIT
+        if (is_image or is_video) and not (IMAGE_UNIT_PATH.exists() if is_image else VIDEO_UNIT_PATH.exists()):
             continue                    # not installed: no card, no pill, no gate
         boot = {"stage": None, "fired_up": False, "done": []}
         if is_image:
@@ -1220,11 +1229,16 @@ def collect_lifecycle():
                 unit, active=active, sub=d.get("SubState", "?"), prev_state=prev.get(unit),
                 enter_key=d.get("ActiveEnterTimestampMonotonic", "0"),
                 invocation=d.get("InvocationID", ""))
+        elif is_video:
+            st, boot, running = video_engine_state(
+                unit, active=active, sub=d.get("SubState", "?"), prev_state=prev.get(unit),
+                enter_key=d.get("ActiveEnterTimestampMonotonic", "0"),
+                invocation=d.get("InvocationID", ""))
         else:
             cont = UNIT2CONT[unit]
             running = bool(run(["docker", "ps", "-q", "-f",
                                 f"name=^{cont}$"]).strip())
-        if not is_image and running and not healthy:
+        if not is_image and not is_video and running and not healthy:
             # A mature server's tail is pure decode noise: only read logs
             # while health is down (boot or trouble), where markers live.
             tail = run(["docker", "logs", "--tail", "300", cont],
@@ -1260,13 +1274,13 @@ def collect_lifecycle():
         # Hysteresis: a 2 s health probe times out under a heavy prefill.
         # Leaving ready needs 3 consecutive misses AND no fresh progress line;
         # a single 200 restores it at once.
-        if is_image:
-            pass                        # its state was derived above, from its own facts
+        if is_image or is_video:
+            pass                        # their state was derived above, from their own facts
         elif healthy:
             UNHEALTHY_TICKS[unit] = 0
         else:
             UNHEALTHY_TICKS[unit] = UNHEALTHY_TICKS.get(unit, 0) + 1
-        if not is_image:
+        if not is_image and not is_video:
             progressing = LAST_PROGRESS["ts"] and time.time() - LAST_PROGRESS["ts"] < 30
             sticky_ready = (prev.get(unit) in ("ready", "wedged") and running and not healthy
                             and (UNHEALTHY_TICKS[unit] < 3 or progressing))
@@ -1279,7 +1293,7 @@ def collect_lifecycle():
             # (wedged is only reachable from ready, so an engine that was wedged has served)
             if st["state"] == "degraded" and prev.get(unit) not in ("ready", "degraded", "wedged"):
                 st["state"] = "warming-up"
-        if st["state"] == "ready" and not is_image:
+        if st["state"] == "ready" and not is_image and not is_video:
             with STATE_LOCK:
                 load = ((STATE.get("engine_fast") or {}).get("data", {})
                         .get("load") or [{}])[0]
@@ -1416,9 +1430,9 @@ def collect_lifecycle():
                          "stage_done": boot.get("done", []),
                          # which stage list this engine walks, and what it is loading
                          # now: the UI draws each from here rather than assuming
-                         "stages": list(lc.IMAGE_STAGES if is_image else lc.STAGES),
-                         "detail": boot.get("detail", ""),
-                         "kind": "image" if is_image else "text",
+                          "stages": list(lc.VIDEO_STAGES if is_video else lc.IMAGE_STAGES if is_image else lc.STAGES),
+                          "detail": boot.get("detail", ""),
+                          "kind": "video" if is_video else "image" if is_image else "text",
                          # systemd's own word for how the last run ended: "timeout" is a
                          # unit killed because it did not stop in time, not one that crashed
                          "result": d.get("Result", ""),
@@ -1438,9 +1452,9 @@ def collect_lifecycle():
             if st["state"] == "ready" and elapsed and witnessed \
                     and was in lc.TRANSITIONAL:
                 history = lc.record_boot(history, unit, elapsed)
-                if is_image:
-                    # It has no KV pool, and ENGINE_BASE is the text lane's port: reading
-                    # a pool here would record the wrong engine's, or nothing.
+                if is_image or is_video:
+                    # Neither has a KV pool, and ENGINE_BASE is the text lane's port:
+                    # reading a pool here would record the wrong engine's, or nothing.
                     save_history(history)
                     with LIFE_LOCK:
                         LIFE["witnessed"][unit] = False
@@ -1559,10 +1573,11 @@ def sampler(period: float, collectors: dict):
 AUDIT_LOG = CONFIG_DIR / "cockpit-audit.log"
 
 # The image lane is here because a cockpit whose Image tab tells you to open a terminal
-# is not a cockpit. Starting it stops the text lane (the unit's own Conflicts=), which is
-# why the modal says so before it runs.
+# is not a cockpit, and the video lane for the same reason. Starting either stops the
+# text lane (each unit's own Conflicts=), which is why the modal says so before it runs.
 SERVING_UNITS = {"qwen38-sglang.service", "qwen38-flash.service",
-                 "qwen38-keepalive.service", "qwen38-image.service", AGENT_UNIT}
+                 "qwen38-keepalive.service", "qwen38-image.service",
+                 "qwen38-video.service", AGENT_UNIT}
 UNIT_VERBS = {"start", "stop", "restart"}
 
 ACTIONS = {
@@ -1578,7 +1593,7 @@ ACTIONS = {
     "switch": {
         "danger": "medium",
         "params": {"target": ["stock", "uncensored", "fp8", "uncensored-fp8",
-                              "flash", "flash-nvda", "flash-uncensored", "image"]},
+                              "flash", "flash-nvda", "flash-uncensored", "image", "video"]},
         "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"]],
         # A switch can download a whole checkpoint: 124 GB for flash take about 23 min at
         # the 89 MB/s the reference box gets, so 30 min failed it on any slower link, and
@@ -2368,6 +2383,425 @@ def _multipart(fields: dict, images: list) -> tuple[bytes, str]:
     return bytes(out), f"multipart/form-data; boundary={boundary}"
 
 
+# ── the video lane ──────────────────────────────────────────────────────────────
+# MiniMax-H3, served by SGLang Diffusion in its own venv on its own port, installed
+# by ./install.sh --with-video. Same shape as the image lane: the browser never holds
+# the serving key (the diffusion runtime has none) and never talks to the lane; it
+# sends a description of the call and this process makes it.
+#
+# One difference from images: creation is asynchronous. POST /v1/videos answers 200
+# with an id in a queued state, the lane works for minutes, and GET /v1/videos/{id}
+# (polled here through the list) says when it is completed. So this process holds
+# the call from the create to the download, the way the image call holds one from
+# the POST to the pixels.
+VIDEO_UNIT = "qwen38-video.service"
+VIDEO_UNIT_PATH = Path("/etc/systemd/system/qwen38-video.service")
+# A prompt plus two keyframes at most; the MP4 itself travels back as a download,
+# never inside a JSON body.
+VIDEO_MAX_POST = 10 * 1024 * 1024
+# About 12 min per 4 s 480P request on the reference box, plus the queue ahead of it
+# and the download after: a call past this stops waiting here, not on the lane (which
+# has no abort and goes on). 60 min covers the cookbook's longest official duration
+# (15 s). The cookbook's duration band is 4 to 15 s.
+VIDEO_TIMEOUT = 3600.0
+# This lane serves ONE request at a time, and that is caution, not a measurement: the
+# cookbook sizes one 480P request near what this box holds, and on unified memory
+# running out hangs the machine rather than failing the request. The refusal below is
+# instant and says why. Re-measure with two overlapping calls before ever lifting it.
+VIDEO_LOCK = threading.Lock()
+VIDEO_POLL_S = 10.0
+VIDEO_LAST: dict = {}             # the call in flight or just finished: {id, status, seconds}
+
+
+VIDEO_UNIT_CACHE: dict = {}
+
+
+def _video_unit_text() -> str:
+    """The unit's text, read once per mtime: the lifecycle tick, the status call and
+    the tab's poll each ask for the port, the bind, the model and the variant, several
+    times a second between them. Empty when the unit is absent or unreadable."""
+    try:
+        key = (str(VIDEO_UNIT_PATH), VIDEO_UNIT_PATH.stat().st_mtime_ns)
+    except OSError:
+        return ""
+    hit = VIDEO_UNIT_CACHE.get("unit")
+    if hit and hit[0] == key:
+        return hit[1]
+    try:
+        text = VIDEO_UNIT_PATH.read_text(errors="replace")
+    except OSError:
+        return ""
+    VIDEO_UNIT_CACHE["unit"] = (key, text)
+    return text
+
+
+def _video_unit_flag(flag: str, fallback: str) -> str:
+    """What the installed unit passes, not what this file assumes."""
+    for line in _video_unit_text().splitlines():
+        if flag in line:
+            return line.split(flag, 1)[1].split()[0]
+    return fallback
+
+
+def video_port() -> int:
+    try:
+        return int(_video_unit_flag("--port", "30022"))
+    except ValueError:
+        return 30022
+
+
+def video_base() -> str:
+    host = _video_unit_flag("--host", "127.0.0.1")
+    return os.environ.get("COCKPIT_VIDEO", f"http://{host}:{video_port()}")
+
+
+VIDEO_JOURNAL_LINES = 300
+
+
+def _video_journal(invocation: str) -> list:
+    """This run's log, and only this run's: the lines of the unit's current systemd
+    invocation. Same latest-boot trap as the image lane: a new process takes seconds
+    to print its first line, and until it does the tail is the previous run's."""
+    if not invocation:
+        return []
+    raw = run(["journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}",
+               "-n", str(VIDEO_JOURNAL_LINES), "--no-pager", "-o", "cat"], timeout=8.0)
+    return raw.splitlines()
+
+
+def video_healthy() -> bool:
+    """The video lane's own /health, on its own port. Only a 200 is ready."""
+    try:
+        urllib.request.urlopen(urllib.request.Request(video_base() + "/health"),
+                               timeout=3).read()
+        return True
+    except Exception:                                   # noqa: BLE001 (any non-200 is "not yet")
+        return False
+
+
+def video_engine_state(unit: str, *, active: str, sub: str, prev_state: str | None,
+                       enter_key: str, invocation: str = "") -> tuple:
+    """(state, boot, running) for the video lane, from its own facts: the unit, its own
+    /health, and its journal while it boots. None of the text lanes' belts apply to it
+    (pool guard, generation canary, autoheal): they all talk to ENGINE_BASE.
+
+    Same one-miss-keeps-ready rule as the image lane: once the lane has served in this
+    activation it does not go back to booting on a slow probe."""
+    running = active in ("active", "activating")
+    healthy = running and video_healthy()
+    VIDEO_INVOCATION[unit] = invocation
+    UNHEALTHY_TICKS[unit] = 0 if healthy else UNHEALTHY_TICKS.get(unit, 0) + 1
+    served_here = VIDEO_READY_ENTER.get(unit) == enter_key and enter_key != "0"
+    boot = {"stage": None, "fired_up": False, "done": []}
+    if running and not healthy:
+        if served_here:
+            boot = {"stage": "warming-up", "fired_up": True, "done": list(lc.VIDEO_STAGES)}
+            healthy = UNHEALTHY_TICKS[unit] < 3
+        else:
+            boot = lc.parse_video_boot_log(_video_journal(invocation))
+    st = lc.derive_state(unit_active=active, unit_sub=sub, container_running=running,
+                         healthy=healthy, boot=boot)
+    if st["state"] == "degraded" and prev_state not in ("ready", "degraded"):
+        st["state"] = "warming-up"
+    if st["state"] == "ready":
+        VIDEO_READY_ENTER[unit] = enter_key
+    return st, boot, running
+
+
+def video_status() -> dict:
+    """What the Video tab needs that the lifecycle does not already carry: where the
+    lane listens, which model and variant its unit serves, and the call in flight."""
+    out = {"installed": VIDEO_UNIT_PATH.exists(), "port": video_port(),
+           "host": _video_unit_flag("--host", "127.0.0.1"),
+           "model": _video_unit_flag("--model-path", "MiniMaxAI/MiniMax-H3"),
+           "variant": _video_unit_flag("--model-variant", "fl2va"),
+           "state": "not installed", "available": False, "llm_lane": "", "progress": {}}
+    if not out["installed"]:
+        return out
+    with LIFE_LOCK:
+        states = dict(LIFE.get("states", {}))
+    # before the lifecycle's first tick (a cockpit that just started) nothing is known
+    # yet, and saying so beats guessing "stopped" at a lane that may be serving
+    out["state"] = states.get(VIDEO_UNIT) or "unknown"
+    out["available"] = out["state"] in ("ready", "degraded")
+    out["llm_lane"] = next((u for u in lc.TEXT_UNITS if states.get(u) in lc.BUSY_STATES), "")
+    if out["available"]:
+        out["progress"] = dict(VIDEO_LAST) if VIDEO_LAST.get("status") not in ("completed", "failed", "") else {}
+    return out
+
+
+def _video_life() -> tuple:
+    """(ActiveState, InvocationID) of the video unit, asked of systemd directly: the
+    lifecycle ticks every 2 s, and the question is whether THIS request outlived its lane."""
+    raw = run(["systemctl", "show", VIDEO_UNIT, "-p", "ActiveState,InvocationID"], timeout=5)
+    d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
+    return d.get("ActiveState", ""), d.get("InvocationID", "")
+
+
+VIDEO_INTERRUPTED = ("the video lane was stopped or restarted while this video was being made, which is "
+                     "the only way this runtime can end a generation early (it has no abort); nothing was kept")
+VIDEO_CRASHED = ("the video lane crashed while this video was being made (systemd: {result}), and nothing "
+                 "was kept. Its journal, in the Logs tab, says why; systemd starts it again by itself.")
+# How a run that ended under a request ended: same rule as the image lane.
+VIDEO_CRASH_RESULTS = {"signal", "core-dump", "oom-kill", "watchdog"}
+
+
+def _video_exit() -> dict:
+    """SubState and Result of the video unit, asked of systemd once a request was cut."""
+    raw = run(["systemctl", "show", VIDEO_UNIT, "-p", "SubState,Result,NRestarts"], timeout=5)
+    return dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
+
+
+def _video_cut(t0: float) -> tuple[int, dict]:
+    """The answer for a request whose run of the lane ended under it."""
+    ex = _video_exit()
+    secs = round(time.time() - t0, 2)
+    if ex.get("SubState") == "auto-restart" or ex.get("Result") in VIDEO_CRASH_RESULTS:
+        return 502, {"error": VIDEO_CRASHED.format(result=ex.get("Result") or "died"), "crashed": True,
+                     "seconds": secs}
+    return 503, {"error": VIDEO_INTERRUPTED, "interrupted": True, "seconds": secs}
+VIDEO_STILL_RUNNING = ("the video lane is still generating this request: it has no abort, so it goes on after "
+                       "this page stopped waiting, and the next request is refused until it ends. Cancel "
+                       "restarts the lane if it should not finish.")
+
+
+def _video_decoded_frame(payload: dict, name: str) -> tuple[bytes | None, str]:
+    """One keyframe data URL, as bytes. Absent is fine (text-only); malformed is refused."""
+    ref = payload.get(name)
+    if ref is None:
+        return None, ""
+    if not isinstance(ref, str) or not ref.startswith("data:image/"):
+        return None, f"{name} is not an image data URL"
+    head, _, b64 = ref.partition(",")
+    if ";base64" not in head or not b64:
+        return None, f"{name} is not base64"
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except Exception:                               # noqa: BLE001
+        return None, f"{name} is not valid base64"
+    if not raw:
+        return None, f"{name} is empty"
+    return raw, ""
+
+
+# Only what this model accepts, and nothing that lets a browser reach past the lane.
+VIDEO_ALLOWED = {"model", "prompt", "seconds", "size", "task", "target", "quality",
+                 "num_outputs_per_prompt", "num_inference_steps", "flow_shift",
+                 "audio_flow_shift", "seed"}
+
+
+def _video_list_status(vid: str) -> str:
+    """This video's status from the lane's list, or "unknown" when the lane says nothing."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(video_base() + "/v1/videos"),
+                                    timeout=20) as r:
+            items = json.loads(r.read().decode()).get("data", [])
+    except Exception:                               # noqa: BLE001 (the poll below retries)
+        return "unknown"
+    return next((v.get("status", "unknown") for v in items if v.get("id") == vid), "missing")
+
+
+def _release_video_lock_when_done(life0: tuple, vid: str, since: float) -> None:
+    """The lock of a call that timed out here, given back when the lane is done with
+    it: the video reached a terminal status, or the lane is no longer the run the call
+    went to (a Cancel, a Stop, a crash), or another VIDEO_TIMEOUT went by with neither."""
+    deadline = time.time() + VIDEO_TIMEOUT
+    try:
+        while time.time() < deadline:
+            if _video_life() != life0:
+                return
+            if _video_list_status(vid) in ("completed", "failed", "error", "cancelled"):
+                return
+            time.sleep(VIDEO_POLL_S)
+    finally:
+        VIDEO_LAST.clear()
+        VIDEO_LOCK.release()
+
+
+def video_call(payload: dict) -> tuple[int, dict]:
+    """One video request, made to the lane on loopback and waited on to the end. This
+    process is the gate: the route checked the session before the body was read."""
+    fields = {k: v for k, v in payload.items() if k in VIDEO_ALLOWED and v is not None}
+    if not str(fields.get("prompt", "")).strip():
+        return 400, {"error": "a prompt is required"}
+    secs = fields.get("seconds", 5)
+    if isinstance(secs, bool) or not isinstance(secs, int) or not 4 <= secs <= 15:
+        # the cookbook's duration band: 4 to 15 s
+        return 400, {"error": "seconds is a whole number from 4 to 15"}
+    fields["seconds"] = secs
+    if fields.get("num_outputs_per_prompt", 1) != 1:
+        # the lane serves one request at a time; parallel variants inside one call are
+        # the same working set twice
+        return 400, {"error": "one video per call on this lane; make several calls"}
+    fields["num_outputs_per_prompt"] = 1
+    size = fields.get("size")
+    if size is not None:
+        parts = str(size).lower().replace(" ", "").split("x")
+        try:
+            sw, sh = (int(parts[0]), int(parts[1])) if len(parts) == 2 else (0, 0)
+        except ValueError:
+            sw = sh = 0
+        if sw <= 0 or sh <= 0:
+            return 400, {"error": "size must be WIDTHxHEIGHT, two positive numbers"}
+    else:
+        sw, sh = 864, 480
+    # The lane requires a target object (measured 2026-09-25): short edge, aspect
+    # ratio and duration, derived from the size and seconds above so the tab's two
+    # controls stay the contract. The ratio is the cookbook's wording ("16:9"), which
+    # the lane accepted with 864x480 and served to completed: the exact reduction
+    # (18:10) was never tried against it.
+    fields["size"] = f"{sw}x{sh}"
+    fields["target"] = {"short_edge": min(sw, sh),
+                        "aspect_ratio": "16:9" if sw >= sh else "9:16",
+                        "duration_seconds": secs}
+    # Keyframes turn text-to-video into first/last-frame conditioning; without them the
+    # call is text only. Reference modes (ref2va weights) need a unit installed with
+    # VIDEO_VARIANT=ref2va and are refused here until that lane exists.
+    first, why = _video_decoded_frame(payload, "first_frame")
+    if why:
+        return 400, {"error": why}
+    last, why = _video_decoded_frame(payload, "last_frame")
+    if why:
+        return 400, {"error": why}
+    variant = _video_unit_flag("--model-variant", "fl2va")
+    keyframe_paths: list = []
+    if first is not None or last is not None:
+        if variant != "fl2va":
+            return 400, {"error": f"this lane serves the {variant} weights, which take no keyframes"}
+        # The lane reads keyframes by URI, not by bytes: decoded frames are staged as
+        # files this user owns and named file://, then removed with the call. Data URLs
+        # are never sent: whether the pipeline accepts one was never measured.
+        import tempfile
+        for raw, tag in ((first, "first"), (last, "last")):
+            if raw is None:
+                continue
+            fd, path = tempfile.mkstemp(prefix=f"qwen38-{tag}-frame-", suffix=".png",
+                                        dir=str(CONFIG_DIR))
+            with os.fdopen(fd, "wb") as f:
+                f.write(raw)
+            keyframe_paths.append(path)
+        try:
+            fields["task"] = "fl2va"
+            fields["conditions"] = []
+            if first is not None:
+                fields["conditions"].append({"type": "image",
+                                             "uri": f"file://{keyframe_paths[0]}",
+                                             "role": "keyframe", "frame_index": 0})
+            if last is not None:
+                fields["conditions"].append({"type": "image",
+                                             "uri": f"file://{keyframe_paths[-1]}",
+                                             "role": "keyframe", "frame_index": -1})
+        except Exception:
+            for path in keyframe_paths:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            raise
+    else:
+        # The lane requires a task; named wrong it answers 400 (measured 2026-09-25).
+        # Text-only is t2v, and only t2v: fl2va without a frame would read as text-only
+        # under a conditioning task, so it is refused as asked, not served as text.
+        task = fields.get("task", "t2v")
+        if task not in ("t2v", "fl2va"):
+            return 400, {"error": "task is t2v, or fl2va with a first_frame and/or last_frame"}
+        if task == "fl2va":
+            if variant != "fl2va":
+                return 400, {"error": f"this lane serves the {variant} weights, which take no keyframes"}
+            return 400, {"error": "fl2va names first/last-frame conditioning: attach a first_frame and/or last_frame"}
+        fields["task"] = "t2v"
+    fields.setdefault("model", "MiniMax-H3")
+    # No Authorization header: the diffusion runtime has no --api-key, so the lane
+    # cannot check one and the unit binds loopback instead. The gate is this process's
+    # own session.
+    if not VIDEO_LOCK.acquire(blocking=False):
+        return 409, {"error": "this lane serves one video at a time, and something is "
+                              "already generating on it. Wait for the current one to finish."}
+    t0 = time.time()
+    life0 = _video_life()
+    handed_over = [False]
+    try:
+        req = urllib.request.Request(video_base() + "/v1/videos",
+                                     json.dumps(fields).encode(),
+                                     {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                created = json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            if e.code >= 500 and _video_life() != life0:
+                return _video_cut(t0)
+            try:
+                detail = json.loads(raw.decode())
+            except Exception:                           # noqa: BLE001
+                detail = raw[:400].decode("utf-8", "replace")
+            return e.code, {"refused": detail, "seconds": round(time.time() - t0, 2)}
+        vid = created.get("id", "")
+        if not vid:
+            return 502, {"error": f"the lane took the call but gave no video id: {str(created)[:200]}",
+                         "seconds": round(time.time() - t0, 2)}
+        VIDEO_LAST.update({"id": vid, "status": created.get("status", "queued"),
+                           "seconds": 0.0})
+        # To completed, the way the lane reports it: its list, not its journal.
+        while time.time() - t0 < VIDEO_TIMEOUT:
+            if _video_life() != life0:
+                return _video_cut(t0)
+            st = _video_list_status(vid)
+            VIDEO_LAST["status"] = st
+            VIDEO_LAST["seconds"] = round(time.time() - t0, 2)
+            if st == "completed":
+                return 200, {"video_id": vid, "seconds": round(time.time() - t0, 2)}
+            if st in ("failed", "error", "cancelled"):
+                return 502, {"error": f"the lane ended video {vid} in {st}",
+                             "seconds": round(time.time() - t0, 2)}
+            if st == "missing":
+                # a definitive answer from the lane, not a transport failure: the
+                # record is gone, so there is nothing to download however long this
+                # waits (an "unknown" is our failure to ask, and polls on)
+                return 502, {"error": f"the lane has no record of video {vid}",
+                             "seconds": round(time.time() - t0, 2)}
+            time.sleep(VIDEO_POLL_S)
+        # The wait ran out; the lane goes on (it has no abort). The lock is handed to
+        # a watcher that gives it back when the lane is done, so a second generation
+        # never runs beside the first.
+        threading.Thread(target=_release_video_lock_when_done, args=(life0, vid, t0),
+                         daemon=True).start()
+        handed_over[0] = True
+        return 504, {"error": VIDEO_STILL_RUNNING, "video_id": vid,
+                     "seconds": round(time.time() - t0, 2)}
+    except Exception as e:                              # noqa: BLE001 (isolated route)
+        if _video_life() != life0:
+            return _video_cut(t0)
+        return 502, {"error": f"the video lane did not answer ({type(e).__name__}). "
+                              f"Switch to MiniMax-H3 in the action bar and start it "
+                              f"(or ./switch-model.sh video)",
+                     "seconds": round(time.time() - t0, 2)}
+    finally:
+        for path in keyframe_paths:
+            try:
+                os.unlink(path)
+            except (OSError, NameError):
+                pass
+        if not handed_over[0]:
+            VIDEO_LAST.clear()
+            VIDEO_LOCK.release()
+
+
+def video_content(vid: str) -> tuple[int, bytes, str]:
+    """This video's bytes, downloaded from the lane on loopback. The route checked the
+    session; the id is path-shaped and nothing else reaches the lane."""
+    if not vid or not all(c.isalnum() or c in "-_" for c in vid):
+        return 400, b"", ""
+    try:
+        req = urllib.request.Request(video_base() + f"/v1/videos/{vid}/content")
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return 200, r.read(), r.headers.get("Content-Type", "video/mp4")
+    except urllib.error.HTTPError as e:
+        return e.code, b"", ""
+    except Exception:                                   # noqa: BLE001 (isolated route)
+        return 502, b"", ""
+
+
 def job_flush_cache(job: Job):
     req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST", data=b"",
                                  headers={"Authorization": f"Bearer {api_key()}"})
@@ -2420,6 +2854,7 @@ def job_diag_bundle(job: Job):
         # the image lane and the Agent tab's server have journals of their own, which the
         # bundle left out (found in review, 2026-09-24)
         (tdp / "journal-image.txt").write_text(run(["journalctl", "-u", IMAGE_UNIT, "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
+        (tdp / "journal-video.txt").write_text(run(["journalctl", "-u", VIDEO_UNIT, "-n", "300", "--no-pager", "-o", "short-iso"], timeout=15))
         (tdp / "journal-opencode-web.txt").write_text(run(["journalctl", "-u", AGENT_UNIT, "-n", "200", "--no-pager", "-o", "short-iso"], timeout=15))
         for cont in CONTAINERS:
             (tdp / f"docker-{cont}.txt").write_text(run(["docker", "logs", "--tail", "600", cont], timeout=15, merge_err=True))
@@ -2746,6 +3181,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def send_json(self, obj, code=200):
         return self.send_json_text(json.dumps(obj), code)
 
+    def send_bytes(self, body: bytes, ctype: str, code=200):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_json_text(self, text, code=200):
         body = text.encode()
         self.send_response(code)
@@ -2844,6 +3288,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(systemone_available(max_age=0.0 if fresh else 60.0))
         if path == "/api/image":
             return self.send_json(image_status())
+        if path == "/api/video":
+            return self.send_json(video_status())
+        if path == "/api/video/content":
+            vid = urllib.parse.parse_qs(query).get("id", [""])[0].strip()
+            code, body, ctype = video_content(vid)
+            if code != 200:
+                return self.send_json({"error": "no such video"}, code)
+            return self.send_bytes(body, ctype or "video/mp4")
         if path == "/api/stream":
             return self.stream()
         return self.send_json({"error": "not found"}, 404)
@@ -2862,10 +3314,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.close_connection = True
             return self.send_json({"error": "bad Content-Length"}, 400)
         length = int(declared)
-        # Ten reference images do not fit in 64 KiB and never will. The cap is raised for
-        # the two image routes and for nothing else; a login is a key in a JSON object.
-        raised = path in ("/api/image/edit", "/api/image/generate")
-        cap = IMAGE_MAX_POST if raised else 4096 if path == "/api/login" else 65536
+        # Ten reference images do not fit in 64 KiB and never will, and neither do
+        # two keyframes. The cap is raised for the image and video routes and for
+        # nothing else; a login is a key in a JSON object.
+        raised = path in ("/api/image/edit", "/api/image/generate", "/api/video/generate")
+        cap = max(IMAGE_MAX_POST, VIDEO_MAX_POST) if raised else 4096 if path == "/api/login" else 65536
         if length > cap:
             self.close_connection = True
             return self.send_json({"error": "body too large"}, 413)
@@ -2947,6 +3400,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(out, code)
         if path in ("/api/image/generate", "/api/image/edit"):
             code, out = image_call(payload, editing=path.endswith("edit"))
+            return self.send_json(out, code)
+        if path == "/api/video/generate":
+            code, out = video_call(payload)
             return self.send_json(out, code)
         return self.send_json({"error": "not found"}, 404)
 

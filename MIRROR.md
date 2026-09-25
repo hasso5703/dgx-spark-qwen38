@@ -31,6 +31,7 @@ happens to exist.
 | draft | RadixArk/Qwen3.8-27B-DSpark | not yet checked |
 | draft2 | maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal | not yet checked: verify both layers |
 | qwen-image | Qwen/Qwen-Image-2.1 | not yet checked |
+| minimax-h3 | MiniMaxAI/MiniMax-H3 | not yet checked: own licence, read it before any redistribution |
 | images (2) | lmsysorg/sglang@sha256:... | copied whole by digest: the Apache-2.0 SGLang images carry their license inside; keep it there |
 
 No row is a conclusion until this table says one, with a date.

@@ -56,9 +56,31 @@ IMAGE_MARKERS = [
     ("fired up and ready to roll", "warming-up", "ready"),
 ]
 
+# ── The video lane speaks the same dialect ────────────────────────────────────
+# MiniMax-H3 is served by the same SGLang Diffusion server from the same source
+# tree, so its boot prints the shared server lines. The component lines below are the
+# ones this pipeline printed on the reference box on 2026-09-25 (boot 23:08:50, DiT
+# 61.73 GB in 13 shards, text encoder 48.09 GB, audio VAE 0.56 GB, video VAE 5.2 GB):
+# a marker for a line never seen is a guess dressed as knowledge, so anything else
+# still falls on the generic "Loading " arm and reads as weights without naming it.
+VIDEO_STAGES = ("init", "loading-weights", "warming-up")
+VIDEO_MARKERS = [
+    # (substring, stage it opens, what is being loaded while that line is the latest)
+    ("Starting server...", "init", "starting the server"),
+    ("Loading ", "loading-weights", "loading a pipeline component"),
+    ("Loading pipeline modules...", "loading-weights", "reading the checkpoint layout"),
+    ("Loading text_encoder from", "loading-weights", "the 48 GB text encoder"),
+    ("Loading MiniMaxH3DiTModel from", "loading-weights", "the 61.7 GB DiT"),
+    ("Loading audio_vae from", "loading-weights", "the audio VAE"),
+    ("Loading video_vae from", "loading-weights", "the 5.2 GB video VAE"),
+    ("Pipeline instantiated", "loading-weights", "building the pipeline"),
+    ("Starting FastAPI server", "warming-up", "three warmup requests"),
+    ("fired up and ready to roll", "warming-up", "ready"),
+]
 
-def parse_image_boot_log(lines: list[str]) -> dict:
-    """The image lane's journal, reduced to the same shape parse_boot_log returns.
+
+def _parse_diffusion_boot_log(lines: list[str], markers: list, stages: tuple) -> dict:
+    """A diffusion lane's journal, reduced to the same shape parse_boot_log returns.
 
     Only the latest boot counts: journald keeps every previous life of the unit,
     and a "fired up" from yesterday must not make today's boot read as ready."""
@@ -68,15 +90,32 @@ def parse_image_boot_log(lines: list[str]) -> dict:
             start = i
     stage, detail, fired = None, "", False
     for ln in lines[start:]:
-        for needle, st, what in IMAGE_MARKERS:
+        for needle, st, what in markers:
             if needle in ln:
                 stage, detail = st, what
                 if needle == "fired up and ready to roll":
                     fired = True
-    done = list(IMAGE_STAGES[:IMAGE_STAGES.index(stage)]) if stage in IMAGE_STAGES else []
+    done = list(stages[:stages.index(stage)]) if stage in stages else []
     if fired:
-        done = list(IMAGE_STAGES)
+        done = list(stages)
     return {"stage": stage, "done": done, "fired_up": fired, "detail": detail}
+
+
+def parse_image_boot_log(lines: list[str]) -> dict:
+    """The image lane's journal, reduced to the same shape parse_boot_log returns.
+
+    Only the latest boot counts: journald keeps every previous life of the unit,
+    and a "fired up" from yesterday must not make today's boot read as ready."""
+    return _parse_diffusion_boot_log(lines, IMAGE_MARKERS, IMAGE_STAGES)
+
+
+def parse_video_boot_log(lines: list[str]) -> dict:
+    """The video lane's journal, reduced to the same shape parse_boot_log returns.
+
+    Same latest-boot rule as the image lane. Only the shared server lines are
+    matched; the pipeline's own component lines fall on the generic "Loading "
+    arm and read as weights without naming what they load."""
+    return _parse_diffusion_boot_log(lines, VIDEO_MARKERS, VIDEO_STAGES)
 
 
 def parse_boot_log(lines: list[str]) -> dict:
@@ -204,14 +243,17 @@ BUSY_STATES = {"starting", "loading-weights", "loading-draft", "allocating-kv",
 TRANSITIONAL = BUSY_STATES - {"ready", "degraded", "orphan", "wedged"}
 # Every unit that holds the GPU pool while it runs. The image lane is one of them:
 # 31 GB of weights, and two engines at once on 121.6 GB of unified memory is the
-# livelock this whole module exists to prevent.
-ENGINE_UNITS = ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service")
+# livelock this whole module exists to prevent. The video lane is one of them too:
+# about 108 GB of weights, for the same reason.
+ENGINE_UNITS = ("qwen38-sglang.service", "qwen38-flash.service",
+                "qwen38-image.service", "qwen38-video.service")
 IMAGE_UNIT = "qwen38-image.service"
+VIDEO_UNIT = "qwen38-video.service"
 # The engines that serve text on ENGINE_BASE. Every probe, guard and belt that talks to
 # that port (the generation canary, the pool guard, the wedge autoheal) is about these
-# and only these: with the image lane serving, :30000 is closed, and asking "is an
+# and only these: with a diffusion lane serving, :30000 is closed, and asking "is an
 # engine ready" instead sent the canary a chat completion to a dead port every 90 s.
-TEXT_UNITS = tuple(u for u in ENGINE_UNITS if u != IMAGE_UNIT)
+TEXT_UNITS = tuple(u for u in ENGINE_UNITS if u not in (IMAGE_UNIT, VIDEO_UNIT))
 
 
 def blocked_reasons(action: str, params: dict, states: dict) -> list[str]:
@@ -259,7 +301,11 @@ def warn_reasons(action: str, params: dict, states: dict,
         elif unit == IMAGE_UNIT and state == "ready":
             # the proxy on :30001 is a text door; nothing reaches this lane through it
             warns.append("an image being generated right now is lost, and the Image "
-                         "tab has nothing to talk to until this lane is back (about 70 s)")
+                          "tab has nothing to talk to until this lane is back (about 70 s)")
+        elif unit == VIDEO_UNIT and state == "ready":
+            # same text-door reason as the image lane; a video boot is the long one
+            warns.append("a video being generated right now is lost, and the Video "
+                          "tab has nothing to talk to until this lane is back (about 12 min)")
         elif state == "ready":
             warns.append("clients on :30001 will get errors until an engine "
                          "is back")

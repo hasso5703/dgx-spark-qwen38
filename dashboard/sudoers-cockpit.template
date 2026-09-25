@@ -2,7 +2,7 @@
 # Rendered by the dashboard installer to /etc/sudoers.d/qwen38-cockpit
 # (validated with visudo -c before install; removed by uninstall).
 # The cockpit runs unprivileged; these lines are the entire privileged
-# surface: start/stop/restart of the units of this repo (the three serving
+# surface: start/stop/restart of the units of this repo (the four serving
 # units and the opencode web server of the Agent tab), the
 # operations switch-model.sh performs (27B unit install from a fixed staging
 # path, enable/disable, daemon-reload, the keepalive ceiling drop-in), one
@@ -24,6 +24,9 @@ __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-keepalive.servic
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start qwen38-image.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop qwen38-image.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-image.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start qwen38-video.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop qwen38-video.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart qwen38-video.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl start opencode-web.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl stop opencode-web.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl restart opencode-web.service
@@ -33,6 +36,8 @@ __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-flash.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl enable qwen38-image.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-image.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl enable qwen38-video.service
+__USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl disable qwen38-video.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
 __USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 __HOME__/.config/qwen38/qwen38-sglang.service.switch-stage /etc/systemd/system/qwen38-sglang.service
 __USER__ ALL=(root) NOPASSWD: /usr/bin/install -m 644 -D __HOME__/.config/qwen38/keepalive-ceiling.conf.switch-stage /etc/systemd/system/qwen38-keepalive.service.d/ceiling.conf

@@ -31,6 +31,10 @@ more="$(grep -E '^(OPENCODE_VERSION|OPENCODE_SHA256)=' "$REPO_DIR/install.sh")"
 eval "$more"
 lane="$(grep -E '^(IMAGE_MODEL_PIN|IMAGE_MODEL_PIN_REV|PIN|WHEEL)=' "$REPO_DIR/install-image.sh")"
 eval "$lane"
+IMAGE_PIN="$PIN"; IMAGE_WHEEL="$WHEEL"
+vline="$(grep -E '^(VIDEO_MODEL_PIN|VIDEO_MODEL_PIN_REV|PIN|WHEEL)=' "$REPO_DIR/install-video.sh")"
+eval "$vline"
+VIDEO_PIN="$PIN"; VIDEO_WHEEL="$WHEEL"
 
 # Hugging Face answers an anonymous request with 401 both for a gated repo and for one that
 # does not exist (or is private): only its x-error-code tells a gated repo apart, so the
@@ -155,8 +159,12 @@ check_model dspark-draft   "$DRAFT_REPO"      "$DRAFT_REV"
 
 echo "Image lane and opencode"
 check_model  qwen-image     "$IMAGE_MODEL_PIN" "$IMAGE_MODEL_PIN_REV" model_index.json
-check_commit sglang-source  sgl-project/sglang "$PIN"
-check_wheel  sglang-wheel   sglang "$WHEEL"
+check_commit sglang-source  sgl-project/sglang "$IMAGE_PIN"
+check_wheel  sglang-wheel   sglang "$IMAGE_WHEEL"
+echo "Video lane"
+check_model  minimax-h3     "$VIDEO_MODEL_PIN" "$VIDEO_MODEL_PIN_REV" model_index.json
+check_commit sglang-source-video sgl-project/sglang "$VIDEO_PIN"
+check_wheel  sglang-wheel-video sglang "$VIDEO_WHEEL"
 check_asset  opencode       anomalyco/opencode "v$OPENCODE_VERSION" opencode-linux-arm64.tar.gz "$OPENCODE_SHA256"
 
 echo "Images"

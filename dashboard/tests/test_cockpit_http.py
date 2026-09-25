@@ -209,7 +209,8 @@ class Unauthenticated(Base):
         before, _ = self.routes("do_GET", "do_POST")
         self.assertEqual(before, self.PUBLIC_GET)
         before, _ = self.routes("do_POST", "serve_static")
-        self.assertEqual(before - {"/api/image/edit", "/api/image/generate"}, self.PUBLIC_POST)
+        self.assertEqual(before - {"/api/image/edit", "/api/image/generate",
+                                   "/api/video/generate"}, self.PUBLIC_POST)
 
     def test_every_route_behind_the_session_check_refuses_without_one(self):
         _, get = self.routes("do_GET", "do_POST")
@@ -651,6 +652,7 @@ class ReadRoutes(Base):
         self.assertEqual(set(self.cp.CONTAINERS), {"qwen38-sglang", "qwen38-flash"})
         self.assertEqual(set(self.cp.JOURNAL_UNITS), {
             "qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service",
+            "qwen38-video.service",
             "qwen38-keepalive.service", "opencode-web.service"})
 
     def test_a_known_log_source_answers_with_bounded_lines(self):

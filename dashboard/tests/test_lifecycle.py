@@ -1408,5 +1408,123 @@ class PoolShortfall(unittest.TestCase):
         self.assertIn("restart", msg.lower())
 
 
+class FourEngines(unittest.TestCase):
+    """The video lane is a fourth engine, under the same one-at-a-time rule as the
+    other three: about 108 GB of weights do not fit beside any serving lane."""
+    VID = "qwen38-video.service"
+
+    def test_video_is_blocked_while_the_27b_serves(self):
+        r = lc.blocked_reasons("unit", {"unit": self.VID, "verb": "start"},
+                               {"qwen38-sglang.service": "ready", "qwen38-flash.service": "stopped",
+                                "qwen38-image.service": "stopped"})
+        self.assertEqual(len(r), 1)
+        self.assertIn("qwen38-sglang.service", r[0])
+
+    def test_video_is_blocked_while_the_image_lane_runs(self):
+        """With four lanes, checking one neighbour of three would let a start through."""
+        r = lc.blocked_reasons("unit", {"unit": self.VID, "verb": "start"},
+                               {"qwen38-sglang.service": "stopped",
+                                "qwen38-flash.service": "stopped",
+                                "qwen38-image.service": "ready"})
+        self.assertEqual(len(r), 1)
+        self.assertIn("qwen38-image.service", r[0])
+
+    def test_a_text_lane_is_blocked_while_the_video_lane_runs(self):
+        for text in ("qwen38-sglang.service", "qwen38-flash.service"):
+            with self.subTest(text=text):
+                r = lc.blocked_reasons("unit", {"unit": text, "verb": "start"},
+                                       {self.VID: "ready"})
+                self.assertEqual(len(r), 1)
+                self.assertIn(self.VID, r[0])
+
+    def test_an_image_start_is_blocked_while_the_video_lane_runs(self):
+        r = lc.blocked_reasons("unit", {"unit": "qwen38-image.service", "verb": "start"},
+                               {self.VID: "warming-up"})
+        self.assertEqual(len(r), 1)
+        self.assertIn(self.VID, r[0])
+
+    def test_video_starts_when_nothing_else_runs(self):
+        self.assertEqual(lc.blocked_reasons("unit", {"unit": self.VID, "verb": "start"},
+                                            {"qwen38-sglang.service": "stopped",
+                                             "qwen38-flash.service": "stopped",
+                                             "qwen38-image.service": "stopped"}), [])
+
+    def test_the_switch_waits_for_a_video_boot_too(self):
+        self.assertEqual(len(lc.blocked_reasons("switch", {"target": "stock"},
+                                                {self.VID: "loading-weights"})), 1)
+
+    def test_stopping_a_ready_video_lane_warns_about_the_video_not_the_proxy(self):
+        """The proxy on :30001 is a text door; nothing reaches this lane through it."""
+        w = lc.warn_reasons("unit", {"unit": self.VID, "verb": "stop"}, {self.VID: "ready"})
+        self.assertEqual(len(w), 1)
+        self.assertIn("video", w[0])
+        self.assertIn("12 min", w[0])
+        self.assertNotIn(":30001", w[0])
+
+    def test_the_video_lane_is_an_engine_but_not_a_text_engine(self):
+        self.assertIn(self.VID, lc.ENGINE_UNITS)
+        self.assertNotIn(self.VID, lc.TEXT_UNITS)
+        self.assertEqual(lc.VIDEO_UNIT, self.VID)
+
+
+class VideoBootLog(unittest.TestCase):
+    """The MiniMax-H3 boot lines, captured from journald on the reference box on
+    2026-09-25 (boot 23:08:50): DiT 61.73 GB in 13 shards, text encoder 48.09 GB,
+    audio VAE 0.56 GB, video VAE 5.2 GB, then three warmup requests before ready."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lines = (HERE.parent / "fixtures" / "video-boot.log").read_text().splitlines()
+
+    def at(self, needle):
+        """The boot as it looked the moment this line was written."""
+        for i, ln in enumerate(self.lines):
+            if needle in ln:
+                return lc.parse_video_boot_log(self.lines[:i + 1])
+        self.fail(f"the fixture has no line with {needle!r}")
+
+    def test_a_complete_boot_is_fired_up_with_every_stage_done(self):
+        b = lc.parse_video_boot_log(self.lines)
+        self.assertTrue(b["fired_up"])
+        self.assertEqual(b["done"], list(lc.VIDEO_STAGES))
+
+    def test_each_shared_milestone_opens_its_stage(self):
+        for needle, stage in (
+                ("Starting server", "init"),
+                ("Loading pipeline modules", "loading-weights"),
+                ("Pipeline instantiated", "loading-weights"),
+                ("Starting FastAPI server", "warming-up")):
+            with self.subTest(line=needle):
+                b = self.at(needle)
+                self.assertEqual(b["stage"], stage)
+                self.assertFalse(b["fired_up"])
+
+    def test_each_component_line_names_what_is_being_loaded(self):
+        """"loading weights" for a minute says less than "the 61.7 GB DiT"."""
+        for needle, detail in (
+                ("Loading text_encoder from", "48 GB text encoder"),
+                ("Loading MiniMaxH3DiTModel from", "61.7 GB DiT"),
+                ("Loading audio_vae from", "audio VAE"),
+                ("Loading video_vae from", "5.2 GB video VAE")):
+            with self.subTest(line=needle):
+                b = self.at(needle)
+                self.assertEqual(b["stage"], "loading-weights")
+                self.assertIn(detail, b["detail"])
+
+    def test_only_the_latest_boot_counts(self):
+        """journald keeps every previous life of the unit. A "fired up" from an earlier
+        boot must not make the one in progress read as ready."""
+        restarted = self.lines + ["[2026-09-25 22:00:00] Starting server...",
+                                  "[2026-09-25 22:00:07] Loading pipeline modules..."]
+        b = lc.parse_video_boot_log(restarted)
+        self.assertFalse(b["fired_up"])
+        self.assertEqual(b["stage"], "loading-weights")
+
+    def test_an_empty_journal_is_not_a_boot(self):
+        b = lc.parse_video_boot_log([])
+        self.assertIsNone(b["stage"])
+        self.assertFalse(b["fired_up"])
+
+
 if __name__ == '__main__':
     unittest.main()

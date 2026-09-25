@@ -295,6 +295,28 @@ reference, prompt, step count and guidance setting). Licence: Qwen Research, **n
 
 Every number, every refusal and how the runtime is pinned: **[docs/image-lane.md](docs/image-lane.md)**.
 
+## Videos: MiniMax-H3 on the same box (opt-in)
+
+`./install.sh --with-video` adds a video lane beside the other three: text to video with
+joint video-and-audio, plus first/last-frame conditioning. It is opt-in because it costs
+about 150 GB of headroom and an hour or more, and once installed a
+plain re-run keeps it.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --with-video
+```
+
+Then it is a fourth lane, driven like the other three: pick **MiniMax-H3** in the cockpit's
+switcher, **Switch**, stop the serving lane, **Start MiniMax-H3** (about 12 min). From a terminal,
+`./switch-model.sh video` does the switch and prints the rest.
+
+It serves the SGLang cookbook's MiniMax-H3 recipe exactly as upstream wrote it, with no local
+patch: the cookbook verifies about 12.1 s per denoise step, about 40 s of decode and about
+12 min per warm 4 s 480P request on the DGX Spark, with no flags at all. One request at a
+time; the Video tab refuses a second one, and a duration outside the cookbook's 4 to 15 s band.
+
+Every number, every refusal and how the runtime is pinned: **[docs/video-lane.md](docs/video-lane.md)**.
+
 ## The 1M context mode
 
 Since v1.12.1 a plain 27B install serves a **1,010,000-token window** (YaRN static scaling, the
@@ -586,7 +608,7 @@ question you had when you opened the page.
 | **Models** | Every target as data: recipes, drift against what is running, registry of what is on disk, upstream watch, full inventory | Read what is installed and what it costs in bytes; rescan (the panels are read-only: `./uninstall.sh --list` shows the same inventory, and `./uninstall.sh` prints the reclaim commands) |
 | **System One** | The typed-decisions endpoint, from a browser: is it served, and what does it answer? | Ask the lane with prefilled examples, copy the matching curl, read the probabilities |
 | **Image** | Qwen-Image 2.1, when it is the serving lane: generation, editing with up to ten references, native RGBA | Generate and edit at the model's defaults (**Reset settings**), start from the sample prompts, follow each stage of a request, copy the matching curl |
-| **Video** | Nothing yet, and it says so | |
+| **Video** | MiniMax-H3, when it is the serving lane: text to video with joint video-and-audio, first/last-frame conditioning | Generate at the cookbook's defaults (**Reset settings**), follow the request to completed, play and download the MP4, copy the matching curl |
 | **Logs** | Live logs, the last 30 events, recent jobs | Tail or follow a service's log, read what each recent job printed |
 | **Setup** | The repo itself, opencode integration, whether a newer release is out, the cockpit's own settings | Fit opencode's limits to the engine that serves; copy the command that updates the stack, which runs in a terminal because the installer needs an interactive sudo |
 

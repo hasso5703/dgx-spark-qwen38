@@ -114,8 +114,8 @@ names, header hygiene) are property-tested.
 
 **The installer (`install.sh`, `dashboard/install-*.sh`)** runs things you
 sudo. Every pinned byte is hash-verified: images by digest, checkpoints by
-pinned revision, the opencode release by its sha256. The image lane
-(`--with-image`) is the one part with unpinned bytes: its SGLang wheel, source
+pinned revision, the opencode release by its sha256. The image and video lanes
+(`--with-image`, `--with-video`) are the parts with unpinned bytes: their SGLang wheel, source
 commit and checkpoint revision are pinned, but pip resolves the wheel's dependency tree
 from PyPI at install time, with no hash checked. The engine enforces its key, read from a file created
 0600 and handed to it through SGLang's `--config`, so it is in no process's command line and the chat template and launcher are regenerated from the
@@ -157,7 +157,7 @@ discussion, not a disclosure.
   readable by anything that can reach the proxy port. That is the port's
   existing trust model (a trusted network by design, see the plain HTTP edge
   above); the metrics endpoint adds counters to it, not a new surface to
-  authenticate against. The image lane exports no metrics.
+   authenticate against. The image and video lanes export no metrics.
 - **The cockpit assumes one admin user.** The sudo allowlist covers this
   repo's argv, but a hostile local user with your shell can do what you can
   do: this box is yours, and it is not a multi-tenant host.

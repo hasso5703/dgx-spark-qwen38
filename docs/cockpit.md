@@ -170,7 +170,9 @@ assumed, so a box whose proxy predates v6.19 is told why instead of looking brok
 
 **Image** is next to it: since v1.18.0 it drives Qwen-Image 2.1, the third lane, when that lane
 serves (generation, editing with up to ten references, native RGBA; see
-[docs/image-lane.md](image-lane.md)). **Video** says Coming soon, which is its honest state.
+[docs/image-lane.md](image-lane.md)). **Video** drives MiniMax-H3, the fourth lane, when that lane
+serves (text to video with joint video-and-audio, first/last-frame conditioning; see
+[docs/video-lane.md](video-lane.md)).
 
 ## Being told there is a newer version
 

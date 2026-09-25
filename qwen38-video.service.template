@@ -1,0 +1,63 @@
+[Unit]
+Description=MiniMax-H3 video-and-audio (SGLang Diffusion, native venv), OpenAI videos API :__VIDEO_PORT__
+Wants=network-online.target
+# One engine at a time on this box, and systemd is where that is said rather than in a
+# wrapper someone can bypass: the video checkpoint (fl2va partition plus shared
+# components) does not fit beside any serving lane, while
+# any other lane holds its own pool for the life of its process. Starting this stops
+# the other lanes; starting another lane stops this.
+Conflicts=qwen38-sglang.service qwen38-flash.service qwen38-image.service qwen38-llamacpp.service
+# Conflicts= alone orders nothing: the old lane's stop and the new lane's start ran
+# side by side on the reference box (measured on its systemd 255: 3.0 s of overlap
+# without After=, 0.02 s after the stop with, 2026-09-24). With the same units named
+# in After=, systemd finishes the stop before the start, in both directions.
+After=network-online.target qwen38-sglang.service qwen38-flash.service qwen38-image.service qwen38-llamacpp.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__VIDEO_LANE_DIR__
+Environment=HF_HOME=__HF_CACHE__
+Environment=HF_HUB_OFFLINE=1
+Environment=PYTHONUNBUFFERED=1
+# The decode sits close enough to the cap that fragmentation tips it over (cookbook).
+Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# The cookbook's DGX Spark recipe, and nothing else: every component resident, no
+# offload flags. The cookbook verifies about 12.1 s per denoise step, about 40 s of
+# decode and about 12 min per warm request at 480P with no flags at all, and adding
+# the discrete-GPU offload flags measured 2.1x slower on the same box. Forcing any of
+# those is how a verified recipe stops being the verified recipe.
+# NO --api-key, and that is not an omission. The diffusion runtime is a different
+# parser from the LLM one: it has no --api-key and no --sleep-on-idle, and passing
+# either kills the unit at startup with "unrecognized arguments". So this lane cannot
+# authenticate anyone, and the loopback bind below is the only thing standing in
+# front of it. The cockpit is the authenticated door.
+# --output-path: a directory of this lane's own, because the download needs the
+# file to still be there. Left empty (like the image lane), the server answers into
+# a temp dir it deletes when the request ends, and every completed video 404s on
+# download (measured 2026-09-25: completed in 592 s, file gone before the download).
+# --input-save-path "": uploads are never used (keyframes travel as staged files in
+# the request, never as uploads), so nothing needs the copy.
+# Old MP4s stay until deleted: watch the directory grow.
+ExecStart=__VIDEO_VENV__/bin/sglang serve \
+  --model-path __VIDEO_MODEL__ \
+  --model-variant __VIDEO_VARIANT__ \
+  --output-path __VIDEO_LANE_DIR__/outputs \
+  --input-save-path "" \
+  --host __VIDEO_BIND__ --port __VIDEO_PORT__
+Restart=on-failure
+RestartSec=15
+# No TimeoutStartSec: systemd counts a Type=simple unit started once its process runs,
+# so the setting never bounded the minutes it takes to load the checkpoint.
+# install-video.sh and the cockpit wait on /health for that.
+#
+# Stop waits for the generation in flight to end, because this runtime has no abort
+# and this lane carries no local shutdown patch: the cookbook's recipe runs as
+# upstream wrote it. A 15 s request at the cookbook's rate is about 45 min, so the
+# bound below covers the longest official duration; past it systemd kills the lane
+# mid-generation. Cancel in the cockpit is a restart through this same wait.
+TimeoutStopSec=3600
+
+[Install]
+WantedBy=multi-user.target

@@ -413,6 +413,8 @@ NO_COCKPIT=0
 WITH_COCKPIT=0
 WITH_IMAGE=0
 NO_IMAGE=0
+WITH_VIDEO=0
+NO_VIDEO=0
 for arg in "$@"; do
   case "$arg" in
     --no-start) NO_START=1 ;;
@@ -423,6 +425,8 @@ for arg in "$@"; do
     --with-cockpit) WITH_COCKPIT=1 ;;
     --with-image) WITH_IMAGE=1 ;;
     --no-image) NO_IMAGE=1 ;;
+    --with-video) WITH_VIDEO=1 ;;
+    --no-video) NO_VIDEO=1 ;;
     --with-claude-warmup)
       echo "NOTE: --with-claude-warmup was removed in v1.3 (the repo's client story moved to opencode)."
       echo "      The flag is ignored; an installed warmup drop-in from an earlier version is cleaned up." ;;
@@ -430,6 +434,7 @@ for arg in "$@"; do
       cat <<'HLP'
 Usage: ./install.sh [--no-start] [--no-service] [--no-opencode | --with-opencode]
                    [--no-cockpit | --with-cockpit] [--with-image | --no-image]
+                   [--with-video | --no-video]
 
 Run it as yourself. Never with sudo in front: it calls sudo itself for the
 privileged steps, and under sudo every path it writes moves to /root (see the
@@ -458,6 +463,15 @@ from there you start, stop, switch, watch and benchmark without a terminal.
                         keep and update it.
   --no-image            skip it on a box that already has it (the unit and the
                         venv stay in place; ./install-image.sh --uninstall
+                        removes them)
+  --with-video          also install the MiniMax-H3 video lane: text-to-video
+                        with joint video-and-audio, served on its own port
+                        and driven from the cockpit's Video tab. Adds about
+                        150 GB of headroom and an hour or
+                        more, which is why a plain run does not. Once
+                        installed, later runs keep and update it.
+  --no-video            skip it on a box that already has it (the unit and the
+                        venv stay in place; ./install-video.sh --uninstall
                         removes them)
 
 Re-running over an existing install keeps the operator's choices: the target
@@ -611,11 +625,27 @@ if systemctl is-enabled --quiet qwen38-image.service 2>/dev/null \
     echo "without making it the boot lane again. Switch back to text from the cockpit when you want it."
   fi
 fi
+# The video lane is a lane too, under the same promise: a plain re-run on a box
+# booting video must not enable a text unit beside it.
+VIDEO_BOOT=0
+if systemctl is-enabled --quiet qwen38-video.service 2>/dev/null \
+   && [ "$SGL_ENABLED" -eq 0 ] && [ "$FLASH_ENABLED" -eq 0 ]; then
+  if [ -n "$_ENV_MODEL_CHOICE" ]; then
+    # An explicit MODEL_CHOICE asks for a text lane: honour it, and the video lane
+    # leaves the boot below, where the text unit is enabled.
+    echo "MODEL_CHOICE=$_ENV_MODEL_CHOICE given on a box booting the video lane: making that text lane the boot lane again."
+  else
+    VIDEO_BOOT=1
+    echo "The video lane is this box's boot lane: this run brings the text lane up to date"
+    echo "without making it the boot lane again. Switch back to text from the cockpit when you want it."
+  fi
+fi
 # Which text lane to bring up to date on that path. Both text units can be on disk with
 # neither enabled, since a switch to images disables both, so enablement cannot say which
 # one was in use; the switch writes it down instead, and without it the 27B lane is the
 # fallback, the same one the code below picks when nothing is enabled.
 LANE_BEFORE_IMAGE="$(cat "$CONFIG_DIR/lane-before-image" 2>/dev/null || true)"
+LANE_BEFORE_VIDEO="$(cat "$CONFIG_DIR/lane-before-video" 2>/dev/null || true)"
 if [ "$FLASH_READABLE" -eq 1 ] && [ "$FLASH_ENABLED" -eq 1 ] && [ "$SGL_ENABLED" -eq 1 ]; then
   echo "NOTE: both qwen38-sglang and qwen38-flash are enabled (only one can serve the port)."
   echo "      Following the 27B unit; run ./switch-model.sh to resolve this cleanly."
@@ -624,6 +654,8 @@ if [ "$FLASH_READABLE" -eq 1 ] && [ "$FLASH_ENABLED" -eq 1 ] && [ "$SGL_ENABLED"
   INSTALLED_CHOICE=flash
 elif [ "$IMAGE_BOOT" -eq 1 ] && [ "$LANE_BEFORE_IMAGE" = "qwen38-flash.service" ] && [ "$FLASH_READABLE" -eq 1 ]; then
   INSTALLED_CHOICE=flash          # the text lane this box used before it switched to images
+elif [ "$VIDEO_BOOT" -eq 1 ] && [ "$LANE_BEFORE_VIDEO" = "qwen38-flash.service" ] && [ "$FLASH_READABLE" -eq 1 ]; then
+  INSTALLED_CHOICE=flash          # the text lane this box used before it switched to video
 elif [ "$SGL_READABLE" -eq 1 ]; then
   INSTALLED_CHOICE=27b
 elif [ "$FLASH_READABLE" -eq 1 ]; then
@@ -880,12 +912,21 @@ fi
 if [ "$NO_IMAGE" -eq 1 ] && [ "$WITH_IMAGE" -eq 1 ]; then
   printf -- '--no-image and --with-image contradict each other (drop one flag)\n' >&2; exit 1
 fi
+# The same for the video lane.
+if [ "$NO_VIDEO" -eq 1 ] && [ "$WITH_VIDEO" -eq 1 ]; then
+  printf -- '--no-video and --with-video contradict each other (drop one flag)\n' >&2; exit 1
+fi
 
 # --no-start and --no-service both return before the image step, so the flag would be
 # accepted and silently do nothing. Say so here rather than at the end of a long install.
 if [ "$WITH_IMAGE" -eq 1 ] && { [ "$NO_START" -eq 1 ] || [ "$NO_SERVICE" -eq 1 ]; }; then
   printf -- '--with-image needs the full install: it installs a systemd unit and proves it serves.\n' >&2
   printf -- 'Run ./install.sh without --no-start/--no-service, or ./install-image.sh on its own.\n' >&2
+  exit 1
+fi
+if [ "$WITH_VIDEO" -eq 1 ] && { [ "$NO_START" -eq 1 ] || [ "$NO_SERVICE" -eq 1 ]; }; then
+  printf -- '--with-video needs the full install: it installs a systemd unit and proves it serves.\n' >&2
+  printf -- 'Run ./install.sh without --no-start/--no-service, or ./install-video.sh on its own.\n' >&2
   exit 1
 fi
 # Since v1.12 the cockpit is part of a plain install: the one-liner has to leave
@@ -1995,6 +2036,11 @@ if [ "$IMAGE_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-image.service 
   echo "disabling the image lane at boot (unit kept, switch back anytime from the cockpit)"
   sudo systemctl disable qwen38-image.service
 fi
+# The video lane is the fourth engine, under the same rule.
+if [ "$VIDEO_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-video.service 2>/dev/null; then
+  echo "disabling the video lane at boot (unit kept, switch back anytime from the cockpit)"
+  sudo systemctl disable qwen38-video.service
+fi
 KEEPALIVE_UNIT="qwen38-keepalive.service"
 # One-prompt ceiling enforced by the proxy (tokens; 0 = pool share only). The proxy
 # always refuses a prompt above its share of the KV pool as well, so the smaller of
@@ -2066,12 +2112,13 @@ if [ -f "/etc/systemd/system/$UNIT_NAME.d/warmup.conf" ]; then
 fi
 rm -f "$CONFIG_DIR/warmup-claude-code.sh"
 sudo systemctl daemon-reload
-if [ "$IMAGE_BOOT" -eq 0 ]; then
+if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then
   sudo systemctl enable "$UNIT_NAME"
 else
-  # Updated, not switched to. Starting it would stop the image lane that is serving, and
-  # the cockpit and the image step below only run once a text engine has proved itself,
-  # so this path finishes here, on its own, instead of waiting for a boot it must not do.
+  # Updated, not switched to. Starting it would stop the lane that is serving, and
+  # the cockpit and the side-lane steps below only run once a text engine has proved
+  # itself, so this path finishes here, on its own, instead of waiting for a boot it
+  # must not do.
   # The proxy's code and unit were just rewritten above; on the text path it is restarted
   # once the engine behind it answers, which this path never waits for. Without this it
   # kept the old keepalive-proxy.py in memory until someone restarted it by hand.
@@ -2084,11 +2131,18 @@ else
       || echo "NOTE: the cockpit did not reinstall; retry with ./dashboard/install-dashboard.sh"
   fi
   # --no-smoke always: the smoke test starts and stops the lane, and this lane is serving.
-  if [ "$NO_IMAGE" -eq 0 ]; then
+  # Guarded by the unit file: on a box booting the other side lane, an unconditional
+  # update would install gigabytes nobody asked for.
+  if [ "$NO_IMAGE" -eq 0 ] && [ -f /etc/systemd/system/qwen38-image.service ]; then
     "$REPO_DIR/install-image.sh" --no-smoke \
       || echo "NOTE: the image lane did not update; retry with ./install-image.sh --no-smoke"
   fi
-  step "Done: the text lane is up to date; the image lane stays this box's serving lane"
+  if [ "$NO_VIDEO" -eq 0 ] && [ -f /etc/systemd/system/qwen38-video.service ]; then
+    "$REPO_DIR/install-video.sh" --no-smoke \
+      || echo "NOTE: the video lane did not update; retry with ./install-video.sh --no-smoke"
+  fi
+  if [ "$VIDEO_BOOT" -eq 1 ]; then SERVING_LANE="video"; else SERVING_LANE="image"; fi
+  step "Done: the text lane is up to date; the $SERVING_LANE lane stays this box's serving lane"
   echo "  text lane : installed as $UNIT_NAME, not enabled at boot"
   if [ "$MODEL_CHOICE" = "custom" ]; then
     # a kept custom model has no switch target of its own; the installer is the way back
@@ -2317,6 +2371,30 @@ except Exception as e:
       fi
     fi
 
+    # ── The video lane, last with the image lane, for the same two reasons: it is
+    # the only other step that stops the engine already serving above, and the only
+    # other one that costs over 100 GB. It is opt-in, and remembered: a box that has
+    # it keeps it across upgrades.
+    VIDEO_ON=0
+    [ -f /etc/systemd/system/qwen38-video.service ] && VIDEO_ON=1
+    [ "$WITH_VIDEO" -eq 1 ] && VIDEO_ON=1
+    [ "$NO_VIDEO" -eq 1 ] && VIDEO_ON=0
+    if [ "$VIDEO_ON" -eq 1 ]; then
+      step "MiniMax-H3 lane (text-to-video with joint video-and-audio)"
+      # The smoke test stops the engine this run just verified, loads the checkpoint
+      # and puts it back, then generates for about 12 min: worth it once, on the
+      # install that asked for the lane; not on every routine upgrade of a box that
+      # happens to have it.
+      VIDEO_ARGS=()
+      [ "$WITH_VIDEO" -eq 0 ] && VIDEO_ARGS=(--no-smoke)
+      if "$REPO_DIR/install-video.sh" ${VIDEO_ARGS[@]+"${VIDEO_ARGS[@]}"}; then
+        VIDEO_READY=1
+      else
+        echo "NOTE: the video lane did not install. Everything above is up and serving."
+        echo "      retry on its own with ./install-video.sh (it resumes what it already did)"
+      fi
+    fi
+
     printf '\n\033[1;32m✅ Installed, verified, and enabled at boot.\033[0m\n'
     if [ -n "$COCKPIT_URL" ]; then
       printf '\n\033[1;36m  ▶ OPEN THE COCKPIT:  %s\033[0m\n' "$COCKPIT_URL"
@@ -2370,6 +2448,14 @@ except Exception as e:
       echo "  Images     : installed, not updated by this run (--no-image); ./install-image.sh --uninstall removes it"
     elif [ "${IMAGE_ON:-0}" -eq 0 ]; then
       echo "  Images     : not installed; ./install.sh --with-image adds the Qwen-Image 2.1 lane (38 GB)"
+    fi
+    if [ "${VIDEO_READY:-0}" -eq 1 ]; then
+      echo "  Videos     : a fourth lane; switch to MiniMax-H3 in the cockpit (or ./switch-model.sh video)"
+    elif [ -f /etc/systemd/system/qwen38-video.service ] && [ "${VIDEO_ON:-0}" -eq 0 ]; then
+      # --no-video on a box that has the lane: it is there, only not updated by this run
+      echo "  Videos     : installed, not updated by this run (--no-video); ./install-video.sh --uninstall removes it"
+    elif [ "${VIDEO_ON:-0}" -eq 0 ]; then
+      echo "  Videos     : not installed; ./install.sh --with-video adds the MiniMax-H3 lane (about 150 GB of headroom)"
     fi
     [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh"
     exit 0

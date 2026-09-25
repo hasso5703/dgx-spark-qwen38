@@ -21,6 +21,7 @@ LANES = {
     "qwen38-sglang.service": ("qwen38-sglang.service.template", "qwen38-sglang-1m.service.template"),
     "qwen38-flash.service": ("qwen38-flash.service.template",),
     "qwen38-image.service": ("qwen38-image.service.template",),
+    "qwen38-video.service": ("qwen38-video.service.template",),
 }
 ALL = set(LANES) | {"qwen38-llamacpp.service"}
 

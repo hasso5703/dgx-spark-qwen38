@@ -688,11 +688,12 @@ jobs:
           # Two kinds of target since the image lane. The TEXT targets are what
           # install.sh can serve as its LLM (MODEL_CHOICE) and what the Models tab
           # builds a recipe for. The SWITCH targets are those plus the lanes a flag
-          # installs, which today is one: `image`, installed by --with-image, switched
-          # to like any other, and not an LLM checkpoint (it has no recipe, no KV pool
-          # and no opencode default). Both sets are asserted, so a lane added to the
+          # installs, which today is two: `image`, installed by --with-image, and
+          # `video`, installed by --with-video, each switched to like any other,
+          # and neither an LLM checkpoint (neither has a recipe, a KV pool
+          # nor an opencode default). Both sets are asserted, so a lane added to the
           # switcher and forgotten in the cockpit's enum is still caught.
-          FLAG_LANES = ["image"]
+          FLAG_LANES = ["image", "video"]
           ref = choices
           switch_ref = sorted(ref + FLAG_LANES)
           text_lists = {"install.sh MODEL_CHOICE": choices, "recipes BUILTIN_IDS": sorted(builtins)}
@@ -1214,9 +1215,11 @@ jobs:
           allowed = {m.strip() for m in re.findall(r"NOPASSWD:\s*(.+)$", alw, re.M)}
           stage = dict(re.findall(r'^(STAGE_UNIT|STAGE_CEIL)="\$CONFIG_DIR/([^"]+)"', script, re.M))
           units = {"qwen38-sglang.service", "qwen38-flash.service"}
+          engines = units | {"qwen38-image.service", "qwen38-video.service"}
           values = {
-              "TEXT_UNIT_NAME": units, "TARGET_UNIT_NAME": units, "OTHER_UNIT_NAME": units,
+              "TEXT_UNIT_NAME": engines, "TARGET_UNIT_NAME": units, "OTHER_UNIT_NAME": engines,
               "IMAGE_UNIT_NAME": {"qwen38-image.service"},
+              "VIDEO_UNIT_NAME": {"qwen38-video.service"},
               "TARGET_UNIT": {re.search(r'^SGL_UNIT="([^"]+)"', script, re.M).group(1)},
               "STAGE_UNIT": {"__HOME__/.config/qwen38/" + stage["STAGE_UNIT"]},
               "STAGE_CEIL": {"__HOME__/.config/qwen38/" + stage["STAGE_CEIL"]},
@@ -1343,9 +1346,13 @@ jobs:
                   bad.append(var)
           # The image lane's checkpoint is pinned by install-image.sh, not install.sh, and
           # was the one the inventory missed (2026-09-23: 31 GB left behind, unnamed).
+          # The video lane's checkpoint is pinned by install-video.sh the same way.
           m = re.search(r'\bMODEL="\$\{MODEL:-([^}]+)\}"', pathlib.Path("install-image.sh").read_text())
           if not m or m.group(1) not in un.split('HF_REPOS="', 1)[-1].split('"', 1)[0].split():
               bad.append("install-image.sh MODEL")
+          m = re.search(r'\bMODEL="\$\{MODEL:-([^}]+)\}"', pathlib.Path("install-video.sh").read_text())
+          if not m or m.group(1) not in un.split('HF_REPOS="', 1)[-1].split('"', 1)[0].split():
+              bad.append("install-video.sh MODEL")
           if bad:
               print("install.sh pins missing from uninstall.sh inventory:")
               print("\n".join("  " + b for b in bad)); sys.exit(1)

@@ -49,7 +49,7 @@ done
 # digest: a digest pull leaves no tag behind.
 LOCAL_IMAGE_REPOS="qwen38-dflash2 qwen38-flash qwen38-pinned"  # qwen38-dflash2 is the pre-v1.14 27B overlay, retired but still deletable; qwen38-pinned (v1.18.6) tags the digest pulls
 BASE_IMAGES="lmsysorg/sglang:v0.5.19 lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9 lmsysorg/sglang:qwen38-27b lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1 lmsysorg/sglang:qwen38flashnext lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1 lmsysorg/sglang@sha256:9d2a843c706c74bc259c0d9abf360551eb2734e1e7d255ab012a6965f10480b6 lmsysorg/sglang@sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe vllm/vllm-openai:qwen38-flash-next vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8"
-HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 Qwen/Qwen3.8-27B-FP8 edp1096/Huihui-Qwen3.8-27B-abliterated-FP8 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal RadixArk/Qwen3.8-Flash-Next-NVFP4 nvidia/Qwen3.8-Flash-Next-NVFP4 dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4 Qwen/Qwen-Image-2.1"
+HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 Qwen/Qwen3.8-27B-FP8 edp1096/Huihui-Qwen3.8-27B-abliterated-FP8 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal RadixArk/Qwen3.8-Flash-Next-NVFP4 nvidia/Qwen3.8-Flash-Next-NVFP4 dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4 Qwen/Qwen-Image-2.1 MiniMaxAI/MiniMax-H3"
 
 FOUND_IMAGES=()   # "ref|size|every ref", deduplicated by image ID (a tag and its digest are one image)
 # Every reference Docker keeps for one image. A digest-pulled image carries its digest
@@ -90,7 +90,7 @@ rm_cmd() {
 }
 
 echo "── Inventory (everything any version of this repo may have left here) ──"
-for u in qwen38-sglang.service qwen38-flash.service qwen38-keepalive.service qwen38-dashboard.service qwen38-image.service opencode-web.service; do
+for u in qwen38-sglang.service qwen38-flash.service qwen38-keepalive.service qwen38-dashboard.service qwen38-image.service qwen38-video.service opencode-web.service; do
   if [ -f "$SYSTEMD_DIR/$u" ]; then
     STATE="$(systemctl is-enabled "$u" 2>/dev/null || true)/$(systemctl is-active "$u" 2>/dev/null || true)"
     echo "  unit      $SYSTEMD_DIR/$u ($STATE)"
@@ -106,6 +106,11 @@ done
 IMAGE_LANE_DIR="${IMAGE_LANE_DIR:-$({ grep -m1 -E '^WorkingDirectory=' "$SYSTEMD_DIR/qwen38-image.service" 2>/dev/null || true; } | cut -d= -f2-)}"
 IMAGE_LANE_DIR="${IMAGE_LANE_DIR:-$HOME/.local/share/qwen38-image}"
 [ -d "$IMAGE_LANE_DIR" ] && echo "  runtime   $IMAGE_LANE_DIR ($(dir_size "$IMAGE_LANE_DIR"), image lane venv + pinned SGLang checkout)"
+# Read from the unit, not assumed: install-video.sh takes VIDEO_LANE_DIR, so a lane
+# installed elsewhere would be reported clean and left on disk.
+VIDEO_LANE_DIR="${VIDEO_LANE_DIR:-$({ grep -m1 -E '^WorkingDirectory=' "$SYSTEMD_DIR/qwen38-video.service" 2>/dev/null || true; } | cut -d= -f2-)}"
+VIDEO_LANE_DIR="${VIDEO_LANE_DIR:-$HOME/.local/share/qwen38-video}"
+[ -d "$VIDEO_LANE_DIR" ] && echo "  runtime   $VIDEO_LANE_DIR ($(dir_size "$VIDEO_LANE_DIR"), video lane venv + pinned SGLang checkout)"
 for f in "$CONFIG_DIR"/*.bak-preupdate; do
   [ -f "$f" ] && echo "  backup    $f (pre-update unit backup)"
 done
@@ -155,7 +160,7 @@ fi
 PRIV=0
 for f in "$SYSTEMD_DIR/qwen38-sglang.service" "$SYSTEMD_DIR/qwen38-flash.service" \
          "$SYSTEMD_DIR/qwen38-keepalive.service" "$SYSTEMD_DIR/qwen38-dashboard.service" \
-         "$SYSTEMD_DIR/qwen38-image.service" "$SYSTEMD_DIR/opencode-web.service" \
+         "$SYSTEMD_DIR/qwen38-image.service" "$SYSTEMD_DIR/qwen38-video.service" "$SYSTEMD_DIR/opencode-web.service" \
          "$SYSTEMD_DIR/qwen38-sglang.service.d" "$SYSTEMD_DIR/qwen38-dashboard.service.d" \
          "$SYSTEMD_DIR/qwen38-keepalive.service.d" "$SUDOERS_FILE" "$PYSPY_WRAPPER"; do
   [ -e "$f" ] && PRIV=1
@@ -168,11 +173,11 @@ done
 PRIV_DONE=0
 if [ "$PRIV" -eq 1 ]; then
   if sudo -v; then
-    for u in qwen38-sglang qwen38-flash qwen38-keepalive qwen38-dashboard qwen38-image opencode-web; do
+    for u in qwen38-sglang qwen38-flash qwen38-keepalive qwen38-dashboard qwen38-image qwen38-video opencode-web; do
       sudo systemctl disable --now "$u.service" 2>/dev/null || true
     done
     docker rm -f qwen38-sglang qwen38-sglang-run qwen38-flash 2>/dev/null || true
-    sudo rm -f "$SYSTEMD_DIR/qwen38-sglang.service" "$SYSTEMD_DIR/qwen38-flash.service" "$SYSTEMD_DIR/qwen38-keepalive.service" "$SYSTEMD_DIR/qwen38-dashboard.service" "$SYSTEMD_DIR/qwen38-image.service" "$SYSTEMD_DIR/opencode-web.service"
+    sudo rm -f "$SYSTEMD_DIR/qwen38-sglang.service" "$SYSTEMD_DIR/qwen38-flash.service" "$SYSTEMD_DIR/qwen38-keepalive.service" "$SYSTEMD_DIR/qwen38-dashboard.service" "$SYSTEMD_DIR/qwen38-image.service" "$SYSTEMD_DIR/qwen38-video.service" "$SYSTEMD_DIR/opencode-web.service"
     sudo rm -rf "$SYSTEMD_DIR/qwen38-sglang.service.d" "$SYSTEMD_DIR/qwen38-dashboard.service.d" "$SYSTEMD_DIR/qwen38-keepalive.service.d"
     # The cockpit's privileged surface goes with it: a NOPASSWD allowlist left behind
     # after an uninstall is the one leftover that is not merely clutter.
@@ -195,6 +200,12 @@ fi
 if [ -d "$IMAGE_LANE_DIR" ] && { [ "$PRIV" -eq 0 ] || [ "$PRIV_DONE" -eq 1 ]; }; then
   rm -rf "$IMAGE_LANE_DIR/venv" "$IMAGE_LANE_DIR/sglang"
   rmdir "$IMAGE_LANE_DIR" 2>/dev/null || echo "kept $IMAGE_LANE_DIR: it holds files the image lane did not put there"
+fi
+# The video lane's runtime, under the same rule: only venv/ and sglang/, and the
+# directory itself only once it is empty.
+if [ -d "$VIDEO_LANE_DIR" ] && { [ "$PRIV" -eq 0 ] || [ "$PRIV_DONE" -eq 1 ]; }; then
+  rm -rf "$VIDEO_LANE_DIR/venv" "$VIDEO_LANE_DIR/sglang"
+  rmdir "$VIDEO_LANE_DIR" 2>/dev/null || echo "kept $VIDEO_LANE_DIR: it holds files the video lane did not put there"
 fi
 # The oc launcher, only if it is ours (never a foreign oc binary)
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
