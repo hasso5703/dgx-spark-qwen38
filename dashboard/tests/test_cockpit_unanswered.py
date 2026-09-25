@@ -13,6 +13,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# every module hands the next one the environment it found (test_env_isolation.py)
+ENV_BEFORE = dict(os.environ)
+
+
+def tearDownModule():
+    for name in set(os.environ) - set(ENV_BEFORE):
+        del os.environ[name]
+    os.environ.update(ENV_BEFORE)
+
+
 HERE = Path(__file__).resolve()
 DASH = HERE.parents[1]
 

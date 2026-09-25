@@ -534,8 +534,10 @@ class ThePageNeverShowsAStaleOrRacingState(unittest.TestCase):
         self.js = APP_JS.read_text()
 
     def test_the_text_engines_target_never_labels_the_image_lane(self):
-        self.assertIn("unit !== IMAGE_UNIT && F.target", self.js)
-        self.assertIn("s[0] !== IMAGE_UNIT && F.target", self.js)
+        # the text engine's target, and only when it is one of this unit's (ownTarget)
+        self.assertIn("unit !== IMAGE_UNIT && ownTarget(unit)", self.js)
+        self.assertIn("s[0] !== IMAGE_UNIT && ownTarget(unit)", self.js)
+        self.assertIn("F.target && TARGET_UNIT(F.target) === unit", self.js)
         down = self.js[self.js.index("function rEngineInfoDown("):self.js.index("function showEngineFacts(")]
         self.assertIn("F.target = null", down)
 
