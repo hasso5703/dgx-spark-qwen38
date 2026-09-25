@@ -31,6 +31,20 @@ HERE = Path(__file__).resolve()
 DASH = HERE.parents[1]
 REPO = HERE.parents[2]
 
+# The environment this module sets for the cockpit it loads is handed back when it ends,
+# so the next module in the same process starts from what this one found.
+ENV_BEFORE = {}
+
+
+def setUpModule():
+    ENV_BEFORE.update(os.environ)
+
+
+def tearDownModule():
+    for name in set(os.environ) - set(ENV_BEFORE):
+        del os.environ[name]
+    os.environ.update(ENV_BEFORE)
+
 
 def load_cockpit(config_dir: Path):
     os.environ.update(
@@ -83,6 +97,10 @@ class Base(unittest.TestCase):
         cls.tmp = Path(tempfile.mkdtemp(prefix="cockpit-image-"))
         (cls.tmp / "api-key").write_text("test-key-not-a-real-one\n")
         cls.ck = load_cockpit(cls.tmp)
+        # The box is read through run(); left real, this suite asked the reference box's
+        # systemd about its image unit 36 times (found in review, 2026-09-24). A test that
+        # needs an answer puts its own run() in place.
+        cls.ck.run = lambda argv, timeout=5.0, merge_err=False: ""
         # Kept in a dict, not as a class attribute: a plain function assigned to a class
         # becomes a bound method and would be handed self. Two tests below call the real
         # one to check it reads the installed unit.

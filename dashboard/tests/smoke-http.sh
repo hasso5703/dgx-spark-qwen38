@@ -63,21 +63,30 @@ PYEOF
 )"
 ck "inventory"            200 "$(code -b "$J" "$BASE/api/inventory")"
 ck "logs allowlist"       404 "$(code -b "$J" "$BASE/api/logs/etc-passwd")"
-ck "static traversal"     404 "$(code -b "$J" "$BASE/static/../cockpit.py")"
+# --path-as-is: without it curl resolves the ".." itself and asks for /cockpit.py, which is
+# a 404 whatever serve_static does, so this line could not fail (found in review, 2026-09-24).
+ck "static traversal"     404 "$(code --path-as-is -b "$J" "$BASE/static/../cockpit.py")"
 
 echo "── actions:"
 ck "action sans csrf"     403 "$(code -b "$J" -X POST "$BASE/api/action" -H 'Content-Type: application/json' -d '{"name":"smoke","params":{}}')"
 CSRF=$(curl -s -b "$J" -X POST "$BASE/api/csrf" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
 ck "enum ferme"           400 "$(code -b "$J" -X POST "$BASE/api/action" -H 'Content-Type: application/json' -d "{\"name\":\"unit\",\"params\":{\"verb\":\"start\",\"unit\":\"evil.service\"},\"csrf\":\"$CSRF\"}")"
 ck "action inconnue"      404 "$(code -b "$J" -X POST "$BASE/api/action" -H 'Content-Type: application/json' -d "{\"name\":\"rm-rf\",\"params\":{},\"csrf\":\"$CSRF\"}")"
-# the mutual-exclusion gate: starting the OTHER engine while one is busy
+# the mutual-exclusion gate: starting a text engine that is down while another lane is busy.
+# Only against a cockpit started with COCKPIT_DRY_RUN=1: this is a real start request, and on
+# a live cockpit a gate that regressed would start that second engine for real, the pair
+# that runs the unified memory out. A lane serving images counts as busy; the target is a
+# text lane that is down (the image lane had no entry here, and this died on a KeyError).
+DRY=$(curl -s -b "$J" "$BASE/api/state" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["config"]["data"].get("dry_run")).lower())')
 BUSY=$(curl -s -b "$J" "$BASE/api/state" | python3 -c '
 import json,sys
 l=json.load(sys.stdin)["lifecycle"]["data"]["engines"]
 busy=[u for u,e in l.items() if e["state"] not in ("stopped","failed")]
-other={"qwen38-flash.service":"qwen38-sglang.service","qwen38-sglang.service":"qwen38-flash.service"}
-print(other[busy[0]] if busy else "")')
-if [ -n "$BUSY" ]; then
+down=[u for u in ("qwen38-sglang.service","qwen38-flash.service") if u in l and u not in busy]
+print(down[0] if busy and down else "")')
+if [ "$DRY" != "true" ]; then
+  echo "  skip gate deux moteurs (cockpit reel: seulement contre un cockpit en COCKPIT_DRY_RUN=1)"
+elif [ -n "$BUSY" ]; then
   CSRF=$(curl -s -b "$J" -X POST "$BASE/api/csrf" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
   ck "gate deux moteurs"  409 "$(code -b "$J" -X POST "$BASE/api/action" -H 'Content-Type: application/json' -d "{\"name\":\"unit\",\"params\":{\"verb\":\"start\",\"unit\":\"$BUSY\"},\"csrf\":\"$CSRF\"}")"
 else

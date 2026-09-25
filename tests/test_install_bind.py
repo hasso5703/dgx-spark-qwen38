@@ -24,10 +24,15 @@ the same promise that protects a box hardened before v1.17.
 Every run stops at a later refusal on purpose, past the bind resolution and long before
 the preflight downloads anything.
 """
+import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import installer_wall as wall  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 INSTALL = str(REPO / "install.sh")
@@ -37,81 +42,48 @@ STOP = ["--no-cockpit", "--with-cockpit"]
 STOCK = {"MODEL_CHOICE": "stock"}
 
 
-def run(args=(), script=None, **env_extra):
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin",
-           "HOME": tempfile.mkdtemp(prefix="bind-home-")}
-    env.update(env_extra)
-    r = subprocess.run([script or INSTALL, *args], capture_output=True, text=True,
-                       env=env, cwd=str(REPO), timeout=60)
-    return r.returncode, r.stdout + r.stderr
+def run(args=(), script=None, home=None, **env_extra):
+    """A walled copy of install.sh (a fresh box unless `script` is another one), with the
+    commands that act on the box fenced: the refusal these runs stop at is checked to
+    have fired, instead of trusted to."""
+    env, record = wall.fenced_env(home=home or tempfile.mkdtemp(prefix="bind-home-"), **env_extra)
+    r = subprocess.run([script or fresh_box(), *args], capture_output=True, text=True,
+                       env=env, cwd=wall.cwd(), timeout=60)
+    out = r.stdout + r.stderr
+    assert wall.WALL not in out, f"the run went past its refusal:\n{out[-800:]}"
+    assert not wall.reached(record), wall.reached(record)
+    return r.returncode, out
 
 
 def box_with_units(engine_host="127.0.0.1", proxy_bind=None):
-    """A copy of install.sh whose unit paths point at a directory holding the units this
-    test wrote, so the convergence block reads a bind this box does not actually have."""
-    d = pathlib.Path(tempfile.mkdtemp(prefix="bind-units-"))
-    (d / "qwen38-sglang.service").write_text(
-        "[Service]\nExecStart=/bin/true --model-path RadixArk/Qwen3.8-27B-NVFP4 "
-        f"--host {engine_host} --port 30000 --context-length 1010000\n")
-    text = pathlib.Path(INSTALL).read_text()
-    for var, unit in (("SGL_UNIT_PATH", "qwen38-sglang.service"),
-                      ("FLASH_UNIT_PATH", "qwen38-flash.service")):
-        old = '%s="/etc/systemd/system/%s"' % (var, unit)
-        if old not in text:
-            raise AssertionError("install.sh no longer assigns %s the way this test rewrites it" % var)
-        text = text.replace(old, '%s="%s/%s"' % (var, d, unit))
+    """A copy of install.sh on a box holding the units this test wrote, so the convergence
+    block reads a bind this box does not actually have."""
+    units = {"qwen38-sglang.service":
+             "[Service]\nExecStart=/bin/true --model-path RadixArk/Qwen3.8-27B-NVFP4 "
+             f"--host {engine_host} --port 30000 --context-length 1010000\n"}
     if proxy_bind is not None:
-        ka = d / "qwen38-keepalive.service"
-        ka.write_text(f"[Service]\nEnvironment=PROXY_BIND={proxy_bind}\n")
-        old = '"/etc/systemd/system/qwen38-keepalive.service"'
-        if text.count(old) < 1:
-            raise AssertionError("install.sh no longer reads the keepalive unit by that path")
-        text = text.replace(old, '"%s"' % ka)
-    copy = d / "install.sh"
-    copy.write_text(text)
-    copy.chmod(0o755)
-    return str(copy)
+        units["qwen38-keepalive.service"] = f"[Service]\nEnvironment=PROXY_BIND={proxy_bind}\n"
+    return wall.walled(units=wall.units_dir(units))
 
 
 def flash_box(engine_host):
     """A flash box: its unit only points at the launcher, where the engine flags live, so
-    the bind to keep is read from launch-flash.sh. Returns (install.sh copy, HOME, PATH)."""
-    d = pathlib.Path(tempfile.mkdtemp(prefix="bind-flash-"))
-    home = d / "home"
+    the bind to keep is read from launch-flash.sh. Returns (install.sh copy, HOME); no lane
+    is enabled on it, whatever the host running the test has."""
+    home = pathlib.Path(tempfile.mkdtemp(prefix="bind-flash-"))
     cfg = home / ".config/qwen38"
     cfg.mkdir(parents=True)
     (cfg / "launch-flash.sh").write_text(
         "#!/bin/bash\nexec docker run --rm --name qwen38-flash lmsysorg/sglang@sha256:" + "a" * 64 +
         " python3 -m sglang.launch_server --model-path RadixArk/Qwen3.8-Flash-Next-NVFP4 \\\n"
         f"    --host {engine_host} --port 30000\n")
-    (d / "qwen38-flash.service").write_text(f"[Service]\nExecStart=/bin/bash {cfg}/launch-flash.sh\n")
-    text = pathlib.Path(INSTALL).read_text()
-    for var, unit in (("SGL_UNIT_PATH", "qwen38-sglang.service"),
-                      ("FLASH_UNIT_PATH", "qwen38-flash.service")):
-        text = text.replace('%s="/etc/systemd/system/%s"' % (var, unit), '%s="%s/%s"' % (var, d, unit))
-    copy = d / "install.sh"
-    copy.write_text(text)
-    copy.chmod(0o755)
-    # no lane is enabled on this fixture, whatever the host running the test has
-    bin_ = d / "bin"
-    bin_.mkdir()
-    (bin_ / "systemctl").write_text("#!/bin/sh\nexit 1\n")
-    (bin_ / "systemctl").chmod(0o755)
-    return str(copy), str(home), f"{bin_}:/usr/local/bin:/usr/bin:/bin"
+    units = wall.units_dir({"qwen38-flash.service": f"[Service]\nExecStart=/bin/bash {cfg}/launch-flash.sh\n"})
+    return wall.walled(units=units), str(home)
 
 
 def fresh_box():
     """No units anywhere: the default is what answers."""
-    empty = tempfile.mkdtemp(prefix="bind-none-")
-    text = pathlib.Path(INSTALL).read_text()
-    for var, unit in (("SGL_UNIT_PATH", "qwen38-sglang.service"),
-                      ("FLASH_UNIT_PATH", "qwen38-flash.service")):
-        text = text.replace('%s="/etc/systemd/system/%s"' % (var, unit),
-                            '%s="%s/%s"' % (var, empty, unit))
-    copy = pathlib.Path(empty) / "install.sh"
-    copy.write_text(text)
-    copy.chmod(0o755)
-    return str(copy)
+    return wall.walled(units=wall.units_dir())
 
 
 KEPT_ENGINE = "Keeping the installed engine bind:"
@@ -185,13 +157,13 @@ class AnInstalledChoiceWins(unittest.TestCase):
         which only the 27B branch sets: every plain re-run printed "UNIT_PATH: unbound
         variable", carried on, and rendered the launcher with 127.0.0.1 over the box's
         0.0.0.0 (found in review, 2026-09-24)."""
-        script, home, path = flash_box("0.0.0.0")
-        _, out = run(STOP, script=script, HOME=home, PATH=path)
+        script, home = flash_box("0.0.0.0")
+        _, out = run(STOP, script=script, home=home)
         self.assertNotIn("unbound variable", out)
         self.assertIn("Keeping the installed target model: flash", out, "the fixture is a flash box")
         self.assertIn(KEPT_ENGINE + " 0.0.0.0", out)
-        script, home, path = flash_box("127.0.0.1")
-        _, out = run(STOP, script=script, HOME=home, PATH=path)
+        script, home = flash_box("127.0.0.1")
+        _, out = run(STOP, script=script, home=home)
         self.assertNotIn("unbound variable", out)
         self.assertNotIn(KEPT_ENGINE, out)
 

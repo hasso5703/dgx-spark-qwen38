@@ -23,8 +23,12 @@ import os
 import pathlib
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import installer_wall as wall  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 ONELINER = "https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh"
@@ -47,18 +51,28 @@ def fake_root_bin():
     return d
 
 
-def run(script, *, sudo_user=None, allow_root=None, args=(), **extra):
-    """Run script with a faked root identity, in a throwaway HOME."""
-    env = {"PATH": fake_root_bin() + ":/usr/local/bin:/usr/bin:/bin",
-           "HOME": tempfile.mkdtemp(prefix="root-refusal-home-")}
+def run(script, *, sudo_user=None, allow_root=None, args=(), past=False, **extra):
+    """Run a walled copy of script with a faked root identity, in a throwaway HOME and a
+    directory that is not a clone of this repo, the commands that act on the box fenced.
+
+    The copy ends at a wall: install.sh before step 1, get.sh right after its root
+    refusal. These runs used to start the real scripts from the real checkout, so a root
+    refusal that stopped firing would have run step 1 on the box, or had get.sh fetch
+    GitHub into the checkout the suite runs from and reset it (found in review,
+    2026-09-24). `past`: the run is meant to get through the refusal, to the wall."""
+    extra_env = dict(extra)
     if sudo_user is not None:
-        env["SUDO_USER"] = sudo_user
+        extra_env["SUDO_USER"] = sudo_user
     if allow_root is not None:
-        env["ALLOW_ROOT"] = allow_root
-    env.update(extra)
-    r = subprocess.run(["bash", str(REPO / script), *args],
-                       capture_output=True, text=True, env=env, cwd=str(REPO), timeout=60)
-    return r.returncode, r.stdout + r.stderr, env["HOME"]
+        extra_env["ALLOW_ROOT"] = allow_root
+    env, record = wall.fenced_env(home=tempfile.mkdtemp(prefix="root-refusal-home-"),
+                                  first=fake_root_bin(), **extra_env)
+    r = subprocess.run(["bash", wall.walled(script), *args],
+                       capture_output=True, text=True, env=env, cwd=wall.cwd(), timeout=60)
+    out = r.stdout + r.stderr
+    assert (wall.WALL in out) == past, f"expected the run {'at' if past else 'before'} the wall:\n{out[-800:]}"
+    assert not wall.reached(record), wall.reached(record)
+    return r.returncode, out, env["HOME"]
 
 
 class InstallRefusesSudo(unittest.TestCase):
@@ -126,12 +140,12 @@ class GetShRefusesRootBeforeTheClone(unittest.TestCase):
         self.assertEqual(os.listdir(home), [])
 
     def test_allow_root_gets_through_the_wall(self):
-        # DIR points at a path that is not a clone, so the run stops at the
-        # origin check: past the wall, still no network and nothing written.
-        rc, out, _ = run("get.sh", allow_root="1", DIR="/nonexistent/not-a-clone")
-        self.assertEqual(rc, 1)
-        self.assertIn("not a clone of this repo", out)
+        # Through the root refusal and straight into the copy's own wall, which stands
+        # where the clone, the fetch and the reset begin: no network, nothing written.
+        rc, out, home = run("get.sh", allow_root="1", past=True)
+        self.assertEqual(rc, 97)
         self.assertNotIn("not as root", out)
+        self.assertEqual(os.listdir(home), [])
 
 
 if __name__ == "__main__":

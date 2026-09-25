@@ -15,8 +15,12 @@ before anything is downloaded or written outside the marker under test.
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import installer_wall as wall  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 INSTALL = str(REPO / "install.sh")
@@ -27,13 +31,17 @@ STOP_ENV = {"CONTEXT_MODE": "1m"}
 
 
 def run(args=(), home=None, **extra):
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin",
-           "HOME": home or tempfile.mkdtemp(prefix="cockpit-flag-home-")}
-    env.update(STOP_ENV)
-    env.update(extra)
-    r = subprocess.run([INSTALL, *args], capture_output=True, text=True,
-                       env=env, cwd=str(REPO), timeout=60)
-    return r.returncode, r.stdout + r.stderr, env["HOME"]
+    """A copy of install.sh that ends at a wall before step 1, with the commands that act
+    on the box fenced and its units read from an empty directory: the refusal that stops
+    these runs is checked to have fired, instead of trusted to."""
+    env, record = wall.fenced_env(home=home or tempfile.mkdtemp(prefix="cockpit-flag-home-"),
+                                  **{**STOP_ENV, **extra})
+    r = subprocess.run([wall.walled(), *args], capture_output=True, text=True,
+                       env=env, cwd=wall.cwd(), timeout=60)
+    out = r.stdout + r.stderr
+    assert wall.WALL not in out, f"the run went past its refusal:\n{out[-800:]}"
+    assert not wall.reached(record), wall.reached(record)
+    return r.returncode, out, env["HOME"]
 
 
 class TheFlags(unittest.TestCase):
@@ -43,17 +51,19 @@ class TheFlags(unittest.TestCase):
         self.assertIn("contradict each other", out)
 
     def test_help_documents_both_flags(self):
-        r = subprocess.run([INSTALL, "--help"], capture_output=True, text=True,
-                           env={"PATH": "/usr/local/bin:/usr/bin:/bin",
-                                "HOME": tempfile.mkdtemp()}, timeout=30)
+        env, record = wall.fenced_env()
+        r = subprocess.run([wall.walled(), "--help"], capture_output=True, text=True,
+                           env=env, cwd=wall.cwd(), timeout=30)
+        self.assertEqual(wall.reached(record), [])
         self.assertEqual(r.returncode, 0)
         self.assertIn("--no-cockpit", r.stdout)
         self.assertIn("--with-cockpit", r.stdout)
 
     def test_help_says_a_plain_run_installs_the_cockpit(self):
-        r = subprocess.run([INSTALL, "--help"], capture_output=True, text=True,
-                           env={"PATH": "/usr/local/bin:/usr/bin:/bin",
-                                "HOME": tempfile.mkdtemp()}, timeout=30)
+        env, record = wall.fenced_env()
+        r = subprocess.run([wall.walled(), "--help"], capture_output=True, text=True,
+                           env=env, cwd=wall.cwd(), timeout=30)
+        self.assertEqual(wall.reached(record), [])
         self.assertIn("cockpit", r.stdout)
         self.assertIn("sudo", r.stdout)
 

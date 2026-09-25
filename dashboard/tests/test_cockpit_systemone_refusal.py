@@ -17,6 +17,20 @@ from pathlib import Path
 HERE = Path(__file__).resolve()
 DASH = HERE.parents[1]
 
+# The environment this module sets for the cockpit it loads is handed back when it ends,
+# so the next module in the same process starts from what this one found.
+ENV_BEFORE = {}
+
+
+def setUpModule():
+    ENV_BEFORE.update(os.environ)
+
+
+def tearDownModule():
+    for name in set(os.environ) - set(ENV_BEFORE):
+        del os.environ[name]
+    os.environ.update(ENV_BEFORE)
+
 
 def load(config_dir):
     os.environ.update(COCKPIT_DRY_RUN="1", COCKPIT_CONFIG_DIR=str(config_dir), COCKPIT_REPO_DIR=str(DASH.parent),

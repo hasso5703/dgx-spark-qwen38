@@ -27,6 +27,22 @@ HERE = Path(__file__).resolve()
 DASH = HERE.parents[1]
 REPO = HERE.parents[2]
 
+# What this module sets in os.environ (HOME and COCKPIT_DRY_RUN=0 among them) is handed
+# back when it ends: unittest runs every module in one process, and the ones after this
+# one ran with HOME on a directory that no longer existed (found in review, 2026-09-24).
+ENV_BEFORE = {}
+
+
+def setUpModule():
+    ENV_BEFORE.update(os.environ)
+
+
+def tearDownModule():
+    for name in set(os.environ) - set(ENV_BEFORE):
+        del os.environ[name]
+    os.environ.update(ENV_BEFORE)
+
+
 KEY = "SUPERSECRETKEY0123456789"
 
 
