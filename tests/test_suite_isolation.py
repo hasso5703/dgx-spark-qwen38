@@ -87,10 +87,14 @@ print("WROTE=" + json.dumps(wrote))
 """
 
 
+# spelled in two parts: the CI counts that string to know how many tests a file declares
+TEST_DEF = "def " + "test_"
+
+
 def modules():
     """Every unittest module of tests/ but this one."""
     return [p.stem for p in sorted((REPO / "tests").glob("test_*.py"))
-            if p.stem != "test_suite_isolation" and "def test_" in p.read_text()]
+            if p.stem != "test_suite_isolation" and TEST_DEF in p.read_text()]
 
 
 def run(code, *args, timeout=600):
