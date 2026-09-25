@@ -31,6 +31,15 @@ import unittest
 import uuid
 from pathlib import Path
 
+
+def _keep_env(cls):
+    """Put os.environ back as this class found it, once it is done: the variables set for
+    the proxy under test (UPSTREAM and the rest) stayed set for every module after this
+    one (found in review, 2026-09-24; tests/test_suite_isolation.py holds it)."""
+    saved = dict(os.environ)
+    cls.addClassCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
+
+
 HERE = Path(__file__).resolve()
 SPEC = importlib.util.spec_from_file_location("kproxy_abort", HERE.parents[1] / "keepalive-proxy.py")
 
@@ -144,6 +153,7 @@ class FakeEngine(http.server.BaseHTTPRequestHandler):
 class Abort(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        _keep_env(cls)
         cls.engine = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeEngine)
         cls.engine.daemon_threads = True
         threading.Thread(target=cls.engine.serve_forever, daemon=True).start()

@@ -40,6 +40,8 @@ class Fake(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/health"):
             return self._send(200, {"ok": True})
         if self.path.startswith("/v1/models"):
+            if Fake.model is None:                     # an engine that does not answer it
+                return self._send(404, {"detail": "Not Found"})
             return self._send(200, {"data": [{"id": Fake.model}]})
         self._send(404, {})
 
@@ -106,12 +108,15 @@ def main():
     if set(SERVED) != {"qwen3.8-27b"}:
         fails.append(f"the 27B lane sent {set(SERVED)}")
 
-    # An engine that does not answer /v1/models must not stop the benchmark.
-    out = run_bench("")
-    if "unknown" not in out:
-        fails.append(f"an unnamed model is not reported as unknown:\n{out[:400]}")
-    if "greedy median" not in out:
-        fails.append("the benchmark did not run when the engine would not name itself")
+    # An engine that does not answer /v1/models, or answers it with no name, must not stop
+    # the benchmark. Only the second was simulated (a 200 with an empty id), so the path
+    # that catches the error never ran (found in review, 2026-09-24).
+    for model, what in ((None, "does not answer /v1/models"), ("", "answers it with no name")):
+        out = run_bench(model)
+        if "unknown" not in out:
+            fails.append(f"an engine that {what} is not reported as unknown:\n{out[:400]}")
+        if "greedy median" not in out:
+            fails.append(f"the benchmark did not run when the engine {what}")
 
     for f in fails:
         print("FAIL", f)

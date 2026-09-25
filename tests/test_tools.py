@@ -20,6 +20,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+
+def _keep_env(cls):
+    """Put os.environ back as this class found it, once it is done: the variables set for
+    the proxy under test (UPSTREAM and the rest) stayed set for every module after this
+    one (found in review, 2026-09-24; tests/test_suite_isolation.py holds it)."""
+    saved = dict(os.environ)
+    cls.addClassCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
+
+
 HERE = Path(__file__).resolve()
 REPO = HERE.parents[1]
 
@@ -180,6 +189,7 @@ class Grading(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        _keep_env(cls)
         os.environ.setdefault("SGLANG_API_KEY", "test")
         cls.cc = load("conc-check.py")
         cls.tasks = cls.cc.TASKS

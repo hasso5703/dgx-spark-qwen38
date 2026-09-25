@@ -64,6 +64,11 @@ jobs:
             echo 'install.sh to a surviving revision with the bench and'
             echo 'quality cycle the target table demands, or mirror the bytes.'
           } > /tmp/pin-body.md
+          # --label fails the whole call when the label does not exist, and nothing else in the
+          # repo creates it: the first dead pin would have ended in a red run and no issue
+          # (found in review, 2026-09-24). --force makes this a no-op when it is there.
+          gh label create pin-watch -R "$GITHUB_REPOSITORY" --force \
+            --color B60205 --description "a pinned revision, digest or release no longer resolves"
           gh issue create -R "$GITHUB_REPOSITORY" --label pin-watch \
             --title "a pin died: ${DEAD:0:80}" \
             --body-file /tmp/pin-body.md

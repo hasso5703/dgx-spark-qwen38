@@ -13,6 +13,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+
+def _keep_env(cls):
+    """Put os.environ back as this class found it, once it is done: the variables set for
+    the proxy under test (UPSTREAM and the rest) stayed set for every module after this
+    one (found in review, 2026-09-24; tests/test_suite_isolation.py holds it)."""
+    saved = dict(os.environ)
+    cls.addClassCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
+
+
 HERE = Path(__file__).resolve()
 SPEC = importlib.util.spec_from_file_location("kproxy", HERE.parents[1] / "keepalive-proxy.py")
 
@@ -60,6 +69,7 @@ class FakeTokenize(http.server.BaseHTTPRequestHandler):
 class ProxyGuard(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        _keep_env(cls)
         cls.srv = http.server.HTTPServer(("127.0.0.1", 0), FakeTokenize)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         os.environ["UPSTREAM"] = f"http://127.0.0.1:{cls.srv.server_port}"
@@ -675,11 +685,18 @@ class PoolCacheInvalidation(unittest.TestCase):
     def test_a_smaller_pool_is_picked_up_after_invalidation(self):
         # 27B pool cached, then the box switches to the flash lane. Whatever the
         # cache said, the limit must follow the engine that is actually serving.
-        self.m._POOL.update(tokens=863398, ts=self.m.time.time())
+        # Read through pool_tokens() from a fake /server_info: the cache was written by
+        # hand after the invalidation, so an invalidation that dropped nothing passed
+        # (found in review, 2026-09-24).
+        engine = {"max_total_num_tokens": 863398}
+        self.m._api_key = lambda: "k"
+        self.m._server_info = lambda key, timeout: dict(engine)
         big = self.m.prompt_limit(self.m.pool_tokens())
+        engine["max_total_num_tokens"] = 184384             # the flash lane now serves
+        self.assertEqual(self.m.pool_tokens(), 863398, "the cache is what spares the engine a read")
         self.m.invalidate_pool()
-        self.m._POOL.update(tokens=184384, ts=self.m.time.time())
         small = self.m.prompt_limit(self.m.pool_tokens())
+        self.assertEqual(self.m.pool_tokens(), 184384)
         self.assertLess(small, big, "the flash lane must not inherit the 27B limit")
 
 
@@ -974,9 +991,17 @@ class HardeningV615(unittest.TestCase):
                              "b": {"type": "string", "pattern": r"^\p{N}+$"}}
         body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}],
                            "tools": [{"type": "function", "function": {"name": "f", "parameters": node}}]}).encode()
-        out, dropped = self.k.sanitize_tool_schemas(body, "/v1/chat/completions")
+        logged = []
+        real_log, self.k.log = self.k.log, logged.append
+        try:
+            out, dropped = self.k.sanitize_tool_schemas(body, "/v1/chat/completions")
+        finally:
+            self.k.log = real_log
         self.assertIs(out, body)
         self.assertEqual(dropped, [])
+        # "reported" is the name of this test: the log line was never read, and a bound
+        # hit that said nothing passed (found in review, 2026-09-24)
+        self.assertTrue(any("nested past depth" in m for m in logged), logged)
 
 
 class HardeningUnits(unittest.TestCase):
@@ -1353,6 +1378,7 @@ class ClientStringsAreNotKept(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        _keep_env(cls)
         cls.srv = http.server.HTTPServer(("127.0.0.1", 0), FakeTokenize)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         os.environ["UPSTREAM"] = f"http://127.0.0.1:{cls.srv.server_port}"
@@ -1424,6 +1450,7 @@ class TopLogprobsCeilingEndToEnd(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        _keep_env(cls)
         cls.srv = http.server.HTTPServer(("127.0.0.1", 0), FakeTokenize)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         os.environ["UPSTREAM"] = f"http://127.0.0.1:{cls.srv.server_port}"

@@ -847,14 +847,21 @@ class MoreMutantsThatSurvived(unittest.TestCase):
 
     # ---- parse_feed's timestamp and its 10-minute orphan window ------------
     def test_only_an_iso_timestamp_is_read_as_one(self):
-        """Kills line 346 And->Or: both the length and the T position matter, or
-        a body= line's own text becomes the clock."""
+        """Kills the And->Or of parse_feed's timestamp check: both the length and the
+        T position matter, or a line's own text becomes the clock."""
         raw = ("2026-09-10T09:00:00+02:00 h p[1]: [proxy] 1.2.3.4:5 -> "
                "POST /v1/chat/completions body=10b")
         self.assertEqual(lc.parse_feed(raw)[0]["ts"], "2026-09-10T09:00:00")
-        # a line with no timestamp at all must not invent one
-        self.assertEqual(lc.parse_feed("[proxy] 1.2.3.4:5 -> POST /x body=1b")[0]["ts"][:1],
-                         "[")
+        # A line with no timestamp at all must not become the clock: after it, a start
+        # left dangling 20 minutes before the newest dated line still reads as unknown.
+        # The check here read back the first character of a string the test wrote, and
+        # the mutant it claims passed (found in review, 2026-09-24).
+        raw = ("2026-09-10T09:00:00+02:00 h p[1]: [proxy] 1.2.3.4:5 -> POST /v1/chat/completions body=10b\n"
+               "2026-09-10T09:20:00+02:00 h p[1]: [proxy] 1.2.3.4:6 -> POST /v1/chat/completions body=10b\n"
+               "[proxy] 1.2.3.4:7 -> POST /v1/chat/completions body=10b\n")
+        first = lc.parse_feed(raw)[0]
+        self.assertEqual((first["peer"], first["outcome"], first["kind"]),
+                         ("1.2.3.4:5", "no end logged", "unknown"))
 
     def test_an_orphan_becomes_unknown_only_after_ten_minutes(self):
         """Kills line 386 Gt->GtE: at exactly 600 s it is still in flight."""

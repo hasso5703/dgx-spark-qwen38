@@ -29,9 +29,14 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 EVALS = REPO / "evals"
 
 STUB_COMMON = '''
+import json, os
+
+
 class ChatCompletionSampler:
     def __init__(self, **kw):
         self.kw = kw
+        with open(os.environ["STUB_SAMPLER_LOG"], "w") as f:
+            json.dump(kw, f, default=str)
 '''
 
 STUB_MMLU = '''
@@ -87,12 +92,14 @@ class EvalDrivers(unittest.TestCase):
         (pkg / "simple_eval_mmlu.py").write_text(STUB_MMLU)
         (pkg / "simple_eval_humaneval.py").write_text(STUB_HUMANEVAL)
         self.log = self.tmp / "call.json"
+        self.sampler_log = self.tmp / "sampler.json"
 
     def run_driver(self, name, *args):
         r = subprocess.run([sys.executable, str(EVALS / name), *args],
                            capture_output=True, text=True, timeout=120,
                            env=dict(os.environ, PYTHONPATH=str(self.tmp),
-                                    STUB_LOG=str(self.log), OPENAI_API_KEY="k"))
+                                    STUB_LOG=str(self.log), STUB_SAMPLER_LOG=str(self.sampler_log),
+                                    OPENAI_API_KEY="k"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return r.stdout, json.loads(self.log.read_text())
 
@@ -124,10 +131,26 @@ class EvalDrivers(unittest.TestCase):
         self.assertIn("'score': 0.75", out)
 
     def test_both_take_an_optional_base_url(self):
-        """The fourth argument is how these point at a proxy or another box."""
+        """The fourth argument is how these point at a proxy or another box, and it has to
+        reach the sampler: only the score line was checked, so a driver that ignored it
+        passed (found in review, 2026-09-24)."""
         for name in ("mmlu.py", "humaneval.py"):
-            out, _ = self.run_driver(name, "m", "2", "1", "http://127.0.0.1:1/v1")
-            self.assertIn("'score':", out)
+            with self.subTest(driver=name):
+                out, _ = self.run_driver(name, "m", "2", "1", "http://127.0.0.1:1/v1")
+                self.assertIn("'score':", out)
+                kw = json.loads(self.sampler_log.read_text())
+                self.assertEqual(kw["base_url"], "http://127.0.0.1:1/v1")
+                self.run_driver(name, "m", "2", "1")
+                kw = json.loads(self.sampler_log.read_text())
+                self.assertEqual(kw["base_url"], "http://127.0.0.1:30000/v1")
+
+    def test_both_sample_the_model_they_are_given_at_temperature_zero(self):
+        """The published scores are greedy: a sampler at 0.7 measures something else."""
+        for name in ("mmlu.py", "humaneval.py"):
+            with self.subTest(driver=name):
+                self.run_driver(name, "my-model", "2", "1")
+                kw = json.loads(self.sampler_log.read_text())
+                self.assertEqual((kw["model"], kw["temperature"]), ("my-model", 0.0))
 
 
 if __name__ == "__main__":
