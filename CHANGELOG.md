@@ -988,7 +988,7 @@ ENGINE_BIND=127.0.0.1 PROXY_BIND=127.0.0.1 ./install.sh
 **The defaults do not move.** Somebody else's laptop may legitimately point at either
 port, and a default must never take away something the operator did not ask to lose. What
 the knob buys is that an operator who wants the proxy to be the only door can have it,
-and the cockpit has had `COCKPIT_BIND` for the same reason since v1.5.
+and the cockpit has had `COCKPIT_BIND` for the same reason since v1.6.
 
 An installed choice wins over the default, in both directions, which is the part that
 matters: a box hardened to localhost that a plain `./install.sh` reopened would be the
@@ -1015,7 +1015,7 @@ than by trusting the feature that had just been tested.
 
 ## v1.15.3 (2026-09-22): the cockpit tells you a newer version exists
 
-The release check was written in v1.5 and printed its answer in a line of the Models tab
+The release check was written in v1.6 and printed its answer in a line of the Models tab
 that appears after a button press. It therefore reached exactly the people who already
 suspected there was news, and a box could sit several releases behind a fix without one
 sign of it on screen. The check is unchanged; what changed is that nobody has to go
@@ -1276,7 +1276,7 @@ sends makes the two agree, which is why `SYSTEMONE_TEMPERATURE` is applied to th
 probabilities after they come back and must never be moved into the request. A test now
 fails if it is.
 
-**What now holds the line.** `tests/test_proxy_systemone.py`: 82 tests against a fake
+**What now holds the line.** `tests/test_proxy_systemone.py`: 87 tests against a fake
 engine with scripted first-token distributions (the Jev shape key by key and in the
 hosted key order, the readout over the right tokens and never the wrong ones, never a
 `token_ids_logprob` in any body, both refusal shapes with the path each one names and
@@ -1286,7 +1286,7 @@ engine as the relay path's 503 and never a size refusal, the label list re-check
 against the local tokenizer, the four levers, the door, the SDK round trip when it is
 importable); `dashboard/tests/test_lifecycle.py` holds four new members of the closed
 outcome vocabulary; every existing proxy suite is unchanged and green; `ruff F,E9`
-clean; `keepalive-proxy.py` at 83% branch coverage against a floor raised from 74 to 82.
+clean; `keepalive-proxy.py` at 83% branch coverage against a floor raised from 74 to 83.
 
 **Every checkpoint this repo can serve was checked, not two.** The label table rests on
 the tokenizer being the same file everywhere, and that was verified on the RadixArk 27B
@@ -2018,9 +2018,7 @@ the README tier table carries the new numbers.
 - Deliberately unchanged, with the reason written down: `sudo` without `-n`
   in the install scripts (they are interactive by design, the cockpit uses
   `-n` everywhere), `set -uo` without `-e` in the two diagnostic helpers
-  (they degrade to FAIL lines, never a silent pass), no `HF_HUB_OFFLINE=1`
-  on the native lane (only the 1M lane needs it; adding it wants a boot
-  test), and `fit()` without a ceiling on proxyless boxes (no proxy
+  (they degrade to FAIL lines, never a silent pass), and `fit()` without a ceiling on proxyless boxes (no proxy
   enforces one there, so the pool share is the right answer).
 
 Not a code change: the state `patch-yarn --restore` needs. Two pinned
@@ -3499,6 +3497,8 @@ got a 400 before auto-compaction fired at ~225K); no field report yet, fixed pre
 Users who prefer longer context over very long single answers can set 64000/194048, as
 documented in the README. Existing installs: re-run the one-liner (or `./install.sh
 --no-start`) to regenerate `claude-code.env`; the serving image and unit are untouched.
+
+## v1.2.4 (2026-08-21)
 
 Second fix from the lifecycle audit: the step-3 "container sees the GPU" line always printed
 blank, because the image's entrypoint banner starts with an empty line and the check displayed
