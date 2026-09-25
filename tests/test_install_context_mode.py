@@ -133,6 +133,28 @@ class TheDefault(unittest.TestCase):
         self.assertNotIn(DEFAULT_LINE, out)
 
 
+class TheResolvedMode(unittest.TestCase):
+    """The mode the installer goes on with, read from the run: the tests above read its
+    messages, so a --no-service run that said "native" and went on with 1m, a flash lane
+    given 1m by default (YaRN patched into its checkpoint), or a native box converged to
+    1m passed them (found in review, 2026-09-24)."""
+
+    def mode(self, args, script=None, **env):
+        from test_install_bind import binds, probed
+        _, out = run(args, script=probed(script or fresh_box_install()), **env)
+        return binds(out)
+
+    def test_each_case_goes_on_with_the_mode_it_says(self):
+        cases = (("fresh 27B", [*STOP], None, STOCK, "1m"),
+                 ("--no-service", [*STOP, "--no-service"], None, STOCK, "native"),
+                 ("installed native", [*STOP], box_27b(262144), STOCK, "native"),
+                 ("installed 1m", [*STOP], box_27b(1010000), STOCK, "1m"),
+                 ("flash lane", [*STOP], None, {"MODEL_CHOICE": "flash"}, "native"))
+        for name, args, script, env, want in cases:
+            with self.subTest(case=name):
+                self.assertEqual(self.mode(args, script, **env)["ctx"], want)
+
+
 class TheExplicitRefusalsSurvive(unittest.TestCase):
     def test_explicit_1m_on_the_flash_lane_is_still_refused_by_name(self):
         rc, out = run(STOP, MODEL_CHOICE="flash", CONTEXT_MODE="1m")

@@ -86,6 +86,28 @@ def fresh_box():
     return wall.walled(units=wall.units_dir())
 
 
+# Where the binds stand once everything that decides them has run: the line just above the
+# refusal these runs stop at. The tests read the messages, so an ENGINE_BIND=0.0.0.0 set
+# after the convergence opened the engine at every install with all of them green (found
+# in review, 2026-09-24).
+BINDS_AT = 'if [ "$NO_COCKPIT" -eq 1 ] && [ "$WITH_COCKPIT" -eq 1 ]; then\n'
+
+
+def probed(script):
+    """The walled copy, printing the binds it resolved just before the refusal it stops at."""
+    path = pathlib.Path(script)
+    text = path.read_text()
+    assert text.count(BINDS_AT) == 1, "install.sh no longer has the cockpit refusal the probe goes before"
+    path.write_text(text.replace(BINDS_AT, 'echo "BINDS engine=$ENGINE_BIND proxy=$PROXY_BIND ctx=$CONTEXT_MODE lane=$LANE"\n' + BINDS_AT))
+    return str(path)
+
+
+def binds(out):
+    line = next((ln for ln in out.splitlines() if ln.startswith("BINDS ")), None)
+    assert line, f"the probe never printed:\n{out[-800:]}"
+    return dict(kv.split("=", 1) for kv in line.split()[1:])
+
+
 KEPT_ENGINE = "Keeping the installed engine bind:"
 KEPT_PROXY = "Keeping the installed proxy bind:"
 
@@ -166,6 +188,31 @@ class AnInstalledChoiceWins(unittest.TestCase):
         _, out = run(STOP, script=script, home=home)
         self.assertNotIn("unbound variable", out)
         self.assertNotIn(KEPT_ENGINE, out)
+
+
+class TheResolvedBinds(unittest.TestCase):
+    """What the installer goes on with, read from the run itself rather than its messages."""
+
+    def test_each_box_ends_with_the_bind_it_should(self):
+        cases = (("fresh box", fresh_box(), {}, {"engine": "127.0.0.1", "proxy": "0.0.0.0"}),
+                 ("closed box", box_with_units(engine_host="127.0.0.1"), {}, {"engine": "127.0.0.1"}),
+                 ("open box", box_with_units(engine_host="0.0.0.0"), {}, {"engine": "0.0.0.0"}),
+                 ("operator opens it", box_with_units(engine_host="127.0.0.1"), {"ENGINE_BIND": "0.0.0.0"},
+                  {"engine": "0.0.0.0"}),
+                 ("operator closes it", box_with_units(engine_host="0.0.0.0"), {"ENGINE_BIND": "127.0.0.1"},
+                  {"engine": "127.0.0.1"}),
+                 ("proxy kept", box_with_units(proxy_bind="127.0.0.1"), {}, {"proxy": "127.0.0.1"}))
+        for name, script, env, want in cases:
+            with self.subTest(box=name):
+                _, out = run(STOP, script=probed(script), **STOCK, **env)
+                got = binds(out)
+                self.assertEqual({k: got[k] for k in want}, want)
+
+    def test_a_flash_box_ends_with_its_own(self):
+        for host in ("0.0.0.0", "127.0.0.1"):
+            script, home = flash_box(host)
+            _, out = run(STOP, script=probed(script), home=home)
+            self.assertEqual(binds(out)["engine"], host)
 
 
 class TheTemplatesCarryIt(unittest.TestCase):
