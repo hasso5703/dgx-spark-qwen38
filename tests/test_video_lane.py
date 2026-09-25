@@ -205,11 +205,15 @@ class TheSwitch(unittest.TestCase):
         self.assertIn("|video)", self.text)
         self.assertIn("./switch-model.sh video", self.text)
 
-    def test_it_verifies_the_checkpoint_before_touching_boot(self):
-        i = self.text.index('if [ "$CHOICE" = "video" ]; then')
-        block = self.text[i:self.text.index("exit 0", i)]
-        self.assertIn("snapshot_download", block)
-        self.assertIn("local_files_only", block)
+    def test_the_switch_verifies_only_the_served_partition(self):
+        """The switch re-downloaded the whole repo (Ref2VA included) onto a full disk:
+        it carries the installer's allowlist, so a complete fl2va cache answers without
+        touching the network."""
+        i = SWITCH.read_text().index('if [ "$CHOICE" = "video" ]; then')
+        block = SWITCH.read_text()[i:SWITCH.read_text().index("exit 0", i)]
+        self.assertIn("allow_patterns", block)
+        self.assertIn("FL2VA/*", block)
+        self.assertIn("local_files_only=True, allow_patterns=allow", block)
 
     def test_the_lane_before_video_is_written_down_before_anything_is_disabled(self):
         i = self.text.index('if [ "$CHOICE" = "video" ]; then')

@@ -143,19 +143,31 @@ if [ "$CHOICE" = "video" ]; then
   VID_MODEL="${VID_MODEL:-MiniMaxAI/MiniMax-H3}"
   VID_HF="$(grep -m1 -E '^Environment=HF_HOME=' "$VIDEO_UNIT" | cut -d= -f3- || true)"
   printf '\n\033[1;36m── Verifying %s in the cache (resumable)\033[0m\n' "$VID_MODEL"
+  # Only the partition the installed unit serves is verified and fetched, by the same
+  # allowlist as install-video.sh: a complete fl2va cache answers without touching the
+  # network, and without it a switch re-downloaded the whole repo (Ref2VA included)
+  # onto a full disk (reference box, 2026-09-26).
+  VID_VARIANT="$(grep -oE -- '--model-variant [^ ]+' "$VIDEO_UNIT" | head -1 | cut -d' ' -f2 || true)"
+  VID_VARIANT="${VID_VARIANT:-fl2va}"
+  if [ "$VID_MODEL" = "MiniMaxAI/MiniMax-H3" ]; then
+    if [ "$VID_VARIANT" = "fl2va" ]; then VID_ALLOW="FL2VA/* model_index.json modular_model_index.json scheduler/* audio_scheduler/* *.md LICENSE*"
+    else VID_ALLOW="Ref2VA/* model_index.json modular_model_index.json scheduler/* audio_scheduler/* *.md LICENSE*"; fi
+  else VID_ALLOW="";
+  fi
   # Xet stalls on this box, and an unauthenticated pull gets throttled.
-  # local_files_only first, so a complete cache answers without touching the
-  # network at all.
-  HF_HOME="${VID_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 VID_MODEL="$VID_MODEL" \
+  HF_HOME="${VID_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 VID_MODEL="$VID_MODEL" VID_ALLOW="$VID_ALLOW" \
     "$VID_PY" - <<'PYVID' || die "the video checkpoint could not be verified or fetched (re-run to resume; set HF_TOKEN if it stalls)"
 import os
 from huggingface_hub import snapshot_download
 repo = os.environ["VID_MODEL"]
+allow = [p for p in os.environ["VID_ALLOW"].split() if p] or None
 try:
-    print(snapshot_download(repo, local_files_only=True))
+    # local_files_only first, so a complete cache answers without touching the
+    # network at all.
+    print(snapshot_download(repo, local_files_only=True, allow_patterns=allow))
 except Exception:
     print("not complete in the cache, fetching the rest", flush=True)
-    print(snapshot_download(repo))
+    print(snapshot_download(repo, allow_patterns=allow))
 PYVID
   # Which lane this box served, written down before it is disabled: install.sh
   # updates that lane on a later run, and enablement cannot tell it once all are off.
