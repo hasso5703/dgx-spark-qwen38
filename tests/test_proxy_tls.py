@@ -158,6 +158,31 @@ class TlsDoor(unittest.TestCase):
             proc.terminate()
             proc.wait(timeout=5)
 
+    def test_a_silent_client_cannot_hold_the_accept_loop(self):
+        """S6: the handshake used to run inside the accept loop, so one silent
+        TCP connection parked every other client until the handshake timed out.
+        With the handshake moved into the connection thread, the silent
+        client burns only its own thread and live clients are unaffected."""
+        port = free_port()
+        proc = run_proxy(port, base_env(self.engine_port,
+                                        {"QWEN38_TLS_CERT": self.cert,
+                                         "QWEN38_TLS_KEY": self.key,
+                                         "QWEN38_TLS_HANDSHAKE_S": "2"}))
+        try:
+            silent = socket.create_connection(("127.0.0.1", port), timeout=5)
+            time.sleep(0.5)  # let the proxy accept the silent connection
+            t0 = time.monotonic()
+            status, _body = https_post(port, "/v1/chat/completions", BODY)
+            elapsed = time.monotonic() - t0
+            self.assertEqual(status, 200)
+            self.assertLess(elapsed, 5.0,
+                            "a silent TLS client delayed a live one: handshake "
+                            "still runs in the accept loop")
+        finally:
+            silent.close()
+            proc.terminate()
+            proc.wait(timeout=5)
+
     def test_unusable_cert_refuses_to_start(self):
         port = free_port()
         proc = subprocess.Popen(

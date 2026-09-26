@@ -14,6 +14,20 @@ call, t2v/fl2va on the fl2va weights). The cookbook's Spark figures are quoted a
 cookbook's until the lane proves itself here. Each addition comes with the tests that
 hold it, checked by running the whole offline suite with and without it.
 
+**Proxy v6.26: the three guard findings the v1.18.7 review left open, closed.** S4: a
+request key spelled with a JSON `\u` escape (`"\u0074op_logprobs"`) carried none of the
+bytes the guards scanned for, so the logprob ceiling and the token-id refusals were skipped
+and the value reached the engine; a body carrying any `\u` is now parsed rather than
+scanned. S5: the sampling and logprob guards now also cover `/v1/responses`, `/invocations`
+and `/vertex_generate` (which nests its fields under `parameters`), read `input_ids` and
+`prompt` as a batch of lists, read `sampling_params` as a list, and the oversize guard now
+reaches `/generate` and the other non-`/v1/` generation routes instead of only the `/v1/`
+prefix. S6: the TLS handshake no longer runs in the accept loop, where one silent client
+parked every other connection behind its timeout; it now runs in the connection's own
+thread on its own budget, and a handshake that dies leaves one journal line instead of a
+traceback the cockpit would render. Each change is held by a test that failed before and
+passes after.
+
 ## v1.18.7 (2026-09-24): a full review of v1.18.6, and the defects it found fixed with a test each
 
 A line-by-line review of the whole repo at v1.18.6 (code, templates, tests, CI and docs)

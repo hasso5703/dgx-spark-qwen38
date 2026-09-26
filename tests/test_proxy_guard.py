@@ -502,11 +502,23 @@ class SmallPoolEngine(http.server.BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(out); return
         self.send_response(404); self.end_headers()
 
+    seen_post_paths = []
+
     def do_POST(self):
+        type(self).seen_post_paths.append(self.path.split("?")[0])
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
         if self.path == "/tokenize":
-            text = " ".join(str(m.get("content", "")) for m in body.get("messages", []))
+            # the proxy forwards text-or-prompt as `prompt`; count its words
+            if isinstance(body.get("prompt"), str):
+                text = body["prompt"]
+            else:
+                text = " ".join(str(m.get("content", "")) for m in body.get("messages", []))
             out = json.dumps({"count": len(text.split()), "max_model_len": 262144}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out))); self.end_headers()
+            self.wfile.write(out); return
+        if self.path == "/generate":
+            out = b'{"text":"ok"}'
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(out))); self.end_headers()
             self.wfile.write(out); return
@@ -1212,6 +1224,35 @@ class TopLogprobsCeiling(unittest.TestCase):
     def test_a_query_string_does_not_hide_the_route(self):
         self.assertEqual(self.over({"top_logprobs": 10 ** 6}, "/v1/chat/completions?x=1")[1], 10 ** 6)
 
+    def test_an_escaped_key_is_seen_by_the_ceiling(self):
+        """S4: JSON spells the same key several ways, and the byte scan only knew the
+        unescaped one. "\\u0074op_logprobs" decodes to top_logprobs for json.loads and
+        for the engine, so it is the same crash and the ceiling must see it."""
+        raw = b'{"model": "m", "messages": [], "\\u0074op_logprobs": 1000000}'
+        self.assertEqual(self.m.top_logprobs_over_ceiling(raw, "/v1/chat/completions"),
+                         ("top_logprobs", 1000000))
+        raw = b'{"model": "m", "\\u006cogprobs": 300000}'
+        self.assertEqual(self.m.top_logprobs_over_ceiling(raw, "/v1/completions"),
+                         ("logprobs", 300000))
+        raw = b'{"model": "m", "messages": [], "top_logprobs": 99999, ' \
+              b'"content note": "a \\u0031 in a value is no escape of a key"}'
+        self.assertEqual(self.m.top_logprobs_over_ceiling(raw, "/v1/chat/completions"),
+                         ("top_logprobs", 99999))
+
+    def test_the_responses_invocations_and_vertex_routes_carry_the_ceiling(self):
+        """S5: three more routes of the pinned engine reach the same topk, and the review
+        of 2026-09-24 found them outside the guard."""
+        self.assertEqual(self.over({"top_logprobs": 100000}, "/v1/responses"),
+                         ("top_logprobs", 100000))
+        self.assertEqual(self.over({"top_logprobs": 100000}, "/invocations"),
+                         ("top_logprobs", 100000))
+        self.assertEqual(self.over({"instances": [{"prompt": "hi"}],
+                                    "parameters": {"top_logprobs_num": 1000000}},
+                                    "/vertex_generate"),
+                         ("top_logprobs_num", 1000000))
+        self.assertIsNone(self.over({"instances": [{"prompt": "hi"}],
+                                     "parameters": {"top_logprobs_num": 20}}, "/vertex_generate"))
+
     def test_zero_disables_the_ceiling_for_an_operator_who_knows_their_build(self):
         self.m.TOP_LOGPROBS_CEILING = 0
         self.assertIsNone(self.over({"model": "m", "top_logprobs": 10 ** 9}))
@@ -1289,6 +1330,54 @@ class SamplingFieldsTheEngineDiesOn(unittest.TestCase):
     def test_routes_that_do_not_reach_the_sampler_are_left_alone(self):
         for path in ("/v1/messages", "/v1/models", "/v1/systemone"):
             self.assertIsNone(self.refusal({"stop_token_ids": [-1]}, path=path), path)
+
+    def test_an_escaped_key_is_seen_by_the_sampling_guard(self):
+        """S4: a key spelled with a \\u escape carries none of the bytes the scan looks
+        for, so before the fix the guard returned None and relayed it straight to a
+        scheduler that would die on it."""
+        raw = b'{"messages": [], "\\u0073top_token_ids": [-1]}'
+        self.assertIn("negative token id",
+                      self.m.sampling_field_refusal(raw, "/v1/chat/completions", 248320) or "")
+        raw = b'{"\\u0069nput_ids": [300000]}'
+        self.assertIn("input_ids contains 300000, past the 248320 tokens",
+                      self.m.sampling_field_refusal(raw, "/generate", 248320) or "")
+
+    def test_a_batched_prompt_of_token_ids_is_caught_on_completions(self):
+        """S5: prompt=[[id]] is a legal shape for /v1/completions and indexes the
+        embedding directly, but the guard read prompt as a flat list and skipped it."""
+        self.assertIsNotNone(self.refusal({"prompt": [[999999999]]}, path="/v1/completions"))
+        self.assertIsNotNone(self.refusal({"prompt": [-1]}, path="/v1/completions"))
+        self.assertIsNone(self.refusal({"prompt": [[1, 2]]}, path="/v1/completions"))
+        self.assertIsNone(self.refusal({"prompt": "plain text"}, path="/v1/completions"))
+        self.assertIsNone(self.refusal({"prompt": ["a", "b"]}, path="/v1/completions"))
+
+    def test_nested_input_ids_on_generate_are_caught(self):
+        """S5: /generate's input_ids is List[List[int]] for a batch; the flat scan
+        iterated a list of lists and skipped every element as a non-int."""
+        self.assertIsNotNone(self.refusal({"input_ids": [[1, 2, 999999999]]}, path="/generate"))
+        self.assertIsNotNone(self.refusal({"input_ids": [[-1]]}, path="/generate"))
+        self.assertIsNone(self.refusal({"input_ids": [[1, 2]]}, path="/generate"))
+
+    def test_sampling_params_as_a_batch_list_is_caught(self):
+        """S5: SGLang's /generate accepts sampling_params as a list (one per sequence);
+        the guard only read it as a dict and let the list through."""
+        self.assertIsNotNone(self.refusal({"text": "hi",
+                                          "sampling_params": [{"stop_token_ids": [-1]}]},
+                                          path="/generate"))
+        self.assertIsNone(self.refusal({"text": "hi",
+                                        "sampling_params": [{"stop_token_ids": [1]}]},
+                                       path="/generate"))
+
+    def test_the_alias_routes_reaching_the_sampler_are_guarded(self):
+        """S5: /invocations and /vertex_generate reach the same sampler through names
+        the guard did not know, so the same crash went through them unchecked."""
+        self.assertIsNotNone(self.refusal({"stop_token_ids": [-1]}, path="/invocations"))
+        self.assertIsNotNone(self.refusal({"stop_token_ids": [-1]}, path="/v1/responses"))
+        self.assertIsNotNone(self.refusal(
+            {"instances": [{"input_ids": [1, 999999999]}]}, path="/vertex_generate"))
+        self.assertIsNotNone(self.refusal(
+            {"instances": [{"prompt": "hi"}], "parameters": {"stop_token_ids": [-1]}},
+            path="/vertex_generate"))
 
     def test_the_vocabulary_is_learned_from_the_refusal_that_names_it(self):
         """The engine states its vocabulary in exactly one place: the message refusing an
@@ -1523,6 +1612,93 @@ class TopLogprobsCeilingEndToEnd(unittest.TestCase):
         status, _body = self.post({"model": "m", "messages": [{"role": "user", "content": "hi"}],
                                    "n": 1})
         self.assertNotEqual(status, 400, "an ordinary n was refused")
+
+    def raw_post(self, path, raw):
+        req = urllib.request.Request(
+            self.base + path, data=raw, method="POST",
+            headers={"Content-Type": "application/json", "Authorization": "Bearer t"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def test_an_escaped_key_is_refused_on_the_wire(self):
+        """S4 end to end: the key is spelled with a \\u escape, so the byte scan misses it,
+        but the proxy must still parse the body and refuse the oversized top_logprobs
+        before it reaches the engine."""
+        FakeTokenize.seen = []
+        raw = (b'{"model":"m","messages":[{"role":"user","content":"hi"}],'
+               b'"\\u0074op_logprobs":1000000}')
+        status, body = self.raw_post("/v1/chat/completions", raw)
+        self.assertEqual(status, 400)
+        self.assertIn("top_logprobs=1000000", json.loads(body)["error"]["message"])
+        self.assertEqual(FakeTokenize.seen, [], "the escaped request reached the engine")
+
+    def test_a_batched_prompt_of_token_ids_is_refused_on_the_wire(self):
+        """S5 end to end: prompt=[[id]] on /v1/completions indexes the embedding directly,
+        a form the flat scan missed. The negative id is refused with no vocabulary probe."""
+        FakeTokenize.seen = []
+        status, body = self.raw_post("/v1/completions", b'{"model":"m","prompt":[[-1]]}')
+        self.assertEqual(status, 400)
+        self.assertIn("sglang#31597", json.loads(body)["error"]["message"])
+        for _path, sent in FakeTokenize.seen:
+            self.assertEqual(sent.get("model"), "probe",
+                             f"the client's request was relayed: {sent}")
+
+
+class TheOversizeGuardReachesTheNonV1Routes(unittest.TestCase):
+    """S5: the oversize guard keyed on the /v1/ prefix, so /generate (and its Vertex and
+    SageMaker aliases) relayed a large body with no estimate at all. It now reaches
+    every generation route."""
+
+    @classmethod
+    def setUpClass(cls):
+        import socket, subprocess
+        cls.eng = http.server.HTTPServer(("127.0.0.1", 0), SmallPoolEngine)
+        threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        cls.home = key_home()
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}",
+                   HOME=str(cls.home))
+        cls.proc = subprocess.Popen(
+            [sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                import socket as _s
+                _s.create_connection(("127.0.0.1", cls.port), timeout=0.2).close(); break
+            except OSError:
+                time.sleep(0.05)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate(); cls.proc.wait(timeout=5)
+        cls.eng.shutdown(); cls.eng.server_close()
+        shutil.rmtree(cls.home, ignore_errors=True)
+
+    def _post(self, path, obj):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}",
+                                     data=json.dumps(obj).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def test_a_big_generate_prompt_is_refused_not_relayed(self):
+        SmallPoolEngine.seen_post_paths = []
+        status, raw = self._post("/generate", {"text": "word " * 60000})
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(raw)["error"]["type"], "context_too_long")
+        self.assertNotIn("/generate", SmallPoolEngine.seen_post_paths,
+                         "the oversized /generate body reached the engine")
+
+    def test_a_small_generate_prompt_is_relayed(self):
+        status, _body = self._post("/generate", {"text": "hello"})
+        self.assertEqual(status, 200)
 
 
 if __name__ == "__main__":

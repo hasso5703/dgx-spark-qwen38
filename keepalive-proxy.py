@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.25). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.26). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -30,6 +30,17 @@ Five roles, nothing else:
    yes/no probabilities from the model it already runs, with nothing generated and
    nothing parsed. The "System One endpoint" section below carries the design and
    its receipts.
+
+v6.26: the review's three open guard findings, closed. S4: a key spelled with a \\u escape
+(e.g. \\u0074op_logprobs) carried none of the bytes the guards scanned for, so the ceiling and
+the token-id refusals were skipped; any \\u in the body now forces the parse. S5: the
+sampling and logprob guards also cover /v1/responses, /invocations and /vertex_generate,
+read input_ids as a batch of lists, read sampling_params as a list, read prompt as token
+ids on /v1/completions, and the oversize guard reaches /generate and the other non-/v1/
+generation routes. S6: the TLS handshake no longer runs in the accept loop (one silent
+connection parked every other client behind its timeout); it now runs in the connection's
+own thread on its own budget, and a handshake that dies leaves one journal line, no
+traceback. Found in review, 2026-09-24; fixed 2026-09-26.
 
 v6.25: a caller that leaves a non-streamed answer stops the generation. The proxy waited
 inside the upstream call for the whole answer, so it never saw that caller go and kept the
@@ -239,6 +250,10 @@ UPSTREAM      = os.environ.get("UPSTREAM", "http://127.0.0.1:30000")
 KEEPALIVE_S   = float(os.environ.get("KEEPALIVE_S", "10"))
 MAX_SILENCE_S = float(os.environ.get("MAX_SILENCE_S", "3600"))
 CLIENT_IO_S   = float(os.environ.get("CLIENT_IO_S", "900"))   # write blocked toward a frozen client
+TLS_HANDSHAKE_S = float(os.environ.get("QWEN38_TLS_HANDSHAKE_S", "10"))
+# A TLS client that connects and then says nothing must not pin a handshake thread (or,
+# before S6, the accept loop itself) open for CLIENT_IO_S; the handshake gets this
+# short, separate budget.
 # Oversize guard (v6.7): a prompt longer than the engine's KV pool is not rejected by
 # this SGLang build, it wedges the scheduler (measured 29/08). The proxy learns the
 # pool size from /get_server_info once the upstream is healthy and refuses, with a
@@ -569,7 +584,8 @@ def route_reasoning_effort(body, path):
 # element by element when a batch sends a list.
 TOP_LOGPROBS_CEILING = int(os.environ.get("TOP_LOGPROBS_CEILING", "1024") or 1024)
 TOP_LOGPROBS_FIELD = {"/v1/chat/completions": "top_logprobs", "/v1/completions": "logprobs",
-                      "/generate": "top_logprobs_num"}
+                      "/v1/responses": "top_logprobs", "/invocations": "top_logprobs",
+                      "/generate": "top_logprobs_num", "/vertex_generate": "top_logprobs_num"}
 
 
 def top_logprobs_over_ceiling(body, path):
@@ -577,10 +593,14 @@ def top_logprobs_over_ceiling(body, path):
     else None. Only an integer is judged: anything else is pydantic's refusal to make."""
     if TOP_LOGPROBS_CEILING <= 0 or not body:
         return None
-    field = TOP_LOGPROBS_FIELD.get(path.split("?")[0])
+    route = path.split("?")[0]
+    field = TOP_LOGPROBS_FIELD.get(route)
     if field is None:
         return None
-    if b'"' + field.encode() + b'"' not in body:
+    # S4: a key spelled with a \u escape (e.g. "\u0074op_logprobs") decodes to the very
+    # name this guard looks for, yet the byte scan would not see it. Any escape in the
+    # body voids the substring shortcut, so parse instead.
+    if b"\\u" not in body and b'"' + field.encode() + b'"' not in body:
         return None                     # hot path: one substring scan, no parse
     try:
         j = json.loads(body)
@@ -588,6 +608,8 @@ def top_logprobs_over_ceiling(body, path):
         return None                     # not JSON we can read: the engine's validator decides
     if not isinstance(j, dict):
         return None
+    if route == "/vertex_generate":
+        j = j.get("parameters") or {}
     asked = j.get(field)
     values = asked if isinstance(asked, list) else [asked]
     over = [v for v in values
@@ -595,13 +617,70 @@ def top_logprobs_over_ceiling(body, path):
     return (field, max(over)) if over else None
 
 
-def _sample_fields(j):
-    """The places SGLang reads these fields from: the top level of an OpenAI request, and
-    sampling_params for /generate. Nothing deeper, because nothing deeper is read."""
+def _sampling_holders(j, route):
+    """The dicts SGLang reads sampling/token-id fields from, for this route.
+
+    The top level is always one. /generate additionally reads them from
+    `sampling_params`, which is a single dict for one request or a list of one dict
+    per batched sequence (io_struct.GenerateReqInput). /vertex_generate carries the
+    sampling fields in a `parameters` block and the input tokens under each element of
+    `instances` (VertexGenerateReqInput spreads parameters into GenerateReqInput and
+    lifts instances[*].input_ids). Nothing deeper is read by the engine, so we stop here.
+    """
     yield j
     nested = j.get("sampling_params")
     if isinstance(nested, dict):
         yield nested
+    elif isinstance(nested, list):      # /generate batched sampling_params
+        for item in nested:
+            if isinstance(item, dict):
+                yield item
+    if route == "/vertex_generate":
+        params = j.get("parameters")
+        if isinstance(params, dict):
+            yield params
+        for inst in j.get("instances") or []:
+            if isinstance(inst, dict):
+                yield inst
+
+
+def _iter_token_ids(ids):
+    """Yield the ints in a token-id field that may be a flat list or a batch of lists
+    (GenerateReqInput.input_ids is Union[List[int], List[List[int]]]; so is
+    CompletionRequest.prompt)."""
+    for tok in ids:
+        if isinstance(tok, list):
+            yield from tok
+        else:
+            yield tok
+
+
+def _id_violation(field, tok, vocab):
+    if tok < 0:
+        return (f"keepalive-proxy: {field} contains {tok}, and a negative token id "
+                f"indexes out of bounds on any vocabulary. The engine does not "
+                f"bound this field and dies on it rather than refusing it "
+                f"(sglang#31597), so it is refused here.")
+    if vocab and tok >= vocab:
+        return (f"keepalive-proxy: {field} contains {tok}, past the {vocab} tokens "
+                f"this lane serves (ids run 0 to {vocab - 1}). The engine does not "
+                f"bound this field and dies on it rather than refusing it "
+                f"(sglang#31597), so it is refused here.")
+    return None
+
+
+def _sampling_prealert(body, route):
+    """(might_carry_a_guarded_field, needs_vocab) by byte scan, no parse. A \\u escape
+    voids the shortcut (S4): it can spell any guarded key in bytes the scan would not
+    see, so the body must be parsed. prompt-as-token-ids exists only on /v1/completions
+    and only when the value is a JSON array, not a string. `n` needs no vocabulary."""
+    if b"\\u" in body:
+        return True, True
+    needs_vocab = any(b'"' + f.encode() + b'"' in body for f in TOKEN_ID_FIELDS)
+    has_prompt_ids = (route == "/v1/completions"
+                      and re.search(rb'"prompt"\s*:\s*\[', body) is not None)
+    might = needs_vocab or has_prompt_ids or b'"n"' in body
+    return might, (needs_vocab or has_prompt_ids)
 
 
 def sampling_field_refusal(body, path, vocab):
@@ -610,8 +689,8 @@ def sampling_field_refusal(body, path, vocab):
     known and only the ids no vocabulary can hold are refused."""
     if not body or path.split("?")[0] not in SAMPLE_GUARD_ROUTES:
         return None
-    if not any(b'"' + f.encode() + b'"' in body for f in TOKEN_ID_FIELDS) \
-            and b'"n"' not in body:
+    might, _ = _sampling_prealert(body, path.split("?")[0])
+    if not might:
         return None                     # hot path: substring scans, no parse
     try:
         j = json.loads(body)
@@ -619,24 +698,18 @@ def sampling_field_refusal(body, path, vocab):
         return None
     if not isinstance(j, dict):
         return None
-    for holder in _sample_fields(j):
+    route = path.split("?")[0]
+    for holder in _sampling_holders(j, route):
         for field in TOKEN_ID_FIELDS:
             ids = holder.get(field)
             if not isinstance(ids, list):
                 continue
-            for tok in ids:
+            for tok in _iter_token_ids(ids):
                 if isinstance(tok, bool) or not isinstance(tok, int):
                     continue            # a non-integer is the engine's refusal to make
-                if tok < 0:
-                    return (f"keepalive-proxy: {field} contains {tok}, and a negative token id "
-                            f"indexes out of bounds on any vocabulary. The engine does not "
-                            f"bound this field and dies on it rather than refusing it "
-                            f"(sglang#31597), so it is refused here.")
-                if vocab and tok >= vocab:
-                    return (f"keepalive-proxy: {field} contains {tok}, past the {vocab} tokens "
-                            f"this lane serves (ids run 0 to {vocab - 1}). The engine does not "
-                            f"bound this field and dies on it rather than refusing it "
-                            f"(sglang#31597), so it is refused here.")
+                bad = _id_violation(field, tok, vocab)
+                if bad:
+                    return bad
         n = holder.get("n")
         if MAX_PARALLEL_SAMPLES > 0 and isinstance(n, int) and not isinstance(n, bool) \
                 and n > MAX_PARALLEL_SAMPLES:
@@ -644,6 +717,15 @@ def sampling_field_refusal(body, path, vocab):
                     f"this proxy relays. The engine expands that list before anything is "
                     f"scheduled and does not bound it (sglang#31597). OpenAI's own maximum "
                     f"is 128.")
+    # /v1/completions' prompt doubles as raw token ids (List[int] or List[List[int]]),
+    # which index the embedding directly.
+    if route == "/v1/completions" and isinstance(j.get("prompt"), list):
+        for tok in _iter_token_ids(j["prompt"]):
+            if isinstance(tok, bool) or not isinstance(tok, int):
+                continue
+            bad = _id_violation("prompt", tok, vocab)
+            if bad:
+                return bad
     return None
 
 
@@ -1063,7 +1145,17 @@ def served_vocab():
 # probe above worked; an id at or past the vocabulary is refused only once it is known.
 TOKEN_ID_FIELDS = ("stop_token_ids", "input_ids")
 MAX_PARALLEL_SAMPLES = int(os.environ.get("MAX_PARALLEL_SAMPLES", "128") or 128)
-SAMPLE_GUARD_ROUTES = ("/v1/chat/completions", "/v1/completions", "/generate")
+# Routes that hand a body to the sampler. S5: /v1/responses, /invocations and
+# /vertex_generate reach the same sampler under aliases the old list missed.
+SAMPLE_GUARD_ROUTES = frozenset({
+    "/v1/chat/completions", "/v1/completions", "/generate",
+    "/v1/responses", "/invocations", "/vertex_generate"})
+def _is_prompt_route(route):
+    # S5: the oversize guard keyed on the /v1/ prefix, so /generate and the other
+    # non-/v1 generation aliases (Vertex, SageMaker, ollama) skipped it entirely and a
+    # 1 MB body was relayed with no estimate. The prefix stays, and these are added.
+    return route.startswith("/v1/") or route in (
+        "/generate", "/invocations", "/vertex_generate", "/api/chat", "/api/generate")
 # ---- System One endpoint (v6.19) ------------------------------------------------
 # POST /v1/systemone speaks the wire contract of TypeSafe's Jev (docs.typesafe.ai/api):
 # one `state`, a map of typed `questions` (choice, score, noul), and one typed answer
@@ -2224,6 +2316,18 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 128
 
+    def handle_error(self, request, client_address):
+        # A TLS client that vanishes mid-handshake (S6), and a client that cuts the wire
+        # mid-stream, both land here. They are traffic, not faults: one journal line, no
+        # traceback in a journal the cockpit renders.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ssl.SSLError, socket.timeout, TimeoutError,
+                            ConnectionResetError, BrokenPipeError)):
+            log(f"{client_address[0]}:{client_address[1]} dropped before a whole request "
+                f"({type(exc).__name__})")
+            return
+        super().handle_error(request, client_address)
+
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
@@ -2236,6 +2340,21 @@ class H(BaseHTTPRequestHandler):
 
     def setup(self):
         BaseHTTPRequestHandler.setup(self)
+        if isinstance(self.connection, ssl.SSLSocket):
+            # S6: the listening socket is wrapped with do_handshake_on_connect=False, so
+            # the accept loop never waits on a handshake; it happens here, in this
+            # connection's own thread, on its own short budget. A client that connects
+            # and says nothing costs one thread for TLS_HANDSHAKE_S, not every other
+            # client's connection for the handshake timeout.
+            self.connection.settimeout(TLS_HANDSHAKE_S)
+            try:
+                self.connection.do_handshake()
+            except OSError as e:
+                # log(), not log_error(): this class mutes log_message, so the base
+                # logger would print nothing to a journal that is the only witness.
+                log(f"TLS handshake from {self.client_address[0]} failed: {type(e).__name__}")
+                self.close_connection = True
+                return
         # a write blocked for CLIENT_IO_S (frozen client, laptop asleep) raises
         # socket.timeout instead of parking the thread forever
         self.connection.settimeout(CLIENT_IO_S)
@@ -2783,18 +2902,17 @@ class H(BaseHTTPRequestHandler):
         # The vocabulary is asked for only when a request carries a field that needs one,
         # never for `n` alone, which plenty of ordinary clients send: a probe on the hot
         # path of every request would be the cost this guard exists to prevent.
-        if body and self.path.split("?")[0] in SAMPLE_GUARD_ROUTES \
-                and (any(b'"' + f.encode() + b'"' in body for f in TOKEN_ID_FIELDS)
-                     or b'"n"' in body):
-            needs_vocab = any(b'"' + f.encode() + b'"' in body for f in TOKEN_ID_FIELDS)
-            refusal = sampling_field_refusal(body, self.path,
-                                             served_vocab() if needs_vocab else 0)
-            if refusal:
-                log(f"{self._peer} REFUSED a sampling field the engine dies on: {refusal[17:100]}")
-                self._plain(400, {"Content-Type": "application/json"},
-                            json.dumps({"error": {"type": "invalid_request",
-                                                  "message": refusal}}).encode())
-                self._done("400 sampling field out of range"); return
+        if body and self.path.split("?")[0] in SAMPLE_GUARD_ROUTES:
+            might, needs_vocab = _sampling_prealert(body, self.path.split("?")[0])
+            if might:
+                refusal = sampling_field_refusal(body, self.path,
+                                                 served_vocab() if needs_vocab else 0)
+                if refusal:
+                    log(f"{self._peer} REFUSED a sampling field the engine dies on: {refusal[17:100]}")
+                    self._plain(400, {"Content-Type": "application/json"},
+                                json.dumps({"error": {"type": "invalid_request",
+                                                      "message": refusal}}).encode())
+                    self._done("400 sampling field out of range"); return
         body, dropped = sanitize_tool_schemas(body, self.path)
         body, moved_effort = route_reasoning_effort(body, self.path)
         if moved_effort and _effort_move_logged.first(moved_effort):   # once per level, not per request
@@ -2812,7 +2930,10 @@ class H(BaseHTTPRequestHandler):
         # or held while the pool was unmeasured, it could not learn it (found in review,
         # 2026-09-24).
         count_only = self.path.split("?", 1)[0] in COUNT_ONLY_PATHS
-        if body and self.path.startswith("/v1/") and len(body) > 200_000 and not count_only:
+        # S5: the prefix test alone let /generate and the Vertex and SageMaker aliases
+        # slip through unmeasured; _is_prompt_route adds them without changing the
+        # /v1/ behavior that was already correct.
+        if body and _is_prompt_route(self.path.split("?", 1)[0]) and len(body) > 200_000 and not count_only:
             pool = pool_tokens()
             est = len(body) / CHARS_PER_TOKEN_MIN     # optimistic: fewest tokens the body could be
             if pool is None:
@@ -3132,7 +3253,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.25 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.26 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))
@@ -3150,6 +3271,11 @@ if __name__ == "__main__":
             ctx.load_cert_chain(TLS_CERT, TLS_KEY or None)
         except Exception as e:
             sys.exit(f"[proxy] refusing to start: certificate {TLS_CERT} is not usable ({e})")
-        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        # S6: do not handshake in the accept loop. A single silent client could then hold
+        # the whole accept loop for the handshake timeout; every other connection,
+        # including the cockpit's health checks, would queue behind it. The handshake is
+        # done in H.setup, on the connection's own thread and its own budget.
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True,
+                                       do_handshake_on_connect=False)
         log(f"TLS on (cert {TLS_CERT})")
     httpd.serve_forever()
