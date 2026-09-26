@@ -2676,11 +2676,11 @@ async function vidLane(){
       if (pct == null){
         $('vidrunbar').style.width = '100%';
         $('vidrunprog').classList.add('indet');
-        setText('vidrunpct', p.seconds != null ? fmtDur(p.seconds) + ' elapsed' : '');
+        setText('vidrunpct', p.seconds != null ? ' · ' + fmtDur(p.seconds) + ' elapsed' : '');
       } else {
         $('vidrunprog').classList.remove('indet');
         $('vidrunbar').style.width = pct + '%';
-        setText('vidrunpct', Math.round(pct) + '%' + (p.seconds != null ? ' · ' + fmtDur(p.seconds) : ''));
+        setText('vidrunpct', ' · ' + Math.round(pct) + '%' + (p.seconds != null ? ' · ' + fmtDur(p.seconds) : ''));
       }
     } else if (!vidInflight){
       $('vidrunprog').hidden = true;
