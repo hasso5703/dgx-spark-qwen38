@@ -79,8 +79,12 @@ class VideoSent:
                 if outer.url.endswith("/content"):
                     return b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 200000
                 if outer.url.endswith("/v1/videos") and not outer.body:
-                    st = outer.statuses.pop(0) if len(outer.statuses) > 1 else outer.statuses[0]
-                    return json.dumps({"data": [{"id": "vid-test-1", "status": st}]}).encode()
+                    nxt = outer.statuses.pop(0) if len(outer.statuses) > 1 else outer.statuses[0]
+                    st, pct = nxt if isinstance(nxt, tuple) else (nxt, None)
+                    item = {"id": "vid-test-1", "status": st}
+                    if pct is not None:
+                        item["progress"] = pct
+                    return json.dumps({"data": [item]}).encode()
                 return json.dumps({"id": "vid-test-1", "status": "queued"}).encode()
 
             def __enter__(self_inner):
@@ -247,6 +251,16 @@ class TheAsyncCall(Base):
         code, out = self.call({"prompt": "a cat", "seconds": 4})
         self.assertEqual(code, 502)
         self.assertIn("failed", out["error"])
+
+    def test_the_lane_progress_reaches_the_tab(self):
+        """The lane reports 0-100 itself: the poll stores it where /api/video serves
+        it, so the tab's bar moves instead of pulsing."""
+        self.spy.statuses = [("queued", 12.5)]
+        st, pct = self.ck._video_list_entry("vid-test-1")
+        self.assertEqual(st, "queued")
+        self.assertEqual(pct, 12.5)
+        st, pct = self.ck._video_list_entry("no-such-video")
+        self.assertEqual((st, pct), ("missing", None))
 
     def test_a_video_the_lane_forgot_is_a_502_not_an_hour_of_polling(self):
         """'missing' is the lane's definitive answer (the record is gone), where

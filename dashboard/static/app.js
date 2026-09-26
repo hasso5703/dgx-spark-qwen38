@@ -2667,6 +2667,25 @@ async function vidLane(){
     const p = d.progress || {};
     VID_STATE.busy = !vidInflight && !!p.id && p.status !== 'completed';
     VID_STATE.busyLabel = p.status ? ('generating: ' + p.status) : '';
+    // The lane reports 0-100 itself, so this bar moves where the image lane's only
+    // pulses: percent from the lane, elapsed from this page's clock.
+    if ((VID_STATE.busy || vidInflight) && p.id){
+      $('vidrunprog').hidden = false;
+      const pct = typeof p.progress === 'number' ? Math.max(0, Math.min(100, p.progress)) : null;
+      setText('vidrunlab', 'generating' + (p.status ? ': ' + p.status : ''));
+      if (pct == null){
+        $('vidrunbar').style.width = '100%';
+        $('vidrunprog').classList.add('indet');
+        setText('vidrunpct', p.seconds != null ? fmtDur(p.seconds) + ' elapsed' : '');
+      } else {
+        $('vidrunprog').classList.remove('indet');
+        $('vidrunbar').style.width = pct + '%';
+        setText('vidrunpct', Math.round(pct) + '%' + (p.seconds != null ? ' · ' + fmtDur(p.seconds) : ''));
+      }
+    } else if (!vidInflight){
+      $('vidrunprog').hidden = true;
+      vidWatch(false);
+    }
     if (VID_STATE.busy) vidWatch(true, 10000);
     else if (!vidInflight) vidWatch(false);
     vidRenderLane();

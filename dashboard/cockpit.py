@@ -2590,15 +2590,25 @@ VIDEO_ALLOWED = {"model", "prompt", "seconds", "size", "task", "target", "qualit
                  "audio_flow_shift", "seed"}
 
 
-def _video_list_status(vid: str) -> str:
-    """This video's status from the lane's list, or "unknown" when the lane says nothing."""
+def _video_list_entry(vid: str) -> tuple:
+    """This video's (status, progress) from the lane's list. Progress is the lane's
+    own 0-100, or None when the lane says nothing ("unknown") or nothing about this
+    video ("missing")."""
     try:
         with urllib.request.urlopen(urllib.request.Request(video_base() + "/v1/videos"),
                                     timeout=20) as r:
             items = json.loads(r.read().decode()).get("data", [])
     except Exception:                               # noqa: BLE001 (the poll below retries)
-        return "unknown"
-    return next((v.get("status", "unknown") for v in items if v.get("id") == vid), "missing")
+        return "unknown", None
+    for v in items:
+        if v.get("id") == vid:
+            return v.get("status", "unknown"), v.get("progress")
+    return "missing", None
+
+
+def _video_list_status(vid: str) -> str:
+    """This video's status from the lane's list, or "unknown" when the lane says nothing."""
+    return _video_list_entry(vid)[0]
 
 
 def _release_video_lock_when_done(life0: tuple, vid: str, since: float) -> None:
@@ -2741,14 +2751,16 @@ def video_call(payload: dict) -> tuple[int, dict]:
             return 502, {"error": f"the lane took the call but gave no video id: {str(created)[:200]}",
                          "seconds": round(time.time() - t0, 2)}
         VIDEO_LAST.update({"id": vid, "status": created.get("status", "queued"),
-                           "seconds": 0.0})
+                           "seconds": 0.0, "progress": created.get("progress", 0)})
         # To completed, the way the lane reports it: its list, not its journal.
         while time.time() - t0 < VIDEO_TIMEOUT:
             if _video_life() != life0:
                 return _video_cut(t0)
-            st = _video_list_status(vid)
+            st, progress = _video_list_entry(vid)
             VIDEO_LAST["status"] = st
             VIDEO_LAST["seconds"] = round(time.time() - t0, 2)
+            if isinstance(progress, (int, float)):
+                VIDEO_LAST["progress"] = progress
             if st == "completed":
                 return 200, {"video_id": vid, "seconds": round(time.time() - t0, 2)}
             if st in ("failed", "error", "cancelled"):
