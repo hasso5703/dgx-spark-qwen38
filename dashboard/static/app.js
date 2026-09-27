@@ -749,7 +749,7 @@ function stoppingBlock(e){
   const lab = el('div', 'blab');
   lab.append(el('span', null, `stopping · ${e.state_elapsed != null ? fmtDur(e.state_elapsed) : '…'} elapsed`));
   lab.append(el('span', null, e.kind === 'video'
-    ? 'systemd stops the process (SIGTERM; a generation in flight is cut after 5 s)'
+    ? 'systemd stops the process (SIGTERM; an in-flight generation is not interrupted, the unit waits up to 60 min for it to finish)'
     : e.kind === 'image'
     ? 'systemd stops the process (SIGTERM; a generation in flight is cut after 5 s)'
     : 'systemd stops the container (SIGTERM, usually under 30 s)'));
@@ -2762,7 +2762,8 @@ function vidSync(){
   const body = {prompt: vidVal('vidprompt'), seconds: secs, size, num_inference_steps: steps};
   if (seed) body.seed = parseInt(seed, 10);
   if (vidMode === 'fl2v'){
-    body.task = 'fl2v';
+    // no task field: the lane infers fl2va from the frames, and 'fl2v' would be
+    // a 400 on the wire (only t2va/fl2va are valid)
     if (vidFrames.first) body.first_frame = '[first frame attached]';
     if (vidFrames.last) body.last_frame = '[last frame attached]';
   }

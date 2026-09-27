@@ -1253,6 +1253,47 @@ class TopLogprobsCeiling(unittest.TestCase):
         self.assertIsNone(self.over({"instances": [{"prompt": "hi"}],
                                      "parameters": {"top_logprobs_num": 20}}, "/vertex_generate"))
 
+    def test_a_numeric_string_value_is_judged_like_an_int(self):
+        """The engine (pydantic v2 lax) coerces \"1000000\" to the int 1000000 before the
+        scheduler runs, so typing the danger as a string must not dodge the ceiling.
+        Non-numeric strings and in-range values still pass to the engine."""
+        raw = b'{"model": "m", "messages": [], "top_logprobs": "1000000"}'
+        self.assertEqual(self.m.top_logprobs_over_ceiling(raw, "/v1/chat/completions"),
+                         ("top_logprobs", 1000000))
+        raw = b'{"model": "m", "logprobs": "300000"}'
+        self.assertEqual(self.m.top_logprobs_over_ceiling(raw, "/v1/completions"),
+                         ("logprobs", 300000))
+        raw = b'{"model": "m", "messages": [], "top_logprobs": "50"}'
+        self.assertIsNone(self.m.top_logprobs_over_ceiling(raw, "/v1/chat/completions"))
+        raw = b'{"model": "m", "messages": [], "top_logprobs": "many"}'
+        self.assertIsNone(self.m.top_logprobs_over_ceiling(raw, "/v1/chat/completions"))
+
+    def test_a_numeric_string_value_is_judged_like_the_engine_coerces_it(self):
+        """The engine's request models (pydantic v2 lax, verified on the installed
+        build) coerce "1000000" -> 1000000 before the scheduler runs topk, so the
+        crash shape is reachable by typing the number as a string. The guard must
+        judge the value as the engine will read it. Non-numeric strings and in-range
+        values still go to the engine untouched."""
+        self.assertEqual(
+            self.m.top_logprobs_over_ceiling(
+                b'{"model":"m","messages":[],"top_logprobs":"1000000"}',
+                "/v1/chat/completions"),
+            ("top_logprobs", 1000000))
+        self.assertEqual(
+            self.m.top_logprobs_over_ceiling(b'{"model":"m","logprobs":"300000"}',
+                                             "/v1/completions"),
+            ("logprobs", 300000))
+        self.assertEqual(
+            self.m.top_logprobs_over_ceiling(
+                b'{"text":"hi","top_logprobs_num":"1000000"}', "/generate"),
+            ("top_logprobs_num", 1000000))
+        self.assertIsNone(self.m.top_logprobs_over_ceiling(
+            b'{"model":"m","messages":[],"top_logprobs":"50"}', "/v1/chat/completions"))
+        self.assertIsNone(self.m.top_logprobs_over_ceiling(
+            b'{"model":"m","messages":[],"top_logprobs":"abc"}', "/v1/chat/completions"))
+        self.assertIsNone(self.m.top_logprobs_over_ceiling(
+            b'{"model":"m","messages":[],"top_logprobs":"10.5"}', "/v1/chat/completions"))
+
     def test_zero_disables_the_ceiling_for_an_operator_who_knows_their_build(self):
         self.m.TOP_LOGPROBS_CEILING = 0
         self.assertIsNone(self.over({"model": "m", "top_logprobs": 10 ** 9}))
@@ -1377,6 +1418,37 @@ class SamplingFieldsTheEngineDiesOn(unittest.TestCase):
             {"instances": [{"input_ids": [1, 999999999]}]}, path="/vertex_generate"))
         self.assertIsNotNone(self.refusal(
             {"instances": [{"prompt": "hi"}], "parameters": {"stop_token_ids": [-1]}},
+            path="/vertex_generate"))
+
+    def test_numeric_string_values_are_judged_like_the_engine_coerces_them(self):
+        """The engine coerces numeric strings to ints before the scheduler runs
+        (n='999999' -> 999999, stop_token_ids=['-1'] -> [-1]), so typing the danger
+        as a string must not dodge the guard. Non-numeric strings still go to the
+        engine's own validator."""
+        self.assertIsNotNone(self.refusal({"n": "999999"}, path="/v1/chat/completions"))
+        self.assertIsNotNone(self.refusal({"stop_token_ids": ["-1"]}, path="/v1/chat/completions"))
+        self.assertIsNotNone(self.refusal({"input_ids": ["300000"]}, path="/v1/chat/completions"))
+        self.assertIsNone(self.refusal({"n": "1"}, path="/v1/chat/completions"))
+        self.assertIsNone(self.refusal({"stop_token_ids": ["abc"]}, path="/v1/chat/completions"))
+        # /generate: a batched sampling_params list whose element carries the field
+        self.assertIsNotNone(self.refusal({"text": "hi", "sampling_params": [{"n": "999999"}]},
+                                          path="/generate"))
+
+    def test_vertex_nested_parameters_sampling_params_is_guarded(self):
+        """The vertex handler spreads parameters into GenerateReqInput, so a
+        parameters.sampling_params block reaches the sampler the same way a top-level
+        sampling_params does. Both stop_token_ids and n in it must be judged."""
+        self.assertIsNotNone(self.refusal(
+            {"instances": [{"prompt": "hi"}],
+             "parameters": {"sampling_params": {"stop_token_ids": [-1]}}},
+            path="/vertex_generate"))
+        self.assertIsNotNone(self.refusal(
+            {"instances": [{"prompt": "hi"}],
+             "parameters": {"sampling_params": {"n": 999999}}},
+            path="/vertex_generate"))
+        self.assertIsNone(self.refusal(
+            {"instances": [{"prompt": "hi"}],
+             "parameters": {"sampling_params": {"n": 1, "stop_token_ids": [5]}}},
             path="/vertex_generate"))
 
     def test_the_vocabulary_is_learned_from_the_refusal_that_names_it(self):

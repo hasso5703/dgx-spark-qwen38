@@ -28,6 +28,22 @@ thread on its own budget, and a handshake that dies leaves one journal line inst
 traceback the cockpit would render. Each change is held by a test that failed before and
 passes after.
 
+**Proxy v6.27: the review's second pass, verified against the installed engine.** The
+guards judged the raw JSON value, but the engine's pydantic models coerce `999999`,
+`"999999"` and `999999.0` to the same int before the scheduler runs, so a crash shape
+typed as a string sailed through the ceiling and the token-id refusals; the guards now
+judge each value the way the engine reads it, and the vertex route also judges
+`parameters.sampling_params`, which the scheduler spreads into its SamplingParams. The
+video lane bounds `num_inference_steps` server-side (1 to 100, as the image lane
+already does) instead of trusting the page's slider; its stop message no longer
+promises a 5 s cut the unit never makes (it waits up to 60 min); its curl preview no
+longer prints a `task` the server refuses; and its lock hand-off now carries the
+timeout with the call that timed out instead of re-reading a global a test could have
+already restored. `install-image.sh` starts the lane that was serving again after its
+smoke test even when that lane was the video or llamacpp one, and `install-video.sh`
+refuses a `VIDEO_BIND=0.0.0.0` that would put a keyless generator on every interface.
+Each change is held by a test that fails on the previous revision and passes here.
+
 ## v1.18.7 (2026-09-24): a full review of v1.18.6, and the defects it found fixed with a test each
 
 A line-by-line review of the whole repo at v1.18.6 (code, templates, tests, CI and docs)

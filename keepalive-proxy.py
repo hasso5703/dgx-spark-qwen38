@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.26). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.27). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -30,6 +30,15 @@ Five roles, nothing else:
    yes/no probabilities from the model it already runs, with nothing generated and
    nothing parsed. The "System One endpoint" section below carries the design and
    its receipts.
+
+v6.27: the second pass of the same review found the guards still judgeable by value type.
+The engine's request models (pydantic v2, lax) coerce "999999", 999999.0 and [-1] spelled
+as strings into the ints the scheduler then acts on, and the guards only read the raw
+JSON type, so the crash shapes were one pair of quotes away (verified against the
+installed build: n, logprobs, top_logprobs, top_logprobs_num, and the elements of
+stop_token_ids, input_ids and prompt). The guards now judge each value as the engine
+reads it (_engine_int), and the vertex route also judges parameters.sampling_params,
+which the scheduler spreads into SamplingParams. Found in review, 2026-09-26.
 
 v6.26: the review's three open guard findings, closed. S4: a key spelled with a \\u escape
 (e.g. \\u0074op_logprobs) carried none of the bytes the guards scanned for, so the ceiling and
@@ -588,9 +597,39 @@ TOP_LOGPROBS_FIELD = {"/v1/chat/completions": "top_logprobs", "/v1/completions":
                       "/generate": "top_logprobs_num", "/vertex_generate": "top_logprobs_num"}
 
 
+def _engine_int(v):
+    """The int the engine will act on, or None when it will not act on a number at all.
+
+    The guards must judge what the engine executes, not what the client typed. The
+    request models are pydantic v2 in lax mode, and this build coerces integer floats
+    (3.0) and numeric strings ("999999", "-1", "3.0") into ints before the scheduler
+    ever sees them (checked against the installed SGLang, 2026-09-26). SamplingParams
+    additionally runs int() over every stop_token_ids element in __post_init__. So
+    top_logprobs "1000000" reaches logprob_processor.topk as 1000000, and a guard that
+    only tests isinstance(v, int) is one pair of quotes away from the crash. What is
+    not coerced ("abc", 3.5) is the engine's refusal to make, so it stands down; a bool
+    the engine does coerce to 0 or 1, which is always in range, so it stands down too.
+    """
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v) if v.is_integer() else None
+    if isinstance(v, str):
+        try:
+            f = float(v.strip())
+        except ValueError:
+            return None
+        return int(f) if f.is_integer() else None
+    return None
+
+
 def top_logprobs_over_ceiling(body, path):
     """(field, value) when a request asks for more logprob entries than the ceiling,
-    else None. Only an integer is judged: anything else is pydantic's refusal to make."""
+    else None. The value is judged as the engine will read it (see _engine_int): a
+    numeric string or integer float is coerced to the int the scheduler acts on, so the
+    guard cannot be fooled by typing the danger as "1000000"."""
     if TOP_LOGPROBS_CEILING <= 0 or not body:
         return None
     route = path.split("?")[0]
@@ -612,8 +651,11 @@ def top_logprobs_over_ceiling(body, path):
         j = j.get("parameters") or {}
     asked = j.get(field)
     values = asked if isinstance(asked, list) else [asked]
-    over = [v for v in values
-            if isinstance(v, int) and not isinstance(v, bool) and v > TOP_LOGPROBS_CEILING]
+    over = []
+    for v in values:
+        iv = _engine_int(v)
+        if iv is not None and iv > TOP_LOGPROBS_CEILING:
+            over.append(iv)
     return (field, max(over)) if over else None
 
 
@@ -625,8 +667,25 @@ def _sampling_holders(j, route):
     per batched sequence (io_struct.GenerateReqInput). /vertex_generate carries the
     sampling fields in a `parameters` block and the input tokens under each element of
     `instances` (VertexGenerateReqInput spreads parameters into GenerateReqInput and
-    lifts instances[*].input_ids). Nothing deeper is read by the engine, so we stop here.
+    lifts instances[*].input_ids). The scheduler then runs SamplingParams(**dict) on
+    that sampling_params (tokenizer_manager), so a `parameters.sampling_params` block
+    reaches the sampler too. Nothing deeper is read by the engine, so we stop here.
     """
+    if route == "/vertex_generate":
+        params = j.get("parameters")
+        if isinstance(params, dict):
+            yield params
+            nested = params.get("sampling_params")
+            if isinstance(nested, dict):
+                yield nested
+            elif isinstance(nested, list):
+                for item in nested:
+                    if isinstance(item, dict):
+                        yield item
+        for inst in j.get("instances") or []:
+            if isinstance(inst, dict):
+                yield inst
+        return
     yield j
     nested = j.get("sampling_params")
     if isinstance(nested, dict):
@@ -635,13 +694,6 @@ def _sampling_holders(j, route):
         for item in nested:
             if isinstance(item, dict):
                 yield item
-    if route == "/vertex_generate":
-        params = j.get("parameters")
-        if isinstance(params, dict):
-            yield params
-        for inst in j.get("instances") or []:
-            if isinstance(inst, dict):
-                yield inst
 
 
 def _iter_token_ids(ids):
@@ -705,14 +757,14 @@ def sampling_field_refusal(body, path, vocab):
             if not isinstance(ids, list):
                 continue
             for tok in _iter_token_ids(ids):
-                if isinstance(tok, bool) or not isinstance(tok, int):
-                    continue            # a non-integer is the engine's refusal to make
-                bad = _id_violation(field, tok, vocab)
+                iv = _engine_int(tok)
+                if iv is None:
+                    continue            # not an int the engine will run: its validator decides
+                bad = _id_violation(field, iv, vocab)
                 if bad:
                     return bad
-        n = holder.get("n")
-        if MAX_PARALLEL_SAMPLES > 0 and isinstance(n, int) and not isinstance(n, bool) \
-                and n > MAX_PARALLEL_SAMPLES:
+        n = _engine_int(holder.get("n"))
+        if MAX_PARALLEL_SAMPLES > 0 and n is not None and n > MAX_PARALLEL_SAMPLES:
             return (f"keepalive-proxy: n={n} exceeds the {MAX_PARALLEL_SAMPLES} parallel samples "
                     f"this proxy relays. The engine expands that list before anything is "
                     f"scheduled and does not bound it (sglang#31597). OpenAI's own maximum "
@@ -721,9 +773,10 @@ def sampling_field_refusal(body, path, vocab):
     # which index the embedding directly.
     if route == "/v1/completions" and isinstance(j.get("prompt"), list):
         for tok in _iter_token_ids(j["prompt"]):
-            if isinstance(tok, bool) or not isinstance(tok, int):
+            iv = _engine_int(tok)
+            if iv is None:
                 continue
-            bad = _id_violation("prompt", tok, vocab)
+            bad = _id_violation("prompt", iv, vocab)
             if bad:
                 return bad
     return None
@@ -3253,7 +3306,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001
-    log(f"v6.26 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
+    log(f"v6.27 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s)")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))

@@ -97,6 +97,7 @@ WHEEL="${SGLANG_DIFFUSION_WHEEL:-0.5.20}"
 VIDEO_BIND="${VIDEO_BIND:-$(unit_flag --host)}"; VIDEO_BIND="${VIDEO_BIND:-127.0.0.1}"
 case "$VIDEO_BIND" in
   127.0.0.1|localhost) ;;
+  0.0.0.0) die "VIDEO_BIND=0.0.0.0 puts a keyless video generator on EVERY interface (LAN, tailnet, future NICs). This lane has no --api-key; bind loopback (the cockpit is the door) or name one specific address." ;;
   *) echo "WARNING: binding $VIDEO_BIND. This lane has no API key (the diffusion runtime has"
      echo "         no --api-key), so anyone who can reach that address can generate on your GPU."
      echo "         Loopback plus the cockpit is the intended shape." ;;
@@ -318,7 +319,7 @@ if [ "$SMOKE" -eq 0 ]; then step "Done (smoke test skipped)"; exit 0; fi
 
 step "6/6 Proving it serves (one short video, then the box goes back to the lane it was serving)"
 WAS_OTHER=""
-for u in qwen38-sglang.service qwen38-flash.service qwen38-image.service; do
+for u in qwen38-sglang.service qwen38-flash.service qwen38-image.service qwen38-llamacpp.service; do
   systemctl is-active --quiet "$u" 2>/dev/null && WAS_OTHER="$u"
 done
 # If this lane was already serving, the test leaves it serving: stopping it on the way

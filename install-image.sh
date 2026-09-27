@@ -319,8 +319,13 @@ echo "  a terminal : ./switch-model.sh image, then the two commands it prints"
 if [ "$SMOKE" -eq 0 ]; then step "Done (smoke test skipped)"; exit 0; fi
 
 step "6/6 Proving it serves (one image, then the box goes back to the lane it was serving)"
+# The restore must mirror this unit's Conflicts= set: starting the image lane stops every
+# engine lane, so whatever was serving (text, flash, the video lane, or the legacy
+# llamacpp unit) has to be started back. Checking only the two text lanes left a box that
+# was serving on video with no engine at all after the smoke test (found in review,
+# 2026-09-26).
 WAS_LLM=""
-for u in qwen38-sglang.service qwen38-flash.service; do
+for u in qwen38-sglang.service qwen38-flash.service qwen38-video.service qwen38-llamacpp.service; do
   systemctl is-active --quiet "$u" 2>/dev/null && WAS_LLM="$u"
 done
 # If this lane was already serving, the test leaves it serving: stopping it on the way out
@@ -328,7 +333,7 @@ done
 WAS_IMAGE=0
 systemctl is-active --quiet "$UNIT" 2>/dev/null && WAS_IMAGE=1
 [ -n "$WAS_LLM" ] && echo "note: $WAS_LLM is serving and will be stopped for this test, then started again."
-# From here on the text lane is DOWN, so putting it back cannot live on the happy path:
+# From here on the serving lane is DOWN, so putting it back cannot live on the happy path:
 # every die() below would leave the box serving nothing, with the image unit holding
 # 31 GB, until somebody noticed. The trap runs on success and on every failure alike.
 restore_text_lane() {

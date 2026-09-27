@@ -2611,11 +2611,11 @@ def _video_list_status(vid: str) -> str:
     return _video_list_entry(vid)[0]
 
 
-def _release_video_lock_when_done(life0: tuple, vid: str, since: float) -> None:
+def _release_video_lock_when_done(life0: tuple, vid: str, timeout: float) -> None:
     """The lock of a call that timed out here, given back when the lane is done with
     it: the video reached a terminal status, or the lane is no longer the run the call
-    went to (a Cancel, a Stop, a crash), or another VIDEO_TIMEOUT went by with neither."""
-    deadline = time.time() + VIDEO_TIMEOUT
+    went to (a Cancel, a Stop, a crash), or the timeout went by with neither."""
+    deadline = time.time() + timeout
     try:
         while time.time() < deadline:
             if _video_life() != life0:
@@ -2639,6 +2639,11 @@ def video_call(payload: dict) -> tuple[int, dict]:
         # the cookbook's duration band: 4 to 15 s
         return 400, {"error": "seconds is a whole number from 4 to 15"}
     fields["seconds"] = secs
+    steps = fields.get("num_inference_steps")
+    if steps is not None and (isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 100):
+        # same bound the image lane enforces: past it a call outlives the timeout
+        # and pins the single-flight GPU lane for nothing
+        return 400, {"error": "num_inference_steps is a number from 1 to 100"}
     if fields.get("num_outputs_per_prompt", 1) != 1:
         # the lane serves one request at a time; parallel variants inside one call are
         # the same working set twice
@@ -2776,7 +2781,7 @@ def video_call(payload: dict) -> tuple[int, dict]:
         # The wait ran out; the lane goes on (it has no abort). The lock is handed to
         # a watcher that gives it back when the lane is done, so a second generation
         # never runs beside the first.
-        threading.Thread(target=_release_video_lock_when_done, args=(life0, vid, t0),
+        threading.Thread(target=_release_video_lock_when_done, args=(life0, vid, VIDEO_TIMEOUT),
                          daemon=True).start()
         handed_over[0] = True
         return 504, {"error": VIDEO_STILL_RUNNING, "video_id": vid,

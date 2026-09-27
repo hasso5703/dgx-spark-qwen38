@@ -239,12 +239,15 @@ class TheRefusals(Base):
 
 
 class TheAsyncCall(Base):
-    def test_create_poll_download_returns_the_video_id(self):
+    def test_create_and_poll_return_the_video_id(self):
+        # The download leg (GET .../content) is a separate browser call, covered by
+        # test_content_is_the_lane_bytes; here we only assert create + poll.
         code, out = self.call({"prompt": "a cat", "seconds": 4})
         self.assertEqual(code, 200, out)
         self.assertEqual(out["video_id"], "vid-test-1")
         self.assertIn("seconds", out)
-        self.assertTrue(any(u.endswith("/content") for u, _ in self.spy.calls) or True)
+        self.assertNotIn("/content", [u for u, _ in self.spy.calls],
+                         "video_call must not download; the browser fetches /content")
 
     def test_a_failed_video_is_a_502_not_a_video(self):
         self.spy.statuses = ["failed"]
