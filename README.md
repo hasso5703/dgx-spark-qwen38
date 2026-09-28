@@ -48,6 +48,7 @@ The README is the entry point. Everything longer lives next to it, one subject p
 | Provenance and licenses of the retired flash overlay | [flash-sglang/ATTRIBUTION.md](flash-sglang/ATTRIBUTION.md) |
 | Reproducing the MMLU and HumanEval numbers, and the two image quirks in the way | [evals/README.md](evals/README.md) |
 | Running a GGUF model on this box instead | [extras/gguf/README.md](extras/gguf/README.md) |
+| Chromium / gstack browse dies with "No usable sandbox!" on Ubuntu 24.04 | [extras/chromium-sandbox/README.md](extras/chromium-sandbox/README.md) |
 
 ## The whole stack at a glance
 

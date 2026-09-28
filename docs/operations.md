@@ -46,7 +46,7 @@ arrives at your next `./install.sh` re-run and engine start.
 
 ## Extras (opt-in)
 
-Three field-tested pieces from the reference box, deliberately not part of the default
+Four field-tested pieces from the reference box, deliberately not part of the default
 install because they touch things beyond the serving stack:
 
 **`extras/opencode/auto-continue.js`**: an opencode plugin that automatically resumes a
@@ -87,6 +87,21 @@ extras/cake-ingress/setup.sh --uninstall           # back to stock networking
 Boot-persistent (`cake-ingress.service`). Verify with a `ping 1.1.1.1` kept running
 during a big download. The full bandwidth sweep and the reasoning are in the script's
 header; setting BANDWIDTH too high is the one mistake that silently does nothing.
+
+**`extras/chromium-sandbox/`**: makes Chromium launchable at all on Ubuntu 24.04, which
+the Spark ships. Ubuntu restricts unprivileged user namespaces, Chromium's sandbox needs
+them, so every Playwright/Chromium tool (gstack `/browse` among them) dies at launch with
+`No usable sandbox!`. One persistent sysctl (`99-chromium-userns.conf`) is the whole fix;
+app-level `--no-sandbox` patches were tried on the reference box and are the wrong lever
+(they drop the sandbox per-page, and uncompiled source patches protect nothing). It
+loosens that AppArmor restriction for all unprivileged userns on the machine, so it is
+opt-in; `./setup.sh --uninstall` restores the stock value. Details and the honest
+trade-off in [extras/chromium-sandbox/README.md](../extras/chromium-sandbox/README.md).
+
+```bash
+extras/chromium-sandbox/setup.sh              # sudo; applies now, persists on reboot
+extras/chromium-sandbox/setup.sh --uninstall  # back to Ubuntu's stock restriction
+```
 
 ## Upgrading from an earlier version
 
