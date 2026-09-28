@@ -3348,6 +3348,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             key = api_key()
             if key:
                 txt = txt.replace(key, "<masked>")
+            # The video lane's container logs in colour and the journal keeps the escape
+            # bytes; in a <pre> they are noise (QA of the live page, 2026-09-28).
+            txt = re.sub(r"\x1b\[[0-?;]*[@-~]", "", txt)
             return self.send_json({"name": name,
                                    "lines": txt.splitlines()[-120:]})
         if path.startswith("/api/jobs/"):

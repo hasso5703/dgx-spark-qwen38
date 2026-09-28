@@ -110,13 +110,13 @@ The page itself refuses before anything leaves the box: no prompt, a duration ou
 passes two hours. The cockpit refuses the rest: more than one video per call, an
 unknown task, keyframes on the `ref2va` weights, a malformed keyframe, anything the
 model does not declare (a LoRA path, an output path, a kwargs blob), a ratio other than
-16:9 or 9:16, and a canvas past 1280x720 — the image lane's `IMAGE_MAX_PIXELS` rule,
+16:9 or 9:16, and a canvas past 1280x720 -- the image lane's `IMAGE_MAX_PIXELS` rule,
 because the largest canvas measured here peaks at 81.9 GB of 121.6 and past it the cost
 is a guess and the OOM is a certain one.
 
 The lock is held for up to two hours: one hour holding the call open, then the hand-off
 watcher taking it back from the lane once the generation ends. So a call estimated past
-two hours is refused at admission — cost is linear in step-seconds at the sizes
+two hours is refused at admission -- cost is linear in step-seconds at the sizes
 measured here, 3.05 s each at 480P and 7.65 at 720P (the decodes folded in), plus the
 ~10 % a keyframe conditioning measured; the tab carries the same numbers and refuses the
 same calls, a parity test holds the two files equal. A call that outlives the hour of

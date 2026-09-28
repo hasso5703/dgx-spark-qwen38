@@ -31,7 +31,8 @@ class TheLogs(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("cockpit_logs_masked", DASH / "cockpit.py")
         cls.cp = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.cp)
-        banner = f"[2026-09-24] server_args=ServerArgs(model_path='x', 'api_key': '{KEY}', port=30000)\nready\n"
+        banner = (f"[2026-09-24] server_args=ServerArgs(model_path='x', 'api_key': '{KEY}', port=30000)\n"
+                  "\x1b[32mINFO\x1b[0m: ready \x1b[1;1mone\x1b[m\n")
         cls.cp.run = lambda argv, timeout=5.0, merge_err=False: banner
         cls.srv = cls.cp.Server(("127.0.0.1", 0), cls.cp.Handler)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
@@ -59,6 +60,15 @@ class TheLogs(unittest.TestCase):
             self.assertEqual(st, 200, name)
             self.assertNotIn(KEY, body, name)
             self.assertIn("<masked>", json.loads(body)["lines"][0], name)
+
+    def test_the_escape_codes_never_reach_the_page(self):
+        # The video lane's container logs in colour and the journal keeps the escape
+        # bytes; a <pre> would print them as noise (QA of the live page, 2026-09-28).
+        for name in list(self.cp.CONTAINERS) + list(self.cp.JOURNAL_UNITS):
+            st, body = self.get(f"/api/logs/{name}")
+            self.assertEqual(st, 200, name)
+            self.assertNotIn("\x1b", body, name)
+            self.assertIn("INFO: ready one", body, name)
 
 
 class TheBundleHasEveryLanesJournal(unittest.TestCase):

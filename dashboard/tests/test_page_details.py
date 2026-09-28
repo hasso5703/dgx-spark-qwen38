@@ -435,5 +435,18 @@ class LiveRegionsSayWhatChanged(unittest.TestCase):
         self.assertEqual(len(set(r["said"])), 2, r["said"])
 
 
+class AVideoLaneIsNotNamedAfterItsOwnModel(unittest.TestCase):
+    """QA of the live page (2026-09-28): the Engines row read "qwen38-video · MiniMax-H3 H3".
+    The video unit is named after the model it serves, and the target short said it again."""
+
+    def test_the_label_says_the_model_once(self):
+        r = run(self, r"""
+        rLifecycle(life({'qwen38-video.service': eng('ready', {target: 'video'})}));
+        rLifecycle(life({'qwen38-image.service': eng('ready', {target: 'image'})}));
+        report([laneLabel('qwen38-video.service'), laneLabel('qwen38-image.service')]);
+        """)
+        self.assertEqual(r, ["MiniMax-H3", "Qwen-Image 2.1"])
+
+
 if __name__ == "__main__":
     unittest.main()

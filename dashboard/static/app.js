@@ -110,7 +110,9 @@ function laneLabel(unit){
   // engine is asked every 30 s): a flash lane that had just replaced the 27B read "flash
   // 176B stock" until then (found in review, 2026-09-24).
   const target = (serving && serving[0] === unit && unit !== IMAGE_UNIT && ownTarget(unit)) || cfg.target;
-  const t = target && TARGET_SHORT[target] ? ' ' + TARGET_SHORT[target] : '';
+  // a lane named after its checkpoint (MiniMax-H3) does not repeat it: "MiniMax-H3 H3"
+  const t = target && TARGET_SHORT[target] && !base.endsWith(TARGET_SHORT[target])
+    ? ' ' + TARGET_SHORT[target] : '';
   return base + t;
 }
 const laneCls = name => name.includes('flash') ? 'flash' : name === IMAGE_UNIT ? 'laneimg' : 'lane27';
