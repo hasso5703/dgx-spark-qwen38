@@ -25,6 +25,79 @@ def rules():
     return css_rules(PAGE)
 
 
+class TheVideoTabGuardsTheWire(unittest.TestCase):
+    """The tab refuses what the server refuses, and now also what the server would
+    silently drop: a seed of 'abc' used to ride out as seed:null, the filter stripped
+    it, and the user got a random video and a preview whose curl lied about it
+    (found in review, 2026-09-28). The tenth of slack under the lock is the other
+    half of the same refusal (TheEstimateParity holds the numbers)."""
+
+    def test_a_seed_that_is_not_a_whole_number_never_reaches_the_wire(self):
+        r = run(self, r"""
+        $('vidprompt').value = 'a cat';
+        $('vidseed').value = 'abc';
+        const bad = vidProblem();
+        $('vidseed').value = 'e5';
+        const sci = vidProblem();
+        $('vidseed').value = '123';
+        const good = vidProblem();
+        $('vidseed').value = '';
+        const empty = vidProblem();
+        report([bad, sci, good, empty]);
+        """)
+        self.assertEqual(r[0], 'Seed is a whole number, or empty for a random one.')
+        self.assertEqual(r[1], 'Seed is a whole number, or empty for a random one.')
+        self.assertEqual(r[2], '')
+        self.assertEqual(r[3], '')
+
+    def test_the_refusal_keeps_a_tenth_of_slack_under_the_lock(self):
+        r = run(self, r"""
+        $('vidprompt').value = 'a cat';
+        $('vidsize').value = '1280x720';
+        $('vidseconds').value = '15';
+        $('vidsteps').value = '62';
+        const too = vidProblem();
+        $('vidsteps').value = '57';
+        const fits = vidProblem();
+        $('vidsize').value = '864x480';
+        $('vidsteps').value = '100';
+        const small = vidProblem();
+        report({too: too.slice(0, 24), tooMsg: too.includes('no slack'), fits, small});
+        """)
+        self.assertTrue(r["tooMsg"], r["too"])
+        self.assertEqual(r["fits"], "")   # 57 x 15 x 7.65 x 1.1 = 7195: inside by 5 seconds
+        self.assertEqual(r["small"], "")  # 480P keeps its full 100 steps
+
+
+class TheParkedVideoSurvivesAReload(unittest.TestCase):
+    """The 504's address only lived in one page run: an F5 during the second hour
+    lost the link to a video the lane was still making (found in review, 2026-09-28).
+    The server holds the same id in /api/video's progress, so the tab rebuilds."""
+
+    def test_the_content_link_is_rebuilt_from_the_server_progress(self):
+        r = run(self, r"""
+        __fetch = async url => url === '/api/video'
+            ? __response(200, {installed: true, port: 30022, model: 'MiniMaxAI/MiniMax-H3',
+                               variant: 'fl2va',
+                               progress: {id: 'vid-parked-9', status: 'queued', seconds: 120}})
+            : __response(404, {});
+        await vidLane();
+        report({link: txt('vidout').includes('/api/video/content?id=vid-parked-9')});
+        """)
+        self.assertTrue(r["link"])
+
+    def test_a_finished_call_does_not_rebuild_a_stranger(self):
+        r = run(self, r"""
+        __fetch = async url => url === '/api/video'
+            ? __response(200, {installed: true, port: 30022, progress: {}})
+            : __response(404, {});
+        await vidLane();
+        report({link: txt('vidout').includes('content?id='), shown: vidParkedShown});
+        """)
+        self.assertFalse(r["link"])
+        self.assertIsNone(r["shown"])
+
+
 class AFinishedJobsLogIsReadToItsEnd(unittest.TestCase):
     """U18: the strip's log held the lines of the job's last running snapshot; the lines it
     printed after that were never fetched, so an open log stopped short of its end."""

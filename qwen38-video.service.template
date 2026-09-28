@@ -52,11 +52,14 @@ RestartSec=15
 # so the setting never bounded the minutes it takes to load the checkpoint.
 # install-video.sh and the cockpit wait on /health for that.
 #
-# Stop waits for the generation in flight to end, because this runtime has no abort
-# and this lane carries no local shutdown patch: the cookbook's recipe runs as
-# upstream wrote it. A 15 s request at the cookbook's rate is about 45 min, so the
-# bound below covers the longest official duration; past it systemd kills the lane
-# mid-generation. Cancel in the cockpit is a restart through this same wait.
+# A ceiling, not the expected stop. Measured on this box a stop finishes in under a
+# second (seven of them, ten days of journal): this runtime's shutdown CANCELS the
+# generation task, and its workers die on SIGTERM with no handler of their own. The
+# first version of this comment claimed the opposite, that stop drained the
+# generation, from the upstream code's shape and not from its behaviour (found in
+# the branch's reviews, 2026-09-28). The hour stands for what measurement cannot
+# rule out: a scheduler wedged past its own signal. Cancel in the cockpit is a
+# restart either way, and the lane answers again when the checkpoint reloads.
 TimeoutStopSec=3600
 
 [Install]

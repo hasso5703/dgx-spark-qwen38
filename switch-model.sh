@@ -60,6 +60,26 @@ IMAGE_UNIT_NAME="qwen38-image.service"
 VIDEO_UNIT="/etc/systemd/system/qwen38-video.service"
 VIDEO_UNIT_NAME="qwen38-video.service"
 
+# Free GB under a path's filesystem, whole numbers, "" when df cannot answer. Every
+# branch's room check reads through this, so it lives before the branches run.
+dl_free_gb(){ local p="${1:-$HF_CACHE}"; while [ ! -e "$p" ]; do p="$(dirname "$p")"; done
+              { df -BG --output=avail "$p" 2>/dev/null || true; } | tail -1 | tr -dc '0-9'; }
+
+# qwen38-llamacpp.service is the fifth serving unit: no installer here enables it,
+# but every lane template lists it in Conflicts=, so a box where an operator enabled
+# it by hand would boot it beside the lane just switched to, one of the two boot
+# jobs quietly removed from the transaction (found in the branch's reviews,
+# 2026-09-28). Disabling it keeps "exactly one serving unit enabled" true; a box
+# with an older sudoers file refuses that one line, and the switch must not die for
+# it, because the Conflicts= line already loses it the boot either way.
+disable_rollback_lane(){
+  if [ -f /etc/systemd/system/qwen38-llamacpp.service ] && systemctl is-enabled --quiet qwen38-llamacpp.service 2>/dev/null; then
+    echo "disabling qwen38-llamacpp.service at boot (unit file kept)"
+    sudo systemctl disable qwen38-llamacpp.service \
+      || echo "         (not disabled: this box's sudoers file predates the line; the boot conflict resolves against it anyway)"
+  fi
+}
+
 # ── The image lane: a third lane, switched to the same way as the other two ─────
 # Same contract as a cross-lane switch: verify the checkpoint, make it the one unit
 # enabled at boot, never start or stop anything, print the exact commands. What it
@@ -109,10 +129,11 @@ PYIMG
       sudo systemctl disable "$TEXT_UNIT_NAME"
     fi
   done
+  disable_rollback_lane
   sudo systemctl enable "$IMAGE_UNIT_NAME" >/dev/null 2>&1 || sudo systemctl enable "$IMAGE_UNIT_NAME"
   sudo systemctl daemon-reload
   RUNNING=""
-  for u in qwen38-sglang.service qwen38-flash.service qwen38-video.service; do
+  for u in qwen38-sglang.service qwen38-flash.service qwen38-video.service qwen38-llamacpp.service; do
     systemctl is-active --quiet "$u" 2>/dev/null && RUNNING="$u"
   done
   printf '\n\033[1;32mSwitch queued: %s (%s)\033[0m\n' "$IMG_MODEL" "$IMAGE_UNIT_NAME"
@@ -173,6 +194,19 @@ if [ "$CHOICE" = "video" ]; then
     else VID_REV="main"; fi
   fi
   [ -n "$VID_REV" ] || die "no refs/main under $VID_MODEL_DIR and install-video.sh no longer defines its pin: re-run ./install-video.sh, it resumes"
+  # Room first, the law the text branch learned on 2026-09-24 and this branch
+  # skipped: the cockpit's Switch button runs this under a serving engine, and a
+  # 145 GB weights fetch onto a fuller disk is a failure of everything on it
+  # (found in the branch's reviews, 2026-09-28). What the cache already holds
+  # comes off the need, so a complete cache (this box's normal state) needs only
+  # the floor and downloads nothing; the number is install-video.sh's own.
+  VID_WANT_GB="$(grep -m1 -oE '^WEIGHTS_GB=[0-9]+' "$REPO_DIR/install-video.sh" | cut -d= -f2 || true)"
+  VID_WANT_GB="${VID_WANT_GB:-145}"
+  VID_HAVE_B="$({ du -s --apparent-size -B1 "$VID_MODEL_DIR/blobs" 2>/dev/null || true; } | cut -f1)"
+  VID_WANT_GB=$((VID_WANT_GB - ${VID_HAVE_B:-0} / 1073741824)); [ "$VID_WANT_GB" -ge 10 ] || VID_WANT_GB=10
+  VID_FREE_GB="$(dl_free_gb "${VID_HF:-$HF_CACHE}")"
+  [ "${VID_FREE_GB:-0}" -ge "$VID_WANT_GB" ] \
+    || die "not enough room for $VID_MODEL under HF_HOME=${VID_HF:-$HF_CACHE}: ${VID_FREE_GB:-?} GB free, about $VID_WANT_GB GB needed (nothing was changed). Free some space first, or point HF_HOME at a bigger disk."
   HF_HOME="${VID_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 VID_MODEL="$VID_MODEL" VID_ALLOW="$VID_ALLOW" VID_REV="$VID_REV" \
     "$VID_PY" - <<'PYVID' || die "the video checkpoint could not be verified or fetched (re-run to resume; set HF_TOKEN if it stalls; if the pinned revision was removed upstream, ./install-video.sh VIDEO_MODEL_REV=main re-pins it)"
 import os
@@ -219,10 +253,11 @@ PYVID
       sudo systemctl disable "$OTHER_UNIT_NAME"
     fi
   done
+  disable_rollback_lane
   sudo systemctl enable "$VIDEO_UNIT_NAME" >/dev/null 2>&1 || sudo systemctl enable "$VIDEO_UNIT_NAME"
   sudo systemctl daemon-reload
   RUNNING=""
-  for u in qwen38-sglang.service qwen38-flash.service qwen38-image.service; do
+  for u in qwen38-sglang.service qwen38-flash.service qwen38-image.service qwen38-llamacpp.service; do
     systemctl is-active --quiet "$u" 2>/dev/null && RUNNING="$u"
   done
   printf '\n\033[1;32mSwitch queued: %s (%s)\033[0m\n' "$VID_MODEL" "$VIDEO_UNIT_NAME"
@@ -381,8 +416,6 @@ printf '\n\033[1;36m── Verifying/downloading %s @ %s (resumable)\033[0m\n' "
 # for the target comes off the lane's need (install.sh's numbers: 45 GB for a 27B
 # checkpoint and its caches, 180 for flash).
 DL_REPO_CACHE="$HF_CACHE/hub/models--${TARGET_REPO//\//--}"
-dl_free_gb(){ local p="$HF_CACHE"; while [ ! -e "$p" ]; do p="$(dirname "$p")"; done
-              { df -BG --output=avail "$p" 2>/dev/null || true; } | tail -1 | tr -dc '0-9'; }
 DL_NEED_GB=45; [ "$TARGET_LANE" = "flash" ] && DL_NEED_GB=180
 DL_HAVE_B="$({ du -s --apparent-size -B1 "$DL_REPO_CACHE/blobs" 2>/dev/null || true; } | cut -f1)"
 DL_NEED_GB=$((DL_NEED_GB - ${DL_HAVE_B:-0} / 1073741824)); [ "$DL_NEED_GB" -ge 10 ] || DL_NEED_GB=10
@@ -577,6 +610,7 @@ if [ -f "$VIDEO_UNIT" ] && systemctl is-enabled --quiet "$VIDEO_UNIT_NAME" 2>/de
   echo "disabling $VIDEO_UNIT_NAME at boot (unit file kept for switching back)"
   sudo systemctl disable "$VIDEO_UNIT_NAME"
 fi
+disable_rollback_lane
 sudo systemctl enable "$TARGET_UNIT_NAME" >/dev/null 2>&1 || sudo systemctl enable "$TARGET_UNIT_NAME"
 sudo systemctl daemon-reload
 # 4b) the keepalive proxy's one-prompt ceiling follows the lane (v1.5.6 contract, see
@@ -690,6 +724,7 @@ RUNNING=""
 systemctl is-active --quiet "$OTHER_UNIT_NAME" 2>/dev/null && RUNNING="$OTHER_UNIT_NAME"
 systemctl is-active --quiet "$IMAGE_UNIT_NAME" 2>/dev/null && RUNNING="$IMAGE_UNIT_NAME"
 systemctl is-active --quiet "$VIDEO_UNIT_NAME" 2>/dev/null && RUNNING="$VIDEO_UNIT_NAME"
+systemctl is-active --quiet qwen38-llamacpp.service 2>/dev/null && RUNNING="qwen38-llamacpp.service"
 printf '\n\033[1;32mSwitch queued: %s (%s)\033[0m\n' "$TARGET_REPO" "$TARGET_UNIT_NAME"
 if [ -n "$RUNNING" ]; then
   echo "Effective after:  sudo systemctl stop $RUNNING && sudo systemctl start $TARGET_UNIT_NAME   (or next reboot)"

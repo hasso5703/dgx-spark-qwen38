@@ -70,7 +70,7 @@ the cost line answers 720P with the 720P measurement. `SECURITY.md` line 160 is 
 to two-space continuation. Pass two (re-review of pass one's own fixes): the
 admission budget double-counted its decode and priced any canvas past 720P at the
 720P figure - it now answers the two measured rows exactly (4 s 480P says 10 min,
-measured 10:52) and refuses canvases past 1280x720 and ratios other than 16:9/9:16,
+measured 9:52 - the 10:52 was a typo for the journal's 592 s) and refuses canvases past 1280x720 and ratios other than 16:9/9:16,
 the image lane's pixel-ceiling rule; the tab carried a *different* formula than the
 server (portrait sizes priced 2.6x apart), now the same numbers with a parity test
 that answers accept/refuse through both; a call refused 409 for a busy lane left its
@@ -84,6 +84,30 @@ gate structurally blind to it); and three claims in the docs and the bench table
 refusal the tab does not make, a measured row called cookbook, a staging claim naming
 paths the cockpit does not use) are now true. Fifteen tests added or rewritten;
 the dashboard suite is 682, all green.
+
+Pass three (concurrency and cost review of the branch itself, 2026-09-28, each finding
+verified against the runtime before it was believed): a `systemctl` slower than its
+five seconds read as the lane dying - the silence is now "do not know", not a cut, a
+false "the lane was stopped" and a lock given back beside a lane that was only mute
+(both lanes); the admission guard had no slack at all, and the largest accepted
+estimate landed the lock's deadline on the lane's expected finish, so refusal now
+carries a tenth (server and tab, a parity test holds it); the video route rode the
+image lane's 40 MiB through a shared `max()` where a prompt and two keyframes want
+its own 10 MiB, now refused over-cap by a test at the socket; a seed of `abc` reached
+the wire as `seed:null` and the filter dropped it in silence - the tab now says a
+seed is a whole number or empty; the keyframes were staged outside the error paths (a
+full disk answered nothing and left the half-written PNG), the 504 hand-off unlinked
+files the queued job had not read yet (the lane localizes `file://` URIs when the job
+starts, not when the POST arrives), a cockpit killed mid-call left them forever, and
+the parked video's link died on an F5 - each now has its path, and the link rebuilds
+from `/api/video`; the switch's video branch still had no room check where the text
+branch had learned one (145 GB behind a button on a box with 90 free, the offline
+unit included), and the rollback guard now really disables the competing units at a
+switch, llama.cpp's included; and where the template comment and the docs promised a
+stop that waits out the generation, the journal shows all seven stops cancelling the
+task and finishing under a second, the numbers are the journal's: 592 s at the
+50-step default, 11.1 s per step. Sixteen tests added or rewritten; the dashboard
+suite grew by ten tests and the switch's room file by three, all green, `ci-local` 45 ok.
 
 ## v1.18.7 (2026-09-24): a full review of v1.18.6, and the defects it found fixed with a test each
 

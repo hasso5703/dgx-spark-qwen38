@@ -239,10 +239,16 @@ class TheEstimateParity(Base):
         cond = float(re.search(r"vidMode === 'fl2v' \? ([\d.]+) : 1", js).group(1))
         budget = int(re.search(r"VID_BUDGET_S = (\d+) \* (\d+)", js).group(1)) * \
             int(re.search(r"VID_BUDGET_S = (\d+) \* (\d+)", js).group(2))
-        return bound, per480, per720, cond, budget
+        # the tenth kept in hand: an accepted estimate must leave slack under the
+        # lock's deadline, and both files have to keep the same one (review 2026-09-28)
+        margin = float(re.search(r"if \(est \* ([\d.]+) > VID_BUDGET_S\)", js).group(1))
+        srv = (Path(__file__).resolve().parents[1] / "cockpit.py").read_text()
+        srv_margin = float(re.search(r"if est \* ([\d.]+) > 2 \* 3600\.0", srv).group(1))
+        self.assertEqual(margin, srv_margin, "tab and server keep different slack")
+        return bound, per480, per720, cond, budget, margin
 
     def test_the_tab_and_the_server_refuse_the_same_calls(self):
-        bound, per480, per720, cond, budget = self.js_numbers()
+        bound, per480, per720, cond, budget, margin = self.js_numbers()
         for size in self.JS_SIZES:
             sw, sh = (int(p) for p in size.split("x"))
             for steps, secs in self.JS_COMBO:
@@ -255,16 +261,17 @@ class TheEstimateParity(Base):
                     if frames:
                         payload["first_frame"] = frames
                     code, out = self.call(dict(payload))
-                    self.assertEqual(code, 200 if est <= budget else 400,
+                    self.assertEqual(code, 200 if est * margin <= budget else 400,
                                      f"{size} {steps}x{secs} frames={bool(frames)} est={round(est)}: {out}")
 
     def test_the_server_constants_are_the_measured_ones(self):
-        """3.05 s per step-second is 592 s / (49 steps x 4 s), and 7.65 is about 25 min
-        over the same step-seconds (docs/video-lane.md): the JS mirror reads these
-        numbers, so pinning them here pins both files against a silent retune."""
+        """3.05 s per step-second is 592 s / (50 steps x 4 s) = 2.96 rounded up with
+        the encode and decode folded in, and 7.65 rides the one measured 720P run
+        (25 min, 7.43) with the same margin (docs/video-lane.md): the JS mirror reads
+        these numbers, so pinning them here pins both files against a silent retune."""
         text = (Path(__file__).resolve().parents[1] / "cockpit.py").read_text()
         self.assertIn("3.05 if sw * sh <= 864 * 480 else 7.65", text)
-        self.assertIn("est > 2 * 3600.0", text)
+        self.assertIn("est * 1.1 > 2 * 3600.0", text)
 
     def test_fl2va_named_with_no_frame_is_refused_not_served_as_text(self):
         """fl2va without a keyframe would read as text-only under a conditioning task:
@@ -421,6 +428,93 @@ class TheAsyncCall(Base):
                 break
             time.sleep(0.05)
         self.assertFalse(self.ck.VIDEO_LOCK.locked(), "the watcher never gave the lock back")
+
+
+class ASilenceIsNotAnAnswer(Base):
+    """run() swallows a systemctl that takes longer than its five seconds as "",
+    and two tuples read from silence look like the lane died. The branch's
+    concurrency review (2026-09-28) found what that made of a request: a cut, a
+    confident "the lane was stopped" over a lane that was only mute, and the lock
+    given back beside a job still generating. Silence answers "do not know"."""
+
+    def test_a_mute_systemd_mid_poll_keeps_the_wait_and_the_lock(self):
+        silent = self.ck.Ran("")
+        silent.ok = False
+        seq = iter(["ActiveState=active\nInvocationID=aaa\n", silent,
+                    "ActiveState=active\nInvocationID=aaa\n"])
+        self.ck.run = lambda argv, timeout=5.0, merge_err=False: next(
+            seq, "ActiveState=active\nInvocationID=aaa\n")
+        self.addCleanup(setattr, self.ck, "run", lambda argv, timeout=5.0, merge_err=False: "")
+        self.spy.statuses = ["queued", "completed"]
+        code, out = self.call({"prompt": "a cat"})
+        self.assertEqual(code, 200, out)
+        self.assertFalse(self.ck.VIDEO_LOCK.locked())
+
+    def test_a_watcher_blind_from_the_start_waits_on_deaths_not_on_tuples(self):
+        """With no baseline read at all, only systemd's own verdicts (inactive,
+        failed, a unit that answers as gone) end the wait; the lane's list still
+        carries the real status meanwhile."""
+        silent = self.ck.Ran("")
+        silent.ok = False
+        self.ck.run = lambda argv, timeout=5.0, merge_err=False: silent
+        self.addCleanup(setattr, self.ck, "run", lambda argv, timeout=5.0, merge_err=False: "")
+        self.spy.statuses = ["queued", "completed"]
+        code, out = self.call({"prompt": "a cat"})
+        self.assertEqual(code, 200, out)
+
+
+class TheKeyframesOfAHandOff(Base):
+    """The lane reads the file:// keyframes when the job starts, not when the POST
+    arrives (the runtime localizes URIs at the encoding stage): a 504 whose frames
+    were unlinked with the call hands a still-queued job files that are gone."""
+
+    def test_the_hand_off_parks_the_frames_and_the_watchers_removes_them(self):
+        # the same VIDEO_TIMEOUT bounds the watcher: 0.3 s of waiting, so the frame
+        # is provably parked when the call answers 504, and provably gone when the
+        # watcher's own deadline passes (the spy never answers a terminal status)
+        self.spy.statuses = ["queued"] * 50
+        self.ck.VIDEO_TIMEOUT = 0.3
+        self.addCleanup(setattr, self.ck, "VIDEO_TIMEOUT", 30)
+        code, out = self.call({"prompt": "a cat", "first_frame": PNG})
+        self.assertEqual(code, 504, out)
+        staged = [p for p in self.tmp.iterdir() if "-frame-" in p.name]
+        self.assertEqual(1, len(staged), "the hand-off deleted a keyframe a queued job still names")
+        for _ in range(80):
+            if not staged[0].exists():
+                break
+            time.sleep(0.05)
+        self.assertFalse(staged[0].exists(), "the watcher never removed the staged keyframe")
+
+
+class AFullDiskStagesNothing(Base):
+    """The keyframes are staged on this box before the lane is asked anything. An
+    ENOSPC there used to die outside the call's error paths: no answer on the
+    socket, and the half-written PNG left on the disk to be written again by the
+    next retry (found in review, 2026-09-28)."""
+
+    def test_enospc_answers_says_so_and_leaves_the_disk_as_it_was(self):
+        def boom(*args, **kwargs):
+            raise OSError(28, "No space left on device")
+        saved = tempfile.mkstemp
+        tempfile.mkstemp = boom
+        self.addCleanup(setattr, tempfile, "mkstemp", saved)
+        code, out = self.call({"prompt": "a cat", "first_frame": PNG})
+        self.assertEqual(code, 503, out)
+        self.assertIn("stage", out["error"])
+        self.assertEqual([], self.spy.calls, "a call that could not stage reached the lane")
+        self.assertEqual([], [p for p in self.tmp.iterdir() if "-frame-" in p.name])
+
+
+class TheBootSweep(Base):
+    """Frames staged by a cockpit that died keep their file names until a new
+    cockpit, owning no calls, decides they belong to nothing."""
+
+    def test_stale_frames_go_at_boot_and_the_rest_of_the_dir_stays(self):
+        (self.tmp / "qwen38-first-frame-dead.png").write_bytes(b"x")
+        (self.tmp / "qwen38-last-frame-dead.png").write_bytes(b"x")
+        self.ck._sweep_staged_frames()
+        self.assertEqual([], [p for p in self.tmp.iterdir() if "-frame-" in p.name])
+        self.assertTrue((self.tmp / "api-key").exists())
 
 
 class WhatTheTabIsTold(Base):

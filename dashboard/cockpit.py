@@ -2172,10 +2172,38 @@ IMAGE_ALLOWED = {"prompt", "width", "height", "num_inference_steps", "n", "outpu
 IMAGE_EDIT_UNREAD = ("flow_shift", "max_sequence_length")
 
 
+LIFE_UNKNOWN = (None, None)
+
+
+def _run_over(life: tuple, life0: tuple) -> bool:
+    """Did the run of the lane this request went to end? Silence is NOT an answer
+    (found in the branch's concurrency review, 2026-09-28): run() swallows a systemd
+    that takes more than five seconds, and comparing tuples directly read that mute
+    ("", "") as the lane being gone, answered "the lane was stopped" while it was
+    generating, and gave the lock back beside a live job. A "deactivating" carrying
+    the run's own InvocationID does answer here, and answers "stop": this runtime
+    cancels its jobs as it stops (measured: seven stops in ten days, each done in
+    under a second, the runtime's shutdown cancels the generation tasks)."""
+    if life == life0 or life == LIFE_UNKNOWN:
+        return False
+    if life0 == LIFE_UNKNOWN:
+        return life[0] in ("inactive", "failed", "")
+    # A request in flight sees its run active; deactivating is a stop answering
+    # (this runtime cancels the job as it stops, measured), activating can only be
+    # a new run rising after the old one died or was stopped (a clean stop shows
+    # inactive first, and the restart's crash verdict belongs to _video_cut's
+    # SubState check), inactive/failed is a unit that ended, and any different
+    # InvocationID is a different run whatever its state's name.
+    return (life[0] in ("inactive", "failed", "deactivating", "activating")
+            or life[1] != life0[1])
+
+
 def _image_life() -> tuple:
     """(ActiveState, InvocationID) of the image unit, asked of systemd directly: the
     lifecycle ticks every 2 s, and the question is whether THIS request outlived its lane."""
     raw = run(["systemctl", "show", IMAGE_UNIT, "-p", "ActiveState,InvocationID"], timeout=5)
+    if not answered(raw):
+        return LIFE_UNKNOWN
     d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
     return d.get("ActiveState", ""), d.get("InvocationID", "")
 
@@ -2251,7 +2279,7 @@ def _release_image_lock_when_done(life0: tuple, since: float) -> None:
     deadline = time.time() + IMAGE_TIMEOUT
     try:
         while time.time() < deadline:
-            if _image_life() != life0 or _image_request_ended_since(life0[1], since):
+            if _run_over(_image_life(), life0) or _image_request_ended_since(life0[1], since):
                 return
             time.sleep(IMAGE_END_POLL_S)
     finally:
@@ -2339,7 +2367,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
         # A Stop or a restart cancels the request in flight after 5 s, and uvicorn answers
         # that with a bare 500. Whoever sent the stop (this page, another tab, a terminal),
         # the answer is the same fact, so it is told here and not guessed by one client.
-        if e.code >= 500 and _image_life() != life0:
+        if e.code >= 500 and _run_over(_image_life(), life0):
             return _image_cut(t0)
         try:
             detail = json.loads(raw.decode())
@@ -2347,7 +2375,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
             detail = raw[:400].decode("utf-8", "replace")
         return e.code, {"refused": detail, "seconds": round(time.time() - t0, 2)}
     except Exception as e:                              # noqa: BLE001 (isolated route)
-        if _image_life() != life0:
+        if _run_over(_image_life(), life0):
             return _image_cut(t0)
         if isinstance(e, TimeoutError):
             # A read timeout: the request reached this same run and this process stopped
@@ -2534,6 +2562,8 @@ def _video_life() -> tuple:
     """(ActiveState, InvocationID) of the video unit, asked of systemd directly: the
     lifecycle ticks every 2 s, and the question is whether THIS request outlived its lane."""
     raw = run(["systemctl", "show", VIDEO_UNIT, "-p", "ActiveState,InvocationID"], timeout=5)
+    if not answered(raw):
+        return LIFE_UNKNOWN
     d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
     return d.get("ActiveState", ""), d.get("InvocationID", "")
 
@@ -2612,21 +2642,31 @@ def _video_list_status(vid: str) -> str:
     return _video_list_entry(vid)[0]
 
 
-def _release_video_lock_when_done(life0: tuple, vid: str, timeout: float) -> None:
+def _release_video_lock_when_done(life0: tuple, vid: str, timeout: float,
+                                 staged: list = ()) -> None:
     """The lock of a call that timed out here, given back when the lane is done with
     it: the video reached a terminal status, or the lane is no longer the run the call
     went to (a Cancel, a Stop, a crash), or the timeout went by with neither. "missing"
     counts as terminal here too, exactly as the synchronous poll reads it: a gone
-    record is a finished one, and waiting on it would spend the clock for nothing."""
+    record is a finished one, and waiting on it would spend the clock for nothing.
+    The staged keyframes travel with the lock because the lane reads their pixels at
+    the pipeline's start, not at the POST: a queued job that outlived this call still
+    has their file:// URIs in hand, and unlinking on hand-off would fail it later
+    (found in review, 2026-09-28)."""
     deadline = time.time() + timeout
     try:
         while time.time() < deadline:
-            if _video_life() != life0:
+            if _run_over(_video_life(), life0):
                 return
             if _video_list_status(vid) in ("completed", "failed", "error", "cancelled", "missing"):
                 return
             time.sleep(VIDEO_POLL_S)
     finally:
+        for path in staged:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         VIDEO_LAST.clear()
         VIDEO_LOCK.release()
 
@@ -2686,9 +2726,11 @@ def video_call(payload: dict) -> tuple[int, dict]:
                         "duration_seconds": secs}
     # Budget at admission, the way the image lane budgets pixels (IMAGE_MAX_PIXELS,
     # measured on this box). Cost is linear in step-seconds at the two sizes measured
-    # here: 4 s 480P at 49 steps in 592 s (3.05 s per step-second, the 27 s decode
-    # folded in) and 4 s 720P at about 50 steps in about 25 min (7.65); keyframe
-    # conditioning measured about a minute on a 4 s 480P video, ~10 %, applied below.
+    # here: 4 s 480P at the 50-step default in 592 s (2.96 s per step-second, rounded
+    # up to 3.05 with the 9 s text encode and the 27 s decode folded in) and 4 s 720P
+    # at about 50 steps in about 25 min (7.65, against a measured 7.43, same margin);
+    # keyframe conditioning measured about a minute on a 4 s 480P video, ~10 %,
+    # applied below.
     # A call estimated past the lock's whole guard (one hour of waiting here plus the
     # hour the hand-off watcher holds on) would free the lock while the lane still
     # works, and a second call beside the first is the pair that hangs this box
@@ -2700,11 +2742,15 @@ def video_call(payload: dict) -> tuple[int, dict]:
     conditioning = bool(payload.get("first_frame") or payload.get("last_frame"))
     est = per_step * (steps or 50) * secs * (1.1 if conditioning else 1.0)
     # 7200 s, not 2 * VIDEO_TIMEOUT: this budget is wall-clock work on the GPU, and
-    # the tests' patched VIDEO_TIMEOUT is a clock shortcut, not a shorter box.
-    if est > 2 * 3600.0:
+    # the tests' patched VIDEO_TIMEOUT is a clock shortcut, not a shorter box. The
+    # tenth kept in hand: the estimate is a prediction and the lock's deadline is
+    # wall-clock, and a call accepted at the ceiling would free the lock on a few
+    # percent of drift alone (the per-step numbers ride on one measured run each).
+    # Measured drift needs no third digit, so this slack asks nothing of 480P.
+    if est * 1.1 > 2 * 3600.0:
         return 400, {"error": f"about {round(est / 60)} min at {secs} s, {sw}x{sh} and {steps or 50} steps: "
-                              "past two hours this cockpit stops holding the call, and the next one could "
-                              "start beside this one. Ask for fewer steps, a shorter video, or 480P."}
+                              "no slack under the two hours this cockpit holds the call, and the next one "
+                              "could start beside this one. Ask for fewer steps, a shorter video, or 480P."}
     # Keyframes turn text-to-video into first/last-frame conditioning; without them the
     # call is text only. Reference modes (ref2va weights) need a unit installed with
     # VIDEO_VARIANT=ref2va and are refused here until that lane exists.
@@ -2723,14 +2769,25 @@ def video_call(payload: dict) -> tuple[int, dict]:
         # files this user owns and named file://, then removed with the call. Data URLs
         # are never sent: whether the pipeline accepts one was never measured.
         import tempfile
-        for raw, tag in ((first, "first"), (last, "last")):
-            if raw is None:
-                continue
-            fd, path = tempfile.mkstemp(prefix=f"qwen38-{tag}-frame-", suffix=".png",
-                                        dir=str(CONFIG_DIR))
-            with os.fdopen(fd, "wb") as f:
-                f.write(raw)
-            keyframe_paths.append(path)
+        try:
+            for raw, tag in ((first, "first"), (last, "last")):
+                if raw is None:
+                    continue
+                fd, path = tempfile.mkstemp(prefix=f"qwen38-{tag}-frame-", suffix=".png",
+                                            dir=str(CONFIG_DIR))
+                # Named before it is filled: a write that dies half-way (ENOSPC) must
+                # leave no PNG behind either (found in review, 2026-09-28).
+                keyframe_paths.append(path)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(raw)
+        except OSError as e:
+            for path in keyframe_paths:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            return 503, {"error": f"the cockpit could not stage the keyframe on disk ({e.strerror}); "
+                                  "nothing was sent to the lane"}
         try:
             fields["task"] = "fl2va"
             fields["conditions"] = []
@@ -2789,7 +2846,7 @@ def video_call(payload: dict) -> tuple[int, dict]:
                 created = json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             raw = e.read()
-            if e.code >= 500 and _video_life() != life0:
+            if e.code >= 500 and _run_over(_video_life(), life0):
                 return _video_cut(t0)
             try:
                 detail = json.loads(raw.decode())
@@ -2804,7 +2861,7 @@ def video_call(payload: dict) -> tuple[int, dict]:
                            "seconds": 0.0, "progress": created.get("progress", 0)})
         # To completed, the way the lane reports it: its list, not its journal.
         while time.time() - t0 < VIDEO_TIMEOUT:
-            if _video_life() != life0:
+            if _run_over(_video_life(), life0):
                 return _video_cut(t0)
             st, progress = _video_list_entry(vid)
             VIDEO_LAST["status"] = st
@@ -2827,7 +2884,7 @@ def video_call(payload: dict) -> tuple[int, dict]:
         # a watcher that gives it back when the lane is done, so a second generation
         # never runs beside the first.
         watcher = threading.Thread(target=_release_video_lock_when_done,
-                                   args=(life0, vid, VIDEO_TIMEOUT), daemon=True)
+                                   args=(life0, vid, VIDEO_TIMEOUT, keyframe_paths), daemon=True)
         # The flag goes up before start(): a lane that dies this second could run the
         # watcher's finally before an assignment placed after start() lands, and a
         # thread that never started must leave the flag down so this call's own
@@ -2841,19 +2898,23 @@ def video_call(payload: dict) -> tuple[int, dict]:
         return 504, {"error": VIDEO_STILL_RUNNING, "video_id": vid,
                      "seconds": round(time.time() - t0, 2)}
     except Exception as e:                              # noqa: BLE001 (isolated route)
-        if _video_life() != life0:
+        if _run_over(_video_life(), life0):
             return _video_cut(t0)
         return 502, {"error": f"the video lane did not answer ({type(e).__name__}). "
                               f"Switch to MiniMax-H3 in the action bar and start it "
                               f"(or ./switch-model.sh video)",
                      "seconds": round(time.time() - t0, 2)}
     finally:
-        for path in keyframe_paths:
-            try:
-                os.unlink(path)
-            except (OSError, NameError):
-                pass
+        # On a hand-off the keyframes stay: a queued job still holds their file://
+        # URIs, and the watcher removes them when the lane is done with the video.
+        # A cockpit killed before that moment leaves them behind; the boot sweep
+        # removes what belongs to no call.
         if not handed_over[0]:
+            for path in keyframe_paths:
+                try:
+                    os.unlink(path)
+                except (OSError, NameError):
+                    pass
             VIDEO_LAST.clear()
             VIDEO_LOCK.release()
 
@@ -3391,11 +3452,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.close_connection = True
             return self.send_json({"error": "bad Content-Length"}, 400)
         length = int(declared)
-        # Ten reference images do not fit in 64 KiB and never will, and neither do
-        # two keyframes. The cap is raised for the image and video routes and for
-        # nothing else; a login is a key in a JSON object.
-        raised = path in ("/api/image/edit", "/api/image/generate", "/api/video/generate")
-        cap = max(IMAGE_MAX_POST, VIDEO_MAX_POST) if raised else 4096 if path == "/api/login" else 65536
+        # Ten reference images do not fit in 64 KiB and never will; two keyframes of
+        # a prompt fit in 10 MiB, which is what the video route's cap is for (found
+        # in review, 2026-09-28: it used to ride the image lane's 40 MiB through a
+        # max()). The cap is raised for these routes and for nothing else; a login
+        # is a key in a JSON object.
+        raised = path in ("/api/image/edit", "/api/image/generate")
+        video = path == "/api/video/generate"
+        cap = IMAGE_MAX_POST if raised else VIDEO_MAX_POST if video else 4096 if path == "/api/login" else 65536
         if length > cap:
             self.close_connection = True
             return self.send_json({"error": "body too large"}, 413)
@@ -3537,8 +3601,20 @@ class Server(ar.BoundedThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 
+def _sweep_staged_frames() -> None:
+    """A cockpit killed mid-call leaves that call's staged keyframes behind, and no
+    hand-off watcher outlives the process that made it; a fresh cockpit owns no
+    calls, so nothing these files can still be needed by (review, 2026-09-28)."""
+    for stale in CONFIG_DIR.glob("qwen38-*-frame-*.png"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
 def main():
     load_events()
+    _sweep_staged_frames()
     if not shutil.which("nvidia-smi"):
         print("note: nvidia-smi not found, GPU panel will degrade")
     for period, cols in TIERS:

@@ -68,10 +68,12 @@ pinned commit: **no local source patch**. The image lane carries two (an idle-lo
 and a graceful-shutdown bound), and this lane deliberately does not. The honest costs
 of that choice are stated here instead of patched around:
 
-- **A stop waits for the generation in flight to end**, up to `TimeoutStopSec` (60 min,
-  which covers the cookbook's longest official duration of 15 s). The runtime has no
-  abort. The cockpit's **Cancel** is a restart through that same wait: the video being
-  made is lost, and the lane answers again in about 12 min.
+- **A stop cancels the generation in flight.** There is no abort endpoint for a
+  running job, but the runtime cancels its tasks as it shuts down: all seven logged
+  stops finished in under a second (journal, measured 2026-09-28), so
+  `TimeoutStopSec` (60 min) is the ceiling, not the wait. The cockpit's **Cancel**
+  is a restart through that stop: the video being made is lost, and the lane
+  answers again in about 12 min, which is the boot, not the stop.
 - **An idle lane may hold a CPU core.** The diffusion scheduler's loop never waits;
   the image lane patches that, this one does not. The installer measures the idle cost
   and prints it. It serves either way.
@@ -116,12 +118,16 @@ is a guess and the OOM is a certain one.
 
 The lock is held for up to two hours: one hour holding the call open, then the hand-off
 watcher taking it back from the lane once the generation ends. So a call estimated past
-two hours is refused at admission -- cost is linear in step-seconds at the sizes
-measured here, 3.05 s each at 480P and 7.65 at 720P (the decodes folded in), plus the
-~10 % a keyframe conditioning measured; the tab carries the same numbers and refuses the
-same calls, a parity test holds the two files equal. A call that outlives the hour of
+two hours' nine tenths is refused at admission -- the tenth is slack, added 2026-09-28
+when a review found the guard had none: the largest accepted estimate landed the lock's
+deadline exactly on the lane's expected finish. Cost is linear in step-seconds at the
+sizes measured here, 3.05 s each at 480P and 7.65 at 720P (the decodes folded in), plus
+the ~10 % a keyframe conditioning measured; the tab carries the same numbers and refuses
+the same calls, a parity test holds the two files equal. A call that outlives the hour of
 waiting answers 504 with its video id kept: the tab shows the content URL, which serves
-the MP4 the moment the lane is done. The same two hours is why an interrupted or long
+the MP4 the moment the lane is done. A hand-off parks its staged keyframes until the
+watcher is done: the lane reads those files when the job starts, not when the POST
+arrived (found in review, 2026-09-28). The same two hours is why an interrupted or long
 request never lets a second generation start beside the first.
 
 Licence: MiniMax-H3 ships under its own licence. Read it before commercial use.
@@ -135,7 +141,7 @@ shards, audio VAE 0.56 GB, video VAE 5.2 GB) and 10 min run three warmup request
 was measured.
 
 First text-to-video, measured the same night: 4 s at 480P in 592 s end to end
-(denoise 555 s at 11.3 s/step over 49 steps, decode 27 s), peak memory 9242 MB,
+(denoise 555 s at 11.1 s/step over the 50-step default, decode 27 s), peak memory 9242 MB,
 MP4 (h264 864x480) + muxed audio (aac stereo) inspected and played. That beats the
 cookbook's ~12 min for the same shape. A second 4 s 480P the same night completed in
 about 10 min with the download proven. The text encoder runs ~5.5 min per request

@@ -101,6 +101,12 @@ class TheImageRoutes(unittest.TestCase):
             self.assertEqual(self.declared_only(path, 70_000), 401, path)
             self.assertEqual(self.declared_only(path, self.cp.IMAGE_MAX_POST + 1), 413, path)
 
+    def test_the_video_route_keeps_its_own_smaller_cap(self):
+        # a prompt plus two keyframes at most: the video lane must not ride the
+        # image lane's 40 MiB through a shared max() (review, 2026-09-28)
+        self.assertEqual(self.declared_only("/api/video/generate", 70_000), 401)
+        self.assertEqual(self.declared_only("/api/video/generate", self.cp.VIDEO_MAX_POST + 1), 413)
+
     def test_ten_references_arrive_whole(self):
         cookie, token = self.session()
         refs = ["data:image/png;base64," + "A" * 1_200_000 for _ in range(10)]

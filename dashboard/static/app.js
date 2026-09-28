@@ -70,6 +70,7 @@ const VIDEO_UNIT = 'qwen38-video.service';
 const VID_STATE = {port: 30022, host: '127.0.0.1', available: false, busy: false};
 let vidInflight = null;    // when this page's own request started, or null
 let vidParked = null;      // a 504's video id: the page stopped waiting, the lane did not
+let vidParkedShown = null; // the parked id whose address this page has shown already
 let VID_WATCH = null;
 // The image lane's live facts. Declared up here, not beside the Image tab's code: the
 // lane pill and the action bar read them too, and a const read before its line has run
@@ -2657,6 +2658,16 @@ function imgInit(){
 // video id, and the player streams it back through /api/video/content.
 let vidMode = 't2v';
 let vidFrames = {first: null, last: null};   // {name, dataUrl} or null
+function vidParkedLink(id){
+  vidParkedShown = id;
+  clear($('vidout'));
+  $('vidout').append(el('p', 'note', 'The lane is still making this video (it has no abort). This address serves the MP4 the moment it is done:'));
+  const a = el('a', null, '/api/video/content?id=' + id);
+  a.href = '/api/video/content?id=' + encodeURIComponent(id);
+  $('vidout').append(a);
+  if (![...$('vidmeta').children].some(c => c.textContent.startsWith(id)))
+    $('vidmeta').append(el('span', 'chip', id + ' still generating'));
+}
 async function vidLane(){
   try{
     const r = await fetch('/api/video');
@@ -2691,6 +2702,10 @@ async function vidLane(){
     }
     if (VID_STATE.busy) vidWatch(true, 10000);
     else if (!vidInflight) vidWatch(false);
+    // The id the server is holding survives this tab: a reload (or another tab)
+    // finds the parked video's address again while the lane still makes it.
+    if (VID_STATE.busy && p.id !== vidParkedShown) vidParkedLink(p.id);
+    if (!VID_STATE.busy) vidParkedShown = null;
     vidRenderLane();
   } catch (e){ setChip('vidchip', 'unknown', 'warn'); }
 }
@@ -2748,12 +2763,13 @@ function vidCancel(){
 }
 function vidVal(id){ const e = $(id); return e ? e.value.trim() : ''; }
 // The same admission budget the server runs (cockpit.py video_call): linear in
-// step-seconds at the two measured sizes, 3.05 s each at 480P (4 s in 592 s at 49
-// steps, decode folded in) and 7.65 at 720P (4 s in about 25 min), keyframe
-// conditioning at its measured ~10 %. A call over the lock's two hours is refused
-// here too: this page refuses what it shows, the way the image lane mirrors
-// IMAGE_MAX_PIXELS, and the parity test in dashboard/tests/test_video_routes.py
-// holds the two files' numbers equal.
+// step-seconds at the two measured sizes, 3.05 s each at 480P (4 s in 592 s at the
+// 50-step default, 2.96 rounded up with the encode and decode folded in) and 7.65
+// at 720P (4 s in about 25 min), keyframe conditioning at its measured ~10 %. A
+// call with no tenth of slack under the lock's two hours is refused here too: this
+// page refuses what it shows, the way the image lane mirrors IMAGE_MAX_PIXELS, and
+// the parity test in dashboard/tests/test_video_routes.py holds the two files'
+// numbers equal.
 const VID_BUDGET_S = 2 * 3600;
 function vidEtaSecs(secs, size, steps){
   const [sw, sh] = String(size).split('x').map(Number);
@@ -2770,9 +2786,11 @@ function vidProblem(){
   const rawSteps = ($('vidsteps') || {}).value.trim();
   const steps = parseInt(rawSteps, 10);
   if (rawSteps && !(steps >= 1 && steps <= 100)) return 'Steps is a whole number from 1 to 100.';
+  const rawSeed = vidVal('vidseed');
+  if (rawSeed && !/^\d+$/.test(rawSeed)) return 'Seed is a whole number, or empty for a random one.';
   const est = vidEtaSecs(s, ($('vidsize') || {}).value || '864x480', rawSteps ? steps : 0);
-  if (est > VID_BUDGET_S) return `About ${vidEtaMins(s, ($('vidsize') || {}).value || '864x480', rawSteps ? steps : 0)} min at this size: `
-    + 'past two hours the lane lock lets go while the lane still works, and two generations at once hang this box. '
+  if (est * 1.1 > VID_BUDGET_S) return `About ${vidEtaMins(s, ($('vidsize') || {}).value || '864x480', rawSteps ? steps : 0)} min at this size: `
+    + 'no slack under the two hours the lane lock is held, and two generations at once hang this box. '
     + 'Fewer steps, a shorter video, or 480P.';
   return '';
 }
@@ -2817,7 +2835,7 @@ function vidSync(){
   const steps = parseInt(($('vidsteps') || {}).value, 10) || 50;
   setText('vidcurl', `# run this ON the box: the lane listens on loopback and checks no key\ncurl -s http://127.0.0.1:${VID_STATE.port || 30022}/v1/videos \\\n  -H 'Content-Type: application/json' \\\n  -d ${shq(JSON.stringify(vidWireBody()))}`
     + `\n# then poll GET /v1/videos to completed, and download GET /v1/videos/<id>/content`);
-  setText('vidcost', `About ${vidEtaMins(secs, size, steps)} min for ${secs} s at ${size.split('x')[0] === '864' ? '480P' : '720P'} and ${steps} steps on this box (measured here 2026-09-25: 4 s in 10:52 at 480P, in about 25 min at 720P, at the 50-step default).`);
+  setText('vidcost', `About ${vidEtaMins(secs, size, steps)} min for ${secs} s at ${size.split('x')[0] === '864' ? '480P' : '720P'} and ${steps} steps on this box (measured here 2026-09-25: 4 s in 9:52 at 480P, in about 25 min at 720P, at the 50-step default).`);
 }
 function vidWatch(on, ms){
   if (on && VID_WATCH && VID_WATCH.ms === ms) return;
@@ -2926,12 +2944,7 @@ async function vidRun(){
     if (vidParked){
       const id = vidParked; vidParked = null;
       setText('vidstatus', 'still generating: this page stopped waiting at one hour, the lane did not');
-      clear($('vidout'));
-      $('vidout').append(el('p', 'note', 'The lane is still making this video (it has no abort). This address serves the MP4 the moment it is done:'));
-      const a = el('a', null, '/api/video/content?id=' + id);
-      a.href = '/api/video/content?id=' + encodeURIComponent(id);
-      $('vidout').append(a);
-      $('vidmeta').append(el('span', 'chip', id + ' still generating'));
+      vidParkedLink(id);
       toast('Longer than the hour this page waits: still generating, and the address above serves it when it is done.', 'warn', 9000);
     } else setText('vidstatus', '');
     vidSync(); vidLane();

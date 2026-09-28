@@ -788,9 +788,13 @@ class TheCapOnTheseTwoRoutes(Base):
         self.assertGreater(self.ck.IMAGE_MAX_POST, 10 * 1024 * 1024)
 
     def test_the_raised_cap_applies_to_the_image_routes_and_nothing_else(self):
+        # each raised route carries its OWN cap: the video lane's 10 MiB of
+        # prompt-plus-two-keyframes is not the image lane's 40 MiB of ten
+        # references (found in review, 2026-09-28: a max() had made 40 the video's)
         text = (DASH / "cockpit.py").read_text()
-        self.assertIn('cap = max(IMAGE_MAX_POST, VIDEO_MAX_POST) if raised else ', text)
-        self.assertIn('raised = path in ("/api/image/edit", "/api/image/generate", "/api/video/generate")', text)
+        self.assertIn('cap = IMAGE_MAX_POST if raised else VIDEO_MAX_POST if video', text)
+        self.assertIn('raised = path in ("/api/image/edit", "/api/image/generate")', text)
+        self.assertIn('video = path == "/api/video/generate"', text)
 
     def test_the_raised_cap_authenticates_before_it_buffers(self):
         """Otherwise an unauthenticated client makes this process hold 40 MB in a thread

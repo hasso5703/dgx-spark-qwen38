@@ -317,9 +317,11 @@ class TheLockHoldsWhatItPromises(unittest.TestCase):
                       text[i:text.index("def video_call", i)])
 
     def test_the_longest_run_is_budgeted_at_admission(self):
-        """A call estimated past the lock's whole two-hour guard is refused before
-        it is made, so the escape into overlap is not reachable by a legal request."""
-        self.assertIn("est > 2 * 3600.0", COCKPIT.read_text())
+        """A call estimated past the lock's guard is refused before it is made, so
+        the escape into overlap is not reachable by a legal request. The tenth of
+        slack is the point: an estimate inside 7200 but past 7200/1.1 would have the
+        lock hit its deadline while the lane still works (review, 2026-09-28)."""
+        self.assertIn("est * 1.1 > 2 * 3600.0", COCKPIT.read_text())
 
 
 class TheBootLaneConvergence(unittest.TestCase):
