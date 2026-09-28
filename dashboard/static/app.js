@@ -69,6 +69,7 @@ const VIDEO_UNIT = 'qwen38-video.service';
 // is a ReferenceError that takes the whole page down with it.
 const VID_STATE = {port: 30022, host: '127.0.0.1', available: false, busy: false};
 let vidInflight = null;    // when this page's own request started, or null
+let vidParked = null;      // a 504's video id: the page stopped waiting, the lane did not
 let VID_WATCH = null;
 // The image lane's live facts. Declared up here, not beside the Image tab's code: the
 // lane pill and the action bar read them too, and a const read before its line has run
@@ -2744,12 +2745,66 @@ function vidCancel(){
      + `and the lane answers again in ${readyIn(VIDEO_UNIT)}.`]);
 }
 function vidVal(id){ const e = $(id); return e ? e.value.trim() : ''; }
+// The same admission budget the server runs (cockpit.py video_call): linear in
+// step-seconds at the two measured sizes, 3.05 s each at 480P (4 s in 592 s at 49
+// steps, decode folded in) and 7.65 at 720P (4 s in about 25 min), keyframe
+// conditioning at its measured ~10 %. A call over the lock's two hours is refused
+// here too: this page refuses what it shows, the way the image lane mirrors
+// IMAGE_MAX_PIXELS, and the parity test in dashboard/tests/test_video_routes.py
+// holds the two files' numbers equal.
+const VID_BUDGET_S = 2 * 3600;
+function vidEtaSecs(secs, size, steps){
+  const [sw, sh] = String(size).split('x').map(Number);
+  if (!(sw > 0 && sh > 0)) return 0;
+  const perStep = sw * sh <= 864 * 480 ? 3.05 : 7.65;
+  return perStep * (steps || 50) * secs * (vidMode === 'fl2v' ? 1.1 : 1);
+}
+function vidEtaMins(secs, size, steps){ return Math.round(vidEtaSecs(secs, size, steps) / 60); }
 function vidProblem(){
   const s = parseInt(($('vidseconds') || {}).value, 10);
   if (!(s >= 4 && s <= 15)) return 'Seconds is a whole number from 4 to 15.';
   if (!vidVal('vidprompt')) return 'A prompt is required.';
   if (vidMode === 'fl2v' && !vidFrames.first && !vidFrames.last) return 'Give a first frame, a last frame, or both.';
+  const rawSteps = ($('vidsteps') || {}).value.trim();
+  const steps = parseInt(rawSteps, 10);
+  if (rawSteps && !(steps >= 1 && steps <= 100)) return 'Steps is a whole number from 1 to 100.';
+  const est = vidEtaSecs(s, ($('vidsize') || {}).value || '864x480', rawSteps ? steps : 0);
+  if (est > VID_BUDGET_S) return `About ${vidEtaMins(s, ($('vidsize') || {}).value || '864x480', rawSteps ? steps : 0)} min at this size: `
+    + 'past two hours the lane lock lets go while the lane still works, and two generations at once hang this box. '
+    + 'Fewer steps, a shorter video, or 480P.';
   return '';
+}
+function vidWireBody(){
+  // The body video_call forwards to the lane (dashboard/cockpit.py), which is what
+  // the button above really sends. The lane is MiniMax H3: it requires an explicit
+  // task (t2va/fl2va; absent, or 'fl2v', it 400s -- nothing is inferred from the
+  // frames, measured 2026-09-25), a target object, and keyframes as file://
+  // conditions -- first_frame/last_frame are not even fields of this model: parsed,
+  // dropped, generation never sees them.
+  const secs = parseInt(($('vidseconds') || {}).value, 10) || 5;
+  const size = ($('vidsize') || {}).value || '864x480';
+  const [sw, sh] = size.split('x').map(Number);
+  const body = {model: 'MiniMax-H3', prompt: vidVal('vidprompt'), seconds: secs, size,
+                task: vidMode === 'fl2v' ? 'fl2va' : 't2va',
+                target: {short_edge: Math.min(sw, sh),
+                         aspect_ratio: sw >= sh ? '16:9' : '9:16',
+                         duration_seconds: secs},
+                num_outputs_per_prompt: 1,
+                num_inference_steps: parseInt(($('vidsteps') || {}).value, 10) || 50};
+  const seed = vidVal('vidseed');
+  if (seed) body.seed = parseInt(seed, 10);
+  if (vidMode === 'fl2v'){
+    // Only attached frames: the cockpit sends a condition per frame it received, and
+    // one more than it got would condition the video on an image nobody chose (the
+    // lane probes each URI before queueing, so pasting this needs the frames saved
+    // at these paths first; the cockpit itself stages them under its own temp names
+    // inside ~/.config/qwen38, not here).
+    body.conditions = [['first', 0], ['last', -1]]
+      .filter(([tag]) => vidFrames[tag])
+      .map(([tag, idx]) => ({type: 'image', uri: `file:///tmp/qwen38-${tag}-frame.png`,
+                             role: 'keyframe', frame_index: idx}));
+  }
+  return body;
 }
 function vidSync(){
   const p = vidProblem();
@@ -2758,19 +2813,9 @@ function vidSync(){
   const secs = parseInt(($('vidseconds') || {}).value, 10) || 5;
   const size = ($('vidsize') || {}).value || '864x480';
   const steps = parseInt(($('vidsteps') || {}).value, 10) || 50;
-  const seed = vidVal('vidseed');
-  const body = {prompt: vidVal('vidprompt'), seconds: secs, size, num_inference_steps: steps};
-  if (seed) body.seed = parseInt(seed, 10);
-  if (vidMode === 'fl2v'){
-    // no task field: the lane infers fl2va from the frames, and 'fl2v' would be
-    // a 400 on the wire (only t2va/fl2va are valid)
-    if (vidFrames.first) body.first_frame = '[first frame attached]';
-    if (vidFrames.last) body.last_frame = '[last frame attached]';
-  }
-  setText('vidcurl', `curl -s http://127.0.0.1:${VID_STATE.port || 30022}/v1/videos -H 'Content-Type: application/json' -d '${JSON.stringify(body)}'`
+  setText('vidcurl', `# run this ON the box: the lane listens on loopback and checks no key\ncurl -s http://127.0.0.1:${VID_STATE.port || 30022}/v1/videos \\\n  -H 'Content-Type: application/json' \\\n  -d ${shq(JSON.stringify(vidWireBody()))}`
     + `\n# then poll GET /v1/videos to completed, and download GET /v1/videos/<id>/content`);
-  const mins = Math.round(secs * 11 / 4);
-  setText('vidcost', `About ${mins} min for ${secs} s at ${size.split('x')[0] === '864' ? '480P' : '720P'} on this box (measured 4 s 480P in 10:52 on 2026-09-25).`);
+  setText('vidcost', `About ${vidEtaMins(secs, size, steps)} min for ${secs} s at ${size.split('x')[0] === '864' ? '480P' : '720P'} and ${steps} steps on this box (measured here 2026-09-25: 4 s in 10:52 at 480P, in about 25 min at 720P, at the 50-step default).`);
 }
 function vidWatch(on, ms){
   if (on && VID_WATCH && VID_WATCH.ms === ms) return;
@@ -2830,8 +2875,9 @@ async function vidRun(){
   if (!VID_STATE.available) return toast('The video lane is not serving: start it first.', 'warn');
   const secs = parseInt($('vidseconds').value, 10);
   const steps = parseInt($('vidsteps').value, 10) || 50;
+  const size = $('vidsize').value;
   const seed = vidVal('vidseed');
-  const payload = {prompt: vidVal('vidprompt'), seconds: secs, size: $('vidsize').value,
+  const payload = {prompt: vidVal('vidprompt'), seconds: secs, size,
                    num_inference_steps: steps};
   if (seed) payload.seed = parseInt(seed, 10);
   if (vidMode === 'fl2v'){
@@ -2839,7 +2885,7 @@ async function vidRun(){
     if (vidFrames.last) payload.last_frame = vidFrames.last.dataUrl;
   }
   const t0 = Date.now(); vidInflight = t0; vidCancelSync();
-  setText('vidstatus', `generating: about ${Math.round(secs * 11 / 4)} min at this size`);
+  setText('vidstatus', `generating: about ${vidEtaMins(secs, size, steps)} min at this size and step count`);
   $('vidrunprog').hidden = false;
   setText('vidrunlab', 'generating'); setText('vidrunpct', '');
   $('vidrunbar').style.width = '2%';
@@ -2853,6 +2899,7 @@ async function vidRun(){
     const out = await r.json();
     if (!r.ok && out.crashed) return toast('No video: the lane crashed while making it. ' + out.error, 'err', 9000);
     if (!r.ok && out.interrupted) return toast('Video cancelled: the lane was stopped or restarted.', 'warn');
+    if (!r.ok && r.status === 504 && out.video_id){ vidParked = out.video_id; return; }
     if (!r.ok) return toast(r.status === 409 ? out.error : 'Could not make a video: ' + vidErr(out, r.status),
                             r.status === 409 ? 'warn' : 'err', 7000);
     if (!out.video_id) return toast('The lane answered 200 with no video in it.', 'err');
@@ -2874,7 +2921,18 @@ async function vidRun(){
   } finally {
     vidInflight = null; vidWatch(false);
     $('vidrunprog').hidden = true;
-    setText('vidstatus', ''); vidSync(); vidLane();
+    if (vidParked){
+      const id = vidParked; vidParked = null;
+      setText('vidstatus', 'still generating: this page stopped waiting at one hour, the lane did not');
+      clear($('vidout'));
+      $('vidout').append(el('p', 'note', 'The lane is still making this video (it has no abort). This address serves the MP4 the moment it is done:'));
+      const a = el('a', null, '/api/video/content?id=' + id);
+      a.href = '/api/video/content?id=' + encodeURIComponent(id);
+      $('vidout').append(a);
+      $('vidmeta').append(el('span', 'chip', id + ' still generating'));
+      toast('Longer than the hour this page waits: still generating, and the address above serves it when it is done.', 'warn', 9000);
+    } else setText('vidstatus', '');
+    vidSync(); vidLane();
   }
 }
 function vidInit(){

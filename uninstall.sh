@@ -24,6 +24,7 @@ unit_mount(){  # $1 = the container path; prints the host side of every -v mount
 }
 HF_CACHES="$( { printf '%s\n' "${HF_CACHE:-}"; unit_mount /root/.cache/huggingface
                { grep -m1 -E '^Environment=HF_HOME=' "$SYSTEMD_DIR/qwen38-image.service" 2>/dev/null || true; } | cut -d= -f3-
+               { grep -m1 -E '^Environment=HF_HOME=' "$SYSTEMD_DIR/qwen38-video.service" 2>/dev/null || true; } | cut -d= -f3-
                printf '%s\n' "$HOME/.cache/huggingface"; } | awk 'NF && !seen[$0]++')"
 PLE_DIRS="$( { printf '%s\n' "${PLE_DIR:-}"; unit_mount /ple; printf '%s\n' "$HOME/flashnext-ple"; } | awk 'NF && !seen[$0]++')"
 # opencode reads all three global names, and creates opencode.jsonc itself on its first

@@ -1319,7 +1319,7 @@
             <button class="btn" id="vidrun">Generate</button>
             <span class="follow" id="vidstatus"></span>
           </div>
-          <p class="cost" id="vidcost">About 11 min for 4 s at 480P on this box (measured 10:52 on 2026-09-25).</p>
+          <p class="cost" id="vidcost">About 10 min for 4 s at 480P and 50 steps on this box (measured here 2026-09-25: 4 s in 10:52 at 480P, in about 25 min at 720P, at the 50-step default).</p>
         </section>
 
         <section class="panel">
@@ -1336,20 +1336,21 @@
 
         <section class="panel s1wide">
           <h3>The same call, from a terminal on the box <span class="right"><button class="btn mini ghost" id="vidcopy">Copy</button></span></h3>
-          <p class="note" style="margin:0 0 9px">Exactly what the button above sends, then the poll and the download.
+          <p class="note" style="margin:0 0 9px">What the button above makes the lane receive: the cockpit forwards
+            this body. For frames it sends one condition per attached frame, staged under its own temp names in
+            ~/.config/qwen38; the file:// paths shown are the paste-run convention, so save your frames at exactly
+            those paths before pasting, or the lane probes a missing URI and fails. Then the poll and the download.
             The lane listens on loopback and checks no key, so this runs on the box itself.</p>
           <div class="cmd" id="vidcurl"></div>
         </section>
 
         <section class="panel s1wide">
-          <h3>What each setting costs <span class="right"><span class="chip">4 s rows measured here 2026-09-25, rest cookbook</span></span></h3>
-          <p class="note" style="margin:0 0 10px">The 4 s rows are this lane's own measurements (480P: 10:52 end to end,
-            denoise at 11.3 s/step, decode 27 s, peak 9242 MB; 720P: about 25 min, peak 82 GB).
-            The other rows are the SGLang cookbook's
-            verified DGX Spark figures, not measurements of this lane: about 12.1 s per denoise step steady-state,
-            about 40 s of decode, about 12 min per warm request at 480P, with no flags at all. The text encoder
-            runs about 5.5 min per request and does not warm up. These rows become this box's numbers the day
-            the lane proves them here.</p>
+          <h3>What each setting costs <span class="right"><span class="chip">every row measured here 2026-09-25</span></span></h3>
+          <p class="note" style="margin:0 0 10px">Every row is this lane's own measurement on this box (480P: 10:52 end to end,
+            denoise at 11.3 s/step, decode 27 s, peak 9242 MB; 720P: about 25 min, peak 82 GB). The SGLang cookbook's
+            verified DGX Spark figures are the reference the lane is checked against: about 12.1 s per denoise step
+            steady-state, about 40 s of decode, about 12 min per warm request at 480P, with no flags at all, and a
+            text encoder at about 5.5 min per request that does not warm up.</p>
           <div class="tablewrap">
             <table id="vidbench">
               <thead><tr><th>request</th><th class="r">time</th><th>result</th></tr></thead>
@@ -1360,9 +1361,11 @@
               </tbody>
             </table>
           </div>
-          <p class="note" style="margin:10px 0 0">Two things this lane refuses that are worth knowing before a client does:
-            a duration outside 4 to 15 s, and more than one video per call. This page refuses both before they
-            leave the box.</p>
+          <p class="note" style="margin:10px 0 0">What this page refuses before anything leaves the box: a duration
+            outside 4 to 15 s, steps outside 1 to 100, and any call whose measured cost passes the two hours the
+            lane lock is held (an hour of waiting plus the hand-off hour; two generations at once have hung this box
+            with images). The lane and the cockpit refuse more: more than one video per call, unknown tasks,
+            malformed keyframes, fields the model does not declare, and canvases past 1280x720.</p>
         </section>
       </div>
     </div>

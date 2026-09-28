@@ -2561,8 +2561,9 @@ def _video_cut(t0: float) -> tuple[int, dict]:
                      "seconds": secs}
     return 503, {"error": VIDEO_INTERRUPTED, "interrupted": True, "seconds": secs}
 VIDEO_STILL_RUNNING = ("the video lane is still generating this request: it has no abort, so it goes on after "
-                       "this page stopped waiting, and the next request is refused until it ends. Cancel "
-                       "restarts the lane if it should not finish.")
+                       "this page stopped waiting, and the next request is refused until it ends, or at worst "
+                       "after one more hour in the background, after which this page may say idle while the "
+                       "lane still works. Cancel restarts the lane if it should not finish.")
 
 
 def _video_decoded_frame(payload: dict, name: str) -> tuple[bytes | None, str]:
@@ -2614,13 +2615,15 @@ def _video_list_status(vid: str) -> str:
 def _release_video_lock_when_done(life0: tuple, vid: str, timeout: float) -> None:
     """The lock of a call that timed out here, given back when the lane is done with
     it: the video reached a terminal status, or the lane is no longer the run the call
-    went to (a Cancel, a Stop, a crash), or the timeout went by with neither."""
+    went to (a Cancel, a Stop, a crash), or the timeout went by with neither. "missing"
+    counts as terminal here too, exactly as the synchronous poll reads it: a gone
+    record is a finished one, and waiting on it would spend the clock for nothing."""
     deadline = time.time() + timeout
     try:
         while time.time() < deadline:
             if _video_life() != life0:
                 return
-            if _video_list_status(vid) in ("completed", "failed", "error", "cancelled"):
+            if _video_list_status(vid) in ("completed", "failed", "error", "cancelled", "missing"):
                 return
             time.sleep(VIDEO_POLL_S)
     finally:
@@ -2666,9 +2669,42 @@ def video_call(payload: dict) -> tuple[int, dict]:
     # the lane accepted with 864x480 and served to completed: the exact reduction
     # (18:10) was never tried against it.
     fields["size"] = f"{sw}x{sh}"
+    # The lane was only ever served and measured at 16:9 and 9:16; a square or 4:3
+    # size here would declare the ratio it is not, and cost unknown pixels.
+    ratio = sw / sh
+    if abs(ratio - 16 / 9) > 0.05 * (16 / 9) and abs(ratio - 9 / 16) > 0.05 * (9 / 16):
+        return 400, {"error": "size must be 16:9 or 9:16, the two canvases this lane was "
+                              "measured on; give a matching WIDTHxHEIGHT like 864x480"}
+    if sw * sh > 1280 * 720:
+        # The image lane has IMAGE_MAX_PIXELS for the same reason: past what was
+        # measured, the cost is a guess and the memory is a certain risk - 1280x704
+        # already peaks at 81.9 GB of this box's 121.6.
+        return 400, {"error": f"{sw}x{sh} is past the largest canvas measured here "
+                              "(1280x720, which peaks at 81.9 GB of 121.6)"}
     fields["target"] = {"short_edge": min(sw, sh),
                         "aspect_ratio": "16:9" if sw >= sh else "9:16",
                         "duration_seconds": secs}
+    # Budget at admission, the way the image lane budgets pixels (IMAGE_MAX_PIXELS,
+    # measured on this box). Cost is linear in step-seconds at the two sizes measured
+    # here: 4 s 480P at 49 steps in 592 s (3.05 s per step-second, the 27 s decode
+    # folded in) and 4 s 720P at about 50 steps in about 25 min (7.65); keyframe
+    # conditioning measured about a minute on a 4 s 480P video, ~10 %, applied below.
+    # A call estimated past the lock's whole guard (one hour of waiting here plus the
+    # hour the hand-off watcher holds on) would free the lock while the lane still
+    # works, and a second call beside the first is the pair that hangs this box
+    # (measured on this runtime with images: two generations held 90.5 GB of 121.6
+    # and wedged the engine). So the estimate is refused at the door, not discovered
+    # at the 120th minute. The tab carries the same numbers (vidEtaMins,
+    # dashboard/static/app.js) and dashboard/tests/test_video_routes.py holds them equal.
+    per_step = 3.05 if sw * sh <= 864 * 480 else 7.65
+    conditioning = bool(payload.get("first_frame") or payload.get("last_frame"))
+    est = per_step * (steps or 50) * secs * (1.1 if conditioning else 1.0)
+    # 7200 s, not 2 * VIDEO_TIMEOUT: this budget is wall-clock work on the GPU, and
+    # the tests' patched VIDEO_TIMEOUT is a clock shortcut, not a shorter box.
+    if est > 2 * 3600.0:
+        return 400, {"error": f"about {round(est / 60)} min at {secs} s, {sw}x{sh} and {steps or 50} steps: "
+                              "past two hours this cockpit stops holding the call, and the next one could "
+                              "start beside this one. Ask for fewer steps, a shorter video, or 480P."}
     # Keyframes turn text-to-video into first/last-frame conditioning; without them the
     # call is text only. Reference modes (ref2va weights) need a unit installed with
     # VIDEO_VARIANT=ref2va and are refused here until that lane exists.
@@ -2730,6 +2766,15 @@ def video_call(payload: dict) -> tuple[int, dict]:
     # cannot check one and the unit binds loopback instead. The gate is this process's
     # own session.
     if not VIDEO_LOCK.acquire(blocking=False):
+        # The finally below belongs to the try that has not started yet: a refused
+        # call must leave no keyframe behind either, or every retry of a busy lane
+        # quietly piles two PNGs in the config dir (the image lane stages after
+        # acquiring, which is why it never had this hole).
+        for path in keyframe_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         return 409, {"error": "this lane serves one video at a time, and something is "
                               "already generating on it. Wait for the current one to finish."}
     t0 = time.time()
@@ -2781,9 +2826,18 @@ def video_call(payload: dict) -> tuple[int, dict]:
         # The wait ran out; the lane goes on (it has no abort). The lock is handed to
         # a watcher that gives it back when the lane is done, so a second generation
         # never runs beside the first.
-        threading.Thread(target=_release_video_lock_when_done, args=(life0, vid, VIDEO_TIMEOUT),
-                         daemon=True).start()
+        watcher = threading.Thread(target=_release_video_lock_when_done,
+                                   args=(life0, vid, VIDEO_TIMEOUT), daemon=True)
+        # The flag goes up before start(): a lane that dies this second could run the
+        # watcher's finally before an assignment placed after start() lands, and a
+        # thread that never started must leave the flag down so this call's own
+        # finally releases (an OS that cannot start threads is the outer except's 502).
         handed_over[0] = True
+        try:
+            watcher.start()
+        except Exception:
+            handed_over[0] = False
+            raise
         return 504, {"error": VIDEO_STILL_RUNNING, "video_id": vid,
                      "seconds": round(time.time() - t0, 2)}
     except Exception as e:                              # noqa: BLE001 (isolated route)

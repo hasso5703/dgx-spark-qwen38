@@ -16,6 +16,7 @@ local source patch. The image lane carries two, and this lane deliberately does 
 What that costs is stated, not patched around: a stop waits for the generation to
 end, up to TimeoutStopSec, because the runtime has no abort.
 """
+import json
 import pathlib
 import re
 import unittest
@@ -122,6 +123,26 @@ class TheInstaller(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertEqual(len(m.group(1)), 40)
 
+    def test_the_smoke_says_what_died_in_the_journal(self):
+        """Each smoke death points at "the journal above": the line must print that
+        journal first and survive its own failure (|| true), or the message sends the
+        reader to an empty screen - or set -e silences the message itself."""
+        for why in ("did not answer /health", "did not take the smoke video", "did not complete in 40 min"):
+            i = self.text.index(why)
+            window = self.text[max(0, i - 220):i]
+            self.assertIn("journalctl", window, why)
+            self.assertIn("|| true", window, why)
+
+    def test_the_smoke_fits_the_weights_it_will_meet(self):
+        """The smoke body is t2va on fl2va weights: a ref2va or custom-model install
+        boots fifteen minutes for a body known wrong here, so the smoke is skipped
+        with a reason instead of run into a 400."""
+        i = self.text.index('"$SMOKE" -eq 1 ] &&')
+        block = self.text[i:i + 400]
+        self.assertIn('!= "fl2va"', block)
+        self.assertIn('!= "MiniMaxAI/MiniMax-H3"', block)
+        self.assertIn("SMOKE=0", block)
+
     def test_the_pipeline_prerequisites_are_checked_first(self):
         """MiniMax-H3 refuses to start without ffmpeg and ffprobe (its own words in
         minimax_h3_pipeline.py): the installer refuses before downloading 100 GB."""
@@ -190,6 +211,16 @@ class TheInstaller(unittest.TestCase):
         self.assertIn("completed", self.text)
         self.assertIn("/content", self.text)
 
+    def test_the_smoke_body_sends_the_lanes_required_fields(self):
+        """The lane 400s a request without task and without target (measured
+        2026-09-25, docs/video-lane.md). This body is what a 15-minute boot is
+        judged on, and commit 22a59dd fixed the task everywhere but here."""
+        body = json.loads(re.search(r"-d '(\{[^']*\})'", self.text).group(1))
+        self.assertEqual(body["task"], "t2va")
+        self.assertEqual(sorted(body["target"]),
+                         ["aspect_ratio", "duration_seconds", "short_edge"])
+        self.assertEqual(body["seconds"], body["target"]["duration_seconds"])
+
     def test_uninstall_reads_the_lane_directory_from_the_unit(self):
         self.assertIn("installed WorkingDirectory", self.text)
 
@@ -208,12 +239,30 @@ class TheSwitch(unittest.TestCase):
     def test_the_switch_verifies_only_the_served_partition(self):
         """The switch re-downloaded the whole repo (Ref2VA included) onto a full disk:
         it carries the installer's allowlist, so a complete fl2va cache answers without
-        touching the network."""
+        touching the network. And it fetches the revision the unit serves, not whatever
+        main became upstream: a no-revision download repoints refs/main at the tip
+        before its first byte, stranding the offline unit on a half-fetched snapshot."""
         i = SWITCH.read_text().index('if [ "$CHOICE" = "video" ]; then')
         block = SWITCH.read_text()[i:SWITCH.read_text().index("exit 0", i)]
         self.assertIn("allow_patterns", block)
         self.assertIn("FL2VA/*", block)
-        self.assertIn("local_files_only=True, allow_patterns=allow", block)
+        self.assertIn("revision=rev, local_files_only=True, allow_patterns=allow", block)
+        self.assertIn("revision=rev, allow_patterns=allow", block)
+        self.assertIn("refs/main", block)
+        self.assertIn('VIDEO_MODEL_PIN_REV', block)
+
+    def test_the_switch_allowlist_is_the_installers_allowlist(self):
+        """Two hand-copied literals (ALLOW in install-video.sh, VID_ALLOW in
+        switch-model.sh) drifted once: b7ce5a4 re-downloaded 280 files. Presence-only
+        assertions let a one-sided edit pass; the switch's copy must be the
+        installer's, character for character, per partition."""
+        inst = INSTALLER.read_text()
+        for prefix, variant in (("then ", "fl2va"), ("else ", "ref2va")):
+            a = re.search(prefix + r'ALLOW="([^"]+)"', inst)
+            b = re.search(prefix + r'VID_ALLOW="([^"]+)"', self.text)
+            self.assertIsNotNone(a, f"no {variant} branch in the installer")
+            self.assertIsNotNone(b, f"no {variant} branch in the switch")
+            self.assertEqual(a.group(1), b.group(1), f"the {variant} allowlists drifted")
 
     def test_the_lane_before_video_is_written_down_before_anything_is_disabled(self):
         i = self.text.index('if [ "$CHOICE" = "video" ]; then')
@@ -250,6 +299,27 @@ class TheSwitch(unittest.TestCase):
         self.assertIn("left as they are", block)
         self.assertNotIn("oc-merge-limits", block)
         self.assertNotIn("ceiling", block)
+
+
+class TheLockHoldsWhatItPromises(unittest.TestCase):
+    """One overlapping pair is what this box does not survive (measured with images
+    on this runtime: 90.5 GB held of 121.6, engine wedged). Two facts are pinned at
+    text level here; the refusal behavior itself runs in
+    dashboard/tests/test_video_routes.py."""
+
+    def test_the_watcher_treats_a_gone_record_as_done(self):
+        """The synchronous poll reads "missing" as definitive; a watcher still
+        waiting on it would spend its clock, free the lock and let the next call
+        start beside a lane that may or may not still be working."""
+        text = COCKPIT.read_text()
+        i = text.index("def _release_video_lock_when_done")
+        self.assertIn('"completed", "failed", "error", "cancelled", "missing"',
+                      text[i:text.index("def video_call", i)])
+
+    def test_the_longest_run_is_budgeted_at_admission(self):
+        """A call estimated past the lock's whole two-hour guard is refused before
+        it is made, so the escape into overlap is not reachable by a legal request."""
+        self.assertIn("est > 2 * 3600.0", COCKPIT.read_text())
 
 
 class TheBootLaneConvergence(unittest.TestCase):
@@ -344,6 +414,32 @@ class ThePageShowsVideoTruthfully(unittest.TestCase):
         body = js[i:js.index("function vidRun(){")]
         self.assertIn("1280", body)
         self.assertIn("toDataURL('image/png')", body)
+
+    def test_the_preview_shows_the_frames_the_button_sends(self):
+        """One condition per attached frame: a placeholder slot in the preview would
+        advertise conditioning on an image nobody attached, and the cockpit sends
+        only attached frames."""
+        js = APP_JS.read_text()
+        block = js[js.index("function vidWireBody()"):js.index("function vidSync()")]
+        self.assertNotIn("|| tag === 'first'", block)
+        self.assertIn("filter(([tag]) => vidFrames[tag])", block)
+
+    def test_the_tab_refuses_what_the_server_refuses(self):
+        js = APP_JS.read_text()
+        self.assertIn("const VID_BUDGET_S = 2 * 3600", js)
+        block = js[js.index("function vidProblem()"):js.index("function vidWireBody()")]
+        self.assertIn("VID_BUDGET_S", block)
+        self.assertIn("1 to 100", block)
+
+    def test_a_run_too_long_to_hold_keeps_its_id(self):
+        """A 504 means the page stopped waiting, not that the video failed: the id
+        must survive into something the reader can fetch when the lane is done."""
+        js = APP_JS.read_text()
+        i = js.index("r.status === 504", js.index("function vidRun("))
+        self.assertIn("out.video_id", js[i - 40:i + 120])
+        self.assertIn("vidParked", js)
+        j = js.index("} finally {", i)
+        self.assertIn("vidParked", js[j:j + 300])
 
 
 class TheUninstallKnowsVideo(unittest.TestCase):

@@ -14,6 +14,7 @@ other test here, so importing it writes nothing into the developer's own HOME.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -174,6 +175,96 @@ class TheRefusals(Base):
         code, out = self.call({"prompt": "a cat", "task": "ref2va"})
         self.assertEqual(code, 400)
         self.assertIn("t2va", out["error"])
+
+    def test_a_run_past_the_lock_guard_is_refused_at_the_door(self):
+        """15 s at 720P with 100 steps is about three hours of work: past the two
+        hours the lock is held (the wait plus the hand-off watcher), the lock frees
+        while the lane still works and the next call could start beside the first,
+        which is the pair this box does not survive. Budgeted at admission, the way
+        the image lane budgets pixels."""
+        code, out = self.call({"prompt": "a cat", "seconds": 15, "size": "1280x704",
+                               "num_inference_steps": 100})
+        self.assertEqual(code, 400)
+        self.assertIn("steps", out["error"])
+
+    def test_the_budget_guard_leaves_the_measured_runs_alone(self):
+        # 15 s at 720P on the 50-step default is about 96 min: legal, inside the guard.
+        code, out = self.call({"prompt": "a cat", "seconds": 15, "size": "1280x720"})
+        self.assertEqual(code, 200, out)
+        # 15 s at 480P on the 100-step cap is about 76 min: legal too.
+        code, out = self.call({"prompt": "a cat", "seconds": 15, "num_inference_steps": 100})
+        self.assertEqual(code, 200, out)
+
+    def test_a_busy_lane_refuses_without_leaving_the_keyframes(self):
+        """The 409 lands after the frames were staged and before the try whose finally
+        cleans them: without its own unlink, every retry beside a running call piles
+        two more PNGs into the config dir forever."""
+        self.assertTrue(self.ck.VIDEO_LOCK.acquire(blocking=False))  # stand in for the running call
+        code, out = self.call({"prompt": "continue", "first_frame": PNG, "last_frame": PNG})
+        self.assertEqual(code, 409, out)
+        left = [p for p in self.tmp.iterdir() if p.name.startswith("qwen38-")]
+        self.assertEqual([], left, "the refused call staged keyframes it never cleaned")
+
+    def test_ratio_and_canvas_outside_what_was_measured_are_refused(self):
+        """The lane was served and costed at 16:9 and 9:16 canvases up to 1280x720
+        (81.9 GB peak of 121.6): other ratios would declare an aspect they are not,
+        and bigger canvases are an unknown cost and a certain OOM - the image lane's
+        IMAGE_MAX_PIXELS rule applied to step-seconds."""
+        for size in ("640x640", "1024x768", "864x720", "1920x1080", "2560x1440"):
+            with self.subTest(size=size):
+                code, out = self.call({"prompt": "a cat", "size": size})
+                self.assertEqual(code, 400, size)
+        # both orientations of the two measured ratios pass the gate
+        for size in ("864x480", "480x864", "1280x720", "720x1280"):
+            with self.subTest(size=size):
+                code, out = self.call({"prompt": "a cat", "size": size})
+                self.assertEqual(code, 200, f"{size}: {out}")
+
+
+class TheEstimateParity(Base):
+    """The tab shows a cost and refuses at a bound; the server refuses at a bound too.
+    When the two formulas drift, the button promises what the server refuses - the
+    exact defect class this branch was reviewed for, twice. Same source of truth:
+    the constants parsed out of app.js must answer like video_call does."""
+
+    JS_SIZES = ("864x480", "480x864", "1280x720", "720x1280")
+    JS_COMBO = ((50, 4), (50, 15), (100, 15), (100, 4), (100, 9), (1, 15), (100, 7))
+
+    def js_numbers(self):
+        js = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
+        m = re.search(r"perStep = sw \* sh <= (\d+) \* (\d+) \? ([\d.]+) : ([\d.]+)", js)
+        self.assertIsNotNone(m, "app.js no longer carries the budget formula in the held shape")
+        bound = int(m.group(1)) * int(m.group(2))
+        per480, per720 = float(m.group(3)), float(m.group(4))
+        cond = float(re.search(r"vidMode === 'fl2v' \? ([\d.]+) : 1", js).group(1))
+        budget = int(re.search(r"VID_BUDGET_S = (\d+) \* (\d+)", js).group(1)) * \
+            int(re.search(r"VID_BUDGET_S = (\d+) \* (\d+)", js).group(2))
+        return bound, per480, per720, cond, budget
+
+    def test_the_tab_and_the_server_refuse_the_same_calls(self):
+        bound, per480, per720, cond, budget = self.js_numbers()
+        for size in self.JS_SIZES:
+            sw, sh = (int(p) for p in size.split("x"))
+            for steps, secs in self.JS_COMBO:
+                for frames in (None, PNG):
+                    est = (per480 if sw * sh <= bound else per720) * steps * secs
+                    if frames:
+                        est *= cond
+                    payload = {"prompt": "a cat", "seconds": secs, "size": size,
+                               "num_inference_steps": steps}
+                    if frames:
+                        payload["first_frame"] = frames
+                    code, out = self.call(dict(payload))
+                    self.assertEqual(code, 200 if est <= budget else 400,
+                                     f"{size} {steps}x{secs} frames={bool(frames)} est={round(est)}: {out}")
+
+    def test_the_server_constants_are_the_measured_ones(self):
+        """3.05 s per step-second is 592 s / (49 steps x 4 s), and 7.65 is about 25 min
+        over the same step-seconds (docs/video-lane.md): the JS mirror reads these
+        numbers, so pinning them here pins both files against a silent retune."""
+        text = (Path(__file__).resolve().parents[1] / "cockpit.py").read_text()
+        self.assertIn("3.05 if sw * sh <= 864 * 480 else 7.65", text)
+        self.assertIn("est > 2 * 3600.0", text)
 
     def test_fl2va_named_with_no_frame_is_refused_not_served_as_text(self):
         """fl2va without a keyframe would read as text-only under a conditioning task:

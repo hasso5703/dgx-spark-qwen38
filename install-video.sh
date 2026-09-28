@@ -315,6 +315,14 @@ echo "installed as a lane of its own. Switch to it like any lane:"
 echo "  the cockpit: pick MiniMax-H3 in the switcher, Switch, stop the serving lane, Start"
 echo "  a terminal : ./switch-model.sh video, then the two commands it prints"
 
+# The smoke body is t2va on MiniMax-H3's fl2va weights: the ref2va weights take no
+# unconditioned call, and another model's id the smoke does not name. Asking for
+# either and booting fifteen minutes for a body declared wrong here is a 400 on a
+# 15-minute bill; skip the smoke and say why (the same exit as --no-smoke).
+if [ "$SMOKE" -eq 1 ] && { [ "$VARIANT" != "fl2va" ] || [ "$MODEL" != "MiniMaxAI/MiniMax-H3" ]; }; then
+  echo "smoke skipped: its t2va body fits MiniMax-H3 on the fl2va weights only (this install: model $MODEL, variant $VARIANT)"
+  SMOKE=0
+fi
 if [ "$SMOKE" -eq 0 ]; then step "Done (smoke test skipped)"; exit 0; fi
 
 step "6/6 Proving it serves (one short video, then the box goes back to the lane it was serving)"
@@ -345,16 +353,20 @@ for i in $(seq 1 90); do
   curl -fsS -m 5 "http://$VIDEO_BIND:$PORT/health" >/dev/null 2>&1 && { READY=1; break; }
   sleep 10
 done
-[ "$READY" -eq 1 ] || { sudo journalctl -u "$UNIT" -n 40 --no-pager; die "the lane did not answer /health within 15 min. The journal above says why."; }
+[ "$READY" -eq 1 ] || { sudo journalctl -u "$UNIT" -n 40 --no-pager || true; die "the lane did not answer /health within 15 min. The journal above says why."; }
 echo "up after ~$(( (i - 1) * 10 )) s; generating a 4 s video at 480P (about 12 min on this box)"
 OUT="$(mktemp)"
 # Video creation is asynchronous: POST returns an id with a queued status, then the
 # content is downloaded once the poll says completed. `|| true`: a transport failure
 # made curl exit non-zero inside the assignment, and set -e ended the script before
 # the message below (same trap as the image lane).
+# The body carries task and target because the lane 400s without each (measured
+# 2026-09-25, docs/video-lane.md): a 400 here throws away a 15-minute boot. t2va
+# is the smoke of the default fl2va variant; a ref2va install would need a
+# conditioned body, which no default install path uses.
 CODE=$(curl -sS -o "$OUT" -w '%{http_code}' -m 60 "http://$VIDEO_BIND:$PORT/v1/videos" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"MiniMax-H3","prompt":"A cat walks across a sunlit room, dust in the air","seconds":4}' || true)
+  -d '{"model":"MiniMax-H3","prompt":"A cat walks across a sunlit room, dust in the air","seconds":4,"task":"t2va","target":{"short_edge":480,"aspect_ratio":"16:9","duration_seconds":4}}' || true)
 if [ "$CODE" != 200 ]; then
   echo "HTTP ${CODE:-000}: $(head -c 300 "$OUT" 2>/dev/null)"
   sudo journalctl -u "$UNIT" -n 40 --no-pager || true
@@ -374,11 +386,13 @@ except Exception:
 print(next((v.get("status","unknown") for v in items if v.get("id") == sys.argv[1]), "missing"))' "$VID" 2>/dev/null || echo unknown)"
   case "$ST" in
     completed) DONE=1; break ;;
-    failed|error) die "the smoke video $VID ended in $ST; the journal above says why." ;;
+    failed|error) sudo journalctl -u "$UNIT" -n 40 --no-pager || true
+                  die "the smoke video $VID ended in $ST; the journal above says why." ;;
   esac
   sleep 10
 done
-[ "$DONE" -eq 1 ] || die "the smoke video $VID did not complete in 40 min (last status: $ST)."
+[ "$DONE" -eq 1 ] || { sudo journalctl -u "$UNIT" -n 40 --no-pager || true
+  die "the smoke video $VID did not complete in 40 min (last status: $ST); the journal above says why."; }
 curl -fsS -m 300 "http://$VIDEO_BIND:$PORT/v1/videos/$VID/content" -o "$OUT.mp4" \
   || die "the video completed but its content did not download."
 SZ="$(stat -c %s "$OUT.mp4" 2>/dev/null || echo 0)"

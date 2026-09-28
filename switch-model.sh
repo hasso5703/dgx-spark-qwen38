@@ -155,19 +155,53 @@ if [ "$CHOICE" = "video" ]; then
   else VID_ALLOW="";
   fi
   # Xet stalls on this box, and an unauthenticated pull gets throttled.
-  HF_HOME="${VID_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 VID_MODEL="$VID_MODEL" VID_ALLOW="$VID_ALLOW" \
-    "$VID_PY" - <<'PYVID' || die "the video checkpoint could not be verified or fetched (re-run to resume; set HF_TOKEN if it stalls)"
+  # Fetch the revision this box actually serves, never the upstream main tip: the
+  # unit names the repo with HF_HUB_OFFLINE=1, so refs/main IS the served commit.
+  # A download without revision resolves main over the network, writes refs/main
+  # at the tip BEFORE the first byte is downloaded (huggingface_hub writes the ref
+  # before fetching: _snapshot_download.py), and resumes that half-fetched tip on
+  # the next boot attempt: a switched-off pin, ~145 GB of another commit, a dead
+  # offline unit. refs/main says what to fetch; the installer's pin answers when
+  # the ref is missing (a download by sha wrote no ref).
+  VID_MODEL_DIR="${VID_HF:-$HF_CACHE}/hub/models--${VID_MODEL//\//--}"
+  VID_REV=""
+  if [ -f "$VID_MODEL_DIR/refs/main" ]; then VID_REV="$(cat "$VID_MODEL_DIR/refs/main")"; fi
+  [[ "$VID_REV" =~ ^[0-9a-f]{40}$ ]] || VID_REV=""
+  if [ -z "$VID_REV" ]; then
+    if [ "$VID_MODEL" = "MiniMaxAI/MiniMax-H3" ]; then
+      VID_REV="$(grep -m1 -oE '^VIDEO_MODEL_PIN_REV="[0-9a-f]{40}"' "$REPO_DIR/install-video.sh" | cut -d'"' -f2 || true)"
+    else VID_REV="main"; fi
+  fi
+  [ -n "$VID_REV" ] || die "no refs/main under $VID_MODEL_DIR and install-video.sh no longer defines its pin: re-run ./install-video.sh, it resumes"
+  HF_HOME="${VID_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 VID_MODEL="$VID_MODEL" VID_ALLOW="$VID_ALLOW" VID_REV="$VID_REV" \
+    "$VID_PY" - <<'PYVID' || die "the video checkpoint could not be verified or fetched (re-run to resume; set HF_TOKEN if it stalls; if the pinned revision was removed upstream, ./install-video.sh VIDEO_MODEL_REV=main re-pins it)"
 import os
+import re
 from huggingface_hub import snapshot_download
 repo = os.environ["VID_MODEL"]
+rev = os.environ["VID_REV"]
 allow = [p for p in os.environ["VID_ALLOW"].split() if p] or None
 try:
     # local_files_only first, so a complete cache answers without touching the
-    # network at all.
-    print(snapshot_download(repo, local_files_only=True, allow_patterns=allow))
+    # network at all; a full sha resolves straight from snapshots/, refs or no refs.
+    path = snapshot_download(repo, revision=rev, local_files_only=True, allow_patterns=allow)
 except Exception:
     print("not complete in the cache, fetching the rest", flush=True)
-    print(snapshot_download(repo, allow_patterns=allow))
+    path = snapshot_download(repo, revision=rev, allow_patterns=allow)
+print(path)
+# refs/main is what the offline unit resolves, and a download by sha never writes
+# it: create it when missing, repair it when it holds no commit hash (a corrupt ref
+# strands the unit offline whatever just succeeded here), never move a valid one
+# the installer or the pin watch will answer for. This runs on the local-cache
+# success too: that is the common path, and the ref can be exactly as absent there.
+if len(rev) == 40:
+    ref = os.path.join(os.path.dirname(os.path.dirname(path.rstrip("/"))), "refs", "main")
+    cur = open(ref).read().strip() if os.path.exists(ref) else ""
+    if cur != rev and not re.fullmatch(r"[0-9a-f]{40}", cur):
+        os.makedirs(os.path.dirname(ref), exist_ok=True)
+        with open(ref, "w") as f:
+            f.write(rev)
+        print(f"   refs/main -> {rev[:12]}", flush=True)
 PYVID
   # Which lane this box served, written down before it is disabled: install.sh
   # updates that lane on a later run, and enablement cannot tell it once all are off.

@@ -44,6 +44,47 @@ smoke test even when that lane was the video or llamacpp one, and `install-video
 refuses a `VIDEO_BIND=0.0.0.0` that would put a keyless generator on every interface.
 Each change is held by a test that fails on the previous revision and passes here.
 
+**The video lane's second review, in two passes: eleven defects found, eleven fixed.**
+Pass one (whole branch): the installer's smoke test POSTed a body without `task` and
+without `target`, which the lane 400s by construction (verified against the installed
+lane's own validator, not just the doc): every `./install.sh --with-video` would have
+booted the lane for fifteen minutes and then died on its own smoke test; the body now
+carries the cockpit's measured shape and a test parses it out of the script.
+`switch-model.sh` verified the checkpoint with `snapshot_download` without a
+`revision`, which resolves `main` over the network and repoints `refs/main` at the
+upstream tip before the first byte of a download lands, the offline unit included; it
+now fetches the sha `refs/main` holds (the installer's pin when the ref is missing,
+`main` only for a custom model), and writes the ref when it is absent or holds no
+commit hash, on the local-cache success too - never moving a valid one. A legal request
+(15 s at 720P on 100 steps, the UI's own caps) estimated about three hours, past the
+two hours the single-flight lock is held, which frees the lock while the lane still
+works and admits a second generation beside the first: the cost is now budgeted at
+admission on the two measured figures (3.05 and 7.65 s per step-second, decodes
+folded in, plus the ~10 % keyframes measured). The lock's watcher treats the lane's
+`missing` as terminal exactly as the synchronous poll does, and the smoke test's death
+paths print the journal their messages point at (`|| true`, or `set -e` silences the
+message itself). The Video tab's curl preview printed a body the lane refuses in both
+modes under a label promising "exactly what the button above sends"; it now shows the
+real forwarded body quoted with `shq`, minus the invented placeholder keyframe, and
+the cost line answers 720P with the 720P measurement. `SECURITY.md` line 160 is back
+to two-space continuation. Pass two (re-review of pass one's own fixes): the
+admission budget double-counted its decode and priced any canvas past 720P at the
+720P figure - it now answers the two measured rows exactly (4 s 480P says 10 min,
+measured 10:52) and refuses canvases past 1280x720 and ratios other than 16:9/9:16,
+the image lane's pixel-ceiling rule; the tab carried a *different* formula than the
+server (portrait sizes priced 2.6x apart), now the same numbers with a parity test
+that answers accept/refuse through both; a call refused 409 for a busy lane left its
+two staged keyframe PNGs on disk forever, retry after retry, now unlinked like the
+finally does; a run needing the hour-plus-the-watcher answered 504 and the tab threw
+the video id away, now it parks the id and shows the content URL that serves the MP4
+when the lane is done; the smoke's t2va body would have been run against ref2va or a
+custom model on a fifteen-minute boot, now skipped with a reason; a video lane's
+`HF_HOME` was missing from uninstall's cache inventory (145 GB unlisted, and the CI
+gate structurally blind to it); and three claims in the docs and the bench table (a
+refusal the tab does not make, a measured row called cookbook, a staging claim naming
+paths the cockpit does not use) are now true. Fifteen tests added or rewritten;
+the dashboard suite is 682, all green.
+
 ## v1.18.7 (2026-09-24): a full review of v1.18.6, and the defects it found fixed with a test each
 
 A line-by-line review of the whole repo at v1.18.6 (code, templates, tests, CI and docs)

@@ -56,7 +56,7 @@ the verified recipe.
 The unit serves one variant, `fl2va` by default: text-only requests plus first-frame,
 last-frame, or first+last-frame conditioning. The `ref2va` weights (reference
 image/audio/video conditioning) are the other checkpoint partition; `VIDEO_VARIANT=`
-installs the lane on them instead, and the tab refuses keyframes it cannot serve.
+installs the lane on them instead, and the cockpit refuses keyframes it cannot serve.
 
 Video and audio are denoised jointly in one pass and muxed into one MP4: the sound is
 not dubbed afterwards, so the two stay in sync.
@@ -105,10 +105,24 @@ and on unified memory running out hangs the machine rather than failing the requ
 The cockpit refuses a second one in under a millisecond and says why. That is caution,
 not a measurement: re-measure with two overlapping calls before ever lifting it.
 
-The tab refuses before anything leaves the box: no prompt, a duration outside 4 to 15 s
-(the cookbook's band), more than one video per call, an unknown task, keyframes on the
-`ref2va` weights, a malformed keyframe, and anything the model does not declare (a LoRA
-path, an output path, a kwargs blob).
+The page itself refuses before anything leaves the box: no prompt, a duration outside
+4 to 15 s (the cookbook's band), steps outside 1 to 100, and a call whose measured cost
+passes two hours. The cockpit refuses the rest: more than one video per call, an
+unknown task, keyframes on the `ref2va` weights, a malformed keyframe, anything the
+model does not declare (a LoRA path, an output path, a kwargs blob), a ratio other than
+16:9 or 9:16, and a canvas past 1280x720 — the image lane's `IMAGE_MAX_PIXELS` rule,
+because the largest canvas measured here peaks at 81.9 GB of 121.6 and past it the cost
+is a guess and the OOM is a certain one.
+
+The lock is held for up to two hours: one hour holding the call open, then the hand-off
+watcher taking it back from the lane once the generation ends. So a call estimated past
+two hours is refused at admission — cost is linear in step-seconds at the sizes
+measured here, 3.05 s each at 480P and 7.65 at 720P (the decodes folded in), plus the
+~10 % a keyframe conditioning measured; the tab carries the same numbers and refuses the
+same calls, a parity test holds the two files equal. A call that outlives the hour of
+waiting answers 504 with its video id kept: the tab shows the content URL, which serves
+the MP4 the moment the lane is done. The same two hours is why an interrupted or long
+request never lets a second generation start beside the first.
 
 Licence: MiniMax-H3 ships under its own licence. Read it before commercial use.
 
@@ -133,4 +147,6 @@ about 11 min with the download proven, continuing the frame's scene; a 4 s 720P
 completed in about 25 min (server reports 1280x704 for a 1280x720 ask), peak memory
 81934 MB against 9242 MB at 480P: pixels cost far more than linear here, and 720P is
 near what this box holds. The Video tab's cost table keeps the cookbook figures
-where this file has no row yet.
+where this file has no row yet. The cost estimate extrapolates these two rows linearly
+in step-seconds to the tab's caps (15 s, 100 steps); the 720P row is all-in, so its
+denoise/decode split is one assumed number, and 15 s runs are not yet timed here.

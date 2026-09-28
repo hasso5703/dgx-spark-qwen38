@@ -157,7 +157,7 @@ discussion, not a disclosure.
   readable by anything that can reach the proxy port. That is the port's
   existing trust model (a trusted network by design, see the plain HTTP edge
   above); the metrics endpoint adds counters to it, not a new surface to
-   authenticate against. The image and video lanes export no metrics.
+  authenticate against. The image and video lanes export no metrics.
 - **The cockpit assumes one admin user.** The sudo allowlist covers this
   repo's argv, but a hostile local user with your shell can do what you can
   do: this box is yours, and it is not a multi-tenant host.
