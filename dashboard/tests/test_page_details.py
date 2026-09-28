@@ -440,9 +440,11 @@ class AVideoLaneIsNotNamedAfterItsOwnModel(unittest.TestCase):
     The video unit is named after the model it serves, and the target short said it again."""
 
     def test_the_label_says_the_model_once(self):
+        # both lanes in the ONE rLifecycle: it replaces F.life whole, and the label
+        # only sees a target while its unit is in the snapshot it replaced
         r = run(self, r"""
-        rLifecycle(life({'qwen38-video.service': eng('ready', {target: 'video'})}));
-        rLifecycle(life({'qwen38-image.service': eng('ready', {target: 'image'})}));
+        rLifecycle(life({'qwen38-video.service': eng('ready', {target: 'video'}),
+                        'qwen38-image.service': eng('ready', {target: 'image'})}));
         report([laneLabel('qwen38-video.service'), laneLabel('qwen38-image.service')]);
         """)
         self.assertEqual(r, ["MiniMax-H3", "Qwen-Image 2.1"])

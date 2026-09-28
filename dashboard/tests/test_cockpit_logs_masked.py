@@ -31,7 +31,10 @@ class TheLogs(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("cockpit_logs_masked", DASH / "cockpit.py")
         cls.cp = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.cp)
-        banner = (f"[2026-09-24] server_args=ServerArgs(model_path='x', 'api_key': '{KEY}', port=30000)\n"
+        # The key is printed in two colour runs: masking before the strip would weld the
+        # halves back into a whole key and answer it to the page (security review 2026-09-28).
+        banner = (f"[2026-09-24] server_args=ServerArgs(model_path='x', 'api_key': "
+                  f"'{KEY[:3]}\x1b[31m{KEY[3:]}', port=30000)\n"
                   "\x1b[32mINFO\x1b[0m: ready \x1b[1;1mone\x1b[m\n")
         cls.cp.run = lambda argv, timeout=5.0, merge_err=False: banner
         cls.srv = cls.cp.Server(("127.0.0.1", 0), cls.cp.Handler)

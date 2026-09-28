@@ -3345,12 +3345,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # The key's value, masked as the bundle masks it: SGLang prints its ServerArgs at
             # boot, 'api_key' included, and for the first minutes of a boot that line was in
             # what this tab showed (found in review, 2026-09-24).
+            # The video lane's container logs in colour and the journal keeps the escape
+            # bytes; in a <pre> they are noise (QA of the live page, 2026-09-28). Stripped
+            # BEFORE the key is masked: a key printed across two colour runs is split by
+            # the escapes, and masking first would let the strip weld the halves back into
+            # a whole key (found by the branch's security review the same day).
+            txt = re.sub(r"\x1b\[[0-?;]*[@-~]", "", txt)
             key = api_key()
             if key:
                 txt = txt.replace(key, "<masked>")
-            # The video lane's container logs in colour and the journal keeps the escape
-            # bytes; in a <pre> they are noise (QA of the live page, 2026-09-28).
-            txt = re.sub(r"\x1b\[[0-?;]*[@-~]", "", txt)
             return self.send_json({"name": name,
                                    "lines": txt.splitlines()[-120:]})
         if path.startswith("/api/jobs/"):
