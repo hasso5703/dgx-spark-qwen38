@@ -452,11 +452,15 @@ class ASilenceIsNotAnAnswer(Base):
 
     def test_a_watcher_blind_from_the_start_waits_on_deaths_not_on_tuples(self):
         """With no baseline read at all, only systemd's own verdicts (inactive,
-        failed, a unit that answers as gone) end the wait; the lane's list still
-        carries the real status meanwhile."""
+        failed, a unit that answers as gone) end the wait: an "active" arriving
+        after the silence must not read as a different run. Reverting the
+        predicate to the bare tuple compare turns this call into a 503 over a
+        job the spy still shows queued (the review's mutation proved it)."""
         silent = self.ck.Ran("")
         silent.ok = False
-        self.ck.run = lambda argv, timeout=5.0, merge_err=False: silent
+        seq = iter([silent])
+        self.ck.run = lambda argv, timeout=5.0, merge_err=False: next(
+            seq, "ActiveState=active\nInvocationID=aaa\n")
         self.addCleanup(setattr, self.ck, "run", lambda argv, timeout=5.0, merge_err=False: "")
         self.spy.statuses = ["queued", "completed"]
         code, out = self.call({"prompt": "a cat"})
