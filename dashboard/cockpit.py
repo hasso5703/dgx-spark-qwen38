@@ -278,7 +278,7 @@ def engine_load(timeout: float = 3.0):
         running, waiting = int(r.get("num_running_reqs") or 0), int(r.get("num_waiting_reqs") or 0)
         total, used = int(r.get("num_total_tokens") or 0), int(r.get("num_used_tokens") or 0)
         rows.append({"dp_rank": r.get("dp_rank", 0), "num_reqs": running + waiting,
-                     "num_waiting_reqs": waiting, "num_tokens": total,
+                     "num_waiting_reqs": waiting, "num_tokens": total, "num_used_tokens": used,
                      "num_pending_tokens": total - used})
     return rows
 
@@ -683,7 +683,7 @@ def collect_decode_telemetry():
 @guard
 def collect_feed():
     """Last requests seen by the keepalive proxy: client, path, size, outcome, guard detail."""
-    raw = run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "200",
+    raw = run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "800",
                "--no-pager", "-o", "short-iso"], timeout=6)
     return {"node_id": "local", "rows": lc.parse_feed(raw)}
 

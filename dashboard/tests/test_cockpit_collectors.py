@@ -730,7 +730,8 @@ class TheEngineIsAskedItsCurrentRoutes(Base):
     def test_a_current_engine_gives_the_old_shape_from_the_new_route(self):
         seen = self.engine({"/v1/loads?include=core", "/server_info"})
         self.assertEqual(self.cp.engine_load(), [{"dp_rank": 0, "num_reqs": 3, "num_waiting_reqs": 1,
-                                                  "num_tokens": 500, "num_pending_tokens": 100}])
+                                                  "num_tokens": 500, "num_used_tokens": 400,
+                                                  "num_pending_tokens": 100}])
         self.assertEqual(self.cp.engine_server_info(timeout=3)["max_total_num_tokens"], 900000)
         self.assertEqual(seen, ["/v1/loads?include=core", "/server_info"], "a deprecated route was asked")
 

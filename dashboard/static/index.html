@@ -249,12 +249,17 @@
   /* The numeric columns get just enough for their widest value; the two text
      columns (path, outcome) split whatever is left, so the outcome chip and its
      token line never stack or clip inside the ~600px the split grid leaves. */
+  #feedtable{table-layout:fixed; width:100%}
   #feedtable th:nth-child(1){width:74px} #feedtable th:nth-child(2){width:62px}
   #feedtable th:nth-child(4){width:64px} #feedtable th:nth-child(5){width:60px}
   #feedtable td{padding-left:7px; padding-right:7px}
   #feedtable td:nth-child(1), #feedtable td:nth-child(2),
   #feedtable td:nth-child(4), #feedtable td:nth-child(5){white-space:nowrap}
-  #feedtable td:nth-child(3){overflow-wrap:normal}
+  /* A remote client shows its full address in column 2 and long paths live in
+  column 3: without clipping both overflow their cell and print on top of each
+  other (seen live, 2026-09-29). The full strings stay in the title tooltips. */
+  #feedtable td:nth-child(2){overflow:hidden; text-overflow:ellipsis}
+  #feedtable td:nth-child(3){overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 
   .btn{border:1px solid color-mix(in srgb, var(--acc) 60%, transparent); color:var(--acc); background:color-mix(in srgb, var(--acc) 8%, transparent);
        border-radius:var(--r-ctl); padding:7px 14px; font-size:12.5px; font-weight:650; cursor:pointer; white-space:nowrap;

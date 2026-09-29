@@ -44,6 +44,23 @@ smoke test even when that lane was the video or llamacpp one, and `install-video
 refuses a `VIDEO_BIND=0.0.0.0` that would put a keyless generator on every interface.
 Each change is held by a test that fails on the previous revision and passes here.
 
+**Cockpit display coherence: one definition of in flight, physical pool numbers.**
+Seen live with eight reviewers on the lane: the rail badge said 7 while the Requests
+tab said 6, and the pool read 106 % of capacity. Three separate causes, all in the
+display, none in the serving. First, the feed keyed requests by peer, so two turns
+sharing a keep-alive connection collapsed into one row (and the first end line marked
+the second request as done): starts now open their own record and ends close the
+newest still-open one. Second, the badge read the engine's running-plus-waiting while
+the tab read the proxy's open rows: the badge now counts the same live rows as the
+header chip and the table. Third, the pool bar compared the requests' summed context
+lengths (shared prefixes counted once per request) against physical slots: bars and
+big numbers now use the physical count the engine reports, with the logical total
+kept as a sharing note, and "Tokens in KV" reads physical too. The feed window grows
+200 to 800 journal lines so a long request's start survives it, and long client
+addresses and paths clip with ellipsis (full strings in the tooltips) instead of
+printing over each other. Each change is held by a test that fails on the previous
+revision and passes here.
+
 **The video lane's second review, in two passes: eleven defects found, eleven fixed.**
 Pass one (whole branch): the installer's smoke test POSTed a body without `task` and
 without `target`, which the lane 400s by construction (verified against the installed

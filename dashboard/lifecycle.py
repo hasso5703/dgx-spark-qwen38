@@ -463,12 +463,31 @@ def outcome_kind(outcome: str) -> str:
     return "fail"
 
 
+def _feed_open(records: list[dict], method: str | None = None,
+               path: str | None = None) -> dict | None:
+    """Newest still-open record for one peer, preferring the same route.
+
+    Two requests can share a peer: a reused keep-alive connection serves them
+    one after the other, and multiplexing serves them side by side. The old
+    single record per peer let the second start overwrite the first, then let
+    the first end mark the second as done (found live, 2026-09-29: the feed
+    showed 6 in flight for 7 requests on the engine)."""
+    open_recs = [r for r in records if r["outcome"] == "in flight"]
+    if method is not None or path is not None:
+        same = [r for r in open_recs
+                if (method is None or r.get("method") == method)
+                and (path is None or r.get("path") == path)]
+        if same:
+            return same[-1]
+    return open_recs[-1] if open_recs else None
+
+
 def parse_feed(raw: str, last: int = 25) -> list[dict]:
     """journalctl text of the keepalive proxy -> the last requests: client, path,
     size, outcome, seconds, and the guard's detail when it counted the prompt
     (tokens counted vs the lane's limit) so a 400 explains itself."""
-    reqs: dict[str, dict] = {}
-    order: list[str] = []
+    reqs: dict[str, list[dict]] = {}
+    order: list[tuple[str, int]] = []
     latest_ts = None
     for ln in raw.splitlines():
         ts = ln[:19]
@@ -477,21 +496,27 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
         m = FEED_START.search(ln)
         if m:
             peer = m.group(1)
-            reqs[peer] = {"ts": ts, "peer": peer, "path": m.group(3), "bytes": int(m.group(4)),
-                          "outcome": "in flight", "kind": "live", "secs": None, "detail": None}
-            order.append(peer)
+            rec = {"ts": ts, "peer": peer, "method": m.group(2), "path": m.group(3),
+                   "bytes": int(m.group(4)),
+                   "outcome": "in flight", "kind": "live", "secs": None, "detail": None}
+            reqs.setdefault(peer, []).append(rec)
+            order.append((peer, len(reqs[peer]) - 1))
             continue
         m = FEED_REFUSED.search(ln)
         if m and m.group(1) in reqs:
-            reqs[m.group(1)]["detail"] = f"{m.group(2)}, limit {int(m.group(3)):,}"
+            r = _feed_open(reqs[m.group(1)]) or reqs[m.group(1)][-1]
+            r["detail"] = f"{m.group(2)}, limit {int(m.group(3)):,}"
             continue
         m = FEED_FIT.search(ln)
         if m and m.group(1) in reqs:
-            reqs[m.group(1)]["detail"] = f"{int(m.group(2)):,} tokens counted, fits ({int(m.group(3)):,} usable)"
+            r = _feed_open(reqs[m.group(1)]) or reqs[m.group(1)][-1]
+            r["detail"] = f"{int(m.group(2)):,} tokens counted, fits ({int(m.group(3)):,} usable)"
             continue
         m = FEED_END.search(ln)
         if m and m.group(1) in reqs:
-            r = reqs[m.group(1)]
+            r = _feed_open(reqs[m.group(1)], m.group(2), m.group(3))
+            if r is None:
+                continue
             r["outcome"] = m.group(4)[:40]
             r["kind"] = outcome_kind(r["outcome"])
             r["secs"] = float(m.group(5))
@@ -505,17 +530,18 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
         except ValueError:
             latest = None
         if latest:
-            for r in reqs.values():
-                if r["outcome"] != "in flight":
-                    continue
-                try:
-                    age = (latest - datetime.fromisoformat(r["ts"])).total_seconds()
-                except ValueError:
-                    continue
-                if age > 600:
-                    r["outcome"] = "no end logged"
-                    r["kind"] = "unknown"
-    return [reqs[p] for p in order[-last:]]
+            for records in reqs.values():
+                for r in records:
+                    if r["outcome"] != "in flight":
+                        continue
+                    try:
+                        age = (latest - datetime.fromisoformat(r["ts"])).total_seconds()
+                    except ValueError:
+                        continue
+                    if age > 600:
+                        r["outcome"] = "no end logged"
+                        r["kind"] = "unknown"
+    return [reqs[p][i] for p, i in order[-last:]]
 
 
 # ── zombie guard: what a client that gave up cost the engine (pure) ─────────

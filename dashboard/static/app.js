@@ -380,10 +380,16 @@ function textReady(){
 const imageServing = () => { const s = servingEngine(); return !!s && s[0] === IMAGE_UNIT; };
 const videoServing = () => { const s = servingEngine(); return !!s && s[0] === VIDEO_UNIT; };
 const diffusionServing = () => imageServing() || videoServing();
+// Physical pool occupancy: the engine dedupes shared prefixes, so the sum of
+// the requests' context lengths (l.num_tokens, "logical") can read past the
+// pool while the pool itself never overflows. Bars and big numbers use the
+// physical count; the logical one stays visible as proof the sharing works.
+function physTokens(l){ return (l.num_used_tokens != null ? l.num_used_tokens : l.num_tokens) || 0; }
+function logiTokens(l){ return l.num_tokens || 0; }
 function rPool(){
   const l = F.load || {};
   if (!F.pool){ setText('poollab', 'waiting for the engine'); $('poolfill').style.width = '0%'; setText('poolnote', 'the pool size arrives with the engine (max_total_num_tokens at boot)'); return; }
-  const held = l.num_tokens || 0, pct = 100 * held / F.pool;
+  const held = physTokens(l), pct = 100 * held / F.pool;
   setText('poollab', fmtN(held) + ' / ' + fmtN(F.pool) + ' tokens');
   $('poolfill').style.width = Math.min(100, pct).toFixed(1) + '%';
   $('poolgauge').className = 'gauge' + (pct > 90 ? ' crit' : pct > 70 ? ' warn' : '');
@@ -399,7 +405,8 @@ function rReservoir(){
     const lg = $('reslegend'); clear(lg); lg.append(el('span', null, 'the pool size arrives with the engine (max_total_num_tokens at boot)'));
     return;
   }
-  const held = l.num_tokens || 0, single = singleLimit(), scale = Math.max(F.window, F.pool), pct = 100 * held / F.pool;
+  const held = physTokens(l), logical = logiTokens(l);
+  const single = singleLimit(), scale = Math.max(F.window, F.pool), pct = 100 * held / F.pool;
   const big = $('resbig'); clear(big); big.classList.remove('skel');
   big.append(fmtN(held)); big.append(el('small', null, `of ${fmtN(F.pool)} tokens`));
   $('rescapzone').style.width = (100 * F.pool / scale).toFixed(2) + '%';
@@ -410,6 +417,9 @@ function rReservoir(){
   const lg = $('reslegend'); clear(lg);
   const span = (a, b, c) => { const s = el('span'); if (a) s.append(a); s.append(el('b', null, b)); s.append(c); return s; };
   lg.append(span('', pct.toFixed(0) + '%', ' held' + ((l.num_reqs || 0) ? ` by ${l.num_reqs} request${l.num_reqs > 1 ? 's' : ''}` : '')));
+  // The requests' summed context lengths ("logical") can read past the pool:
+  // shared prefixes live once in the pool but once per request in the sum.
+  if (logical > held) lg.append(span('logical ', fmtN(logical), ` (${fmtN(logical - held)} shared)`));
   lg.append(span('one prompt tops out near ', fmtK(single), ' (tick)'));
   lg.append(span('capacity ', fmtK(F.pool), ' at these memory settings'));
   lg.append(F.window > F.pool ? span('model window ', fmtK(F.window), ': the hatched zone never fits')
@@ -429,10 +439,12 @@ function rEngineFast(d){
   F.load = l; rPool(); rReservoir(); rLanePill();
   setText('reqrun', noEngine ? 'no engine' : (l.num_reqs ?? '...'));
   setText('reqwait', noEngine ? 'no engine' : (l.num_waiting_reqs ?? '...'));
-  setText('reqtok', noEngine ? 'no engine' : fmtN(l.num_tokens ?? 0));
+  setText('reqtok', noEngine ? 'no engine' : fmtN(physTokens(l)));
   setChip('loadchip', noEngine ? 'no engine' : (l.num_reqs || 0) > 0 ? `${l.num_reqs} running` : 'idle',
           noEngine ? '' : (l.num_reqs || 0) > 0 ? 'flash live' : '');
-  badge('requests', (l.num_reqs || 0) > 0 ? String(l.num_reqs) : '', '');
+  // The rail badge counts what the Requests tab counts: the proxy feed's live
+  // rows, set in rFeed from the same array. It used to show the engine's
+  // running+waiting here, so the rail said 7 while the tab said 6.
   if (noEngine){   // a flat line at zero reads as "quiet", not as "there is nothing here"
     series.req = [];
     const c = $('reqspark'); if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
@@ -557,7 +569,7 @@ function rFeed(d){
     // shows its full address. The full peer stays in the tooltip.
     c1.textContent = r.peer.startsWith('127.0.0.1:') ? ':' + r.peer.split(':').pop() : r.peer;
     c1.title = r.peer;
-    tr.insertCell().textContent = r.path;
+    const cpath = tr.insertCell(); cpath.textContent = r.path; cpath.title = r.path;
     const c2 = tr.insertCell(); c2.textContent = r.bytes >= 1024 ? (r.bytes / 1024).toFixed(0) + ' KB' : r.bytes + ' B'; c2.className = 'r num';
     const c3 = tr.insertCell(); c3.textContent = r.secs != null ? r.secs.toFixed(1) + ' s' : ''; c3.className = 'r num';
     // The kind comes from the server (lifecycle.outcome_kind), so the UI never
@@ -574,6 +586,8 @@ function rFeed(d){
   });
   const inflight = rows.filter(r => r.outcome === 'in flight').length;
   setChip('feedchip', inflight ? inflight + ' in flight' : rows.length ? 'idle' : 'no request yet', inflight ? 'flash live' : '');
+  // Same rows, same count: rail badge, header chip and table agree by construction.
+  badge('requests', inflight ? String(inflight) : '', '');
   if (!rows.length){ const tr = tb.insertRow(); const c = tr.insertCell(); c.colSpan = 6; c.className = 'empty'; c.textContent = 'no request has gone through the proxy yet (agent clients use :30001)'; }
 }
 function rGuard(d){

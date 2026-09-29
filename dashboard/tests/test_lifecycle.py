@@ -577,6 +577,29 @@ class FeedOutcomes(unittest.TestCase):
                          "POST /v1/chat/completions body=42b")
         self.assertEqual(lc.parse_feed(later)[0]["kind"], "unknown")
 
+    def test_two_requests_sharing_a_peer_stay_two_requests(self):
+        """A reused keep-alive connection serves turns one after the other under
+        the same ip:port. The old single record per peer let the second start
+        overwrite the first, then let the first end mark the second as done:
+        the feed showed 6 in flight for 7 requests on the engine (found live,
+        2026-09-29, eight reviewers on one proxy)."""
+        def line(ts, text):
+            return f"2026-09-29T10:{ts}+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 {text}"
+        raw = "\n".join([
+            line("00:00", "-> POST /v1/chat/completions body=100b"),
+            line("00:01", "POST /v1/chat/completions ok in 1.0s"),
+            line("00:02", "-> POST /v1/chat/completions body=100b"),
+        ])
+        rows = lc.parse_feed(raw)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual((rows[0]["outcome"], rows[0]["kind"]), ("ok", "ok"))
+        self.assertEqual((rows[1]["outcome"], rows[1]["kind"]), ("in flight", "live"))
+        # the first end must not touch the second request: end lines name the
+        # newest still-open record, and an end with nothing open is ignored
+        rows = lc.parse_feed(raw + "\n" + line("00:03", "POST /v1/chat/completions ok in 1.0s"))
+        self.assertEqual([(r["outcome"], r["kind"]) for r in rows],
+                         [("ok", "ok"), ("ok", "ok")])
+
 
 class MutantsThatSurvived(unittest.TestCase):
     """Written from a mutation run, not from imagination.
