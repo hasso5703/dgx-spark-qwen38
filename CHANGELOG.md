@@ -61,7 +61,7 @@ addresses and paths clip with ellipsis (full strings in the tooltips) instead of
 printing over each other. Each change is held by a test that fails on the previous
 revision and passes here.
 
-**The video lane's second review, in two passes: eleven defects found, eleven fixed.**
+**The video lane's second review, in two passes: fifteen defects found, fifteen fixed.**
 Pass one (whole branch): the installer's smoke test POSTed a body without `task` and
 without `target`, which the lane 400s by construction (verified against the installed
 lane's own validator, not just the doc): every `./install.sh --with-video` would have
@@ -82,7 +82,8 @@ folded in, plus the ~10 % keyframes measured). The lock's watcher treats the lan
 paths print the journal their messages point at (`|| true`, or `set -e` silences the
 message itself). The Video tab's curl preview printed a body the lane refuses in both
 modes under a label promising "exactly what the button above sends"; it now shows the
-real forwarded body quoted with `shq`, minus the invented placeholder keyframe, and
+real forwarded body shape quoted with `shq` (the keyframe URIs stay placeholders:
+the cockpit stages random names), and
 the cost line answers 720P with the 720P measurement. `SECURITY.md` line 160 is back
 to two-space continuation. Pass two (re-review of pass one's own fixes): the
 admission budget double-counted its decode and priced any canvas past 720P at the
@@ -123,8 +124,8 @@ unit included), and the rollback guard now really disables the competing units a
 switch, llama.cpp's included; and where the template comment and the docs promised a
 stop that waits out the generation, the journal shows all seven stops cancelling the
 task and finishing under a second, the numbers are the journal's: 592 s at the
-50-step default, 11.1 s per step. Sixteen tests added or rewritten; the dashboard
-suite grew by ten tests and the switch's room file by three, all green, `ci-local` 45 ok.
+50-step default, 11.1 s per step. Seventeen tests added or rewritten: thirteen new
+(ten dashboard, three switch) and four pins rewritten, all green, `ci-local` 45 ok.
 
 ## v1.18.7 (2026-09-24): a full review of v1.18.6, and the defects it found fixed with a test each
 

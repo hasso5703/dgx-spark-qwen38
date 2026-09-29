@@ -2427,10 +2427,16 @@ VIDEO_UNIT_PATH = Path("/etc/systemd/system/qwen38-video.service")
 # A prompt plus two keyframes at most; the MP4 itself travels back as a download,
 # never inside a JSON body.
 VIDEO_MAX_POST = 10 * 1024 * 1024
+# The download the other way has no such cap in the route: a lane answering a
+# gigabyte would park it whole in this process's RAM, on unified memory shared
+# with the GPU. Legal calls return tens of megabytes; past a gigabyte it is
+# abuse or corruption, refused before or during the read (review, 2026-09-29).
+VIDEO_CONTENT_MAX_BYTES = 1 << 30
 # About 12 min per 4 s 480P request on the reference box, plus the queue ahead of it
 # and the download after: a call past this stops waiting here, not on the lane (which
-# has no abort and goes on). 60 min covers the cookbook's longest official duration
-# (15 s). The cookbook's duration band is 4 to 15 s.
+# has no abort and goes on). 60 min covers the cookbook shapes at 480P; a legal 720P
+# call at 50 steps outruns it (7.65 s per step-second) and goes 504 plus hand-off.
+# The cookbook's duration band is 4 to 15 s.
 VIDEO_TIMEOUT = 3600.0
 # This lane serves ONE request at a time, and that is caution, not a measurement: the
 # cookbook sizes one 480P request near what this box holds, and on unified memory
@@ -2464,10 +2470,17 @@ def _video_unit_text() -> str:
 
 
 def _video_unit_flag(flag: str, fallback: str) -> str:
-    """What the installed unit passes, not what this file assumes."""
+    """What the installed unit passes, not what this file assumes. Only real
+    directives count: a comment naming the flag must not win, and a flag left
+    with no value must fall back instead of raising (review, 2026-09-29)."""
     for line in _video_unit_text().splitlines():
-        if flag in line:
-            return line.split(flag, 1)[1].split()[0]
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        if flag in text:
+            parts = text.split(flag, 1)[1].split()
+            if parts:
+                return parts[0]
     return fallback
 
 
@@ -2586,6 +2599,11 @@ def _video_cut(t0: float) -> tuple[int, dict]:
     """The answer for a request whose run of the lane ended under it."""
     ex = _video_exit()
     secs = round(time.time() - t0, 2)
+    if not ex:
+        # systemd said nothing at all: the clean stop the 503 names cannot be
+        # proven, so read it as the crash it may be (review, 2026-09-29).
+        return 502, {"error": VIDEO_CRASHED.format(result="systemd answered nothing"),
+                     "crashed": True, "seconds": secs}
     if ex.get("SubState") == "auto-restart" or ex.get("Result") in VIDEO_CRASH_RESULTS:
         return 502, {"error": VIDEO_CRASHED.format(result=ex.get("Result") or "died"), "crashed": True,
                      "seconds": secs}
@@ -2621,6 +2639,28 @@ VIDEO_ALLOWED = {"model", "prompt", "seconds", "size", "task", "target", "qualit
                  "audio_flow_shift", "seed"}
 
 
+# What counts as finished on the lane's list: anything else found there is a
+# generation in flight, including a status this cockpit has never seen (a new
+# lane version must refuse, not double-book).
+_VIDEO_DONE = ("completed", "failed", "error", "cancelled", "missing")
+
+
+def _video_lane_busy() -> bool:
+    """Is another generation already on the lane? The lock is per-process: it
+    cannot see a generation an older cockpit left behind, so admission asks the
+    lane itself. Silence is not an answer here either: a down lane holds no
+    jobs, and the create and poll paths already handle a lane that says nothing
+    (found in review, 2026-09-29: a cockpit restart orphaned a queued job the
+    sweep then deleted, and the new process happily generated beside it)."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(video_base() + "/v1/videos"),
+                                    timeout=20) as r:
+            items = json.loads(r.read().decode()).get("data", [])
+    except Exception:                               # noqa: BLE001 (lane down: nothing alive)
+        return False
+    return any(v.get("status", "unknown") not in _VIDEO_DONE for v in items)
+
+
 def _video_list_entry(vid: str) -> tuple:
     """This video's (status, progress) from the lane's list. Progress is the lane's
     own 0-100, or None when the lane says nothing ("unknown") or nothing about this
@@ -2635,11 +2675,6 @@ def _video_list_entry(vid: str) -> tuple:
         if v.get("id") == vid:
             return v.get("status", "unknown"), v.get("progress")
     return "missing", None
-
-
-def _video_list_status(vid: str) -> str:
-    """This video's status from the lane's list, or "unknown" when the lane says nothing."""
-    return _video_list_entry(vid)[0]
 
 
 def _release_video_lock_when_done(life0: tuple, vid: str, timeout: float,
@@ -2658,7 +2693,14 @@ def _release_video_lock_when_done(life0: tuple, vid: str, timeout: float,
         while time.time() < deadline:
             if _run_over(_video_life(), life0):
                 return
-            if _video_list_status(vid) in ("completed", "failed", "error", "cancelled", "missing"):
+            st, progress = _video_list_entry(vid)
+            # The parked page reads VIDEO_LAST: without these two writes the
+            # progress bar and the status freeze at the hand-off minute until
+            # the watcher clears them, up to an hour later (review, 2026-09-29).
+            VIDEO_LAST["status"] = st
+            if isinstance(progress, (int, float)):
+                VIDEO_LAST["progress"] = progress
+            if st in ("completed", "failed", "error", "cancelled", "missing"):
                 return
             time.sleep(VIDEO_POLL_S)
     finally:
@@ -2682,6 +2724,13 @@ def video_call(payload: dict) -> tuple[int, dict]:
         # the cookbook's duration band: 4 to 15 s
         return 400, {"error": "seconds is a whole number from 4 to 15"}
     fields["seconds"] = secs
+    if "seed" in fields and not re.fullmatch(r"\d+", str(fields["seed"])):
+        if fields["seed"] != "":
+            # the page refuses the rest first, but an API call is not the page: a
+            # seed the lane would read as random must not ride out silently
+            # (found in review, 2026-09-29).
+            return 400, {"error": "seed is a whole number, or empty for a random one"}
+        del fields["seed"]
     steps = fields.get("num_inference_steps")
     if steps is not None and (isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 100):
         # same bound the image lane enforces: past it a call outlives the timeout
@@ -2837,6 +2886,18 @@ def video_call(payload: dict) -> tuple[int, dict]:
     t0 = time.time()
     life0 = _video_life()
     handed_over = [False]
+    if _video_lane_busy():
+        # Not ours: the lock is per-process, so a generation an older cockpit
+        # left behind (restart, crash) is invisible to the acquire above. Asking
+        # the lane keeps two generations from ever running beside each other.
+        for path in keyframe_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        VIDEO_LOCK.release()
+        return 409, {"error": "the lane is already generating a video left behind "
+                              "by an earlier call. Wait for it to finish."}
     try:
         req = urllib.request.Request(video_base() + "/v1/videos",
                                      json.dumps(fields).encode(),
@@ -2927,7 +2988,17 @@ def video_content(vid: str) -> tuple[int, bytes, str]:
     try:
         req = urllib.request.Request(video_base() + f"/v1/videos/{vid}/content")
         with urllib.request.urlopen(req, timeout=300) as r:
-            return 200, r.read(), r.headers.get("Content-Type", "video/mp4")
+            declared = r.headers.get("Content-Length")
+            if declared is not None:
+                try:
+                    if int(declared) > VIDEO_CONTENT_MAX_BYTES:
+                        return 413, b"", ""
+                except ValueError:
+                    pass
+            data = r.read(VIDEO_CONTENT_MAX_BYTES + 1)
+            if len(data) > VIDEO_CONTENT_MAX_BYTES:
+                return 413, b"", ""
+            return 200, data, r.headers.get("Content-Type", "video/mp4")
     except urllib.error.HTTPError as e:
         return e.code, b"", ""
     except Exception:                                   # noqa: BLE001 (isolated route)
@@ -3603,8 +3674,13 @@ class Server(ar.BoundedThreadingMixIn, http.server.HTTPServer):
 
 def _sweep_staged_frames() -> None:
     """A cockpit killed mid-call leaves that call's staged keyframes behind, and no
-    hand-off watcher outlives the process that made it; a fresh cockpit owns no
-    calls, so nothing these files can still be needed by (review, 2026-09-28)."""
+    hand-off watcher outlives the process that made it. But the lane outlives a
+    cockpit restart, and a job still queued there names its staged files: sweeping
+    blind would fail it. So the sweep stands down while the lane shows a live job
+    (a down lane holds none), and the admission check above refuses new calls
+    until that job is done (found in review, 2026-09-29)."""
+    if _video_lane_busy():
+        return
     for stale in CONFIG_DIR.glob("qwen38-*-frame-*.png"):
         try:
             stale.unlink()

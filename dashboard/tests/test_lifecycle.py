@@ -600,6 +600,97 @@ class FeedOutcomes(unittest.TestCase):
         self.assertEqual([(r["outcome"], r["kind"]) for r in rows],
                          [("ok", "ok"), ("ok", "ok")])
 
+    def test_an_end_with_nothing_open_is_ignored(self):
+        """A duplicate end line (or one for a start the journal window lost)
+        must leave the completed record alone instead of rewriting it."""
+        def line(ts, text):
+            return f"2026-09-29T10:{ts}+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 {text}"
+        raw = "\n".join([
+            line("00:00", "-> POST /v1/chat/completions body=100b"),
+            line("00:01", "POST /v1/chat/completions ok in 1.0s"),
+            line("00:02", "POST /v1/chat/completions ok in 1.0s"),
+        ])
+        rows = lc.parse_feed(raw)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["outcome"], rows[0]["kind"], rows[0]["secs"]),
+                         ("ok", "ok", 1.0))
+
+    def test_an_end_naming_another_route_takes_the_open_one(self):
+        """Two requests multiplexed on one peer: the end line still closes the
+        newest still-open record when no open record has its route."""
+        def line(ts, text):
+            return f"2026-09-29T10:{ts}+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 {text}"
+        raw = "\n".join([
+            line("00:00", "-> POST /v1/chat/completions body=100b"),
+            line("00:01", "-> GET /v1/models body=0b"),
+            line("00:02", "POST /v1/other ok in 1.0s"),
+        ])
+        rows = lc.parse_feed(raw)
+        self.assertEqual([(r["path"], r["outcome"]) for r in rows],
+                         [("/v1/chat/completions", "in flight"),
+                          ("/v1/models", "ok")])
+
+    def test_an_end_closes_the_request_it_names_not_the_newest(self):
+        """Route matching is load-bearing, not decoration: swapping the method
+        and path groups, flipping == to !=, or turning either or into and must
+        all close the wrong record here (mutation walk, 2026-09-29)."""
+        def line(ts, text):
+            return f"2026-09-29T10:{ts}+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 {text}"
+        raw = "\n".join([
+            line("00:00", "-> POST /v1/a body=100b"),
+            line("00:01", "-> GET /v1/b body=100b"),
+            line("00:02", "POST /v1/a ok in 1.0s"),
+        ])
+        rows = lc.parse_feed(raw)
+        self.assertEqual([(r["path"], r["outcome"]) for r in rows],
+                         [("/v1/a", "ok"), ("/v1/b", "in flight")])
+
+    def test_feed_open_takes_the_route_parts_separately(self):
+        """_feed_open answers method-only and path-only calls from the parts
+        given: collapsing either or into and falls back to the newest record
+        instead (mutation walk, 2026-09-29). NOTE: `method is not None` flipped
+        to `is None` is genuinely equivalent and untestable: with both parts
+        missing the block and the fallback both answer the newest open record,
+        and parse_feed never calls it mixed any other way."""
+        a = {"outcome": "in flight", "method": "POST", "path": "/v1/a"}
+        b = {"outcome": "in flight", "method": "GET", "path": "/v1/b"}
+        recs = [a, b]
+        self.assertIs(lc._feed_open(recs, path="/v1/a"), a)
+        self.assertIs(lc._feed_open(recs, "POST"), a)
+        self.assertIs(lc._feed_open(recs), b)
+
+    def test_details_land_on_the_open_request_not_the_finished_one(self):
+        """A refused/fit line names only the peer: with an older request still
+        open beside a finished one, the detail belongs to the open one. `or`
+        turned into `and` would file it on the finished record."""
+        def line(ts, text):
+            return f"2026-09-29T10:{ts}+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 {text}"
+        raw = "\n".join([
+            line("00:00", "-> POST /v1/a body=100b"),
+            line("00:01", "-> POST /v1/b body=100b"),
+            line("00:02", "POST /v1/b ok in 1.0s"),
+            line("00:03", "REFUSED oversize (9b, 8 prompt tokens (counted by the engine), limit 7)"),
+            line("00:04", "oversize check: 6 tokens fit (7 usable of pool 9)"),
+        ])
+        rows = lc.parse_feed(raw)
+        self.assertIn("6 tokens counted", rows[0]["detail"])
+        self.assertIsNone(rows[1]["detail"])
+
+    def test_details_land_on_the_last_record_when_nothing_is_open(self):
+        """The `or [-1]` fallback is the only thing a late detail line has when
+        every record for the peer is finished: it attaches to the last one
+        instead of crashing."""
+        def line(ts, text):
+            return f"2026-09-29T10:{ts}+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 {text}"
+        raw = "\n".join([
+            line("00:00", "-> POST /v1/a body=100b"),
+            line("00:01", "POST /v1/a ok in 1.0s"),
+            line("00:02", "oversize check: 6 tokens fit (7 usable of pool 9)"),
+        ])
+        rows = lc.parse_feed(raw)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("6 tokens counted", rows[0]["detail"])
+
 
 class MutantsThatSurvived(unittest.TestCase):
     """Written from a mutation run, not from imagination.

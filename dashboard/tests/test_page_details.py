@@ -68,6 +68,18 @@ class TheVideoTabGuardsTheWire(unittest.TestCase):
         self.assertEqual(r["fits"], "")   # 57 x 15 x 7.65 x 1.1 = 7195: inside by 5 seconds
         self.assertEqual(r["small"], "")  # 480P keeps its full 100 steps
 
+    def test_a_missing_steps_field_does_not_throw(self):
+        """A guard written ($('vidsteps') || {}).value reads undefined off the
+        fallback and dies in .trim(): vidVal already answers '' for a missing
+        element (found in review, 2026-09-29)."""
+        r = run(self, r"""
+        $('vidprompt').value = 'a cat';
+        $('vidsteps').remove();
+        const problem = vidProblem();
+        report({problem});
+        """)
+        self.assertEqual(r["problem"], "")
+
 
 class TheParkedVideoSurvivesAReload(unittest.TestCase):
     """The 504's address only lived in one page run: an F5 during the second hour

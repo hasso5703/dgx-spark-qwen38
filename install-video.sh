@@ -9,8 +9,8 @@
 # install.sh runs this when it is given --with-video, which the one-liner passes
 # through:  curl -fsSL .../get.sh | bash -s -- --with-video
 #
-# WHY IT IS OPT-IN. The checkpoint (the fl2va partition plus the shared components)
-# and the runtime another 11, on top
+# WHY IT IS OPT-IN. The checkpoint (the fl2va partition plus the shared components,
+# about 145 GB, install-video.sh:108) and the runtime another 11, on top
 # of whatever the other lanes already hold. A box installed for text should not
 # silently grow about 150 GB. Once installed, a plain ./install.sh keeps and updates it.
 #
@@ -209,8 +209,9 @@ fi
 # wrote it at the pinned commit. The image lane carries two (an idle-loop wait and a
 # graceful-shutdown bound), and this lane deliberately does not: running this model
 # means the official SGLang and MiniMax recommendations, nothing added on top. The
-# honest consequences live in the unit template (a stop waits for the generation to
-# end, up to TimeoutStopSec) and in docs/video-lane.md.
+# honest consequences live in the unit template (a stop cancels the generation in
+# flight, measured under a second on all seven logged stops, with TimeoutStopSec as
+# a ceiling, not a wait) and in docs/video-lane.md.
 CURRENT="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
 if [ "$CURRENT" != "$PIN" ]; then
   git -C "$SRC" fetch --quiet origin "$PIN" 2>/dev/null || git -C "$SRC" fetch --quiet origin

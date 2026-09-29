@@ -244,7 +244,8 @@ TRANSITIONAL = BUSY_STATES - {"ready", "degraded", "orphan", "wedged"}
 # Every unit that holds the GPU pool while it runs. The image lane is one of them:
 # 31 GB of weights, and two engines at once on 121.6 GB of unified memory is the
 # livelock this whole module exists to prevent. The video lane is one of them too:
-# about 108 GB of weights, for the same reason.
+# about 116 GB of weights by measured components (48.09 + 61.73 + 0.56 + 5.2,
+# docs/video-lane.md), for the same reason.
 ENGINE_UNITS = ("qwen38-sglang.service", "qwen38-flash.service",
                 "qwen38-image.service", "qwen38-video.service")
 IMAGE_UNIT = "qwen38-image.service"

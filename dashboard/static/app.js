@@ -2797,7 +2797,7 @@ function vidProblem(){
   if (!(s >= 4 && s <= 15)) return 'Seconds is a whole number from 4 to 15.';
   if (!vidVal('vidprompt')) return 'A prompt is required.';
   if (vidMode === 'fl2v' && !vidFrames.first && !vidFrames.last) return 'Give a first frame, a last frame, or both.';
-  const rawSteps = ($('vidsteps') || {}).value.trim();
+  const rawSteps = vidVal('vidsteps');
   const steps = parseInt(rawSteps, 10);
   if (rawSteps && !(steps >= 1 && steps <= 100)) return 'Steps is a whole number from 1 to 100.';
   const rawSeed = vidVal('vidseed');
@@ -2907,9 +2907,9 @@ async function vidRun(){
   const p = vidProblem();
   if (p) return toast(p, 'warn');
   if (!VID_STATE.available) return toast('The video lane is not serving: start it first.', 'warn');
-  const secs = parseInt($('vidseconds').value, 10);
-  const steps = parseInt($('vidsteps').value, 10) || 50;
-  const size = $('vidsize').value;
+  const secs = parseInt(vidVal('vidseconds'), 10);
+  const steps = parseInt(vidVal('vidsteps'), 10) || 50;
+  const size = vidVal('vidsize');
   const seed = vidVal('vidseed');
   const payload = {prompt: vidVal('vidprompt'), seconds: secs, size,
                    num_inference_steps: steps};

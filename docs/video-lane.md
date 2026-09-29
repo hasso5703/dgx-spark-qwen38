@@ -38,8 +38,8 @@ Back is the same three moves the other way. From a terminal the switch is
 **Never two engines at once.** The video checkpoint (fl2va partition plus shared
 components) does not fit beside any serving
 lane. The cockpit refuses to start any engine while another one is busy, and says which
-one to stop, for all four lanes alike. The unit also carries `Conflicts=` with every
-other unit, as a second belt for a `systemctl start` typed at a terminal.
+one to stop, for all four lanes alike. The unit also carries `Conflicts=` with the
+other engine units, as a second belt for a `systemctl start` typed at a terminal.
 
 The Engines tab's Flush cache, Abort all and Smoke are greyed out while the video lane
 serves: they talk to the text engine on :30000, which is closed then.
@@ -81,12 +81,13 @@ of that choice are stated here instead of patched around:
 `sglang serve --model-path MiniMaxAI/MiniMax-H3 --model-variant fl2va --host 127.0.0.1
 --port 30022`, with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (the cookbook:
 the decode sits close enough to the cap that fragmentation otherwise tips it over),
-`HF_HUB_OFFLINE=1`, and nothing else. No `--api-key` and no `--sleep-on-idle`: the
+`HF_HUB_OFFLINE=1`, `PYTHONUNBUFFERED=1`, `--output-path` naming the lane's own
+`outputs/` directory, and `--input-save-path ""`. No `--api-key` and no `--sleep-on-idle`: the
 diffusion parser has neither, so the loopback bind is the only thing standing in front
 of the lane, and the cockpit is the authenticated door.
 
-One deliberate difference from the image lane: `--output-path` names the lane's own
-`outputs/` directory instead of being emptied. Left empty, the server answers into a
+One deliberate difference from the image lane: the lane's own `outputs/` directory
+instead of an emptied one. Left empty, the server answers into a
 temp dir it deletes when the request ends, and every completed video 404s on download
 (measured 2026-09-25: completed in 592 s, file gone before the download). Old MP4s stay
 until deleted by hand.
@@ -108,10 +109,12 @@ The cockpit refuses a second one in under a millisecond and says why. That is ca
 not a measurement: re-measure with two overlapping calls before ever lifting it.
 
 The page itself refuses before anything leaves the box: no prompt, a duration outside
-4 to 15 s (the cookbook's band), steps outside 1 to 100, and a call whose measured cost
-passes two hours. The cockpit refuses the rest: more than one video per call, an
-unknown task, keyframes on the `ref2va` weights, a malformed keyframe, anything the
-model does not declare (a LoRA path, an output path, a kwargs blob), a ratio other than
+4 to 15 s (the cookbook's band), steps outside 1 to 100, a seed that is not a whole
+number, and a call whose estimate passes two hours' nine tenths. The cockpit filters
+the rest instead of refusing it: more than one video per call, an
+unknown task, keyframes on the `ref2va` weights, a malformed keyframe, undeclared keys
+(a LoRA path, an output path, a kwargs blob are dropped, and the lane 400s what it
+cannot serve), a ratio other than
 16:9 or 9:16, and a canvas past 1280x720 -- the image lane's `IMAGE_MAX_PIXELS` rule,
 because the largest canvas measured here peaks at 81.9 GB of 121.6 and past it the cost
 is a guess and the OOM is a certain one.
@@ -134,8 +137,8 @@ Licence: MiniMax-H3 ships under its own licence. Read it before commercial use.
 
 ## What is measured here, and what is not yet
 
-Boot, measured on the reference box on 2026-09-25 (start 23:08:50, ready 23:19:48):
-11 min, of which 35 s load the weights (text encoder 48.09 GB, DiT 61.73 GB in 13
+Boot, measured on the reference box on 2026-09-25 (start 23:08:50, ready 23:20:00):
+11 min, of which 33 s load the weights (text encoder 48.09 GB, DiT 61.73 GB in 13
 shards, audio VAE 0.56 GB, video VAE 5.2 GB) and 10 min run three warmup requests
 (~200 s each at 1344x768). First request after that runs at full speed: no JIT tax
 was measured.
@@ -145,14 +148,16 @@ First text-to-video, measured the same night: 4 s at 480P in 592 s end to end
 MP4 (h264 864x480) + muxed audio (aac stereo) inspected and played. That beats the
 cookbook's ~12 min for the same shape. A second 4 s 480P the same night completed in
 about 10 min with the download proven. The text encoder runs ~5.5 min per request
-and does not warm up (cookbook).
+and does not warm up (cookbook figure, not measured here: the measured sum above
+leaves it about 9 s, which is what the cockpit budgets).
 
 Not yet measured here: 15 s durations, idle cores, second request while one runs
 (refused until measured). A 4 s fl2va from a keyframe completed the same night in
 about 11 min with the download proven, continuing the frame's scene; a 4 s 720P
 completed in about 25 min (server reports 1280x704 for a 1280x720 ask), peak memory
 81934 MB against 9242 MB at 480P: pixels cost far more than linear here, and 720P is
-near what this box holds. The Video tab's cost table keeps the cookbook figures
-where this file has no row yet. The cost estimate extrapolates these two rows linearly
+near what this box holds. The Video tab's cost table is fully measured here as of
+2026-09-25, every row from this box; the cookbook figures live on as prose reference
+where no row exists yet. The cost estimate extrapolates these two rows linearly
 in step-seconds to the tab's caps (15 s, 100 steps); the 720P row is all-in, so its
 denoise/decode split is one assumed number, and 15 s runs are not yet timed here.

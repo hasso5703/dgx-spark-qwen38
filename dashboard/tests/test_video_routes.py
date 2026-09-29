@@ -60,7 +60,7 @@ class VideoSent:
     """Whatever the cockpit put on the wire, captured instead of sent. Routes by URL:
     POST /v1/videos creates, GET /v1/videos lists, GET .../content downloads."""
 
-    def __init__(self, statuses=("queued", "completed")):
+    def __init__(self, statuses=("completed",)):
         self.body = None
         self.headers = {}
         self.url = ""
@@ -76,7 +76,7 @@ class VideoSent:
         class R:
             headers = {}
 
-            def read(self_inner):
+            def read(self_inner, n=-1):
                 if outer.url.endswith("/content"):
                     return b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 200000
                 if outer.url.endswith("/v1/videos") and not outer.body:
@@ -415,7 +415,7 @@ class TheAsyncCall(Base):
     def test_a_wait_past_the_timeout_hands_the_lock_to_a_watcher(self):
         """The lane has no abort and goes on: the lock is given back when the lane is
         done, so a second generation never runs beside the first."""
-        self.spy.statuses = ["queued"] * 50
+        self.spy.statuses = ["completed"] + ["queued"] * 50
         self.ck.VIDEO_TIMEOUT = 0.01
         try:
             code, out = self.call({"prompt": "a cat"})
@@ -445,7 +445,7 @@ class ASilenceIsNotAnAnswer(Base):
         self.ck.run = lambda argv, timeout=5.0, merge_err=False: next(
             seq, "ActiveState=active\nInvocationID=aaa\n")
         self.addCleanup(setattr, self.ck, "run", lambda argv, timeout=5.0, merge_err=False: "")
-        self.spy.statuses = ["queued", "completed"]
+        self.spy.statuses = ["completed", "queued", "completed"]
         code, out = self.call({"prompt": "a cat"})
         self.assertEqual(code, 200, out)
         self.assertFalse(self.ck.VIDEO_LOCK.locked())
@@ -462,7 +462,7 @@ class ASilenceIsNotAnAnswer(Base):
         self.ck.run = lambda argv, timeout=5.0, merge_err=False: next(
             seq, "ActiveState=active\nInvocationID=aaa\n")
         self.addCleanup(setattr, self.ck, "run", lambda argv, timeout=5.0, merge_err=False: "")
-        self.spy.statuses = ["queued", "completed"]
+        self.spy.statuses = ["completed", "queued", "completed"]
         code, out = self.call({"prompt": "a cat"})
         self.assertEqual(code, 200, out)
 
@@ -476,7 +476,7 @@ class TheKeyframesOfAHandOff(Base):
         # the same VIDEO_TIMEOUT bounds the watcher: 0.3 s of waiting, so the frame
         # is provably parked when the call answers 504, and provably gone when the
         # watcher's own deadline passes (the spy never answers a terminal status)
-        self.spy.statuses = ["queued"] * 50
+        self.spy.statuses = ["completed"] + ["queued"] * 50
         self.ck.VIDEO_TIMEOUT = 0.3
         self.addCleanup(setattr, self.ck, "VIDEO_TIMEOUT", 30)
         code, out = self.call({"prompt": "a cat", "first_frame": PNG})
@@ -514,11 +514,25 @@ class TheBootSweep(Base):
     cockpit, owning no calls, decides they belong to nothing."""
 
     def test_stale_frames_go_at_boot_and_the_rest_of_the_dir_stays(self):
+        # An idle lane holds nothing: declare it, the sweep asks the lane now.
+        self.spy.statuses = ["completed"]
         (self.tmp / "qwen38-first-frame-dead.png").write_bytes(b"x")
         (self.tmp / "qwen38-last-frame-dead.png").write_bytes(b"x")
         self.ck._sweep_staged_frames()
         self.assertEqual([], [p for p in self.tmp.iterdir() if "-frame-" in p.name])
         self.assertTrue((self.tmp / "api-key").exists())
+
+    def test_a_live_lane_keeps_its_staged_frames(self):
+        """The lane outlives a cockpit restart: sweeping blind would fail a job
+        still queued there, so the sweep stands down while the lane shows one
+        (found in review, 2026-09-29)."""
+        self.spy.statuses = ["processing"]
+        (self.tmp / "qwen38-first-frame-live.png").write_bytes(b"x")
+        self.ck._sweep_staged_frames()
+        self.assertTrue((self.tmp / "qwen38-first-frame-live.png").exists())
+        self.spy.statuses = ["completed"]
+        self.ck._sweep_staged_frames()
+        self.assertFalse((self.tmp / "qwen38-first-frame-live.png").exists())
 
 
 class WhatTheTabIsTold(Base):
@@ -562,6 +576,218 @@ class WhatTheTabIsTold(Base):
         self.assertEqual(code, 200)
         self.assertGreater(len(body), 100000)
         self.assertTrue(ctype.startswith("video/"))
+
+    def test_content_over_the_cap_is_refused_before_the_read(self):
+        """A lane answering a gigabyte would park it whole in this process's
+        RAM: past the cap it is abuse or corruption, refused with no body read
+        (found in review, 2026-09-29)."""
+        seen = {}
+
+        class Big:
+            headers = {"Content-Length": str(2 ** 30 + 1)}
+
+            def read(self_inner, n=-1):
+                seen["read"] = True
+                return b"x"
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+        orig = self.ck.urllib.request.urlopen
+        self.ck.urllib.request.urlopen = lambda req, timeout=None: Big()
+        try:
+            code, body, _ = self.ck.video_content("vid-test-1")
+        finally:
+            self.ck.urllib.request.urlopen = orig
+        self.assertEqual(code, 413)
+        self.assertEqual(body, b"")
+        self.assertNotIn("read", seen)
+
+    def test_content_past_the_cap_is_cut_even_undeclared(self):
+        orig = self.ck.VIDEO_CONTENT_MAX_BYTES
+        self.ck.VIDEO_CONTENT_MAX_BYTES = 10
+        try:
+            code, body, _ = self.ck.video_content("vid-test-1")
+        finally:
+            self.ck.VIDEO_CONTENT_MAX_BYTES = orig
+        self.assertEqual(code, 413)
+        self.assertEqual(body, b"")
+
+
+class TheLaneIsAskedBeforeItIsBooked(Base):
+    """The lock is per-process: it cannot see a generation an older cockpit left
+    behind. Admission asks the lane itself, and a 409 names the orphan instead
+    of generating beside it (found in review, 2026-09-29)."""
+
+    def test_a_live_lane_refuses_the_new_call(self):
+        self.spy.statuses = ["processing", "completed"]
+        code, out = self.call({"prompt": "a cat"})
+        self.assertEqual(code, 409)
+        self.assertIn("already generating", out["error"])
+        posts = [u for u, b in self.spy.calls if u.endswith("/v1/videos") and b]
+        self.assertEqual(posts, [], "nothing was created on a busy lane")
+        self.assertFalse(self.ck.VIDEO_LOCK.locked())
+        self.assertEqual([p for p in self.tmp.iterdir() if "-frame-" in p.name], [])
+
+    def test_a_quiet_lane_admits(self):
+        self.spy.statuses = ["completed"]
+        code, out = self.call({"prompt": "a cat"})
+        self.assertEqual(code, 200, out)
+
+    def test_a_down_lane_still_admits_and_fails_its_own_way(self):
+        def down(req, timeout=None):
+            raise ConnectionError("lane down")
+        orig = self.ck.urllib.request.urlopen
+        self.ck.urllib.request.urlopen = down
+        try:
+            code, out = self.call({"prompt": "a cat"})
+        finally:
+            self.ck.urllib.request.urlopen = orig
+        self.assertEqual(code, 502, out)
+
+
+class TheWatcherKeepsReporting(Base):
+    """After a hand-off the parked page reads VIDEO_LAST: the watcher keeps its
+    status and progress moving until it clears them, or the badge freezes at
+    the hand-off minute (found in review, 2026-09-29)."""
+
+    def test_progress_moves_until_the_end(self):
+        import threading
+        self.ck.VIDEO_POLL_S = 0.05
+        try:
+            self.assertTrue(self.ck.VIDEO_LOCK.acquire(blocking=False))
+            self.spy.statuses = [("processing", p) for p in range(0, 60, 5)] + ["completed"]
+            life0 = self.ck._video_life()
+            t = threading.Thread(target=self.ck._release_video_lock_when_done,
+                                 args=(life0, "vid-test-1", 30, ()))
+            t.start()
+            seen = None
+            for _ in range(100):
+                seen = self.ck.VIDEO_LAST.get("progress")
+                if isinstance(seen, (int, float)) and seen >= 10:
+                    break
+                time.sleep(0.02)
+            t.join(timeout=10)
+            self.assertFalse(t.is_alive(), "the watcher never came back")
+            self.assertTrue(isinstance(seen, (int, float)) and seen >= 10,
+                            "progress never moved: the badge would freeze")
+            self.assertFalse(self.ck.VIDEO_LOCK.locked())
+            self.assertEqual(self.ck.VIDEO_LAST, {})
+        finally:
+            self.ck.VIDEO_POLL_S = 0
+
+
+class TheRefusalsGrow(Base):
+    """Bounds the code enforces but no test exercised (found in review, 2026-09-29)."""
+
+    def test_a_seed_is_a_whole_number_or_empty(self):
+        for bad in ("abc", "-1", True, 4.5):
+            with self.subTest(seed=bad):
+                code, out = self.call({"prompt": "a cat", "seed": bad})
+                self.assertEqual(code, 400, out)
+                self.assertIn("seed", out["error"])
+        for good in ("42", 0, "007", ""):
+            with self.subTest(seed=good):
+                self.spy.statuses = ["completed"]
+                code, out = self.call({"prompt": "a cat", "seed": good})
+                self.assertEqual(code, 200, out)
+        bodies = [json.loads(b.decode()) for u, b in self.spy.calls
+                  if u.endswith("/v1/videos") and b]
+        self.assertNotIn("seed", bodies[-1], "an empty seed rides out omitted, like the page")
+
+    def test_steps_stay_inside_1_to_100(self):
+        for bad in (0, 101, -3, "x", True):
+            with self.subTest(steps=bad):
+                code, out = self.call({"prompt": "a cat", "num_inference_steps": bad})
+                self.assertEqual(code, 400, out)
+        self.spy.statuses = ["completed"]
+        code, out = self.call({"prompt": "a cat", "num_inference_steps": 100})
+        self.assertEqual(code, 200, out)
+
+    def test_a_bare_flag_and_a_comment_fall_back(self):
+        orig = self.ck._video_unit_text
+        try:
+            self.ck._video_unit_text = lambda: "ExecStart=/v/bin/sglang serve --port\n"
+            self.assertEqual(self.ck._video_unit_flag("--port", "fb"), "fb")
+            self.ck._video_unit_text = lambda: ("# default --port 30022\n"
+                                                "ExecStart=/v/bin/sglang serve --port 30099")
+            self.assertEqual(self.ck._video_unit_flag("--port", "fb"), "30099")
+        finally:
+            self.ck._video_unit_text = orig
+
+    def test_a_mute_systemd_at_the_cut_reads_as_a_crash(self):
+        """systemd answered the life questions and then went mute for the
+        verdict: the clean stop the 503 names cannot be proven (review,
+        2026-09-29)."""
+        lives = [True]
+
+        def run(argv, timeout=5.0, merge_err=False):
+            if any("SubState" in a for a in argv):
+                r = self.ck.Ran("")
+                r.ok = False
+                return r
+            if lives:
+                lives.pop()
+                return "ActiveState=active\nInvocationID=aaa\n"
+            return "ActiveState=inactive\nInvocationID=zzz\n"
+
+        self.ck.run = run
+        try:
+            self.spy.statuses = ["completed"]
+            code, out = self.call({"prompt": "a cat"})
+        finally:
+            self.ck.run = lambda argv, timeout=5.0, merge_err=False: ""
+        self.assertEqual(code, 502, out)
+        self.assertTrue(out.get("crashed"), out)
+        self.assertIn("answered nothing", out["error"])
+
+
+class TheLaneReportsItsOwnHealth(Base):
+    """video_engine_state, video_healthy and _video_journal had zero references
+    in any test of the repo (found in review, 2026-09-29): the lane's own
+    health was the least exercised path of the branch."""
+
+    KEY = "qwen38-video-test-health"
+
+    def tearDown(self):
+        for d in (self.ck.VIDEO_INVOCATION, self.ck.UNHEALTHY_TICKS,
+                  self.ck.VIDEO_READY_ENTER):
+            d.pop(self.KEY, None)
+        super().tearDown()
+
+    def test_an_inactive_lane_is_not_running(self):
+        st, boot, running = self.ck.video_engine_state(
+            self.KEY, active="inactive", sub="dead", prev_state=None, enter_key="1")
+        self.assertFalse(running)
+        self.assertNotEqual(st["state"], "ready")
+
+    def test_a_healthy_lane_is_ready(self):
+        st, boot, running = self.ck.video_engine_state(
+            self.KEY, active="active", sub="running", prev_state=None, enter_key="1")
+        self.assertTrue(running)
+        self.assertEqual(st["state"], "ready", st)
+        self.assertEqual(self.ck.VIDEO_READY_ENTER.get(self.KEY), "1")
+        self.assertEqual(self.ck.UNHEALTHY_TICKS.get(self.KEY), 0)
+
+    def test_an_empty_journal_counts_strikes(self):
+        def fake(req, timeout=None):
+            if req.full_url.endswith("/health"):
+                raise ConnectionError("lane down")
+            return self.spy.urlopen(req, timeout)
+        orig = self.ck.urllib.request.urlopen
+        self.ck.urllib.request.urlopen = fake
+        try:
+            self.assertEqual(self.ck._video_journal("abc"), [])
+            st, boot, running = self.ck.video_engine_state(
+                self.KEY, active="active", sub="running", prev_state=None, enter_key="2")
+        finally:
+            self.ck.urllib.request.urlopen = orig
+        self.assertTrue(running)
+        self.assertEqual(self.ck.UNHEALTHY_TICKS.get(self.KEY), 1)
+        self.assertNotEqual(st["state"], "ready")
 
 
 if __name__ == "__main__":

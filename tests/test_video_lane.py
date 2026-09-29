@@ -13,8 +13,9 @@ audio_flow_shift, seed) and the OpenAI videos endpoints (POST /v1/videos, GET
 The lane serves that recipe exactly as upstream wrote it at the pinned commit: no
 local source patch. The image lane carries two, and this lane deliberately does not
 (Hasan, 2026-09-25: the official SGLang and MiniMax recommendations, nothing added).
-What that costs is stated, not patched around: a stop waits for the generation to
-end, up to TimeoutStopSec, because the runtime has no abort.
+What that costs is stated, not patched around: a stop cancels the generation in
+flight (measured under a second), TimeoutStopSec is a ceiling, because the runtime
+has no abort.
 """
 import json
 import pathlib
@@ -94,9 +95,10 @@ class TheUnit(unittest.TestCase):
         self.assertIn("__VIDEO_BIND__", text)
         self.assertIn("127.0.0.1", INSTALLER.read_text())
 
-    def test_a_stop_waits_out_the_generation_it_cannot_abort(self):
-        """No local shutdown patch on this lane, so a stop during a 15 s request (about
-        45 min at the cookbook's rate) must not meet a TimeoutStopSec that kills it."""
+    def test_a_stop_is_a_ceiling_not_a_wait(self):
+        """A stop cancels the generation in under a second (measured on all seven
+        logged stops), so TimeoutStopSec only needs to stand above any wedged
+        scheduler, not above a draining generation."""
         text = UNIT_TPL.read_text()
         m = re.search(r"TimeoutStopSec=(\d+)", text)
         self.assertIsNotNone(m, "no TimeoutStopSec in the unit")
