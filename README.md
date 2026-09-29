@@ -1,6 +1,14 @@
-# Qwen3.8 on DGX Spark (GB10): 27B at 71 tok/s, Flash-Next 176B on one box
+# LLMs, System One decisions, images and video on one DGX Spark (GB10)
 
-One command installs a boot-persistent, hardened serving stack for the Qwen3.8 family on a single DGX Spark, with **seven switchable targets** and **zero quality loss** on each (NVFP4 is the quantization floor, Qwen's own FP8 is available above it; every speculative path is lossless by construction). Since v1.8 the flash lane serves an **official SGLang image** for this hardware with nothing added, serves **4 concurrent requests** where it used to serve one, and got **14 to 25% of its decode back from one flag** (`--speculative-token-map`, see below):
+One command installs a boot-persistent, hardened serving stack on a single DGX Spark,
+and it is not one model: **large language models** (the Qwen3.8 family, seven
+switchable targets, 27B at 71 tok/s and Flash-Next 176B on one box), **typed decisions**
+(a System One endpoint speaking TypeSafe's Jev contract: calibrated probabilities
+instead of generated text), **image generation** (Qwen-Image 2.1, opt-in) and **video
+generation** (MiniMax-H3, opt-in). One cockpit drives all four lanes, one switcher moves
+between them, and text answers on the same OpenAI-compatible API.
+
+The text lanes come with **seven switchable targets** and **zero quality loss** on each (NVFP4 is the quantization floor, Qwen's own FP8 is available above it; every speculative path is lossless by construction). Since v1.8 the flash lane serves an **official SGLang image** for this hardware with nothing added, serves **4 concurrent requests** where it used to serve one, and got **14 to 25% of its decode back from one flag** (`--speculative-token-map`, see below):
 
 | target | model | engine | headline (measured here) |
 |---|---|---|---|
