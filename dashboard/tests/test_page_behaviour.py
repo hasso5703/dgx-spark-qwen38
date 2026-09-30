@@ -710,6 +710,26 @@ class TheCockpitsProbeWearsNoAlarmColour(unittest.TestCase):
         self.assertEqual(sorted(out), ["tag", "tag err"])
 
 
+class AVideoNeverGoesBackAPhase(unittest.TestCase):
+    """Once the decode was done, the lane's journal named no phase while the file was
+    written, and the Video view read "Reading the prompt" for the last seconds of every
+    run (the reference box, 2026-09-30)."""
+
+    def test_after_the_steps_it_reads_decoding_not_reading_the_prompt(self):
+        out = run(self, r"""
+        VS.inflight = Date.now(); VS.seen = null;
+        VS.run = {phase: 'denoise', step: 48, steps: 49, s_per_step: 12.8, left_s: 13}; vidDrawProgress();
+        const during = txt('vid-prog-lab');
+        VS.run = null; vidDrawProgress();
+        const after = txt('vid-prog-lab');
+        VS.inflight = Date.now(); VS.seen = null; VS.run = null; vidDrawProgress();
+        report({during, after, fresh: txt('vid-prog-lab')});
+        """)
+        self.assertTrue(out["during"].startswith("Denoising"), out)
+        self.assertEqual(out["after"], "Decoding video and sound")
+        self.assertEqual(out["fresh"], "Reading the prompt", "a new request starts from the prompt")
+
+
 class TheServingLanesPoolIsTheLiveOne(unittest.TestCase):
     """The rack and the Lanes view read the pool from the boots this cockpit watched: one
     restarted after the serving lane booted said "KV pool this boot: 400,384 tokens" while

@@ -194,7 +194,12 @@ function vidDrawProgress(){
   card.hidden = !active;
   // a card put away says nothing: its last words are not read out, nor found again later
   if (!active){ ['vid-prog-lab', 'vid-prog-eta', 'vid-prog-note'].forEach(id => setText(id, '')); return; }
-  const phase = r.phase || (mine ? 'encode' : null);
+  // A request never goes back a phase: once the decode is done and the file is written,
+  // the lane's journal names no phase, and the run read "Reading the prompt" for its
+  // last seconds (seen on the reference box, 2026-09-30).
+  const ORDER = ['encode', 'denoise', 'decode'];
+  if (mine && r.phase && ORDER.indexOf(r.phase) > ORDER.indexOf(VS.seen || '')) VS.seen = r.phase;
+  const phase = r.phase || (mine ? (VS.seen === 'denoise' || VS.seen === 'decode' ? 'decode' : 'encode') : null);
   let lab, eta = '', pct = null;
   if (phase === 'denoise' && r.step != null){
     lab = `Denoising, step ${r.step} of ${r.steps}`;
@@ -302,7 +307,7 @@ async function vidRun(){
   const seed = vidVal('vid-seed'); if (seed) payload.seed = Number(seed);
   if (VS.mode === 'fl2v'){ if (VS.frames.first) payload.first_frame = VS.frames.first.dataUrl; if (VS.frames.last) payload.last_frame = VS.frames.last.dataUrl; }
   const t0 = Date.now(); VS.inflight = t0; VS.req = {...payload}; delete VS.req.first_frame; delete VS.req.last_frame;
-  clear($('vid-meta')); VS.run = null; vidDrawProgress(); vidSync(); vidRenderLane(); vidWatch(true);
+  clear($('vid-meta')); VS.run = null; VS.seen = null; vidDrawProgress(); vidSync(); vidRenderLane(); vidWatch(true);
   try{
     const {status, ok, out} = await postJSON('/api/video/generate', payload);
     const took = Math.round((Date.now() - t0) / 1000);
