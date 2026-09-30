@@ -111,9 +111,15 @@ def running(unit, config_dir, hf_cache, ckpts):
     if not started.isdigit():
         return f"no: {name} has no start time"
     files, images, containers = inputs(unit, config_dir, hf_cache, ckpts)
+    # Whole seconds on both sides, as install.sh's stale_since compares them: systemd gives
+    # the start in whole seconds, and the installer writes the unit, then restarts the
+    # engine in the same second. Compared with the file's fraction, that write read as a
+    # change made after the start, and the run after every first install restarted an
+    # engine that had everything (the reference box, 2026-09-30: an 8-minute boot, and
+    # opencode-web restarted for the limits of the new pool).
     for f in files:
         try:
-            if os.stat(f).st_mtime > int(started):
+            if int(os.stat(f).st_mtime) > int(started):
                 return f"no: {f} changed after {name} started"
         except OSError:
             return f"no: {f} is unreadable"

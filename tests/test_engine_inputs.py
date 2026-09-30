@@ -187,6 +187,28 @@ class TheRunningVerdict(unittest.TestCase):
         box.started = int(time.time()) - 100
         self.assertRegex(box.run("running"), r"^no: .* changed after qwen38-sglang.service started$")
 
+    def test_a_file_written_in_the_second_the_engine_started_is_in_it(self):
+        # The installer writes the unit, then restarts the engine in the same second, and
+        # systemd gives the start in whole seconds: compared with the file's fraction, the
+        # run after every first install restarted an engine that had everything (the
+        # reference box, 2026-09-30).
+        box = Box()
+        t = int(time.time()) - 100
+        for f in (box.unit, box.template, box.cfg / "api-key", box.config_json):
+            os.utime(f, (t + 0.9, t + 0.9))
+        box.started = t
+        self.assertEqual(box.run("running"), "yes")
+
+    def test_a_file_written_the_second_after_the_start_is_not(self):
+        box = Box()
+        t = int(time.time()) - 100
+        for f in (box.unit, box.template, box.cfg / "api-key", box.config_json):
+            os.utime(f, (t, t))
+        os.utime(box.template, (t + 1.1, t + 1.1))
+        box.started = t
+        self.assertRegex(box.run("running"),
+                         r"^no: .*chat-template-sglang\.jinja changed after qwen38-sglang\.service started$")
+
     def test_a_stopped_engine_has_nothing(self):
         box = Box()
         box.active = "inactive"

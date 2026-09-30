@@ -126,9 +126,9 @@ def restart_agent() -> str:
     r = subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "restart", AGENT_UNIT],
                        capture_output=True, text=True)
     if r.returncode == 0:
-        return f"{AGENT_UNIT} restarted: the Agent tab now runs the new limits"
+        return f"{AGENT_UNIT} restarted: the Agent view now runs the new limits"
     return (f"NOTE: could not restart {AGENT_UNIT} ({(r.stderr or '').strip()[:120]}); "
-            f"restart it by hand, or the Agent tab keeps the old limits")
+            f"restart it by hand, or the Agent view keeps the old limits")
 
 
 def engine_info(base: str) -> dict:

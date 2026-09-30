@@ -831,7 +831,7 @@ def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
     AUTOFIT_DONE[unit] = enter
     add_event("guard", f"opencode limits fitted to the {int(fit['pool']):,}-token pool this boot got: "
                        f"{ctx:,} + {outp:,}, where they asked for {int(fit['worst']):,}; "
-                       f"the Agent tab's server restarts to read them")
+                       f"the Agent view's server restarts to read them")
     return "started"
 
 

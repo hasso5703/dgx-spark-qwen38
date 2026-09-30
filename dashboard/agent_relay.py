@@ -299,7 +299,7 @@ SIGN_IN_PAGE = """<!doctype html><meta charset="utf-8"><title>Spark Cockpit</tit
 main{{max-width:44ch;padding:32px;text-align:center}}a{{color:#d9b45e}}</style>
 <main><h1 style="font-size:18px">Cockpit session required</h1>
 <p>This is the agent relay of the Spark Cockpit. Sign in to the cockpit at
-<a href="{cockpit}">{cockpit}</a>, then come back to the Agent tab.</p></main>"""
+<a href="{cockpit}">{cockpit}</a>, then come back to the Agent view.</p></main>"""
 
 
 def make_handler(cfg: RelayConfig) -> type[http.server.BaseHTTPRequestHandler]:
