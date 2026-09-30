@@ -26,11 +26,12 @@ def block() -> str:
 
 
 PINS = "\n".join(line for line in INSTALL.read_text().splitlines()
-                 if line.startswith(("FP8_REPO=", "UNCFP8_REPO=")))
+                 if line.startswith(("STOCK_REPO=", "UNC_REPO=", "FP8_REPO=", "UNCFP8_REPO=",
+                                     "FLASH_REPO=", "FLASH_UNC_REPO=", "FLASH_NVDA_REPO=")))
 
 
 def generate(lane, mode, unit_ctx=None, flash_unit=False, model="RadixArk/Qwen3.8-27B-NVFP4",
-             pair=None):
+             pair=None, names=False):
     t = pathlib.Path(tempfile.mkdtemp(prefix="oc-art-"))
     sgl = t / "qwen38-sglang.service"
     if unit_ctx:
@@ -48,6 +49,8 @@ def generate(lane, mode, unit_ctx=None, flash_unit=False, model="RadixArk/Qwen3.
                        env={"PATH": "/usr/bin:/bin", "HOME": str(t)})
     assert r.returncode == 0, r.stdout + r.stderr
     doc = json.loads((t / "opencode.json").read_text())
+    if names:
+        return {p: b["models"][next(iter(b["models"]))]["name"] for p, b in doc["provider"].items()}
     return {p: b["models"][next(iter(b["models"]))]["limit"] for p, b in doc["provider"].items()}
 
 
@@ -82,6 +85,21 @@ class EachLaneKeepsItsOwnLimits(unittest.TestCase):
         self.assertEqual(lim["qwen38"], {"context": 480000, "input": 480000, "output": 160000})
         self.assertIn("flashnext", lim)
 
+
+
+class TheLaneNotInstalledKeepsItsCheckpointsName(unittest.TestCase):
+    """A flash install named the 27B entry generically, whatever its unit serves; the next
+    switch back to the 27B renamed it, so the first update after every switch rewrote the
+    file and restarted opencode-web for a name (the reference box, 2026-09-30)."""
+
+    def test_an_abliterated_27b_keeps_its_name_under_a_flash_install(self):
+        names = generate("flash", "native", unit_ctx=1010000,
+                         model="edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4", names=True)
+        self.assertEqual(names["qwen38"], "Qwen3.8-27B NVFP4 abliterated + DFlash2 (local, 1M)")
+
+    def test_an_fp8_27b_is_named_fp8_and_a_native_one_says_its_window(self):
+        names = generate("flash", "native", unit_ctx=262144, model="Qwen/Qwen3.8-27B-FP8", names=True)
+        self.assertEqual(names["qwen38"], "Qwen3.8-27B FP8 official + DFlash2 (local, 262K)")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

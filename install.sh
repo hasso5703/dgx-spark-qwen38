@@ -1635,6 +1635,24 @@ esac
 OC_27B_PAIR="$("$REPO_DIR/oc-limits.sh" "$OC_27B_CHOICE" "$OC_27B_MODE")" \
   || die "oc-limits.sh refused $OC_27B_CHOICE/$OC_27B_MODE (repo bug: please open an issue)"
 OC_27B_CTX="${OC_27B_PAIR%% *}"; OC_27B_OUT="$(echo "$OC_27B_PAIR" | cut -d' ' -f2)"
+# The lane that is not being installed keeps the name of the checkpoint its unit serves,
+# from the same table as the served one. A flash install wrote the 27B entry a generic
+# name, the next switch back renamed it, so the first update after every switch rewrote
+# the file and restarted opencode-web for a name (the reference box, 2026-09-30).
+OC_27B_TARGET=stock
+case "$(grep -oE -- '--model-path [^ ]+' "$SGL_UNIT_PATH" 2>/dev/null | head -1 | cut -d' ' -f2 || true)" in
+  "$UNC_REPO")    OC_27B_TARGET=uncensored ;;
+  "$FP8_REPO")    OC_27B_TARGET=fp8 ;;
+  "$UNCFP8_REPO") OC_27B_TARGET=uncensored-fp8 ;;
+esac
+OC_27B_WINDOW=262144; [ "$OC_27B_MODE" = "1m" ] && OC_27B_WINDOW=1010000
+OC_27B_NAME="$(python3 "$REPO_DIR/oc-point-default.py" --label "$OC_27B_TARGET" "$OC_27B_WINDOW" || true)"
+OC_FLASH_TARGET=flash
+case "$(grep -oE -- '--model-path [^ ]+' "$CONFIG_DIR/launch-flash.sh" 2>/dev/null | head -1 | cut -d' ' -f2 || true)" in
+  "$FLASH_UNC_REPO")  OC_FLASH_TARGET=flash-uncensored ;;
+  "$FLASH_NVDA_REPO") OC_FLASH_TARGET=flash-nvda ;;
+esac
+OC_FLASH_NAME="$(python3 "$REPO_DIR/oc-point-default.py" --label "$OC_FLASH_TARGET" 262144 || true)"
 # The served entry's name comes from the table oc-point-default.py applies below. The
 # generator wrote a generic one that the call below then renamed, so the file was written
 # twice at every run, and the rename now leaves a backup (found in review, 2026-09-24).
@@ -1644,6 +1662,7 @@ OC_SERVED_NAME="$(python3 "$REPO_DIR/oc-point-default.py" --label "$MODEL_CHOICE
 OC_LANE="$LANE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
 OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$OC_27B_MODE" \
 OC_27B_CTX="$OC_27B_CTX" OC_27B_OUT="$OC_27B_OUT" OC_SERVED_NAME="$OC_SERVED_NAME" \
+OC_27B_NAME="$OC_27B_NAME" OC_FLASH_NAME="$OC_FLASH_NAME" \
 OC_KEEP="$OC_KEEP" OC_PIN="$OPENCODE_PIN" \
 OC_CONFIG_DIR="$CONFIG_DIR" python3 - <<'PYEOF' || die "could not write the opencode provider config"
 import json
@@ -1699,14 +1718,16 @@ if os.environ["OC_27B"] == "1":
     if os.environ["OC_CONTEXT_MODE"] == "1m":
         ctx, out = fitted("qwen38", "qwen3.8-27b", ctx, out) or (ctx, out)
     providers["qwen38"] = prov("Qwen3.8-27B (DGX Spark)", "qwen3.8-27b",
-                               lane == "27b" and served_name or f"Qwen3.8-27B NVFP4+DFlash2 ({label})",
+                               lane == "27b" and served_name or os.environ.get("OC_27B_NAME")
+                               or f"Qwen3.8-27B NVFP4+DFlash2 ({label})",
                                ctx, out)
 if os.environ["OC_FLASH"] == "1":
     # the flash lane's limits follow the pool math above (OC_CTX/OC_OUT); a 27B
     # install that also lists flash gets the same pool-safe constants
     fctx, fout = (int(os.environ["OC_CTX"]), int(os.environ["OC_OUT"])) if lane == "flash" else (110000, 32000)
     providers["flashnext"] = prov("Qwen3.8-Flash-Next (DGX Spark)", "qwen3.8-flash-next",
-                                  lane == "flash" and served_name or "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)",
+                                  lane == "flash" and served_name or os.environ.get("OC_FLASH_NAME")
+                                  or "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)",
                                   fctx, fout)
 
 default = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8-27b"

@@ -947,6 +947,14 @@ jobs:
           assert c["provider"]["qwen38"]["models"]["qwen3.8-27b"]["limit"]["context"] == 700000
           assert c["model"] == "flashnext/qwen3.8-flash-next"
           PY
+          # the lane not being installed keeps its checkpoint's name, from the one table
+          # (a generic name here flipped at every first update after a switch, 2026-09-30)
+          OC_27B_NAME="$(python3 oc-point-default.py --label uncensored 1010000)" gen flash 1 1 110000 32000 1m
+          python3 - <<'PY'
+          import json
+          c = json.load(open("/tmp/octest/opencode.json"))
+          assert c["provider"]["qwen38"]["models"]["qwen3.8-27b"]["name"] == "Qwen3.8-27B NVFP4 abliterated + DFlash2 (local, 1M)", c["provider"]["qwen38"]["models"]["qwen3.8-27b"]["name"]
+          PY
 
       - name: Anti-drift, the two unit templates differ only on the four known lines
         run: |
