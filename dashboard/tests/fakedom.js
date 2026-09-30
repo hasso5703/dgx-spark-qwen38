@@ -83,6 +83,9 @@ const matchesSel = (el, sel) => parseSelector(sel).some(chain => matchComplex(el
 class FNode {
   constructor(doc){ this.ownerDocument = doc; this.parentNode = null; this.childNodes = []; }
   get parentElement(){ return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null; }
+  // in the document tree, as the DOM's own isConnected: the page gives a closed dialog's
+  // focus back only to an element that is still there
+  get isConnected(){ for (let n = this; n; n = n.parentNode) if (n === this.ownerDocument) return true; return false; }
   get firstChild(){ return this.childNodes[0] || null; }
   get lastChild(){ return this.childNodes[this.childNodes.length - 1] || null; }
   get nextSibling(){ const p = this.parentNode; return p ? p.childNodes[p.childNodes.indexOf(this) + 1] || null : null; }

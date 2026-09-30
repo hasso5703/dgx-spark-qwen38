@@ -51,6 +51,15 @@ function cap(id, text, kind, lamp){
   if (lamp !== false){ const l = el('span', 'lamp' + (kind === 'ok' ? ' ok' : kind === 'warn' ? ' warn' : kind === 'err' ? ' err' : kind === 'cool' ? ' cool' : '') + (lamp === 'live' ? ' live' : '')); e.append(l); }
   e.append(document.createTextNode(text));
 }
+// Each cell carries its column's name: on a phone a wide table stacks into cards, and a
+// line without its header is a number nobody can read. A cell spanning columns has none.
+function labelCells(t){
+  const heads = t.tHead ? [...t.tHead.rows[0].cells].map(c => c.textContent.trim()) : [];
+  [...t.tBodies[0].rows].forEach(tr => {
+    let i = 0;
+    [...tr.cells].forEach(td => { const n = td.colSpan || 1; if (n === 1 && heads[i]) td.dataset.label = heads[i]; i += n; });
+  });
+}
 function facts(dl, rows){
   clear(dl);
   rows.forEach(([k, v, cls]) => { if (v == null) return; dl.append(el('dt', null, k)); const dd = el('dd', cls || null, v); dl.append(dd); });
@@ -362,8 +371,15 @@ const argvFor = (name, p) => name === 'unit' ? ['sudo', '-n', '/usr/bin/systemct
   : name === 'switch' ? ['bash', 'switch-model.sh', p.target] : ['cockpit', name];
 
 let SHEET = null;   // {mode: 'one'|'journey', ...}
-function openSheet(){ $('scrim').hidden = false; setTimeout(() => $('sh-go').focus(), 0); }
-function closeSheet(){ if (SHEET && SHEET.running) return; $('scrim').hidden = true; const s = SHEET; SHEET = null; if (s && s.onClose) s.onClose(); }
+// A dialog hands the focus back to what opened it: closing one left it on the body, so a
+// keyboard had to start again from the top of the page.
+const OPENER = {sheet: null, menu: null};
+const giveBack = k => { const e = OPENER[k]; OPENER[k] = null; if (e && e.isConnected && typeof e.focus === 'function') e.focus(); };
+function openSheet(){
+  const a = document.activeElement; OPENER.sheet = a && !a.closest('#scrim') ? a : OPENER.sheet;
+  $('scrim').hidden = false; setTimeout(() => $('sh-go').focus(), 0);
+}
+function closeSheet(){ if (SHEET && SHEET.running) return; $('scrim').hidden = true; const s = SHEET; SHEET = null; if (s && s.onClose) s.onClose(); giveBack('sheet'); }
 function askAction(name, params, warns, opts = {}){
   if (offline) return toast('The cockpit is unreachable right now: nothing can be started.', 'err');
   if (NEEDS_ENGINE.has(name) && !textReady()) return toast(noEngineWhy(), 'warn');
@@ -679,6 +695,17 @@ on('engine_fast', d => { F.load = (d.load || [])[0] || {}; F.noEngine = !d.load;
 on('machine', d => { F.machine = d; });
 on('gpu', d => { F.gpu = d; });
 on('opencode', d => { F.ocfit = d.fit || null; });
+// The pool a lane's facts show. The history holds the boots this cockpit watched, so a
+// cockpit restarted after the serving lane booted read the boot before as "this boot"
+// (400,384 tokens beside a live 491,136 on 2026-09-30): the serving text lane shows
+// what its engine reports now, every other lane its last recorded boot.
+const livePool = (unit, e) => {
+  const s = servingEngine();
+  // the engine read is refreshed every 30 s: right after a switch it can still be the
+  // previous lane's, which says so by its target
+  return !!(s && s[0] === unit && textReady() && F.pool && (!F.target || !e || !e.target || F.target === e.target));
+};
+function lanePool(unit, e){ return livePool(unit, e) ? F.pool : (e && e.pools && e.pools.last) || null; }
 const singleLimit = () => F.pool ? (F.ceiling > 0 ? Math.min(Math.round(F.pool * F.usable), F.ceiling) : Math.round(F.pool * F.usable)) : null;
 // physical pool occupancy: the engine dedupes shared prefixes, so the requests' summed
 // lengths ("logical") can read past the pool while the pool never overflows
@@ -688,7 +715,10 @@ const physTokens = l => (l.num_used_tokens != null ? l.num_used_tokens : l.num_t
 function wireShell(){
   document.querySelectorAll('.rail .nav').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
   window.addEventListener('hashchange', () => showView(location.hash.slice(1) || 'now', false));
-  $('menubtn').addEventListener('click', () => setRailOpen(!document.body.classList.contains('railopen')));
+  $('menubtn').addEventListener('click', () => {
+    const open = !document.body.classList.contains('railopen'); setRailOpen(open);
+    if (open) setTimeout(() => { const b = document.querySelector('.rail .nav[aria-current="page"]') || document.querySelector('.rail .nav'); if (b) b.focus(); }, 0);
+  });
   document.addEventListener('click', e => { if (document.body.classList.contains('railopen') && !e.target.closest('.rail') && !e.target.closest('#menubtn')) setRailOpen(false); });
   try { setRailMin(localStorage.getItem('cockpit.rail') === 'min'); } catch { setRailMin(false); }
   $('railbtn').addEventListener('click', () => setRailMin(!document.body.classList.contains('railmin')));
@@ -702,14 +732,24 @@ function wireShell(){
     if (!$('scrim').hidden){
       if (e.key === 'Escape') closeSheet();
       if (e.key === 'Tab'){   // focus stays inside the sheet
-        const f = [...$('sheet').querySelectorAll('button:not([disabled])')];
+        const f = [...$('sheet').querySelectorAll('button')].filter(b => !b.disabled);
         if (!f.length) return;
         const i = f.indexOf(document.activeElement);
         e.preventDefault(); f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
       }
       return;
     }
-    if (!$('menu').hidden && e.key === 'Escape') closeMenu();
+    if (!$('menu').hidden){
+      if (e.key === 'Escape') closeMenu();
+      if (e.key === 'Tab'){   // focus stays inside the menu, as in the sheet
+        const f = [...$('menu').querySelectorAll('button')].filter(b => !b.disabled);
+        if (!f.length) return;
+        const i = f.indexOf(document.activeElement);
+        e.preventDefault(); f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+      }
+      return;
+    }
+    if (e.key === 'Escape' && document.body.classList.contains('railopen')){ setRailOpen(false); $('menubtn').focus(); }
   });
   // the dock
   $('dock-log').addEventListener('click', () => {
@@ -740,6 +780,8 @@ function openMenu(){
     b.addEventListener('click', () => { closeMenu(); askAction(act, {}, []); });
     box.append(b);
   });
+  const a = document.activeElement; OPENER.menu = a && !a.closest('#menu') ? a : OPENER.menu;
   $('menu').hidden = false; applyBusy();
+  setTimeout(() => { const f = [...$('menu-list').querySelectorAll('button')].find(b => !b.disabled) || $('menu-close'); if (f) f.focus(); }, 0);
 }
-function closeMenu(){ $('menu').hidden = true; }
+function closeMenu(){ if ($('menu').hidden) return; $('menu').hidden = true; giveBack('menu'); }

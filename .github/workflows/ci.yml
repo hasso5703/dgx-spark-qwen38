@@ -44,12 +44,21 @@ jobs:
       - name: The cockpit page survives losing its server (headless browser, a cockpit of its own)
         run: |
           # The browser checks in dashboard/tests/*.mjs ran nowhere (found in review,
-          # 2026-09-24). This one owns what it drives: a dry-run cockpit on loopback with a
-          # key of its own, a PATH whose box commands answer nothing and no network, and a
-          # browser that resolves no name. The other five drive the live cockpit of a box
-          # and stay manual; they are parsed here so they do not rot.
+          # 2026-09-24). This one and the touch check below own what they drive: a dry-run
+          # cockpit on loopback with a key of its own, a PATH whose box commands answer
+          # nothing and no network, and a browser that resolves no name. The other five
+          # drive the live cockpit of a box and stay manual; they are parsed here so they
+          # do not rot.
           for f in dashboard/tests/*.mjs; do node --check "$f"; done
           node dashboard/tests/resilience-check.mjs
+
+      - name: The cockpit page works under a finger (headless browser, real taps, a cockpit of its own)
+        run: |
+          # Every browser check switched views with element.click() from script, which
+          # ignores what covers the element: on a phone the drawer's veil covered every rail
+          # item and all of them stayed green (2026-09-30). This one taps where a finger
+          # lands, on five touch screens and a laptop, and reads what the page did.
+          node dashboard/tests/touch-check.mjs
 
       - name: Python correctness (ruff F,E9 + compile)
         run: |

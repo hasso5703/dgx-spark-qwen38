@@ -52,12 +52,18 @@
   --spine:64px; --rail:248px; --rail-min:76px;
   --ease:cubic-bezier(.2,.8,.2,1);
   --dur:.45s;
+  /* the page asks for the whole screen (viewport-fit=cover), so it keeps what an iPhone
+     reserves out of it: the notch or island in landscape, the home indicator at the foot.
+     Zero everywhere else, so nothing moves on a screen that reserves nothing. */
+  --sa-t:env(safe-area-inset-top, 0px); --sa-r:env(safe-area-inset-right, 0px);
+  --sa-b:env(safe-area-inset-bottom, 0px); --sa-l:env(safe-area-inset-left, 0px);
+  --head:calc(var(--spine) + var(--sa-t));
 }
 
 /* ── base ───────────────────────────────────────────────────────────────────── */
 *,*::before,*::after{box-sizing:border-box}
 *{margin:0}
-html{-webkit-text-size-adjust:100%; scrollbar-color:var(--rule-3) transparent; scroll-padding-top:calc(var(--spine) + 16px)}
+html{-webkit-text-size-adjust:100%; scrollbar-color:var(--rule-3) transparent; scroll-padding-top:calc(var(--head) + 16px)}
 body{min-height:100vh; min-height:100dvh; background:var(--ink-0); color:var(--fg-1);
   font:400 var(--t-15)/1.5 var(--f-ui); font-stretch:100%;
   -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; text-rendering:optimizeLegibility;
@@ -90,8 +96,8 @@ img,svg,video,canvas{display:block; max-width:100%}
 .ok-t{color:var(--gold-hi)}
 
 /* ── the spine: brand, what serves, the pool at a glance, the job, the line ── */
-.spine{position:sticky; top:0; z-index:40; height:var(--spine); display:flex; align-items:center; gap:var(--s-4);
-  padding:0 var(--s-5) 0 var(--s-4); border-bottom:1px solid var(--rule-1);
+.spine{position:sticky; top:0; z-index:40; height:var(--head); display:flex; align-items:center; gap:var(--s-4);
+  padding:var(--sa-t) max(var(--s-5), var(--sa-r)) 0 max(var(--s-4), var(--sa-l)); border-bottom:1px solid var(--rule-1);
   background:color-mix(in srgb, var(--ink-0) 82%, transparent); backdrop-filter:saturate(1.2) blur(16px);
   -webkit-backdrop-filter:saturate(1.2) blur(16px)}
 .spine::after{content:''; position:absolute; left:0; right:0; bottom:-1px; height:1px; pointer-events:none;
@@ -142,10 +148,15 @@ img,svg,video,canvas{display:block; max-width:100%}
 @keyframes breathe{50%{filter:brightness(.72); box-shadow:0 0 0 5px transparent}}
 
 /* ── shell: rail and stage ─────────────────────────────────────────────────── */
-.shell{position:relative; z-index:1; display:grid; grid-template-columns:var(--rail) minmax(0,1fr);
-  min-height:calc(100dvh - var(--spine))}
-.rail{position:sticky; top:var(--spine); align-self:start; height:calc(100dvh - var(--spine)); overflow:auto;
-  padding:var(--s-5) var(--s-3) var(--s-4); border-right:1px solid var(--rule-1); display:flex; flex-direction:column; gap:var(--s-5)}
+/* positioned so it paints over the grain, and never given a z-index: that would make it
+   a stacking context, and the phone drawer and the Agent's fullscreen frame inside it
+   would then stack under the head and the drawer's veil whatever their own z-index
+   (every rail item was covered by the veil, so a tap only closed the drawer) */
+.shell{position:relative; display:grid; grid-template-columns:var(--rail) minmax(0,1fr);
+  min-height:calc(100dvh - var(--head))}
+.rail{position:sticky; top:var(--head); align-self:start; height:calc(100dvh - var(--head)); overflow:auto;
+  padding:var(--s-5) var(--s-3) calc(var(--s-4) + var(--sa-b)) max(var(--s-3), var(--sa-l));
+  border-right:1px solid var(--rule-1); display:flex; flex-direction:column; gap:var(--s-5)}
 .rail .grp{display:flex; flex-direction:column; gap:2px}
 .rail .grp h2{font-size:var(--t-12); font-weight:520; color:var(--fg-3); padding:0 var(--s-3) var(--s-1); letter-spacing:.01em}
 .nav{position:relative; display:flex; align-items:center; gap:var(--s-3); width:100%; padding:9px var(--s-3);
@@ -176,13 +187,16 @@ img,svg,video,canvas{display:block; max-width:100%}
   body.railmin .rail .collapse svg{transform:rotate(180deg)}
   body.railmin .shell{grid-template-columns:var(--rail-min) minmax(0,1fr)}
 }
-.stage{min-width:0; padding:var(--s-7) clamp(16px, 3vw, 40px) var(--s-9); max-width:1560px; width:100%}
+.stage{min-width:0; max-width:1560px; width:100%;
+  padding:var(--s-7) max(clamp(16px, 3vw, 40px), var(--sa-r)) calc(var(--s-9) + var(--sa-b)) max(clamp(16px, 3vw, 40px), var(--sa-l))}
 
 /* ── view head ── */
-.view{display:none; animation:rise .5s var(--ease) both}
+.view{display:none; animation:rise .5s var(--ease) backwards}
 .view.active{display:block}
 /* opacity only: an animated transform makes the view the containing block of every
-   position:fixed inside it, and the Agent's fullscreen frame then sat 210 px down */
+   position:fixed inside it, and the Agent's fullscreen frame then sat 210 px down.
+   And backwards, not both: an animation still filling on opacity keeps the view a
+   stacking context after it ends, which held the fullscreen frame under the head */
 @keyframes rise{from{opacity:0}}
 .vhead{display:flex; align-items:flex-end; justify-content:space-between; gap:var(--s-5); flex-wrap:wrap; margin-bottom:var(--s-6)}
 .vhead h1{font-size:var(--t-30); font-weight:640; font-stretch:118%; letter-spacing:-.005em; line-height:1.1}
@@ -243,6 +257,7 @@ img,svg,video,canvas{display:block; max-width:100%}
 .cap.warn{border-color:color-mix(in srgb, var(--ember) 45%, transparent); background:color-mix(in srgb, var(--ember) 10%, var(--ink-2)); color:#f7c79f}
 .cap.err{border-color:color-mix(in srgb, var(--clay) 50%, transparent); background:color-mix(in srgb, var(--clay) 12%, var(--ink-2)); color:#ffb9b1}
 .cap.cool{border-color:color-mix(in srgb, var(--cool) 40%, transparent); background:color-mix(in srgb, var(--cool) 9%, var(--ink-2))}
+.tag:empty{display:none}
 .tag{display:inline-flex; align-items:center; padding:2px 9px; border-radius:var(--r-chip); background:var(--ink-3);
   color:var(--fg-2); font-size:var(--t-12); font-weight:520; white-space:nowrap}
 .tag.gold{background:color-mix(in srgb, var(--gold) 16%, var(--ink-2)); color:var(--gold-hi)}
@@ -355,7 +370,9 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px color
 .tbl .r{text-align:right}
 .tbl .num{font-variant-numeric:tabular-nums}
 .tbl.dense{font-size:var(--t-13); font-stretch:92%}
-.tbl.dense td{padding:7px var(--s-3)}
+/* vertical only: the shorthand gave every dense table's first cell its 12 px back (same
+   specificity as the :first-child rule above, and later), while its header stayed flush */
+.tbl.dense td{padding-top:7px; padding-bottom:7px}
 .tbl tbody tr:hover td{background:color-mix(in srgb, var(--ink-2) 60%, transparent)}
 .tbl .empty td, td.empty{color:var(--fg-3); text-align:center; padding:var(--s-6) 0}
 .scroll-x{overflow-x:auto; -webkit-overflow-scrolling:touch}
@@ -502,9 +519,10 @@ button.bay:hover{border-color:var(--rule-3); transform:translateY(-1px)}
 
 /* ── sheet: every action asks first and shows its exact command ── */
 .scrim{position:fixed; inset:0; z-index:80; background:rgba(4,5,6,.62); backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
-  display:flex; align-items:center; justify-content:center; padding:var(--s-4); animation:fade .2s ease both}
+  display:flex; align-items:center; justify-content:center;
+  padding:max(var(--s-4), var(--sa-t)) max(var(--s-4), var(--sa-r)) max(var(--s-4), var(--sa-b)) max(var(--s-4), var(--sa-l)); animation:fade .2s ease both}
 @keyframes fade{from{opacity:0}}
-.sheet{width:min(640px, 100%); max-height:calc(100dvh - 32px); overflow:auto; border-radius:var(--r-hero); border:1px solid var(--rule-2);
+.sheet{width:min(640px, 100%); max-height:calc(100dvh - 32px - var(--sa-t) - var(--sa-b)); overflow:auto; border-radius:var(--r-hero); border:1px solid var(--rule-2);
   background:linear-gradient(180deg, var(--ink-2), var(--ink-1)); box-shadow:0 40px 120px -30px rgba(0,0,0,.95), var(--shadow-1);
   padding:var(--s-6); display:flex; flex-direction:column; gap:var(--s-4); animation:pop .28s var(--ease) both}
 @keyframes pop{from{opacity:0; transform:translateY(10px) scale(.985)}}
@@ -521,7 +539,8 @@ button.bay:hover{border-color:var(--rule-3); transform:translateY(-1px)}
 .sheet .cmd-lbl{font-size:var(--t-12); color:var(--fg-3); margin-bottom:-8px}
 
 /* ── dock: the job that is running, from every view and every browser ── */
-.dock{position:fixed; right:var(--s-5); bottom:var(--s-5); z-index:60; width:min(440px, calc(100vw - 32px)); border-radius:var(--r-panel);
+.dock{position:fixed; right:calc(var(--s-5) + var(--sa-r)); bottom:calc(var(--s-5) + var(--sa-b)); z-index:60;
+  width:min(440px, calc(100vw - 32px - var(--sa-l) - var(--sa-r))); border-radius:var(--r-panel);
   border:1px solid var(--rule-2); background:color-mix(in srgb, var(--ink-2) 94%, transparent); backdrop-filter:blur(16px);
   -webkit-backdrop-filter:blur(16px); box-shadow:0 30px 80px -30px rgba(0,0,0,.9); overflow:hidden; animation:pop .3s var(--ease) both}
 .dock .close{width:36px; height:36px}
@@ -535,7 +554,7 @@ button.bay:hover{border-color:var(--rule-3); transform:translateY(-1px)}
 .dock.failed{border-color:color-mix(in srgb, var(--clay) 50%, transparent)}
 
 /* toast */
-.toasts{position:fixed; left:50%; bottom:var(--s-5); transform:translateX(-50%); z-index:90; display:flex; flex-direction:column; gap:var(--s-2);
+.toasts{position:fixed; left:50%; bottom:calc(var(--s-5) + var(--sa-b)); transform:translateX(-50%); z-index:90; display:flex; flex-direction:column; gap:var(--s-2);
   align-items:center; pointer-events:none; width:min(560px, calc(100vw - 32px))}
 .toast{pointer-events:auto; padding:11px 16px; border-radius:12px; border:1px solid var(--rule-2); background:var(--ink-2);
   box-shadow:0 18px 50px -18px rgba(0,0,0,.9); font-size:var(--t-14); animation:pop .25s var(--ease) both; max-width:100%}
@@ -633,14 +652,23 @@ button.bay:hover{border-color:var(--rule-3); transform:translateY(-1px)}
 /* agent: the frame is the view */
 .agentbar{display:flex; align-items:center; gap:var(--s-3); flex-wrap:wrap; margin-bottom:var(--s-3)}
 .agentframe{position:relative; border:1px solid var(--rule-2); border-radius:var(--r-panel); overflow:hidden; background:#0a0a0b;
-  height:calc(100dvh - var(--spine) - 150px); min-height:min(420px, calc(100dvh - var(--spine) - 40px))}
+  height:calc(100dvh - var(--head) - 150px); min-height:min(420px, calc(100dvh - var(--head) - 40px))}
+/* the height agent.js measured for this screen (fitAgentFrame): the guess above left the
+   frame's bottom, opencode's composer, below the fold on a phone, a tablet and a laptop */
+body:not(.agentmax) .agentframe.mounted.fitted{height:var(--agh); min-height:0}   /* never over fullscreen's own height */
 .agentframe:not(.mounted){height:auto; min-height:220px}
 .agentframe iframe{width:100%; height:100%; border:0; display:block; background:#0a0a0b}
 .agentframe .msg{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:var(--s-3);
   padding:var(--s-6); text-align:center; color:var(--fg-2)}
-body.agentmax .agentframe{position:fixed; inset:0; z-index:70; border-radius:0; height:var(--vvh, 100dvh); top:var(--vvtop, 0); border:0}
-.agexit{position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:3; touch-action:none}
+/* the frame covers the whole screen and opencode inside it keeps to the safe area: a frame
+   gets no safe-area inset of its own, so its composer sat under the home indicator */
+body.agentmax .agentframe{position:fixed; inset:0; z-index:70; border-radius:0; height:var(--vvh, 100dvh); top:var(--vvtop, 0); border:0;
+  padding:var(--sa-t) var(--sa-r) var(--sa-b) var(--sa-l); background:#0a0a0b}
+.agexit{position:absolute; top:calc(10px + var(--sa-t)); left:50%; transform:translateX(-50%); z-index:3; touch-action:none}
 body:not(.agentmax) .agexit{display:none}
+/* the view's entry animation makes it a stacking context while it runs, which holds the
+   frame under the head: on a phone the Agent view opens straight into fullscreen */
+body.agentmax .view{animation:none}
 
 /* library / logs toolbars */
 .toolbar{display:flex; gap:var(--s-2); flex-wrap:wrap; align-items:center; margin-bottom:var(--s-4)}
@@ -664,11 +692,16 @@ body:not(.agentmax) .agexit{display:none}
   :root{--spine:60px}
   .shell{grid-template-columns:1fr !important}
   .menu-btn{display:grid}
-  .rail{position:fixed; top:var(--spine); left:0; bottom:0; z-index:60; width:min(300px, 86vw); height:auto; background:var(--ink-1);
+  /* The drawer over its veil, both over the dock (60): an open drawer is the one thing a
+     finger can reach below the head, and a tap anywhere else closes it. align-self back to
+     normal: the desktop rule's start made the fixed drawer as tall as its items instead of
+     stretching between top and bottom, so on a short screen (a phone on its side) it never
+     scrolled and its last items sat below the screen, out of reach. */
+  .rail{position:fixed; top:var(--head); left:0; bottom:0; z-index:65; width:min(300px, 86vw); height:auto; align-self:normal; background:var(--ink-1);
     transform:translateX(-102%); visibility:hidden; transition:transform .3s var(--ease), visibility 0s linear .3s;
     box-shadow:30px 0 80px -30px rgba(0,0,0,.9)}
   body.railopen .rail{transform:none; visibility:visible; transition:transform .3s var(--ease)}
-  body.railopen::after{content:''; position:fixed; inset:var(--spine) 0 0 0; z-index:55; background:rgba(0,0,0,.5)}
+  body.railopen::after{content:''; position:fixed; inset:var(--head) 0 0 0; z-index:64; background:rgba(0,0,0,.5)}
   .rail .collapse{display:none}
   .serving{max-width:none}
   .minipool{display:none}
@@ -676,9 +709,9 @@ body:not(.agentmax) .agexit{display:none}
   .span2{grid-column:auto}
 }
 @media (max-width:720px){
-  .stage{padding:var(--s-5) var(--s-4) calc(var(--s-9) + 40px)}
+  .stage{padding:var(--s-5) max(var(--s-4), var(--sa-r)) calc(var(--s-9) + 40px + var(--sa-b)) max(var(--s-4), var(--sa-l))}
   .brand .word, .conn .lbl, .spine .dry{display:none}
-  .spine{gap:var(--s-2); padding:0 var(--s-3)}
+  .spine{gap:var(--s-2); padding:var(--sa-t) max(var(--s-3), var(--sa-r)) 0 max(var(--s-3), var(--sa-l))}
   .serving{flex:1 1 auto}
   .serving{padding:5px 6px 5px 12px}
   .serving .go{display:none}
@@ -697,10 +730,42 @@ body:not(.agentmax) .agexit{display:none}
   .vital:nth-child(4){border-left:1px solid var(--rule-1)}
   .vital:nth-child(n+3){border-top:1px solid var(--rule-1)}
   .facts{font-size:var(--t-14)}
+  /* a finger cannot hover a cut value to read the rest of it: on a phone they wrap */
+  .facts dd{white-space:normal; overflow-wrap:anywhere}
   .sheet{padding:var(--s-5); border-radius:18px}
-  .dock{right:var(--s-3); bottom:var(--s-3)}
+  .dock{right:calc(var(--s-3) + var(--sa-r)); bottom:calc(var(--s-3) + var(--sa-b))}
   .pairs{grid-template-columns:minmax(0,1fr)}
   .prob{grid-template-columns:minmax(70px, 110px) 1fr 52px}
+  /* the request log, one card per request: the outcome is what you look for, so it sits
+     beside the time instead of three columns past the edge of the screen */
+  .tbl.feed, .tbl.feed tbody{display:block}
+  .tbl.feed thead{display:none}
+  .tbl.feed tr{display:grid; grid-template-columns:auto minmax(0,1fr) auto; column-gap:var(--s-3); row-gap:2px;
+    grid-template-areas:"time outcome took" "route route size" "peer peer peer"; padding:10px 0; border-top:1px solid var(--rule-1)}
+  .tbl.feed tr:first-child{border-top:0}
+  .tbl.feed td{padding:0; border:0}
+  .tbl.feed td:nth-child(1){grid-area:time}
+  .tbl.feed td:nth-child(2){grid-area:peer; color:var(--fg-3); font-size:var(--t-12)}
+  .tbl.feed td:nth-child(3){grid-area:route; overflow-wrap:anywhere}
+  .tbl.feed td:nth-child(4){grid-area:size; color:var(--fg-2)}
+  .tbl.feed td:nth-child(5){grid-area:took; color:var(--fg-2)}
+  .tbl.feed td:nth-child(6){grid-area:outcome; min-width:0}
+  .tbl.feed tr.empty{display:block}
+  .tbl.feed tr.empty td{display:block; padding:var(--s-6) 0}
+  /* a wide table, one card per row: the first cell is the card's title and every other
+     line carries its column's name (set on each cell by labelCells) */
+  .tbl.stack, .tbl.stack tbody, .tbl.stack tr{display:block}
+  .tbl.stack thead{display:none}
+  .tbl.stack tr{padding:var(--s-3) 0; border-top:1px solid var(--rule-1)}
+  .tbl.stack tr:first-child{border-top:0}
+  .tbl.stack td{display:block; position:relative; padding:3px 0 3px 104px; border:0; text-align:left; overflow-wrap:anywhere}
+  .tbl.stack td::before{content:attr(data-label); position:absolute; left:0; top:5px; width:96px;
+    color:var(--fg-3); font-size:var(--t-12); line-height:1.35}
+  .tbl.stack td:first-child, .tbl.stack td:not([data-label]){padding-left:0}
+  .tbl.stack td:first-child::before, .tbl.stack td:not([data-label])::before{content:none}
+  .tbl.stack tr.empty td{text-align:center; padding:var(--s-6) 0}
+  .tbl.stack td:empty{display:none}   /* a second revision of the same model leaves its name blank */
+  .tbl.feed tbody tr:hover td, .tbl.stack tbody tr:hover td{background:none}
 }
 /* a finger, not a mouse: every target at least 44 px (Apple's HIG), and text entry at
    16 px, under which iOS Safari zooms the whole page on focus and never zooms back */

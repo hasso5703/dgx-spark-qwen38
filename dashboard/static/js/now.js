@@ -133,7 +133,8 @@ function renderRack(){
     clear(b.line);
     const fact = (k, v) => { const sp = el('span'); sp.append(k + ' '); sp.append(el('b', null, v)); b.line.append(sp); };
     if (e) fact('boot', fmtMin(bootSeconds(unit)));
-    if (e && e.pools && e.pools.last) fact('KV pool', fmtK(e.pools.last));
+    const pool = e ? lanePool(unit, e) : null;
+    if (pool) fact('KV pool', fmtK(pool));
     if (seated && e && e.elapsed && (st === 'ready' || st === 'degraded')) fact('up', fmtDur(e.elapsed));
     if (unit === VIDEO_UNIT) fact('4 s clip', 'about 11 min');
     if (unit === IMAGE_UNIT) fact('1024 image', 'about 38 s');

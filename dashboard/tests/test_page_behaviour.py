@@ -600,6 +600,102 @@ class TheCollapsedRailIsADesktopThing(unittest.TestCase):
 
 
 
+def z_index(sel, media_frag=None):
+    """The z-index a selector declares, in the @media whose condition holds media_frag
+    (None for a rule outside any @media), or None."""
+    for s, media, decl in css_rules():
+        if sel not in [x.strip() for x in s.split(",")]:
+            continue
+        cond = "".join(media).replace(" ", "")
+        if (media_frag is None and not media) or (media_frag and media_frag.replace(" ", "") in cond):
+            m = re.search(r"z-index:\s*(-?\d+)", decl)
+            if m:
+                return int(m.group(1))
+    return None
+
+
+class TheDrawerIsNotTrappedUnderItsVeil(unittest.TestCase):
+    """On a phone no rail item could be tapped: .shell carried z-index:1, which made it a
+    stacking context, so the drawer inside it (z-index 60) stacked as a whole at 1, under
+    the veil its own opening draws (body::after, z-index 55). Every tap landed on the veil,
+    whose click closes the drawer: the view never changed (2026-09-30). The same trap held
+    the Agent's fullscreen frame under the head, over its own exit button. The browser
+    check (touch-check.mjs) taps for real; these hold the mechanism in the stylesheet."""
+
+    def test_the_shell_is_no_stacking_context(self):
+        decl = [d for s, media, d in css_rules() if s.strip() == ".shell" and not media]
+        self.assertTrue(decl, "the page has a .shell rule")
+        self.assertNotRegex(decl[0], r"z-index", "a z-index here traps the drawer and the fullscreen frame")
+
+    def test_no_view_keeps_a_filling_animation(self):
+        """An animation still filling on opacity keeps the view a stacking context after it
+        ends, which held the fullscreen frame under the head with .shell fixed."""
+        for s, media, d in css_rules():
+            if s.strip() == ".view":
+                self.assertNotRegex(d, r"animation:[^;]*\b(both|forwards)\b", d)
+                return
+        self.fail("no .view rule")
+
+    def test_on_a_phone_the_drawer_is_over_its_veil_and_both_over_the_dock(self):
+        rail = z_index(".rail", "max-width:980px")
+        veil = z_index("body.railopen::after", "max-width:980px")
+        dock = z_index(".dock")
+        self.assertIsNotNone(rail); self.assertIsNotNone(veil); self.assertIsNotNone(dock)
+        self.assertGreater(rail, veil)
+        self.assertGreater(veil, dock, "the dock is under the veil while the drawer is open")
+
+    def test_the_fullscreen_frame_is_over_the_head_and_under_the_dialogs(self):
+        frame = z_index("body.agentmax .agentframe")
+        self.assertGreater(frame, z_index(".spine"))
+        self.assertGreater(frame, z_index(".rail", "max-width:980px"))
+        self.assertLess(frame, z_index(".scrim"))
+
+
+class TheDrawerAndTheDialogsHandTheFocusBack(unittest.TestCase):
+    """The drawer had no Escape and a closed dialog left the focus on the body: a keyboard
+    started again from the top of the page every time."""
+
+    def test_the_drawer_takes_the_focus_to_where_you_are_and_escape_gives_it_back(self):
+        out = run(self, r"""
+        showView('lanes');
+        $('menubtn').click(); await __advance(10);
+        const opened = document.body.classList.contains('railopen');
+        const inside = document.activeElement && document.activeElement.dataset.view;
+        document.dispatchEvent({type: 'keydown', key: 'Escape'});
+        report({opened, inside, closed: !document.body.classList.contains('railopen'),
+                back: document.activeElement === $('menubtn')});
+        """)
+        self.assertEqual(out, {"opened": True, "inside": "lanes", "closed": True, "back": True})
+
+    def test_the_actions_menu_takes_the_focus_and_gives_it_back(self):
+        out = run(self, r"""
+        feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-sglang.service': eng('ready')})});
+        $('actbtn').focus(); $('actbtn').click(); await __advance(10);
+        const first = document.activeElement && document.activeElement.dataset.act;
+        document.dispatchEvent({type: 'keydown', key: 'Escape'});
+        report({first, hidden: $('menu').hidden, back: document.activeElement === $('actbtn')});
+        """)
+        self.assertEqual(out["hidden"], True)
+        self.assertEqual(out["back"], True)
+        self.assertTrue(out["first"], "the first action has the focus while the menu is open")
+
+
+class ATableCellCarriesItsColumnName(unittest.TestCase):
+    """On a phone the Library's wide tables stack each row into a card, and a line without
+    its column's name is a value nobody can read. A cell spanning columns has no one name."""
+
+    def test_each_cell_is_labelled_by_its_column_and_a_span_is_not(self):
+        out = run(self, r"""
+        const t = $('rcp-table'), tb = t.tBodies[0];
+        const a = tb.insertRow(); ['r', 'img', 'ckpt', 'drafter', 'serve', 'disk', 'lane'].forEach(v => { a.insertCell().textContent = v; });
+        const b = tb.insertRow(); b.insertCell().textContent = 'bad'; const w = b.insertCell(); w.colSpan = 6; w.textContent = 'invalid';
+        labelCells(t);
+        report({a: [...a.cells].map(c => c.dataset.label || null), b: [...b.cells].map(c => c.dataset.label || null)});
+        """)
+        self.assertEqual(out["a"], ["Recipe", "Engine image", "Checkpoint", "Drafter", "Serving", "On disk", "Against the lane"])
+        self.assertEqual(out["b"], ["Recipe", None])
+
+
 class TheCockpitsProbeWearsNoAlarmColour(unittest.TestCase):
     """The request log painted the cockpit's own route probe the red of a failure."""
 
@@ -613,6 +709,36 @@ class TheCockpitsProbeWearsNoAlarmColour(unittest.TestCase):
         """)
         self.assertEqual(sorted(out), ["tag", "tag err"])
 
+
+class TheServingLanesPoolIsTheLiveOne(unittest.TestCase):
+    """The rack and the Lanes view read the pool from the boots this cockpit watched: one
+    restarted after the serving lane booted said "KV pool this boot: 400,384 tokens" while
+    the engine reported 491,136 (2026-09-30)."""
+
+    def test_the_serving_text_lane_shows_what_its_engine_reports(self):
+        out = run(self, r"""
+        const flash = eng('ready', {target: 'flash', pools: {n: 3, last: 400384, min: 400384, max: 575744, spread_pct: 30.5}, boots: [650, 660, 670]});
+        const u27 = eng('stopped', {pools: {n: 2, last: 926495, min: 880417, max: 926495, spread_pct: 5}, boots: [460]});
+        const units = {units: Object.assign({}, UNITS.units, {'qwen38-flash.service': {active: 'active', enabled: 'enabled'},
+                                                          'qwen38-sglang.service': {active: 'inactive', enabled: 'disabled'}})};
+        feed({config: CONFIG, units, engine_info: {info: {max_total_num_tokens: 491136}},
+              lifecycle: life({'qwen38-flash.service': flash, 'qwen38-sglang.service': u27})});
+        report({flash: lanePool('qwen38-flash.service', flash), u27: lanePool('qwen38-sglang.service', u27)});
+        """)
+        self.assertEqual(out, {"flash": 491136, "u27": 926495})
+
+    def test_right_after_a_switch_the_other_lanes_pool_is_not_shown_as_this_boots(self):
+        """The engine read refreshes every 30 s: just after a switch it still holds the
+        previous lane's pool, and says which target it read."""
+        out = run(self, r"""
+        const flash = eng('ready', {target: 'flash', pools: {n: 1, last: 400384}, boots: [650]});
+        const units = {units: Object.assign({}, UNITS.units, {'qwen38-flash.service': {active: 'active', enabled: 'enabled'},
+                                                          'qwen38-sglang.service': {active: 'inactive', enabled: 'disabled'}})};
+        feed({config: CONFIG, units, engine_info: {served_target: 'uncensored', info: {max_total_num_tokens: 926495}},
+              lifecycle: life({'qwen38-flash.service': flash})});
+        report(lanePool('qwen38-flash.service', flash));
+        """)
+        self.assertEqual(out, 400384)
 
 if __name__ == "__main__":
     unittest.main()

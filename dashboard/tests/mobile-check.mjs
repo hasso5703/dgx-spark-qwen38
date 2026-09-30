@@ -76,6 +76,16 @@ async function evalJs(expression) {
   return r.result?.result?.value;
 }
 
+// A finger: a touch at the centre of an element brought on screen first.
+const tapXY = async (x, y) => {
+  await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, radiusX: 3, radiusY: 3, force: 1 }] }, sessionId);
+  await sleep(40);
+  await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }, sessionId);
+};
+const aim = sel => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null;
+  e.scrollIntoView({block: 'center'}); const r = e.getBoundingClientRect(); if (!r.width || !r.height) return null;
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+
 // The audit runs in the page: one pass over the DOM per tab.
 const AUDIT = `(() => {
   const vw = window.innerWidth, vh = window.innerHeight;
@@ -149,9 +159,24 @@ for (const d of DEVICES) {
   await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }, sessionId);
   await send('Page.navigate', { url: BASE + '/#now' }, sessionId);
   await sleep(4500);
+  // each device starts from the phone's default (fullscreen), not from a choice a previous
+  // device's exit tap stored in this origin
+  await evalJs("(() => { try { localStorage.removeItem('cockpit.agent.max'); } catch {} agentMaxChoice = null; return 1; })()");
   for (const tab of VIEWS) {
-    await evalJs(`(() => { const b = document.querySelector('.rail .nav[data-view="${tab}"]'); if (b) b.click(); else location.hash = '#${tab}'; })()`);
+    // Switch the way a thumb does: out of the Agent's fullscreen, the menu button, then the
+    // item. element.click() from script ignores what covers the item, and the drawer's own
+    // veil covered every one of them while this check stayed green (2026-09-30).
+    if (await evalJs("document.body.classList.contains('agentmax')")) {
+      const ex = await aim('#ag-exit'); if (ex) { await tapXY(ex.x, ex.y); await sleep(400); }
+    }
+    if (await evalJs("getComputedStyle(document.getElementById('menubtn')).display !== 'none'")) {
+      const m = await aim('#menubtn'); if (m) { await tapXY(m.x, m.y); await sleep(450); }
+    }
+    const it = await aim(`.rail .nav[data-view="${tab}"]`);
+    if (it) await tapXY(it.x, it.y);
     await sleep(tab === 'agent' ? 2500 : 700);
+    ok(`${d.name} ${tab}: a tap on the ${tab} item shows it`, it && await evalJs(`document.body.dataset.view === '${tab}'`),
+      it ? await evalJs('document.body.dataset.view') : 'the item is not rendered');
     const a = JSON.parse(await evalJs(AUDIT));
     report.push({ device: d.name, tab, ...a });
     ok(`${d.name} ${tab}: no horizontal overflow`, a.overflowX <= 1, `document scrolls ${a.overflowX}px past ${a.vw}px`);
@@ -183,6 +208,25 @@ for (const d of DEVICES) {
       }
     }
   }
+  // The inline frame, as a person who left fullscreen gets it on this phone: it was sized
+  // on a guess of 150 px above it, and its composer sat below the fold (2026-09-30).
+  await evalJs("(() => { if (document.body.classList.contains('agentmax')) setAgentMax(false, false); showView('now'); try { localStorage.setItem('cockpit.agent.max', '0'); } catch {} agentMaxChoice = null; return 1; })()");
+  await sleep(300);
+  if (await evalJs("getComputedStyle(document.getElementById('menubtn')).display !== 'none'")) {
+    const m = await aim('#menubtn'); if (m) { await tapXY(m.x, m.y); await sleep(450); }
+  }
+  const ai = await aim('.rail .nav[data-view="agent"]'); if (ai) await tapXY(ai.x, ai.y);
+  await sleep(2500);
+  const inl = JSON.parse(await evalJs(AUDIT));
+  if (!inl.agentnote && inl.frame && !inl.agentmax) {
+    ok(`${d.name} agent inline: the opencode frame fits the viewport`,
+      inl.frame.top >= 0 && inl.frame.bottom <= inl.vh + 2, JSON.stringify(inl.frame) + ` vh=${inl.vh}`);
+    ok(`${d.name} agent inline: the frame gets most of the screen`, inl.frame.h >= inl.vh * 0.55,
+      `${inl.frame.h}px of ${inl.vh}px`);
+  } else {
+    ok(`${d.name} agent inline: the frame is shown inline`, false, JSON.stringify({ note: inl.agentnote, frame: inl.frame, max: inl.agentmax }));
+  }
+  await evalJs("(() => { try { localStorage.removeItem('cockpit.agent.max'); } catch {} agentMaxChoice = null; return 1; })()");
 }
 
 try { ws.close(); } catch {}

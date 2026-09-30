@@ -154,7 +154,7 @@
           <header><h2>Keepalive proxy</h2><span class="aside age"></span></header>
           <p class="muted">Fronts the text engine for agent clients on :30001: keeps streams alive, refuses prompts the lane cannot serve, aborts generations whose client left.</p>
           <dl class="facts" style="margin-top:var(--s-4)">
-            <dt>State</dt><dd id="px-state">…</dd>
+            <dt>State</dt><dd><span id="px-state">…</span></dd>
             <dt>Version</dt><dd id="px-ver">…</dd>
             <dt>Generation probe</dt><dd id="px-probe">…</dd>
             <dt>Last probe</dt><dd class="num" id="px-last">…</dd>
@@ -185,7 +185,7 @@
         <section class="panel" data-src="feed">
           <header><h2>Requests</h2><span class="aside age"></span></header>
           <div class="scroll-x">
-            <table class="tbl dense" id="feed">
+            <table class="tbl dense feed" id="feed">
               <thead><tr><th>Time</th><th>Client</th><th>Route</th><th class="r">Size</th><th class="r">Took</th><th>Outcome</th></tr></thead>
               <tbody></tbody>
             </table>
@@ -492,16 +492,16 @@
         <section class="panel">
           <header><h2>Recipes</h2><div class="btn-row"><span class="aside" id="rcp-age"></span><button class="btn sm" id="rcp-btn" type="button">Load</button></div></header>
           <p class="muted" id="rcp-line">A recipe is a lane's full serving setup: engine image, checkpoint, drafter, flags.</p>
-          <div class="scroll-x" style="margin-top:var(--s-3)"><table class="tbl dense" id="rcp-table">
+          <div class="scroll-x" style="margin-top:var(--s-3)"><table class="tbl dense stack" id="rcp-table">
             <thead><tr><th>Recipe</th><th>Engine image</th><th>Checkpoint</th><th>Drafter</th><th>Serving</th><th>On disk</th><th>Against the lane</th></tr></thead><tbody></tbody></table></div>
           <p class="help" id="rcp-dir"></p>
         </section>
         <div class="grid g2">
           <section class="panel">
             <header><h2>Checkpoints on disk</h2><div class="btn-row"><span class="aside" id="reg-age"></span><button class="btn sm" id="reg-btn" type="button">Scan</button></div></header>
-            <div class="scroll-x"><table class="tbl dense" id="reg-models"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">On disk</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+            <div class="scroll-x"><table class="tbl dense stack" id="reg-models"><thead><tr><th>Model</th><th>Revision</th><th class="r">Size</th><th class="r">On disk</th><th>Status</th></tr></thead><tbody></tbody></table></div>
             <h3 style="font-size:var(--t-14); margin:var(--s-5) 0 var(--s-2)">Engine images</h3>
-            <div class="scroll-x"><table class="tbl dense" id="reg-images"><thead><tr><th>Image</th><th class="r">Size</th><th class="r">ID</th></tr></thead><tbody></tbody></table></div>
+            <div class="scroll-x"><table class="tbl dense stack" id="reg-images"><thead><tr><th>Image</th><th class="r">Size</th><th class="r">ID</th></tr></thead><tbody></tbody></table></div>
             <h3 style="font-size:var(--t-14); margin:var(--s-5) 0 var(--s-2)">Other models in the cache <span class="tag" id="reg-other-tag"></span></h3>
             <div class="scroll-x"><table class="tbl dense" id="reg-other"><thead><tr><th>Model</th><th class="r">On disk</th></tr></thead><tbody></tbody></table></div>
           </section>
@@ -509,7 +509,7 @@
             <section class="panel">
               <header><h2>Pins against upstream</h2><button class="btn sm" id="up-btn" type="button">Check</button></header>
               <p class="muted" id="up-line">Compares each pinned revision with the tip of its repository.</p>
-              <div class="scroll-x" style="margin-top:var(--s-3)"><table class="tbl dense" id="up-table"><thead><tr><th>Model</th><th>Pinned</th><th>Upstream</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+              <div class="scroll-x" style="margin-top:var(--s-3)"><table class="tbl dense stack" id="up-table"><thead><tr><th>Model</th><th>Pinned</th><th>Upstream</th><th>Status</th></tr></thead><tbody></tbody></table></div>
             </section>
             <section class="panel">
               <header><h2>What this repo installed</h2><button class="btn sm" id="inv-btn" type="button">Scan</button></header>

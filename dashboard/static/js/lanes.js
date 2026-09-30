@@ -56,9 +56,10 @@ function bootChart(box, e, unit){
   const lab = el('p', 'help'); lab.textContent = `Last ${boots.length} boots: ${boots.map(fmtDur).join(', ')}. Median ${fmtDur(bootSeconds(unit))}.`;
   const row = el('div'); row.style.cssText = 'display:flex; gap:var(--s-4); align-items:flex-end; flex-wrap:wrap'; row.append(wrap, lab);
   box.append(row);
-  if (e.pools && e.pools.last){
-    const seatedNow = (servingEngine() || [])[0] === unit;
-    box.append(el('p', 'help', `KV pool ${seatedNow ? 'this' : 'last'} boot: ${fmtN(e.pools.last)} tokens` + (e.pools.n > 1 ? `, between ${fmtN(e.pools.min)} and ${fmtN(e.pools.max)} over ${e.pools.n} boots (${e.pools.spread_pct} % spread). The pool is decided at boot by the memory free at that moment.` : '.')));
+  const pool = lanePool(unit, e);
+  if (pool){
+    const live = livePool(unit, e);
+    box.append(el('p', 'help', `KV pool ${live ? 'this' : 'last'} boot: ${fmtN(pool)} tokens` + (e.pools && e.pools.n > 1 ? `, between ${fmtN(e.pools.min)} and ${fmtN(e.pools.max)} over the ${e.pools.n} boots this cockpit watched (${e.pools.spread_pct} % spread). The pool is decided at boot by the memory free at that moment.` : '.')));
   }
 }
 function renderLanes(){

@@ -36,6 +36,7 @@ function mountAgent(){
     f.id = 'ag-iframe'; f.title = 'opencode'; f.src = agentUrl();
     f.setAttribute('allow', 'clipboard-read; clipboard-write'); f.setAttribute('referrerpolicy', 'no-referrer');
     $('ag-frame').append(f); $('ag-frame').classList.add('mounted'); AG.mounted = true;
+    if (activeView === 'agent') fitAgentFrame();   // once, when the frame first exists: never on a refresh
   }
   show('ag-msg', false);
 }
@@ -46,10 +47,25 @@ function applyAgentMax(){
   if (!agentReady() || !$('ag-note').hidden || !$('ag-msg').hidden) return;
   setAgentMax(true, false);
 }
+// The inline frame fills the screen below where it really starts, so opencode's composer,
+// at its foot, is on screen. It was sized on a guess of 150 px above it, which left the
+// composer under the fold on a phone, a tablet and a laptop (2026-09-30). When too little
+// room is left under the view's buttons (a phone on its side), the frame is a screen tall
+// and the page brings it under the head instead.
+function fitAgentFrame(scroll = true){
+  const f = $('ag-frame');
+  if (!f || !f.classList.contains('mounted') || document.body.classList.contains('agentmax') || activeView !== 'agent') return;
+  const vh = window.innerHeight, head = $('spine').getBoundingClientRect().height;
+  const top = f.getBoundingClientRect().top + window.scrollY, room = Math.floor(vh - top - 16);
+  f.classList.add('fitted');
+  if (room >= vh * 0.6){ f.style.setProperty('--agh', room + 'px'); return; }
+  f.style.setProperty('--agh', Math.max(200, Math.floor(vh - head - 32)) + 'px');
+  if (scroll && f.scrollIntoView) f.scrollIntoView({block: 'start'});
+}
 function setAgentMax(on, persist = true){
   document.body.classList.toggle('agentmax', on);
   const b = $('ag-max'); if (b){ setText(b, on ? 'Exit fullscreen' : 'Fullscreen'); b.setAttribute('aria-pressed', String(on)); }
-  if (on){ mountAgent(); agexitPlace(); }
+  if (on){ mountAgent(); agexitPlace(); } else if (activeView === 'agent') fitAgentFrame();
   if (persist){ agentMaxChoice = on; try { localStorage.setItem('cockpit.agent.max', on ? '1' : '0'); } catch { /* private mode */ } }
 }
 on('agent', d => {
@@ -96,7 +112,7 @@ on('agent', d => {
   AG.wasReady = ready;
   badge('agent', ready ? '' : 'down', 'err');
 });
-onShow('agent', () => { mountAgent(); applyAgentMax(); });
+onShow('agent', () => { mountAgent(); applyAgentMax(); fitAgentFrame(); });
 // The back button floats where the person parks it; the place is a fraction of the
 // frame, so a rotation keeps it on the same side. A drag is never a click.
 const AGEXIT_KEY = 'cockpit.agent.exitpos';
@@ -139,7 +155,7 @@ function wireAgent(){
   exit.addEventListener('pointerup', end); exit.addEventListener('pointercancel', end);
   exit.addEventListener('click', () => { if (moved){ moved = false; return; } setAgentMax(false); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && document.body.classList.contains('agentmax') && $('scrim').hidden) setAgentMax(false); });
-  window.addEventListener('resize', () => { if (document.body.classList.contains('agentmax')) agexitPlace(); });
+  window.addEventListener('resize', () => { if (document.body.classList.contains('agentmax')) agexitPlace(); else fitAgentFrame(false); });
   // the visual viewport: on iOS the keyboard shrinks it without touching the layout
   // viewport, so a fullscreen frame sized in dvh would keep the composer under the keyboard
   const vvp = window.visualViewport;

@@ -158,6 +158,7 @@ async function loadRecipes(){
     const tb = $('rcp-table').tBodies[0]; clear(tb);
     (d.builtin || []).forEach(row => recipeRow(tb, row)); (d.custom || []).forEach(row => recipeRow(tb, row));
     if (!tb.rows.length) emptyRow(tb, 7, 'No recipe found.');
+    labelCells($('rcp-table'));
     setText('rcp-dir', d.custom_dir ? `Custom recipes live in ${d.custom_dir}.` : '');
     const inst = (d.builtin || []).concat(d.custom || []).filter(x => x.installed).map(x => x.recipe.id);
     const drift = (d.builtin || []).filter(x => x.installed && x.drift && x.drift.length).length;
@@ -181,9 +182,11 @@ async function scanRegistry(){
       const s = tr.insertCell(); s.append(tag(rv.status, rv.status === 'pinned' ? 'cool' : rv.status === 'stray' ? 'warn' : '')); if (rv.pin) s.append(' ', tag(rv.pin));
     }));
     if (!tb.rows.length) emptyRow(tb, 5, 'No managed model in the Hugging Face cache.');
+    labelCells($('reg-models'));
     const ti = $('reg-images').tBodies[0]; clear(ti);
     (d.images || []).forEach(im => { const tr = ti.insertRow(); tr.insertCell().textContent = im.ref; const a = tr.insertCell(); a.className = 'r num'; a.textContent = im.size; const c = tr.insertCell(); c.className = 'r num'; c.textContent = im.id; });
     if (!ti.rows.length) emptyRow(ti, 3, 'No engine image.');
+    labelCells($('reg-images'));
     const to = $('reg-other').tBodies[0]; clear(to);
     const others = (d.other_models || []).slice().sort((x, y) => y.disk_bytes - x.disk_bytes);
     others.forEach(m => { const tr = to.insertRow(); tr.insertCell().textContent = m.repo_id; const c = tr.insertCell(); c.className = 'r num'; c.textContent = fmtGiB(m.disk_bytes); });
@@ -202,6 +205,7 @@ async function checkUpstream(){
     (d.models || []).forEach(m => { const tr = tb.insertRow(); tr.insertCell().textContent = m.model.split('/').pop();
       const a = tr.insertCell(); a.className = 'num'; a.textContent = m.pin; const c = tr.insertCell(); c.className = 'num'; c.textContent = m.upstream || '?';
       tr.insertCell().append(tag(m.status, m.status === 'same' ? 'cool' : m.status === 'moved' ? 'warn' : 'err')); });
+    labelCells($('up-table'));
     const rel = d.release || {}, stale = rel.stale_code || [];
     const relLine = rel.latest ? `Release: this box ${rel.local}, latest ${rel.latest}` + (rel.latest === rel.local ? ', up to date.' : ', an update is out.') : 'The release check is offline (no network, or GitHub unreachable).';
     setText('up-line', stale.length ? `This cockpit runs code older than the repo (${stale.join(', ')} changed on disk): restart it. ${relLine}` : relLine);
