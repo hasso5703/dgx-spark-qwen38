@@ -2531,14 +2531,26 @@ def video_base() -> str:
 
 
 VIDEO_JOURNAL_LINES = 300
+# The first lines of a run hold every boot marker: the server line, the component loads,
+# FastAPI's start (line 74 of the reference box's boot, 2026-09-30).
+VIDEO_HEAD_LINES = 600
+# unit -> (invocation, boot): the stage a boot reached, kept for that activation, and the
+# invocation whose first lines were read once
+VIDEO_BOOT_SEEN: dict = {}
+VIDEO_HEAD_READ: dict = {}
 
 
-def _video_journal(invocation: str) -> list:
+def _video_journal(invocation: str, head: bool = False) -> list:
     """This run's log, and only this run's: the lines of the unit's current systemd
     invocation. Same latest-boot trap as the image lane: a new process takes seconds
-    to print its first line, and until it does the tail is the previous run's."""
+    to print its first line, and until it does the tail is the previous run's.
+    head=True reads the run from its start instead of its tail (the boot's markers)."""
     if not invocation:
         return []
+    if head:
+        raw = run(["journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}",
+                   "--no-pager", "-o", "cat"], timeout=15.0)
+        return raw.splitlines()[:VIDEO_HEAD_LINES]
     raw = run(["journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}",
                "-n", str(VIDEO_JOURNAL_LINES), "--no-pager", "-o", "cat"], timeout=8.0)
     return raw.splitlines()
@@ -2574,6 +2586,21 @@ def video_engine_state(unit: str, *, active: str, sub: str, prev_state: str | No
             healthy = UNHEALTHY_TICKS[unit] < 3
         else:
             boot = lc.parse_video_boot_log(_video_journal(invocation))
+            # The tail is 300 lines and the cockpit's own /health probe writes one every
+            # 2 s through the warm-up: its markers leave the window before it ends (the
+            # reference box, 2026-09-30: FastAPI's start at line 74 of 395), the parse
+            # reads no stage, and the lane went from warming up back to starting. Within
+            # one activation a boot does not go back; a cockpit that came up after the
+            # markers left reads the run's first lines, once.
+            seen = VIDEO_BOOT_SEEN.get(unit)
+            if (boot["stage"] is None and invocation and not (seen and seen[0] == invocation)
+                    and VIDEO_HEAD_READ.get(unit) != invocation):
+                VIDEO_HEAD_READ[unit] = invocation
+                boot = lc.parse_video_boot_log(_video_journal(invocation, head=True))
+            if boot["stage"] is not None:
+                VIDEO_BOOT_SEEN[unit] = (invocation, boot)
+            elif seen and invocation and seen[0] == invocation:
+                boot = seen[1]
     st = lc.derive_state(unit_active=active, unit_sub=sub, container_running=running,
                          healthy=healthy, boot=boot)
     if st["state"] == "degraded" and prev_state not in ("ready", "degraded"):

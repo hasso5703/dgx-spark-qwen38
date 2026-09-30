@@ -857,5 +857,78 @@ class TheLaneReportsItsOwnHealth(Base):
         self.assertNotEqual(st["state"], "ready")
 
 
+
+class TheBootBarNeverGoesBackOnTheVideoLane(Base):
+    """The cockpit reads the last 300 lines of the run, and its own /health probe writes one
+    every 2 s through the ten-minute warm-up: on the reference box on 2026-09-30 FastAPI's
+    start sat at line 74 of 395 when the lane went from warming up back to starting. The
+    lines below are that boot's, verbatim."""
+    KEY = "qwen38-video-test-bootbar"
+    BOOT = ["[09-30 18:11:49] Starting server...",
+            "[09-30 18:11:55] Loading pipeline modules...",
+            "[09-30 18:11:56] Loading MiniMaxH3DiTModel from 13 safetensors file(s) , param_dtype: torch.bfloat16",
+            "[09-30 18:12:06] Pipeline instantiated",
+            "[09-30 18:12:20] Starting FastAPI server."]
+    PROBE = '[2026-09-30 18:16:55] INFO:     127.0.0.1:34130 - "GET /health HTTP/1.1" 503 Service Unavailable'
+
+    def setUp(self):
+        super().setUp()
+        self.tail, self.head, self.head_reads = [], [], 0
+
+        def run(argv, timeout=5.0, merge_err=False):
+            if argv and argv[0] == "journalctl":
+                if "-n" in argv:
+                    return "\n".join(self.tail)
+                self.head_reads += 1
+                return "\n".join(self.head)
+            return ""
+
+        def down(req, timeout=None):
+            raise ConnectionError("503 while it warms up")
+        self._run, self._open = self.ck.run, self.ck.urllib.request.urlopen
+        self.ck.run, self.ck.urllib.request.urlopen = run, down
+
+    def tearDown(self):
+        self.ck.run, self.ck.urllib.request.urlopen = self._run, self._open
+        for d in (self.ck.VIDEO_INVOCATION, self.ck.UNHEALTHY_TICKS, self.ck.VIDEO_READY_ENTER,
+                  self.ck.VIDEO_BOOT_SEEN, self.ck.VIDEO_HEAD_READ):
+            d.pop(self.KEY, None)
+        super().tearDown()
+
+    def tick(self, invocation):
+        st, boot, running = self.ck.video_engine_state(
+            self.KEY, active="active", sub="running", prev_state=None, enter_key="7", invocation=invocation)
+        return st["state"]
+
+    def test_the_warm_up_stays_when_its_markers_leave_the_tail(self):
+        self.tail = self.BOOT + [self.PROBE] * 20
+        self.assertEqual(self.tick("inv-a"), "warming-up")
+        self.tail = [self.PROBE] * 300
+        self.assertEqual(self.tick("inv-a"), "warming-up")
+        self.assertEqual(self.tick("inv-a"), "warming-up")
+
+    def test_a_new_run_starts_from_its_own_lines(self):
+        self.tail = self.BOOT + [self.PROBE] * 20
+        self.assertEqual(self.tick("inv-a"), "warming-up")
+        self.tail, self.head = [self.PROBE] * 300, ["[09-30 19:00:01] Starting server..."]
+        self.assertEqual(self.tick("inv-b"), "starting")
+
+
+    def test_a_run_that_proves_nothing_yet_never_borrows_the_last_runs_stage(self):
+        self.tail = self.BOOT + [self.PROBE] * 20
+        self.assertEqual(self.tick("inv-a"), "warming-up")
+        self.tail, self.head = [self.PROBE] * 300, [self.PROBE] * 300
+        self.assertEqual(self.tick("inv-e"), "starting")
+
+    def test_a_cockpit_that_came_up_late_reads_the_start_once(self):
+        self.tail, self.head = [self.PROBE] * 300, self.BOOT + [self.PROBE] * 50
+        self.assertEqual([self.tick("inv-c") for _ in range(3)], ["warming-up"] * 3)
+        self.assertEqual(self.head_reads, 1, "the run's first lines are read once per activation")
+
+    def test_a_run_with_no_marker_yet_is_not_read_again_every_tick(self):
+        self.tail, self.head = [self.PROBE] * 300, [self.PROBE] * 300
+        self.assertEqual([self.tick("inv-d") for _ in range(3)], ["starting"] * 3)
+        self.assertEqual(self.head_reads, 1)
+
 if __name__ == "__main__":
     unittest.main()
