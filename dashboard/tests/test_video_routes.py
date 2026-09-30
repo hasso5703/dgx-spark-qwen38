@@ -685,6 +685,37 @@ class TheLaneIsAskedBeforeItIsBooked(Base):
         self.assertEqual(code, 502, out)
 
 
+class ARunningLaneThatSaysNothingIsNotAStoppedOne(Base):
+    """During its warm-up the lane holds a POST until the three warm-up requests are done:
+    measured 2026-09-29, an 80 s wait and then a 502 telling the person to start the
+    lane, which was running. A lane that is up and silent says so; a lane that is down
+    still gets the advice to start it."""
+
+    def silent_lane(self, active_state):
+        def urlopen(req, timeout=None):
+            raise TimeoutError("timed out")
+        orig_open, orig_run = self.ck.urllib.request.urlopen, self.ck.run
+        self.ck.urllib.request.urlopen = urlopen
+        self.ck.run = lambda argv, timeout=5.0, merge_err=False: (
+            f"ActiveState={active_state}\nInvocationID=0123456789abcdef\n" if argv[:2] == ["systemctl", "show"] else "")
+        try:
+            return self.call({"prompt": "a cat"})
+        finally:
+            self.ck.urllib.request.urlopen, self.ck.run = orig_open, orig_run
+
+    def test_a_running_lane_that_holds_the_call_is_warming_up_or_busy(self):
+        code, out = self.silent_lane("active")
+        self.assertEqual(code, 503, out)
+        self.assertIn("warming up", out["error"])
+        self.assertNotIn("start it", out["error"])
+        self.assertFalse(self.ck.VIDEO_LOCK.locked())
+
+    def test_a_stopped_lane_is_still_told_to_start(self):
+        code, out = self.silent_lane("inactive")
+        self.assertEqual(code, 502, out)
+        self.assertIn("start it", out["error"])
+
+
 class TheWatcherKeepsReporting(Base):
     """After a hand-off the parked page reads VIDEO_LAST: the watcher keeps its
     status and progress moving until it clears them, or the badge freezes at

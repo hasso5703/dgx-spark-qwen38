@@ -3044,6 +3044,16 @@ def video_call(payload: dict) -> tuple[int, dict]:
     except Exception as e:                              # noqa: BLE001 (isolated route)
         if _run_over(_video_life(), life0):
             return _video_cut(t0)
+        if life0[0] in ("active", "activating"):
+            # Up and silent for the minute: still in its warm-up (three warm-up requests,
+            # about 10 min after the load) or busy. The only advice here was to start a
+            # lane that was already running (measured 2026-09-29: an 80 s wait, then that).
+            return 503, {"error": f"the video lane is running but did not answer within a minute "
+                                  f"({type(e).__name__}): it is still warming up (three warm-up "
+                                  f"requests, about 10 min after it loads) or busy. Try again when "
+                                  f"the Video tab says it is ready; if the lane took this call after "
+                                  f"all, it runs, and the next call waits for it",
+                         "seconds": round(time.time() - t0, 2)}
         return 502, {"error": f"the video lane did not answer ({type(e).__name__}). "
                               f"Switch to MiniMax-H3 in the action bar and start it "
                               f"(or ./switch-model.sh video)",
