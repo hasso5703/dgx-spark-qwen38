@@ -192,7 +192,7 @@ class TheStepRuns(unittest.TestCase):
     def test_an_agent_tab_that_fails_costs_that_tab_only(self):
         rc, out, calls = self.step10(agent_rc=1)
         self.assertEqual(rc, 0, out)
-        self.assertIn("NOTE: the Agent tab did not install", out)
+        self.assertIn("NOTE: the Agent view did not install", out)
         self.assertIn("URL=http://100.64.0.7:30090", out)
 
     def test_no_opencode_skips_the_agent_tab_and_says_so(self):
