@@ -53,7 +53,7 @@ Nothing shells out free-form; every action is a fixed argv template.
 | Server state | `systemctl status opencode-web`, `journalctl -u opencode-web` | chip (ready, starting, stopped, relay waiting), served version, installed binary if newer, Logs view source |
 | Restart after `opencode upgrade` | `sudo systemctl restart opencode-web` | Restart server button (exact-argv sudoers lines, confirmed like every action) |
 | Reach it on its own | none | Open in a tab (same relay, same session); Fullscreen inside the cockpit (corner button or Escape to come back, remembered) |
-| Autonomy (no approval clicks) | `oc` runs with `--yolo` | `AGENT_AUTO=1` at install (unit sets `OPENCODE_PERMISSION`); the tab shows the mode the running server applies |
+| Autonomy (no approval clicks) | `oc` runs with `--yolo` | `AGENT_AUTO=1` at install (unit sets `OPENCODE_PERMISSION`); the view shows the mode the running server applies |
 
 ## Explicitly out of scope now (groundwork only)
 Multi-node, multi-GPU, clusters: the collector/action registries carry

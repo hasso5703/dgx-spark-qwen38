@@ -247,7 +247,7 @@ curl -s http://127.0.0.1:30001/v1/systemone \
 Every question becomes one chat completion of exactly one token: the options are named by
 single-token letters and the probability of each letter is the probability of its option. A
 question answers in **0.2 s** warm at any state size. The TypeSafe SDK runs against it with one
-base URL changed, and the cockpit's **Decide** tab exercises the whole contract from a
+base URL changed, and the cockpit's **Decide** view exercises the whole contract from a
 browser, with prefilled examples and the matching curl.
 
 **Measured against the hosted model, byte-identical payloads to both:** 92.9% against 93.2% on
@@ -287,7 +287,7 @@ Three things bite before a client does: **width and height must be multiples of 
 else is a bare HTTP 500), **an output format must always be sent** (left out, the API falls back
 to JPEG, this model always returns RGBA, and the plainest possible request fails), and **CFG needs
 both a scale above 1 and a negative prompt** (either alone is ignored byte for byte). The cockpit's
-**Image** tab refuses all three before they leave the box, exposes every parameter at the model's
+**Image** view refuses all three before they leave the box, exposes every parameter at the model's
 own defaults with a **Reset** button, and ships prompts and sample images to try.
 
 **One image at a time.** The diffusion scheduler has no admission cap, so two concurrent

@@ -1,7 +1,7 @@
 # The image lane: Qwen-Image 2.1 on one Spark
 
 Text to image, image editing and native RGBA, served by SGLang Diffusion in its own
-venv, on its own port, driven from the cockpit's **Image** tab. Opt-in, because it costs
+venv, on its own port, driven from the cockpit's **Image** view. Opt-in, because it costs
 38 GB and about 25 minutes:
 
 ```bash
@@ -47,7 +47,7 @@ cockpit it is never reached, because the start is refused first.
 
 The Image view has no start or stop of its own. The first version had one, and it started
 this lane by a path none of the others use, stopping the text lane silently through
-`Conflicts=` where every other lane is refused with "stop it first". The tab now says
+`Conflicts=` where every other lane is refused with "stop it first". The view now says
 which of the three moves is next, naming the buttons as they read on screen.
 
 The engine actions menu's Flush cache, Abort all and Smoke are greyed out while the image lane
@@ -338,5 +338,5 @@ dump target or a diffusers kwargs blob just because the protocol has a field for
 
 ## Licence
 
-Qwen Research License: research and evaluation, **not commercial use**. It is on the tab
+Qwen Research License: research and evaluation, **not commercial use**. It is on the view
 where the people using the box will read it.

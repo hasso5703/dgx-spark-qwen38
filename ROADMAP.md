@@ -23,7 +23,7 @@ have a reason they are not yet planned, stated here or in an issue).
 Since v1.14 the stack gained a third lane and closed its engine port:
 
 - **Typed decisions** (v1.15.0): `POST /v1/systemone`, the wire contract of
-  TypeSafe's Jev answered by the lane on this box, with a cockpit tab of its
+  TypeSafe's Jev answered by the lane on this box, with a cockpit view of its
   own and its measured comparison in BENCHMARKS.md.
 - **The release check** (v1.15.3), on by default: the cockpit says when a
   newer release is out, and `COCKPIT_UPDATE_CHECK=0` turns it off.

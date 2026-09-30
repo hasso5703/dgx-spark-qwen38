@@ -2,7 +2,7 @@
 
 Text to video with joint video-and-audio, plus first/last-frame conditioning, served by
 SGLang Diffusion in its own venv, on its own port, driven from the cockpit's **Video**
-tab. Opt-in, because it costs about 150 GB of headroom and an hour or more:
+view. Opt-in, because it costs about 150 GB of headroom and an hour or more:
 
 ```bash
 ./install.sh --with-video
@@ -138,9 +138,9 @@ when a review found the guard had none: the largest accepted estimate landed the
 deadline exactly on the lane's expected finish. Cost is linear in step-seconds at the
 sizes measured here, 3.05 s each at 480P (3.8 with the NVMe hot, 2026-09-29: the
 largest call admitted still ends inside the lock) and 7.65 at 720P (the decodes folded in), plus
-the ~10 % a keyframe conditioning measured; the tab carries the same numbers and refuses
+the ~10 % a keyframe conditioning measured; the view carries the same numbers and refuses
 the same calls, a parity test holds the two files equal. A call that outlives the hour of
-waiting answers 504 with its video id kept: the tab shows the content URL, which serves
+waiting answers 504 with its video id kept: the view shows the content URL, which serves
 the MP4 the moment the lane is done. A hand-off parks its staged keyframes until the
 watcher is done: the lane reads those files when the job starts, not when the POST
 arrived (found in review, 2026-09-28). The same two hours is why an interrupted or long
@@ -173,7 +173,7 @@ The validation of 2026-09-29, on the same box:
 
 - **4 s at 480P took 759.6 s**, against 592 s on 2026-09-25: the DiT was read back from
   the NVMe at every step (4.36 GB/s, the drive at 76 °C). A request costs 9:52 to 12:40
-  depending on how hot the NVMe runs, and the tab says so.
+  depending on how hot the NVMe runs, and the view says so.
 - **15 s at 480P took 2,830 s** (47 min), peak memory 78.3 GB, the box's MemAvailable
   never under 25.2 GiB.
 - **An idle lane holds 1.04 cores**, the diffusion scheduler's loop that never waits
