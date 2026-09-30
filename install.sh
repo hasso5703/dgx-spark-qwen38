@@ -444,7 +444,7 @@ privileged steps, and under sudo every path it writes moves to /root (see the
 refusal at the top of this file).
 
 A plain run installs the whole box: engine, keepalive proxy, opencode wiring,
-the cockpit and its Agent tab. When it finishes it prints the cockpit URL, and
+the cockpit and its Agent view. When it finishes it prints the cockpit URL, and
 from there you start, stop, switch, watch and benchmark without a terminal.
 
   --no-start            install everything but don't start the service now
@@ -455,12 +455,12 @@ from there you start, stop, switch, watch and benchmark without a terminal.
                         oc launcher, and switch-model.sh leaves your opencode
                         default model alone). Remembered by later runs.
   --with-opencode       re-enable it after a --no-opencode
-  --no-cockpit          skip the web cockpit and its Agent tab (no dashboard
+  --no-cockpit          skip the web cockpit and its Agent view (no dashboard
                         unit, no sudoers allowlist). Remembered by later runs.
   --with-cockpit        re-enable it after a --no-cockpit
   --with-image          also install the Qwen-Image 2.1 lane: text-to-image,
                         image editing and native RGBA, served on its own port
-                        and driven from the cockpit's Image tab. Adds 38 GB
+                        and driven from the cockpit's Image view. Adds 38 GB
                         (31 checkpoint, 7 runtime) and about 25 min, which is
                         why a plain run does not. Once installed, later runs
                         keep and update it.
@@ -469,10 +469,10 @@ from there you start, stop, switch, watch and benchmark without a terminal.
                         removes them)
   --with-video          also install the MiniMax-H3 video lane: text-to-video
                         with joint video-and-audio, served on its own port
-                        and driven from the cockpit's Video tab. Adds about
-                        150 GB of headroom and an hour or
-                        more, which is why a plain run does not. Once
-                        installed, later runs keep and update it.
+                        and driven from the cockpit's Video view. Adds about
+                        150 GB of headroom and an hour or more, which is why
+                        a plain run does not. Once installed, later runs keep
+                        and update it.
   --no-video            skip it on a box that already has it (the unit and the
                         venv stay in place; ./install-video.sh --uninstall
                         removes them)
@@ -2471,7 +2471,7 @@ except Exception as e:
     fi
     [ "$COCKPIT" -eq 0 ] && echo "  cockpit    : off (--no-cockpit); ./install.sh --with-cockpit turns it on"
     if [ "${IMAGE_READY:-0}" -eq 1 ]; then
-      echo "  Images     : a third lane; switch to Qwen-Image 2.1 in the cockpit (or ./switch-model.sh image)"
+      echo "  Images     : a third lane; Load it from the cockpit's Lanes view (or ./switch-model.sh image)"
     elif [ -f /etc/systemd/system/qwen38-image.service ] && [ "${IMAGE_ON:-0}" -eq 0 ]; then
       # --no-image on a box that has the lane: it is there, only not updated by this run
       # (it used to read "not installed", found in review, 2026-09-24)
@@ -2480,7 +2480,7 @@ except Exception as e:
       echo "  Images     : not installed; ./install.sh --with-image adds the Qwen-Image 2.1 lane (38 GB)"
     fi
     if [ "${VIDEO_READY:-0}" -eq 1 ]; then
-      echo "  Videos     : a fourth lane; switch to MiniMax-H3 in the cockpit (or ./switch-model.sh video)"
+      echo "  Videos     : a fourth lane; Load it from the cockpit's Lanes view (or ./switch-model.sh video)"
     elif [ -f /etc/systemd/system/qwen38-video.service ] && [ "${VIDEO_ON:-0}" -eq 0 ]; then
       # --no-video on a box that has the lane: it is there, only not updated by this run
       echo "  Videos     : installed, not updated by this run (--no-video); ./install-video.sh --uninstall removes it"
