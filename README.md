@@ -602,7 +602,7 @@ from a laptop or a phone over a private network, and `127.0.0.1` otherwise. A re
 that. The login is the same API key over plain HTTP, so this belongs on a tailnet or a LAN you
 trust and never on the open internet.
 
-![The cockpit's Now view: the unified memory pool with what holds it, the four lanes in their rack with the serving one lit, activity, the timeline of the engine's own state transitions, and the machine's vitals](docs/img/cockpit-now.png)
+![The cockpit's Now view: the unified memory pool with what holds it, the four lanes in their rack with the serving one lit, the requests running and the timeline of the engine's own state transitions](docs/img/cockpit-now.png)
 
 *Now: one pool of unified memory, four lanes that take turns in it, and which one holds the box. The timeline is the engines' own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
 

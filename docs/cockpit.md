@@ -52,21 +52,21 @@ that script with `AGENT_BIND=`.
 
 ## What it looks like
 
-![The cockpit's Now view: the unified memory pool with what holds it, the four lanes in their rack with the serving one lit, activity, the timeline of the engine's own state transitions, and the machine's vitals](img/cockpit-now.png)
+![The cockpit's Now view: the unified memory pool with what holds it, the four lanes in their rack with the serving one lit, the requests running and the timeline of the engine's own state transitions](img/cockpit-now.png)
 
 *Now: one pool of unified memory, four lanes that take turns in it, and which one holds the box. The timeline is the engines' own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
 
-![The Lanes view: each lane with its checkpoint selector, its Load or Stop button, its boot times and KV pools, then the text engine's facts and the keepalive proxy](img/cockpit-lanes.png)
+![The Lanes view: the 27B and flash lanes, each with its checkpoint selector, its Load or Stop button, its facts, its last five boots and the KV pool its boots won](img/cockpit-lanes.png)
 
 *Lanes: each lane with what it serves, what its boots took on this box and the KV pool each one won, and one button that loads it: switch, stop, start, each step asking first and showing its command.*
 
-![The Traffic view: the requests the keepalive proxy relayed with client, route, size, duration and outcome, and the abandoned-request guard](img/cockpit-traffic.png)
+![The Traffic view: the running, waiting and KV counters, the requests the keepalive proxy relayed with client, route, size, duration and outcome, and the abandoned-request guard](img/cockpit-traffic.png)
 
 *Traffic: both sides of the wire. The feed is what the proxy relayed; the guard is whether any client walked away from an answer the engine is still generating.*
 
-![The Video view: the prompt, length, size, quality and seed of a MiniMax-H3 call with its measured cost, beside where the video appears](img/cockpit-video.png)
+![The Video view with the flash lane holding the box: the button that loads MiniMax-H3, then the mode, examples, prompt, length, size and quality of a call, beside where the video appears](img/cockpit-video.png)
 
-*Video: MiniMax-H3 when it is the serving lane, with what a call costs on this box before it is made.*
+*Video: MiniMax-H3 on this box. While another lane holds the box, the view says which one and loads the video lane with one button; what a call costs here shows before it is made.*
 
 ## What it does that a terminal does not
 
