@@ -41,8 +41,12 @@ n = len(bltin)
 # Serving-flag drift is only ever excused as checkpoint-driven (another target
 # needs another kv/moe/quant pair by design); the served target itself must
 # match its recipe exactly, so at least one builtin reads fully clean.
+# drafter.quantization is in: like the quantization pair, it belongs to the
+# checkpoint itself (recipes.py says so), and the nvidia export carries none
+# while the RadixArk one it is compared against serves unquant.
 allowed = {"model.repo", "model.revision", "serve.kv_cache_dtype",
-           "serve.moe_runner_backend", "serve.quantization"}
+           "serve.moe_runner_backend", "serve.quantization",
+           "drafter.quantization"}
 exact = [b["recipe"]["id"] for b in bltin if not (b["drift"] or [])]
 bad = [b["recipe"]["id"] + ":" + ",".join(sorted(x["key"] for x in b["drift"]))
        for b in bltin if {x["key"] for x in (b["drift"] or [])} - allowed]
