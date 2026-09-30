@@ -390,6 +390,6 @@ fi
 # the trap stops the lane and brings the text lane back, whichever way this ends
 
 step "Done: the image lane is installed and proved it serves on $IMAGE_BIND:$PORT"
-echo "  switch to it : the cockpit's switcher (Qwen-Image 2.1), or ./switch-model.sh image"
-echo "  back to text : the switcher again (any text target), or ./switch-model.sh stock"
+echo "  switch to it : Load on Qwen-Image 2.1 in the cockpit's Lanes view, or ./switch-model.sh image"
+echo "  back to text : Load on a text lane there, or ./switch-model.sh stock"
 echo "  generate     : the cockpit's Image tab, or the API on :$PORT (loopback, no key)"

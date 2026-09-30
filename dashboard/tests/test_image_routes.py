@@ -817,7 +817,7 @@ class WhenTheLaneIsNotThere(Base):
         self.ck.urllib.request.urlopen = refuse
         code, out = self.call({"prompt": "x"})
         self.assertEqual(code, 502)
-        self.assertIn("Switch to Qwen-Image 2.1", out["error"])
+        self.assertIn("Load Qwen-Image 2.1", out["error"])
 
     def test_an_engine_refusal_is_relayed_with_its_own_status(self):
         def refuse(req, timeout=None):

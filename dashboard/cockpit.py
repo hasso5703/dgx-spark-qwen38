@@ -2417,7 +2417,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
             handed_over[0] = True
             return 504, {"error": IMAGE_STILL_RUNNING, "seconds": round(time.time() - t0, 2)}
         return 502, {"error": f"the image lane did not answer ({type(e).__name__}). "
-                              f"Switch to Qwen-Image 2.1 in the action bar and start it "
+                              f"Load Qwen-Image 2.1 from the Lanes view to start it "
                               f"(or ./switch-model.sh image)",
                      "seconds": round(time.time() - t0, 2)}
     finally:
@@ -3055,7 +3055,7 @@ def video_call(payload: dict) -> tuple[int, dict]:
                                   f"all, it runs, and the next call waits for it",
                          "seconds": round(time.time() - t0, 2)}
         return 502, {"error": f"the video lane did not answer ({type(e).__name__}). "
-                              f"Switch to MiniMax-H3 in the action bar and start it "
+                              f"Load MiniMax-H3 from the Lanes view to start it "
                               f"(or ./switch-model.sh video)",
                      "seconds": round(time.time() - t0, 2)}
     finally:

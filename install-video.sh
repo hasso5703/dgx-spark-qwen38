@@ -313,7 +313,7 @@ fi
 # video lane becomes the boot lane the same way the other lanes do, by a switch, which
 # is also what makes it come back after a reboot.
 echo "installed as a lane of its own. Switch to it like any lane:"
-echo "  the cockpit: pick MiniMax-H3 in the switcher, Switch, stop the serving lane, Start"
+echo "  the cockpit: Load on MiniMax-H3 in the Lanes view (it switches, stops the serving lane, starts this one)"
 echo "  a terminal : ./switch-model.sh video, then the two commands it prints"
 
 # The smoke body is t2va on MiniMax-H3's fl2va weights: the ref2va weights take no
@@ -413,6 +413,6 @@ fi
 # the trap stops the lane and brings the other lane back, whichever way this ends
 
 step "Done: the video lane is installed and proved it serves on $VIDEO_BIND:$PORT"
-echo "  switch to it : the cockpit's switcher (MiniMax-H3), or ./switch-model.sh video"
-echo "  back         : the switcher again (any other lane), or ./switch-model.sh stock"
+echo "  switch to it : Load on MiniMax-H3 in the cockpit's Lanes view, or ./switch-model.sh video"
+echo "  back         : Load on any other lane there, or ./switch-model.sh stock"
 echo "  generate     : the cockpit's Video tab, or the API on :$PORT (loopback, no key)"

@@ -2152,7 +2152,7 @@ else
     # a kept custom model has no switch target of its own; the installer is the way back
     echo "  back to it: MODEL_CHOICE=<target> ./install.sh (this box serves a custom model)"
   else
-    echo "  back to it: the cockpit's switcher, or ./switch-model.sh $MODEL_CHOICE"
+    echo "  back to it: Load on that lane in the cockpit's Lanes view, or ./switch-model.sh $MODEL_CHOICE"
   fi
   exit 0
 fi

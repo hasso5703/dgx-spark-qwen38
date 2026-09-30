@@ -195,7 +195,7 @@ if [ "$CHOICE" = "video" ]; then
   fi
   [ -n "$VID_REV" ] || die "no refs/main under $VID_MODEL_DIR and install-video.sh no longer defines its pin: re-run ./install-video.sh, it resumes"
   # Room first, the law the text branch learned on 2026-09-24 and this branch
-  # skipped: the cockpit's Switch button runs this under a serving engine, and a
+  # skipped: the cockpit's Load journey runs this under a serving engine, and a
   # 145 GB weights fetch onto a fuller disk is a failure of everything on it
   # (found in the branch's reviews, 2026-09-28). What the cache already holds
   # comes off the need, so a complete cache (this box's normal state) needs only
