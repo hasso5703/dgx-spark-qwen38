@@ -133,18 +133,17 @@ it changed no file and restarted no service.
 
 ### The flash lane defaults to the concurrency tier, the engine to the nightly
 
-The 2026-09-29 campaign (bench, canaries, needle, prefix cache, memory
-flash_palier8_nightly_2026_09_29) validated `--mamba-max-states-per-path 2` and
-the nightly engine `cb6ed363` on this box, and the box has been serving both
-since. This writes what the box already does back into the plan: `FLASH_TIER`
-defaults to `concurrency` (8 requests, 40 slots, 2 states per path),
-`FLASH_IMAGE` pins `lmsysorg/sglang@sha256:cb6ed363...` (the 9d2a843c pin stays
-tagged `qwen38-pinned:flash-9d2a843c706c` for rollback), and `uninstall.sh`
+The 2026-09-29 campaign on the reference box (bench, canaries, needle, prefix
+cache) validated `--mamba-max-states-per-path 2` and the nightly engine
+`cb6ed363`, and that box has served both since. This writes what it already
+does back into the plan: `FLASH_TIER` defaults to `concurrency` (8 requests,
+40 slots, 2 states per path), `FLASH_IMAGE` pins
+`lmsysorg/sglang@sha256:cb6ed363...` (the 9d2a843c pin it replaces is untagged
+by the update like any retired pin, so a prune reclaims it), and `uninstall.sh`
 knows both digests. A re-run keeps an installed `context` box on `context`: the
 tier detection now reads the 4-request launcher too, which the old default never
 needed. Without this, the next `./install.sh` silently walked a concurrency box
-back to the 07/09 image at 4/20: the debt the campaign note listed under
-"Reste a faire", now paid.
+back to the 2026-09-07 image at 4 requests and 20 slots.
 
 What a new install changes for opencode: on the default tier its flash limits are the
 concurrency tier's, 100,000 tokens of context and 16,000 of output (116,000 at worst, the
@@ -157,11 +156,11 @@ box already serves.
 
 `./install.sh --with-video` adds text-to-video with joint video-and-audio
 (MiniMax-H3, `MiniMaxAI/MiniMax-H3` at `42ed227e`), driven like the other three lanes:
-switcher, stop, start, about 12 min to ready. It serves the SGLang cookbook's MiniMax-H3
+Load and Stop in the Lanes view, about 12 min to ready. It serves the SGLang cookbook's MiniMax-H3
 recipe exactly as upstream wrote it at the pinned source commit, with no local patch:
 no placement flags (the cookbook verifies the DGX Spark with none, and the offload flags
 measured 2.1x slower there), `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, loopback
-bind behind the cockpit's Video tab. The tab holds the asynchronous call (create, poll to
+bind behind the cockpit's Video view. The view holds the asynchronous call (create, poll to
 completed, download) and refuses outside the cookbook's bands (4 to 15 s, one video per
 call, t2v/fl2va on the fl2va weights). The cookbook's Spark figures are quoted as the
 cookbook's until the lane proves itself here. Each addition comes with the tests that
@@ -199,12 +198,12 @@ Each change is held by a test that fails on the previous revision and passes her
 
 **Cockpit display coherence: one definition of in flight, physical pool numbers.**
 Seen live with eight reviewers on the lane: the rail badge said 7 while the Requests
-tab said 6, and the pool read 106 % of capacity. Three separate causes, all in the
+table said 6, and the pool read 106 % of capacity. Three separate causes, all in the
 display, none in the serving. First, the feed keyed requests by peer, so two turns
 sharing a keep-alive connection collapsed into one row (and the first end line marked
 the second request as done): starts now open their own record and ends close the
 newest still-open one. Second, the badge read the engine's running-plus-waiting while
-the tab read the proxy's open rows: the badge now counts the same live rows as the
+the table read the proxy's open rows: the badge now counts the same live rows as the
 header chip and the table. Third, the pool bar compared the requests' summed context
 lengths (shared prefixes counted once per request) against physical slots: bars and
 big numbers now use the physical count the engine reports, with the logical total
@@ -233,7 +232,7 @@ admission on the two measured figures (3.05 and 7.65 s per step-second, decodes
 folded in, plus the ~10 % keyframes measured). The lock's watcher treats the lane's
 `missing` as terminal exactly as the synchronous poll does, and the smoke test's death
 paths print the journal their messages point at (`|| true`, or `set -e` silences the
-message itself). The Video tab's curl preview printed a body the lane refuses in both
+message itself). The Video view's curl preview printed a body the lane refuses in both
 modes under a label promising "exactly what the button above sends"; it now shows the
 real forwarded body shape quoted with `shq` (the keyframe URIs stay placeholders:
 the cockpit stages random names), and
@@ -242,19 +241,19 @@ to two-space continuation. Pass two (re-review of pass one's own fixes): the
 admission budget double-counted its decode and priced any canvas past 720P at the
 720P figure - it now answers the two measured rows exactly (4 s 480P says 10 min,
 measured 9:52 - the 10:52 was a typo for the journal's 592 s) and refuses canvases past 1280x720 and ratios other than 16:9/9:16,
-the image lane's pixel-ceiling rule; the tab carried a *different* formula than the
+the image lane's pixel-ceiling rule; the view carried a *different* formula than the
 server (portrait sizes priced 2.6x apart), now the same numbers with a parity test
 that answers accept/refuse through both; a call refused 409 for a busy lane left its
 two staged keyframe PNGs on disk forever, retry after retry, now unlinked like the
-finally does; a run needing the hour-plus-the-watcher answered 504 and the tab threw
+finally does; a run needing the hour-plus-the-watcher answered 504 and the view threw
 the video id away, now it parks the id and shows the content URL that serves the MP4
 when the lane is done; the smoke's t2va body would have been run against ref2va or a
 custom model on a fifteen-minute boot, now skipped with a reason; a video lane's
 `HF_HOME` was missing from uninstall's cache inventory (145 GB unlisted, and the CI
 gate structurally blind to it); and three claims in the docs and the bench table (a
-refusal the tab does not make, a measured row called cookbook, a staging claim naming
+refusal the view does not make, a measured row called cookbook, a staging claim naming
 paths the cockpit does not use) are now true. Fifteen tests added or rewritten;
-the dashboard suite is 682, all green.
+the dashboard suite then counted 682, all green.
 
 Pass three (concurrency and cost review of the branch itself, 2026-09-28, each finding
 verified against the runtime before it was believed): a `systemctl` slower than its
@@ -262,10 +261,10 @@ five seconds read as the lane dying - the silence is now "do not know", not a cu
 false "the lane was stopped" and a lock given back beside a lane that was only mute
 (both lanes); the admission guard had no slack at all, and the largest accepted
 estimate landed the lock's deadline on the lane's expected finish, so refusal now
-carries a tenth (server and tab, a parity test holds it); the video route rode the
+carries a tenth (server and view, a parity test holds it); the video route rode the
 image lane's 40 MiB through a shared `max()` where a prompt and two keyframes want
 its own 10 MiB, now refused over-cap by a test at the socket; a seed of `abc` reached
-the wire as `seed:null` and the filter dropped it in silence - the tab now says a
+the wire as `seed:null` and the filter dropped it in silence - the view now says a
 seed is a whole number or empty; the keyframes were staged outside the error paths (a
 full disk answered nothing and left the half-written PNG), the 504 hand-off unlinked
 files the queued job had not read yet (the lane localizes `file://` URIs when the job

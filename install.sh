@@ -169,7 +169,7 @@ FLASH_UNC_REV="be794b990578ef3031eccf9f28e675a289a09ee9"
 # router fix for the GB10 MTP output collapse (sglang#36811 via #38308/#38290,
 # which is the root cause of the wall of "!" the proxy learned to detect in
 # v1.6), and the mixed-precision loader (sglang#38121).
-FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:cb6ed363800a5bea98ac90b4c6447e9ba66cef7db881ac1f108046b6622d22b8}"  # = lmsysorg/sglang:nightly-cu134-20260928-6caf0ff, measured 2026-09-29 on this box: boot 11 min, bench median 46.9 tok/s, needle 120k/200k 2/2, prefix cache 99.9%. The previous pin 9d2a843c (qwen4-main-squashed 4ccff141db, 2026-09-07) stays tagged qwen38-pinned:flash-9d2a843c706c for rollback.
+FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:cb6ed363800a5bea98ac90b4c6447e9ba66cef7db881ac1f108046b6622d22b8}"  # = lmsysorg/sglang:nightly-cu134-20260928-6caf0ff, measured 2026-09-29 on this box: boot 11 min, bench median 46.9 tok/s, needle 120k/200k 2/2, prefix cache 99.9%. The previous pin was 9d2a843c (qwen4-main-squashed 4ccff141db, 2026-09-07); an update untags it like any retired pin (unpin_stale below), so a docker image prune reclaims it.
 # Backing store for the flash target's file-backed 47.7 GiB PLE table. The
 # server rewrites it on every boot (~10 min from a fresh sparse file, ~55 min
 # over a populated one), so the launcher deletes the previous file first.
