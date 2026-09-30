@@ -1504,7 +1504,7 @@ elif [ -z "$OC_FOUND" ] || { [ "$OC_FOUND" -ef "$OC_HOME_BIN" ] && ver_lt "$OC_H
     OC_FOUND="$OC_HOME_BIN"; OC_HAVE="$(oc_version "$OC_HOME_BIN")"
     echo "opencode $OC_HAVE installed at $OC_HOME_BIN"
   elif [ -z "$OC_FOUND" ]; then
-    echo "      opencode is still not installed, and the Agent tab and the oc launcher need it. Re-run ./install.sh"
+    echo "      opencode is still not installed, and the Agent view and the oc launcher need it. Re-run ./install.sh"
     echo "      once GitHub is reachable, or install it from https://opencode.ai (this repo tests $OPENCODE_VERSION)."
   else
     echo "      opencode stays at $OC_HAVE."
@@ -1519,7 +1519,7 @@ else
   echo "      a version can leave sessions a newer opencode wrote unreadable. OPENCODE_PIN=0 silences this."
 fi
 if [ "$OPENCODE_PIN" = "1" ] && [ -n "$OC_HAVE" ] && ver_lt "$OC_HAVE" "$OPENCODE_VERSION"; then
-  echo "NOTE: opencode is still $OC_HAVE after the step above; oc and the Agent tab keep running it"
+  echo "NOTE: opencode is still $OC_HAVE after the step above; oc and the Agent view keep running it"
 fi
 # The rest of this run (the Agent tab's unit, the oc launcher) finds opencode on PATH, and
 # a first install puts it in the shell's PATH the way opencode's own installer does.
@@ -1848,7 +1848,7 @@ if systemctl list-unit-files opencode-web.service >/dev/null 2>&1 \
   if [ "$(oc_configs_sum)" != "$OC_SUM_BEFORE" ]; then
     sudo systemctl restart opencode-web.service \
       && echo "opencode-web.service restarted so it reads the new limits" \
-      || echo "NOTE: restart opencode-web.service by hand, or the Agent tab keeps the old limits"
+      || echo "NOTE: restart opencode-web.service by hand, or the Agent view keeps the old limits"
   else
     echo "opencode-web.service kept: the configs it reads did not change"
   fi
@@ -2345,10 +2345,10 @@ except Exception as e:
         # one missing tab is not a reason to fail an install that is otherwise up.
         if [ "$OPENCODE" -eq 1 ] && command -v opencode >/dev/null 2>&1; then
           "$REPO_DIR/dashboard/install-agent.sh" \
-            || echo "NOTE: the Agent tab did not install; the rest of the cockpit is up (retry: ./dashboard/install-agent.sh)"
+            || echo "NOTE: the Agent view did not install; the rest of the cockpit is up (retry: ./dashboard/install-agent.sh)"
         elif [ "$OPENCODE" -eq 1 ]; then
           echo "NOTE: opencode is not on your PATH (step 7 did not install it: see its NOTE, or OPENCODE_PIN=0),"
-          echo "      so the Agent tab is not installed. Re-run ./install.sh, or install it and run ./dashboard/install-agent.sh"
+          echo "      so the Agent view is not installed. Re-run ./install.sh, or install it and run ./dashboard/install-agent.sh"
         fi
         # The URL to print is the installed unit's own bind and port, read back
         # rather than assumed: install-agent.sh re-renders that unit, and a

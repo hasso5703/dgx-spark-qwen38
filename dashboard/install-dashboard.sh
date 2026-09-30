@@ -124,7 +124,7 @@ if [ "$BIND" != "127.0.0.1" ] && [ "$BIND" != "localhost" ] && [ "$BIND" != "::1
     || echo "WARNING: $HOME/.config/qwen38/api-key is missing or empty, so nobody can log in."
 fi
 if [ "$AGENT_PORT" != "0" ]; then
-  echo "Agent relay: $AGENT_BIND:$AGENT_PORT -> $AGENT_UPSTREAM (Agent tab; a cockpit session is required)"
+  echo "Agent relay: $AGENT_BIND:$AGENT_PORT -> $AGENT_UPSTREAM (Agent view; a cockpit session is required)"
 fi
 REMOVE="sudo systemctl disable --now $UNIT; sudo rm -f $INSTALLED /etc/sudoers.d/qwen38-cockpit /usr/local/bin/qwen38-pyspy-scheduler"
 [ -f /etc/systemd/system/opencode-web.service ] && REMOVE="$REMOVE; sudo systemctl disable --now opencode-web.service; sudo rm -f /etc/systemd/system/opencode-web.service"

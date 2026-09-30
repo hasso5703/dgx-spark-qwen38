@@ -415,4 +415,4 @@ fi
 step "Done: the video lane is installed and proved it serves on $VIDEO_BIND:$PORT"
 echo "  switch to it : Load on MiniMax-H3 in the cockpit's Lanes view, or ./switch-model.sh video"
 echo "  back         : Load on any other lane there, or ./switch-model.sh stock"
-echo "  generate     : the cockpit's Video tab, or the API on :$PORT (loopback, no key)"
+echo "  generate     : the cockpit's Video view, or the API on :$PORT (loopback, no key)"

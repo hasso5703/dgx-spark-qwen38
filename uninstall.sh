@@ -117,7 +117,7 @@ for f in "$CONFIG_DIR"/*.bak-preupdate; do
 done
 if [ -d "$CONFIG_DIR" ]; then
   echo "  config    $CONFIG_DIR ($(dir_size "$CONFIG_DIR")): api-key and the engine's copy of it, patched templates, opencode.json, launch scripts, compile cache"
-  [ -f "$CONFIG_DIR/opencode-web.env" ] && echo "  config    $CONFIG_DIR/opencode-web.env (Agent tab: credentials of the opencode web server)"
+  [ -f "$CONFIG_DIR/opencode-web.env" ] && echo "  config    $CONFIG_DIR/opencode-web.env (Agent view: credentials of the opencode web server)"
   [ -f "$CONFIG_DIR/claude-code.env" ] && echo "  legacy    $CONFIG_DIR/claude-code.env (pre-v1.3 client config, unmaintained)"
   [ -f "$CONFIG_DIR/opencode.off" ] && echo "  marker    $CONFIG_DIR/opencode.off (opencode integration disabled with --no-opencode)"
   [ -f "$CONFIG_DIR/cockpit.off" ] && echo "  marker    $CONFIG_DIR/cockpit.off (cockpit disabled with --no-cockpit)"

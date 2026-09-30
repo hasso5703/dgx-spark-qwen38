@@ -88,7 +88,7 @@ if [ -z "${AGENT_BIND:-}" ]; then
   case "$COCKPIT_BIND" in
     127.0.0.1|localhost|::1)
       AGENT_BIND=127.0.0.1
-      note "the cockpit listens on loopback only, so the relay does too: the Agent tab works on this box."
+      note "the cockpit listens on loopback only, so the relay does too: the Agent view works on this box."
       note "to use it from your laptop: DASH_BIND=0.0.0.0 dashboard/install-dashboard.sh (or DASH_BIND=\$(tailscale ip -4)), then re-run this script." ;;
     0.0.0.0|tailscale|"$TS_IP")
       AGENT_BIND=tailscale ;;
@@ -212,7 +212,7 @@ if [ -n "$RELAY_HOST" ]; then
   [ "$code" = "401" ] || die "the relay did not come up on $RELAY_HOST:$AGENT_PORT (got '$code'; journalctl -u qwen38-dashboard -n 30)"
   echo "agent relay: http://$RELAY_HOST:$AGENT_PORT refuses without a cockpit session (401), as it should"
   echo
-  echo "Agent tab: http://$RELAY_HOST:$COCKPIT_PORT/#agent   (log in with the API key; the tab needs no second login)"
+  echo "Agent view: http://$RELAY_HOST:$COCKPIT_PORT/#agent   (log in with the API key; the view needs no second login)"
 else
   echo "agent relay: binds the tailnet address when tailscale is up; then open http://<tailnet address>:$COCKPIT_PORT/#agent"
 fi

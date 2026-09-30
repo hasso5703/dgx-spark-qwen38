@@ -392,4 +392,4 @@ fi
 step "Done: the image lane is installed and proved it serves on $IMAGE_BIND:$PORT"
 echo "  switch to it : Load on Qwen-Image 2.1 in the cockpit's Lanes view, or ./switch-model.sh image"
 echo "  back to text : Load on a text lane there, or ./switch-model.sh stock"
-echo "  generate     : the cockpit's Image tab, or the API on :$PORT (loopback, no key)"
+echo "  generate     : the cockpit's Image view, or the API on :$PORT (loopback, no key)"

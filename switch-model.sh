@@ -713,7 +713,7 @@ if systemctl list-unit-files opencode-web.service >/dev/null 2>&1 \
   if [ "$(oc_configs_sum)" != "$SW_OC_SUM_BEFORE" ]; then
     sudo systemctl restart opencode-web.service \
       && echo "opencode-web.service restarted so it reads the new limits" \
-      || echo "NOTE: could not restart opencode-web.service; restart it by hand or the Agent tab keeps the old limits"
+      || echo "NOTE: could not restart opencode-web.service; restart it by hand or the Agent view keeps the old limits"
   else
     echo "opencode-web.service kept: the limits it reads did not change"
   fi
