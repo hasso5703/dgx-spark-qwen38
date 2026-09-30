@@ -610,7 +610,7 @@ class AStopTimeoutIsNotACrash(Base):
         self.assertEqual((e["state"], e["result"]), ("failed", "timeout"))
 
     def test_the_page_tells_a_stop_timeout_from_a_crash(self):
-        js = (REPO / "dashboard" / "static" / "app.js").read_text()
+        js = (REPO / "dashboard" / "static" / "js" / "base.js").read_text()
         self.assertIn("e.state === 'failed' && e.result === 'timeout'", js)
         self.assertIn("was killed while stopping.", js)
 

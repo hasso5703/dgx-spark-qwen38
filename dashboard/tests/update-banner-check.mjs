@@ -33,7 +33,7 @@ await js("F.update={installed:'v1.15.0',latest:'v1.99.0',behind:true}; banners(l
 let s = await strip() || '';
 check('en retard: le bandeau apparait', /Version v1\.99\.0 is out; this box runs v1\.15\.0/.test(s));
 check('il donne la commande', /git pull && \.\/install\.sh/.test(s));
-await js("F.update={installed:'v1.15.1',stale_code:['static/app.js']}; banners(lastState||{}, lastErrors||{});");
+await js("F.update={installed:'v1.15.1',stale_code:['static/js/base.js']}; banners(lastState||{}, lastErrors||{});");
 s = await strip() || '';
 check('code perime: le bandeau apparait', /running older code than the files on disk/.test(s));
 check('il nomme le fichier et le remede', /static\/app\.js/.test(s) && /systemctl restart qwen38-dashboard/.test(s));

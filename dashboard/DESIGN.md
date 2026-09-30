@@ -87,7 +87,7 @@ GET for the fallback path. Actions are POST with JSON, CSRF-protected.**
 None of this section exists at v1.18.7. The cockpit runs from the repo checkout
 and imports its code at start, so an update is the one-liner (`get.sh` updates the
 checkout, then `install.sh` restarts the cockpit); updating the serving stack is a terminal
-command the Setup tab prints, because the installer needs an interactive sudo
+command the Settings tab prints, because the installer needs an interactive sudo
 (the `ACTIONS` table in `cockpit.py` says why there is no `update_stack`). Only
 the last point below is real: one job at a time. The design, as written:
 
@@ -334,7 +334,7 @@ Rules the app follows from here:
 - **Empty states are written.** A table that can be empty names what would fill it; a
   panel with no data says why, once.
 - **The interface never prints its wire format.** Actions read as sentences from one
-  vocabulary (`ACTION_PHRASE` in app.js, `job_phrase` in cockpit.py), never as the
+  vocabulary (`ACTION_PHRASE` in js/base.js, `job_phrase` in cockpit.py), never as the
   parameter dict that happens to carry them.
 - **Prose stops at 78 characters** whatever the panel width.
 - **The top bar is one row by construction**, and `--top` is measured, not assumed, so

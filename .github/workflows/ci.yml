@@ -654,11 +654,11 @@ jobs:
           def fail(msg):
               print("target lists disagree:", msg); sys.exit(1)
 
-          html = pathlib.Path("dashboard/static/index.html").read_text()
-          m = re.search(r'<select id="switchsel".*?</select>', html, re.S)
+          jsc = pathlib.Path("dashboard/static/js/base.js").read_text()
+          m = re.search(r"const LANE_TARGETS = \{(.*?)\};", jsc, re.S)
           if not m:
-              fail("no switchsel in index.html")
-          ui = re.findall(r'<option value="([^"]+)"', m.group(0))
+              fail("no LANE_TARGETS in js/base.js")
+          ui = re.findall(r"'([a-z0-9|-]+)'", m.group(1))
 
           cock = pathlib.Path("dashboard/cockpit.py").read_text()
           m = re.search(r'"switch":\s*\{.*?"params":\s*\{"target":\s*\[(.*?)\]\}', cock, re.S)

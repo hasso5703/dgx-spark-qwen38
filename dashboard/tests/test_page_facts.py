@@ -196,7 +196,7 @@ class Options(html.parser.HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        if tag == "select" and a.get("id") == "logsel":
+        if tag == "select" and a.get("id") == "log-src":
             self.inside = True
         elif tag == "option" and self.inside:
             self.values.append(a.get("value"))
@@ -207,7 +207,7 @@ class Options(html.parser.HTMLParser):
 
 
 class TheLogsTabOffersTheJournalsItNames(Base):
-    """"Read its journal in the Logs tab", five times over the page, and the tab offered the
+    """"Read its journal in Logs", five times over the page, and the view offered the
     two containers, the proxy and opencode, and no lane's journal at all."""
 
     def offered(self):
@@ -216,7 +216,7 @@ class TheLogsTabOffersTheJournalsItNames(Base):
         return p.values
 
     def test_every_lane_journal_is_offered(self):
-        for unit in ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service"):
+        for unit in ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-image.service", "qwen38-video.service"):
             with self.subTest(unit=unit):
                 self.assertIn(unit, self.offered())
 

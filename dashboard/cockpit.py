@@ -125,8 +125,11 @@ def job_phrase(action: str, params: dict) -> str:
 # offered and the action layer refused, which is a button that errors. install.sh
 # now restarts this unit, but a plain `git pull` does not, so the process watches
 # its own sources and says so instead of lying quietly.
+# The page is several scripts since the rebuild (2026-09-29): every one of them counts,
+# found on disk rather than listed, so a script added later is watched too.
 CODE_FILES = ("cockpit.py", "recipes.py", "lifecycle.py", "registry.py",
-              "agent_relay.py", "static/index.html", "static/app.js")
+              "agent_relay.py", "static/index.html") + tuple(
+    "static/js/" + p.name for p in sorted((HERE / "static" / "js").glob("*.js")))
 
 
 def code_fingerprint() -> dict:
@@ -769,7 +772,7 @@ def fit_verdict(ctx: int, outp: int, usable: int, prompt_cap: int, window: int =
 
 
 # Fit opencode's limits once the serving engine has booted, when the ones declared do not
-# fit its pool (maybe_autofit). COCKPIT_AUTOFIT=0 leaves it to the Setup tab's button.
+# fit its pool (maybe_autofit). COCKPIT_AUTOFIT=0 leaves it to the Settings tab's button.
 AUTOFIT = os.environ.get("COCKPIT_AUTOFIT", "1") == "1"
 AUTOFIT_DONE: dict = {}          # text unit -> the activation its limits were fitted in
 _OC_FIT: dict = {}               # oc-fit-limits.py, loaded once for its fit() formula
@@ -789,7 +792,7 @@ def _oc_fit():
 
 def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
     """Fit opencode's limits to the pool of the engine that has just booted, when the ones
-    declared do not fit it, through the same action as the Setup tab's button.
+    declared do not fit it, through the same action as the Settings tab's button.
 
     A switch writes the target's nominal pair, because the pool is only known once the
     engine is up, and on the 1M lanes that pair's worst case (923,863: the 680,000
@@ -837,7 +840,7 @@ _OCM: dict = {}
 def jsonc_load(text: str):
     """A config as opencode reads it, comments and trailing commas allowed: with json.loads a
     commented config read as unreadable, and an unreadable one as empty ("none", "not
-    declared") on the Setup tab (found in review, 2026-09-24). The parser is oc-merge-limits',
+    declared") on the Settings tab (found in review, 2026-09-24). The parser is oc-merge-limits',
     the one the installer edits these files with."""
     if "load" not in _OCM:
         try:
@@ -1034,7 +1037,7 @@ def agent_relay_thread():
 
 # ---- "there is a newer release" ---------------------------------------------------
 # The release check existed before this: /api/upstream compared the installed tag against
-# the newest published one, and printed the answer in a line of the Models tab that only
+# the newest published one, and printed the answer in a line of the Library tab that only
 # appears after someone presses a button. Nobody presses a button to discover news they
 # do not know exists, so an install could sit versions behind a fix without one sign of
 # it. This collector asks the same question on a slow tier and hands the answer to the
@@ -1610,7 +1613,7 @@ ACTIONS = {
     },
     # NOTE: no "update_stack" here. install.sh needs an interactive sudo (units, cp,
     # sed) that a service without a tty cannot give; a half-applied install from a
-    # button is the one failure this cockpit must never cause. The Setup tab shows
+    # button is the one failure this cockpit must never cause. The Settings tab shows
     # the exact terminal command instead (STATE config: terminal_only).
     # abort every in-flight generation (orphans left by vanished clients)
     "abort_all": {
@@ -1828,7 +1831,7 @@ def served_model_name() -> str:
     return "qwen3.8-27b"
 
 
-# ---- System One (local Jev), the tab that exercises POST /v1/systemone ------------
+# ---- System One (local Jev): the Decide view exercises POST /v1/systemone ----------
 # The cockpit talks to the proxy, never to the browser's own origin: the serving key
 # stays on this machine and no page ever holds it. Everything here is one call to
 # PROXY_BASE, with the same key job_smoke() uses.
@@ -2438,11 +2441,15 @@ VIDEO_CONTENT_MAX_BYTES = 1 << 30
 # call at 50 steps outruns it (7.65 s per step-second) and goes 504 plus hand-off.
 # The cookbook's duration band is 4 to 15 s.
 VIDEO_TIMEOUT = 3600.0
-# This lane serves ONE request at a time, and that is caution, not a measurement: the
-# cookbook sizes one 480P request near what this box holds, and on unified memory
-# running out hangs the machine rather than failing the request. The refusal below is
-# instant and says why. Re-measure with two overlapping calls before ever lifting it.
+# This lane serves ONE request at a time. Measured 2026-09-29: a second call sent to the
+# lane while one runs waits in its queue and starts when the first ends (no overlap, no
+# memory stacked: 9.6 GB then 8.3 GB), so the lock costs nothing the lane would give,
+# and it lets this cockpit refuse at once and say why instead of holding a second call.
 VIDEO_LOCK = threading.Lock()
+# The sizes and lengths measured on this box, past which a call is refused (video_call):
+# above 864x480 pixels a video is admitted at 4 s only.
+VIDEO_LONG_MAX_PIXELS = 864 * 480
+VIDEO_LARGE_MAX_SECONDS = 4
 VIDEO_POLL_S = 10.0
 VIDEO_LAST: dict = {}             # the call in flight or just finished: {id, status, seconds}
 
@@ -2549,6 +2556,45 @@ def video_engine_state(unit: str, *, active: str, sub: str, prev_state: str | No
     return st, boot, running
 
 
+# The lines lc.parse_video_run reads. The journal is filtered before it is tailed: the
+# cockpit's own /health probe writes a line every 2 s, and in a 45-minute request those
+# push the stage lines out of any plain tail of the unit.
+VIDEO_RUN_GREP = (r"Stage\] (started|finished)|denoise:|Pixel data|Running pipeline"
+                  r"|Error executing|Failed to generate")
+
+
+def video_run_now() -> dict:
+    """The phase and the step of the request the lane is working on, {} when none.
+    journalctl hands a filtered tail back newest first, so the rows are put back in time
+    order by their own timestamps before they are read (measured 2026-09-29)."""
+    inv = VIDEO_INVOCATION.get(VIDEO_UNIT, "")
+    if not inv:
+        return {}
+    raw = run(["journalctl", f"_SYSTEMD_INVOCATION_ID={inv}", "--grep", VIDEO_RUN_GREP,
+               "-n", "60", "--no-pager", "-o", "json", "--output-fields=MESSAGE"], timeout=8.0)
+    rows = []
+    for line in raw.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        msg = e.get("MESSAGE") if isinstance(e, dict) else None
+        if isinstance(msg, list):          # journald stores a message with a \r as bytes
+            try:
+                msg = bytes(msg).decode("utf-8", "replace")
+            except (TypeError, ValueError):
+                continue
+        if not isinstance(msg, str):
+            continue
+        try:
+            ts = int(e.get("__REALTIME_TIMESTAMP", 0))
+        except (TypeError, ValueError):
+            ts = 0
+        rows.append((ts, msg))
+    rows.sort(key=lambda r: r[0])
+    return lc.parse_video_run([m for _, m in rows])
+
+
 def video_status() -> dict:
     """What the Video tab needs that the lifecycle does not already carry: where the
     lane listens, which model and variant its unit serves, and the call in flight."""
@@ -2556,7 +2602,7 @@ def video_status() -> dict:
            "host": _video_unit_flag("--host", "127.0.0.1"),
            "model": _video_unit_flag("--model-path", "MiniMaxAI/MiniMax-H3"),
            "variant": _video_unit_flag("--model-variant", "fl2va"),
-           "state": "not installed", "available": False, "llm_lane": "", "progress": {}}
+           "state": "not installed", "available": False, "llm_lane": "", "progress": {}, "run": {}}
     if not out["installed"]:
         return out
     with LIFE_LOCK:
@@ -2568,6 +2614,7 @@ def video_status() -> dict:
     out["llm_lane"] = next((u for u in lc.TEXT_UNITS if states.get(u) in lc.BUSY_STATES), "")
     if out["available"]:
         out["progress"] = dict(VIDEO_LAST) if VIDEO_LAST.get("status") not in ("completed", "failed", "") else {}
+        out["run"] = video_run_now()
     return out
 
 
@@ -2770,6 +2817,15 @@ def video_call(payload: dict) -> tuple[int, dict]:
         # already peaks at 81.9 GB of this box's 121.6.
         return 400, {"error": f"{sw}x{sh} is past the largest canvas measured here "
                               "(1280x720, which peaks at 81.9 GB of 121.6)"}
+    # The memory a video takes grows much faster than its length, and only what was
+    # measured is admitted: 480P from 4 to 15 s (4 s peaked at 9.6 GB, 15 s at 78.3 GB,
+    # 2026-09-29) and 720P at 4 s (82 GB at its peak, 2026-09-25). A 720P video of 8 s
+    # was admitted by the time budget alone, and on this box's 121.6 GB it cannot fit:
+    # running out of unified memory hangs the machine, which is a power cycle by hand.
+    if sw * sh > VIDEO_LONG_MAX_PIXELS and secs > VIDEO_LARGE_MAX_SECONDS:
+        return 400, {"error": f"{sw}x{sh} is measured here at {VIDEO_LARGE_MAX_SECONDS} s only (82 GB at its "
+                              f"peak, of 121.6): a {secs} s video at this size would outgrow the box's "
+                              "memory, which hangs it. Ask for 4 s at this size, or up to 15 s at 480P."}
     fields["target"] = {"short_edge": min(sw, sh),
                         "aspect_ratio": "16:9" if sw >= sh else "9:16",
                         "duration_seconds": secs}
@@ -2785,8 +2841,8 @@ def video_call(payload: dict) -> tuple[int, dict]:
     # works, and a second call beside the first is the pair that hangs this box
     # (measured on this runtime with images: two generations held 90.5 GB of 121.6
     # and wedged the engine). So the estimate is refused at the door, not discovered
-    # at the 120th minute. The tab carries the same numbers (vidEtaMins,
-    # dashboard/static/app.js) and dashboard/tests/test_video_routes.py holds them equal.
+    # at the 120th minute. The view carries the same numbers (vidEtaSecs,
+    # dashboard/static/js/video.js) and dashboard/tests/test_video_routes.py holds them equal.
     per_step = 3.05 if sw * sh <= 864 * 480 else 7.65
     conditioning = bool(payload.get("first_frame") or payload.get("last_frame"))
     est = per_step * (steps or 50) * secs * (1.1 if conditioning else 1.0)

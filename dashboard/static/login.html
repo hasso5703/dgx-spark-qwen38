@@ -3,74 +3,44 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
-<title>Spark Cockpit</title>
+<meta name="theme-color" content="#0d0e10">
+<title>Spark cockpit</title>
 <link rel="icon" href="/static/favicon.svg">
-<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/css/cockpit.css">
 <style>
-  /* Same house as the cockpit: graphite chassis, champagne-gold anodizing. */
-  :root{
-    color-scheme:dark;
-    --paper:#0c0d0f; --card:#16171b; --line:#272930;
-    --txt:#ece9e1; --mut:#8f9197; --soft:#101115; --glow:rgba(216,180,97,.08);
-    --acc:#d8b161; --err:#c9706a;
-    --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  }
-  *{box-sizing:border-box; margin:0}
-  body{
-    min-height:100vh; min-height:100dvh; display:grid; place-items:center; padding:20px;
-    background:
-      radial-gradient(900px 480px at 50% -12%, var(--glow), transparent 60%),
-      var(--paper);
-    color:var(--txt);
-    font:15px/1.5 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  }
-  .card{
-    width:min(390px, 92vw); background:var(--card); position:relative; overflow:hidden;
-    border:1px solid var(--line); border-radius:16px; padding:34px;
-    box-shadow:0 24px 70px rgba(0,0,0,.55);
-    animation:rise .4s ease-out both;
-  }
-  /* the anodized chamfer, same hairline as the cockpit's top bar */
-  .card::before{content:''; position:absolute; left:0; right:0; top:0; height:1px;
-    background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--acc) 60%, transparent) 20%,
-                color-mix(in srgb, var(--acc) 60%, transparent) 80%, transparent)}
-  @keyframes rise{from{opacity:0; transform:translateY(8px)}}
-  .logo{display:flex; align-items:center; gap:12px; margin-bottom:6px}
-  .logo img{width:42px; height:42px; filter:drop-shadow(0 0 12px var(--glow))}
-  h1{font:600 17px/1.1 var(--mono); letter-spacing:.18em; text-transform:uppercase}
-  p{color:var(--mut); font-size:13px; margin:10px 0 24px}
-  code{background:var(--soft); border:1px solid var(--line); color:var(--mut);
-       border-radius:6px; padding:1px 6px; font:12px var(--mono)}
-  input{
-    width:100%; padding:13px 15px; border-radius:11px;
-    border:1px solid var(--line); background:var(--soft);
-    color:var(--txt); font-size:16px; outline:none; min-height:48px;
-    transition:border-color .2s, box-shadow .2s;
-  }
-  input:focus{border-color:color-mix(in srgb, var(--acc) 70%, transparent);
-              box-shadow:0 0 0 3px color-mix(in srgb, var(--acc) 18%, transparent)}
-  button{
-    width:100%; margin-top:15px; padding:13px; border:0; border-radius:11px;
-    background:var(--acc);
-    color:#14100a; font-size:14.5px; font-weight:700; letter-spacing:.02em; cursor:pointer; min-height:48px;
-    transition:filter .18s, box-shadow .18s;
-  }
-  button:hover{filter:brightness(1.08);
-               box-shadow:0 8px 26px color-mix(in srgb, var(--acc) 30%, transparent)}
-  .err{color:var(--err); font-size:13px; margin-top:12px; min-height:18px}
+  body{display:grid; place-items:center; padding:var(--s-5)}
+  .gate{position:relative; z-index:1; width:min(420px, 100%); display:flex; flex-direction:column; gap:var(--s-5);
+    padding:var(--s-7); border-radius:var(--r-hero); border:1px solid var(--rule-2);
+    background:linear-gradient(180deg, var(--ink-2), var(--ink-1)); box-shadow:0 40px 120px -40px rgba(0,0,0,.95), var(--shadow-1);
+    animation:pop .45s var(--ease) both}
+  .gate::before{content:''; position:absolute; left:24px; right:24px; top:-1px; height:2px; border-radius:2px;
+    background:linear-gradient(90deg, transparent, var(--gold-hi), transparent)}
+  .gate .brand{gap:var(--s-3)}
+  .gate .brand .mark{width:44px; height:44px}
+  .gate .brand .word b{font-size:var(--t-20)}
+  .gate p{color:var(--fg-2); font-size:var(--t-14)}
+  .gate code{font-family:var(--f-code); font-size:var(--t-13); color:var(--fg-1); background:var(--ink-0); border:1px solid var(--rule-2); border-radius:6px; padding:1px 6px}
+  .gate .err{min-height:20px; color:#ffb2a9; font-size:var(--t-14)}
 </style>
 </head>
 <body>
-  <form class="card" id="f">
-    <div class="logo">
-      <img src="/static/favicon.svg" alt="">
-      <h1>Spark Cockpit</h1>
+  <form class="gate" id="f">
+    <span class="brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <defs><linearGradient id="mk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f1dcaa"/><stop offset="1" stop-color="#9d7f45"/></linearGradient></defs>
+        <rect x="2.5" y="2.5" width="27" height="27" rx="8" fill="#141518" stroke="#dcb872" stroke-opacity=".6"/>
+        <path d="M6.5 18.6c2.9-2.1 5.4-2.1 8.3 0s5.5 2.1 8.4 0l2.3-1.5v5.4a3.4 3.4 0 0 1-3.4 3.4H9.9a3.4 3.4 0 0 1-3.4-3.4z" fill="url(#mk)"/>
+        <path d="M10 9h12" stroke="#7ac6d6" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span class="word"><b>Spark cockpit</b><small>the control room of this DGX Spark</small></span>
+    </span>
+    <p>Enter the server's API key. It is in <code>~/.config/qwen38/api-key</code> on the box.</p>
+    <div class="field">
+      <label for="k">API key</label>
+      <input class="input code" id="k" type="password" autocomplete="current-password" autofocus required>
     </div>
-    <p>Paste the server API key from <code>~/.config/qwen38/api-key</code></p>
-    <input id="k" type="password" autocomplete="current-password"
-           placeholder="API key" autofocus>
-    <button>Enter the cockpit</button>
-    <div class="err" id="e"></div>
+    <button class="btn primary lg block" type="submit">Enter the cockpit</button>
+    <div class="err" id="e" role="alert"></div>
   </form>
 <script src="/static/login.js" defer></script>
 </body>

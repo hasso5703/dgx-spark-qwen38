@@ -463,7 +463,7 @@ class ThePixelBudget(Base):
             self.assertEqual(code, 400, (bad, out))
 
     def test_the_page_and_the_server_hold_the_same_number(self):
-        js = (REPO / "dashboard" / "static" / "app.js").read_text()
+        js = (REPO / "dashboard" / "static" / "js" / "image.js").read_text()
         self.assertEqual(self.ck.IMAGE_MAX_PIXELS, 2752 * 1536)
         self.assertIn("const IMG_MAX_PIXELS = 2752 * 1536;", js)
         problem = js[js.index("function imgProblem(){"):js.index("function imgEstimate(")]

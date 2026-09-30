@@ -21,17 +21,15 @@ that disk and on the one the runtime goes to (`IMAGE_LANE_DIR`).
 ## A third lane, switched to like the other two
 
 Once installed, the image lane is driven exactly like the 27B and flash lanes, from the
-same three controls at the top of the cockpit, and it obeys the same rule.
+same single Load control, and it obeys the same rule.
 
-1. **Pick `Qwen-Image 2.1`** in the switcher (it sits under its own *Images* heading)
-   and press **Switch**. `switch-model.sh image` verifies the checkpoint and makes the
-   image lane the one unit enabled at boot. Like every switch, it never starts or
+1. **Load it.** On the cockpit's Lanes view pick `Qwen-Image 2.1` and press **Load**: one
+   journey that switches the boot, stops the serving lane and starts the image lane,
+   each step its own job, asking first and showing the exact command. Like every
+   switch, `switch-model.sh image` itself verifies the checkpoint and never starts or
    stops an engine.
-2. **Stop** the lane that is serving. The action bar's lane button reads `Stop 27B`
-   while the 27B serves.
-3. **Start Qwen-Image**. It answers in about 70 seconds; the lane pill, the Engines card
-   and the Image tab all show which component it is loading, in the engine's own words
-   ("the 16.5 GB Qwen3-VL encoder", "the 13.3 GB DiT"), and Generate turns on by itself.
+2. It answers in about 70 seconds; the lane pill, the Lanes view and the Image view
+   all follow the boot in the engine's own words, and Generate turns on by itself.
 
 Back to text is the same three moves the other way. From a terminal the switch is
 `./switch-model.sh image` (or `stock`), and it prints the two commands that follow.
@@ -52,7 +50,7 @@ this lane by a path none of the others use, stopping the text lane silently thro
 `Conflicts=` where every other lane is refused with "stop it first". The tab now says
 which of the three moves is next, naming the buttons as they read on screen.
 
-The Engines tab's Flush cache, Abort all and Smoke are greyed out while the image lane
+The engine actions menu's Flush cache, Abort all and Smoke are greyed out while the image lane
 serves: they talk to the text engine on :30000, which is closed then. They used to test
 "is an engine ready", which the image lane is.
 

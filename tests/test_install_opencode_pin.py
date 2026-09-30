@@ -252,7 +252,7 @@ class TheCockpitNamesThePin(unittest.TestCase):
         self.assertEqual(r.stdout.strip().splitlines()[-1], pinned_default(), r.stderr[-400:])
 
     def test_the_agent_tab_says_when_it_serves_another_version(self):
-        js = (REPO / "dashboard" / "static" / "app.js").read_text()
+        js = (REPO / "dashboard" / "static" / "js" / "agent.js").read_text()
         self.assertIn("if (d.pinned && sv.version && sv.version !== d.pinned)", js)
         self.assertIn("./install.sh brings it in line", js)
 
@@ -328,9 +328,9 @@ class AMissingOpencodeIsSaidPlainly(unittest.TestCase):
         self.assertEqual(r.stdout.strip().splitlines()[-1], f"False None {pinned_default()}", r.stderr[-400:])
 
     def test_the_agent_tab_tells_no_opencode_from_no_tab(self):
-        js = (REPO / "dashboard" / "static" / "app.js").read_text()
+        js = (REPO / "dashboard" / "static" / "js" / "agent.js").read_text()
         self.assertIn("if (d.opencode_found === null)", js)
-        self.assertIn("opencode is not installed on this box, and this tab runs it", js)
+        self.assertIn("opencode is not installed on this box, and this view runs it", js)
         self.assertIn("'cd ~/dgx-spark-qwen38 && ./install.sh'", js)
 
 

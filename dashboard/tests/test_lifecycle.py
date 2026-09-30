@@ -1,5 +1,6 @@
 """Offline tests for lifecycle.py, built on REAL log lines from this box
 (qwen38-flash boot of 2026-08-28 21:19 and qwen38-sglang boots of 08-28)."""
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -96,7 +97,7 @@ class DeriveState(unittest.TestCase):
 
     def test_a_container_that_outlives_its_unit_is_an_orphan(self):
         """A stop past its timeout: systemd kills the docker client and marks the unit
-        failed (app.js already tells that case apart), while the container, which the
+        failed (base.js already tells that case apart), while the container, which the
         docker daemon owns, keeps its whole pool. Also a container started by hand. It
         read "failed" or "stopped", and neither was busy for the gate."""
         for active in ("failed", "inactive", "dead"):
@@ -1638,6 +1639,130 @@ class VideoBootLog(unittest.TestCase):
         b = lc.parse_video_boot_log([])
         self.assertIsNone(b["stage"])
         self.assertFalse(b["fired_up"])
+
+
+
+
+class TheVideoRunComesFromItsOwnJournal(unittest.TestCase):
+    """The lane's own API says "queued, 0%" from the POST until the video is done
+    (measured 2026-09-29), so the phase and the step come from its journal. A wrong
+    operator here is a progress bar that lies while a 60 GB call burns the box."""
+
+    def run_of(self, *messages):
+        return lc.parse_video_run(list(messages))
+
+    def test_nothing_ran_reads_empty(self):
+        self.assertEqual(self.run_of(), {})
+        self.assertEqual(self.run_of("serving, some unrelated line"), {})
+
+    def test_a_step_line_alone_proves_a_request_runs(self):
+        r = self.run_of("denoise:  40%|#### | 20/50 [03:40<05:30, 11.02s/it]")
+        self.assertEqual(r["phase"], "denoise")
+        self.assertEqual((r["step"], r["steps"]), (20, 50))
+        self.assertEqual(r["elapsed_s"], 220.0)
+        self.assertEqual(r["left_s"], 330.0)
+        self.assertEqual(r["s_per_step"], 11.02)
+        self.assertEqual(r["label"], "denoising")
+
+    def test_a_h_m_s_clock_reads_and_a_question_mark_is_none(self):
+        r = self.run_of("denoise:  20%|# | 10/50 [1:02:03<??,  ?it/s]")
+        self.assertEqual(r["elapsed_s"], 3723.0)
+        self.assertIsNone(r["left_s"])
+        self.assertIsNone(r["s_per_step"])
+
+    def test_it_per_second_is_read_as_seconds_per_step(self):
+        r = self.run_of("denoise:  10%| | 5/50 [00:10<00:10, 1.52it/s]")
+        self.assertAlmostEqual(r["s_per_step"], 1 / 1.52, places=6)
+        self.assertEqual(r["step"], 5)
+        self.assertEqual(r["steps"], 50)
+
+    def test_pipeline_start_is_encode_until_a_stage_names_otherwise(self):
+        r = self.run_of("Running pipeline stages for request abc")
+        self.assertEqual(r["phase"], "encode")
+        self.assertEqual(r["label"], "encoding the prompt")
+        r2 = self.run_of("Running pipeline stages", "[MiniMaxH3DenoisingStage] started")
+        self.assertEqual(r2["phase"], "denoise")
+
+    def test_a_stage_the_phase_map_does_not_know_leaves_encode(self):
+        r = self.run_of("Running pipeline stages", "[MiniMaxH3EncodingStage] started")
+        self.assertEqual(r["phase"], "encode")
+
+    def test_a_lone_finished_stage_is_not_a_run(self):
+        self.assertEqual(self.run_of("[MiniMaxH3DenoisingStage] finished"), {})
+
+    def test_a_finished_stage_moves_nothing_by_itself(self):
+        r = self.run_of("[MiniMaxH3DenoisingStage] finished", "[MiniMaxH3DecodingStage] started")
+        self.assertEqual(r["phase"], "decode")
+        self.assertEqual(r["label"], "decoding video and audio")
+
+    def test_denoise_stays_denoise_before_the_decode(self):
+        r = self.run_of("[MiniMaxH3DenoisingStage] started",
+                        "denoise:  60%|#### | 30/50 [05:30<03:40, 11.02s/it]")
+        self.assertEqual(r["phase"], "denoise")
+        self.assertEqual(r["step"], 30)
+
+    def test_the_100_percent_line_closes_the_denoise(self):
+        r = self.run_of("[MiniMaxH3DecodingStage] started",
+                        "denoise: 100%|####| 50/50 [09:52<00:00, 11.85s/it]")
+        self.assertEqual(r["phase"], "decode")
+        self.assertEqual(r["step"], 50)
+
+    def test_the_run_ends_at_its_outcome_line(self):
+        for end in ("Pixel data generated for request abc",
+                    "Error executing request abc",
+                    "Failed to generate video"):
+            r = self.run_of("Running pipeline stages", end)
+            self.assertEqual(r, {}, end)
+
+    def test_ansi_and_carriage_returns_do_not_hide_the_step(self):
+        r = self.run_of("\x1b[2B\x1b[1Gdenoise:  80%|#### | 40/50 [07:21<01:51, 11.12s/it]\r")
+        self.assertEqual(r["step"], 40)
+        self.assertEqual(r["s_per_step"], 11.12)
+
+
+class TheVideoRunFixtureIsReadEndToEnd(unittest.TestCase):
+    """One real 12-minute call, captured from journald on the reference box on
+    2026-09-29: 49 denoise steps at ~14.8 s each, then the pipeline's own "Pixel data
+    generated" line closes it. The tests above feed the parser hand-written lines;
+    this one feeds the whole journal, so a parser that reads them out of order or
+    loses the close is caught against what the lane really emitted."""
+
+    @classmethod
+    def setUpClass(cls):
+        raw = (HERE.parent / "fixtures" / "video-run.log").read_text().splitlines()
+        cls.msgs = [json.loads(ln) for ln in raw if ln.strip()]
+
+    def at(self, needle, last=False):
+        """The run as it looked the moment this line was written."""
+        idx = [i for i, m in enumerate(self.msgs) if needle in m]
+        self.assertTrue(idx, needle)
+        return lc.parse_video_run(self.msgs[:(idx[-1] if last else idx[0]) + 1])
+
+    def test_the_journal_opens_in_encode(self):
+        r = self.at("Running pipeline")
+        self.assertEqual(r["phase"], "encode")
+        self.assertIsNone(r["step"])
+
+    def test_the_first_step_line_switches_to_denoise(self):
+        r = self.at("denoise:")
+        self.assertEqual(r["phase"], "denoise")
+        self.assertEqual((r["step"], r["steps"]), (0, 49))
+
+    def test_the_last_step_line_carries_the_measured_rate(self):
+        r = self.at("denoise:", last=True)
+        self.assertEqual((r["step"], r["steps"]), (49, 49))
+        self.assertAlmostEqual(r["s_per_step"], 14.78, places=2)
+        self.assertEqual(r["elapsed_s"], 724.0)
+
+    def test_the_outcome_line_closes_the_run(self):
+        self.assertEqual(self.at("Pixel data"), {})
+
+    def test_the_journal_ends_in_the_next_request_encode(self):
+        # the tail of the window is the next call starting: the close of one run must
+        # not leak a stale denoise step into the read of the following one
+        r = lc.parse_video_run(self.msgs)
+        self.assertEqual(r["phase"], "encode")
+        self.assertIsNone(r["step"])
 
 
 if __name__ == '__main__':

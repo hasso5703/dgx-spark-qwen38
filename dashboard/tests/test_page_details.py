@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The cockpit page's smaller defects, run: each class is one of the review's low findings
-on the interface (U18 to U43, 2026-09-24) or the live-region chatter found beside U11,
-reproduced here before it was fixed. Same harness as test_page_behaviour.py."""
+on the interface (U18 to U43, 2026-09-24), a finding of the video lane's reviews
+(September 2026), or one met while the page was rebuilt, reproduced before it was fixed.
+Same harness as test_page_behaviour.py."""
 import json
 import pathlib
 import re
@@ -21,111 +22,178 @@ def run(test, body, **kw):
     return pagejs.run(test, HELPERS + body, **kw)
 
 
-def rules():
-    return css_rules(PAGE)
-
-
-class TheVideoTabGuardsTheWire(unittest.TestCase):
-    """The tab refuses what the server refuses, and now also what the server would
-    silently drop: a seed of 'abc' used to ride out as seed:null, the filter stripped
-    it, and the user got a random video and a preview whose curl lied about it
-    (found in review, 2026-09-28). The tenth of slack under the lock is the other
-    half of the same refusal (TheEstimateParity holds the numbers)."""
+class TheVideoViewGuardsTheWire(unittest.TestCase):
+    """The view refuses what the server refuses, and what the server would silently drop:
+    a seed of 'abc' used to ride out as seed:null and the user got a random video (found in
+    review, 2026-09-28). A seed past 2**53 is refused too: a browser rounds the number it
+    sends, so the video would not be the one the seed names (found rebuilding the page).
+    The tenth of slack under the lock is the other half of the same refusal
+    (TheEstimateParity holds the numbers equal to the server's)."""
 
     def test_a_seed_that_is_not_a_whole_number_never_reaches_the_wire(self):
         r = run(self, r"""
-        $('vidprompt').value = 'a cat';
-        $('vidseed').value = 'abc';
-        const bad = vidProblem();
-        $('vidseed').value = 'e5';
-        const sci = vidProblem();
-        $('vidseed').value = '123';
-        const good = vidProblem();
-        $('vidseed').value = '';
-        const empty = vidProblem();
-        report([bad, sci, good, empty]);
+        $('vid-prompt').value = 'a cat';
+        const seed = v => { $('vid-seed').value = v; return vidProblem(); };
+        report([seed('abc'), seed('e5'), seed('1.5'), seed('-1'), seed('123'), seed(''), seed('9007199254740991'), seed('9007199254740993')]);
         """)
-        self.assertEqual(r[0], 'Seed is a whole number, or empty for a random one.')
-        self.assertEqual(r[1], 'Seed is a whole number, or empty for a random one.')
-        self.assertEqual(r[2], '')
-        self.assertEqual(r[3], '')
+        for bad in r[:4]:
+            self.assertIn("seed is a whole number", bad.lower())
+        self.assertEqual(r[4:7], ["", "", ""])
+        self.assertIn("rounds", r[7])
 
-    def test_the_refusal_keeps_a_tenth_of_slack_under_the_lock(self):
+    def test_720p_is_admitted_at_the_4_s_it_was_measured_at_and_no_longer(self):
+        """A video's memory grows far faster than its length (9.6 GB for 4 s at 480p,
+        78.3 GB for 15 s), and 4 s at 720p already peaks at 82 GB of 121.6: the time
+        budget alone let 720p run to 15 s, which cannot fit and hangs the box. The page
+        refuses what the server refuses (TheMemoryCeilingOfLongVideos), and the length
+        slider ends where the size was measured."""
         r = run(self, r"""
-        $('vidprompt').value = 'a cat';
-        $('vidsize').value = '1280x720';
-        $('vidseconds').value = '15';
-        $('vidsteps').value = '62';
-        const too = vidProblem();
-        $('vidsteps').value = '57';
-        const fits = vidProblem();
-        $('vidsize').value = '864x480';
-        $('vidsteps').value = '100';
-        const small = vidProblem();
-        report({too: too.slice(0, 24), tooMsg: too.includes('no slack'), fits, small});
+        $('vid-prompt').value = 'a cat';
+        VS.size = '1280x720'; $('vid-secs').value = '8'; const long = vidProblem();
+        vidSync(); const clamped = {max: $('vid-secs').max, value: $('vid-secs').value, ok: vidProblem()};
+        VS.size = '864x480'; vidSync(); $('vid-secs').value = '15'; $('vid-steps').value = '100';
+        const small = vidProblem(), max480 = $('vid-secs').max;
+        report({long, clamped, small, max480});
         """)
-        self.assertTrue(r["tooMsg"], r["too"])
-        self.assertEqual(r["fits"], "")   # 57 x 15 x 7.65 x 1.1 = 7195: inside by 5 seconds
-        self.assertEqual(r["small"], "")  # 480P keeps its full 100 steps
+        self.assertIn("720p is measured here at 4 s only", r["long"])
+        self.assertIn("hangs", r["long"])
+        self.assertEqual(r["clamped"], {"max": "4", "value": "4", "ok": ""})
+        self.assertEqual(r["small"], "")   # 480p keeps its 15 s and its 100 steps
+        self.assertEqual(r["max480"], "15")
 
     def test_a_missing_steps_field_does_not_throw(self):
-        """A guard written ($('vidsteps') || {}).value reads undefined off the
-        fallback and dies in .trim(): vidVal already answers '' for a missing
-        element (found in review, 2026-09-29)."""
         r = run(self, r"""
-        $('vidprompt').value = 'a cat';
-        $('vidsteps').remove();
-        const problem = vidProblem();
-        report({problem});
+        $('vid-prompt').value = 'a cat';
+        $('vid-steps').remove();
+        report({problem: vidProblem(), body: vidWireBody().num_inference_steps});
         """)
         self.assertEqual(r["problem"], "")
+        self.assertEqual(r["body"], 50)
+
+    def test_the_wire_body_is_what_the_lane_requires(self):
+        r = run(self, r"""
+        $('vid-prompt').value = "it's a fox"; $('vid-secs').value = '6'; VS.size = '864x480'; $('vid-seed').value = '42';
+        const t = vidWireBody();
+        VS.mode = 'fl2v'; VS.frames.first = {name: 'a.png', dataUrl: 'data:image/png;base64,AA'};
+        const k = vidWireBody();
+        report({t, k});
+        """)
+        self.assertEqual(r["t"]["task"], "t2va")
+        self.assertEqual(r["t"]["target"], {"short_edge": 480, "aspect_ratio": "16:9", "duration_seconds": 6})
+        self.assertEqual(r["t"]["seed"], 42)
+        self.assertEqual(r["k"]["task"], "fl2va")
+        self.assertEqual([c["frame_index"] for c in r["k"]["conditions"]], [0], "only the frame that was attached")
+
+
+class AProblemIsSaidOnceTheFormIsTouched(unittest.TestCase):
+    """The old Video tab opened on "A prompt is required." in red under an empty form, and
+    greyed Generate with no reason while the lane was stopped (seen live, 2026-09-29)."""
+
+    def test_an_empty_form_is_quiet_and_a_stopped_lane_says_why(self):
+        r = run(self, r"""
+        feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-flash.service': eng('ready', {target: 'flash'}), 'qwen38-video.service': eng('stopped', {target: 'video'})})});
+        vidSync();
+        const quiet = $('vid-problem').hidden;
+        const why = txt('vid-why'), off = $('vid-run').disabled;
+        $('vid-prompt').dispatchEvent({type: 'blur'});
+        report({quiet, why, off, after: $('vid-problem').hidden, lane: txt('vid-lane')});
+        """)
+        self.assertTrue(r["quiet"], "no error under a form nobody touched")
+        self.assertTrue(r["off"])
+        self.assertIn("not serving", r["why"])
+        self.assertFalse(r["after"], "once touched, the missing prompt is said")
+        self.assertIn("Load MiniMax-H3", r["lane"])
+        self.assertIn("flash 176B", r["lane"], "and it says which lane holds the box")
+
+
+class TheVideoShowsTheLanesRealProgress(unittest.TestCase):
+    """The lane's API says "queued", progress 0, from the POST to the end, and the old tab
+    drew exactly that for twelve minutes (seen live, 2026-09-29). The server now reads the
+    phase and the step from the lane's journal; the view draws those."""
+
+    def test_the_step_and_the_time_left(self):
+        r = run(self, r"""
+        __fetch = async url => url === '/api/video' ? __response(200, {installed: true, available: true, state: 'ready',
+            progress: {id: 'v9', status: 'queued', progress: 0},
+            run: {phase: 'denoise', step: 26, steps: 49, s_per_step: 14.75, left_s: 339, label: 'denoising'}}) : new Promise(() => {});
+        feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-video.service': eng('ready', {target: 'video'})})});
+        await vidLane();
+        report({lab: txt('vid-prog-lab'), eta: txt('vid-prog-eta'), hidden: $('vid-prog').hidden, spine: txt('serving-sub'),
+                off: $('vid-run').disabled, why: txt('vid-why'), phases: [...document.querySelectorAll('#vid-phases span')].map(s => s.className)});
+        """)
+        self.assertFalse(r["hidden"])
+        self.assertIn("step 26 of 49", r["lab"])
+        self.assertIn("Someone else", r["lab"], "a video this page did not ask for is said to be another's")
+        self.assertIn("left", r["eta"])
+        self.assertIn("14.8 s per step", r["eta"])
+        self.assertEqual(r["phases"], ["done", "now", ""])
+        self.assertTrue(r["off"])
+        self.assertIn("one at a time", r["why"])
 
 
 class TheParkedVideoSurvivesAReload(unittest.TestCase):
-    """The 504's address only lived in one page run: an F5 during the second hour
-    lost the link to a video the lane was still making (found in review, 2026-09-28).
-    The server holds the same id in /api/video's progress, so the tab rebuilds."""
+    """The 504's address only lived in one page run: an F5 during the second hour lost the
+    link to a video the lane was still making (found in review, 2026-09-28). The id is kept
+    in the browser, so a reload still says "your video" and shows it when it is done."""
 
-    def test_the_content_link_is_rebuilt_from_the_server_progress(self):
-        r = run(self, r"""
-        __fetch = async url => url === '/api/video'
-            ? __response(200, {installed: true, port: 30022, model: 'MiniMaxAI/MiniMax-H3',
-                               variant: 'fl2va',
-                               progress: {id: 'vid-parked-9', status: 'queued', seconds: 120}})
-            : __response(404, {});
-        await vidLane();
-        report({link: txt('vidout').includes('/api/video/content?id=vid-parked-9')});
-        """)
-        self.assertTrue(r["link"])
+    BODY = r"""
+    let done = false;
+    __fetch = async url => url === '/api/video' ? __response(200, done
+        ? {installed: true, available: true, state: 'ready', progress: {}, run: {}}
+        : {installed: true, available: true, state: 'ready', progress: {id: 'vid-parked-9', status: 'queued'},
+           run: {phase: 'denoise', step: 40, steps: 49, s_per_step: 55, left_s: 500, label: 'denoising'}}) : new Promise(() => {});
+    feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-video.service': eng('ready', {target: 'video'})})});
+    """
 
-    def test_a_finished_call_does_not_rebuild_a_stranger(self):
-        r = run(self, r"""
-        __fetch = async url => url === '/api/video'
-            ? __response(200, {installed: true, port: 30022, progress: {}})
-            : __response(404, {});
-        await vidLane();
-        report({link: txt('vidout').includes('content?id='), shown: vidParkedShown});
+    def test_a_parked_video_is_still_yours_after_a_reload(self):
+        r = run(self, self.BODY + r"""
+        localStorage.setItem('cockpit.video.parked', 'vid-parked-9');
+        await vidLane(); const lab = txt('vid-prog-lab');
+        done = true; await vidLane();
+        const v = document.querySelector('#vid-screen video');
+        report({lab, src: v ? v.src : null, kept: localStorage.getItem('cockpit.video.parked')});
         """)
-        self.assertFalse(r["link"])
-        self.assertIsNone(r["shown"])
+        self.assertIn("Still making your video", r["lab"])
+        self.assertIn("/api/video/content?id=vid-parked-9", r["src"] or "")
+        self.assertIsNone(r["kept"], "the id is forgotten once the video is shown")
+
+    def test_a_stranger_is_not_played_by_itself(self):
+        r = run(self, self.BODY + r"""
+        await vidLane(); done = true; await vidLane();
+        report({video: !!document.querySelector('#vid-screen video'), offer: txt('vid-meta')});
+        """)
+        self.assertFalse(r["video"])
+        self.assertIn("Play the video that just finished", r["offer"])
+
+    def test_a_finished_video_leaves_no_stale_generating_text(self):
+        """The old tab kept "c3da273b still generating" and "the lane is still making this
+        video" on screen after the video was done, until a reload (seen live, 2026-09-29)."""
+        r = run(self, self.BODY + r"""
+        await vidLane(); done = true; await vidLane();
+        report({prog: $('vid-prog').hidden, page: txt('view-video')});
+        """)
+        self.assertTrue(r["prog"])
+        self.assertNotIn("still generating", r["page"].lower())
+        self.assertNotIn("Someone else", r["page"])
 
 
 class AFinishedJobsLogIsReadToItsEnd(unittest.TestCase):
-    """U18: the strip's log held the lines of the job's last running snapshot; the lines it
-    printed after that were never fetched, so an open log stopped short of its end."""
+    """U18: the log held the lines of the job's last running snapshot; the lines it printed
+    after that were never fetched, so an open log stopped short of its end."""
 
     def test_the_last_lines_are_fetched_when_it_ends(self):
         r = run(self, r"""
         const job = (status, lines) => ({id: 'j1', action: 'smoke', params: {}, status, lines,
                                          started: Date.now() / 1000 - 5, elapsed: 5});
         __fetch = async url => url === '/api/jobs/j1' ? __response(200, {lines: ['1', '2', '3', 'the end']}) : new Promise(() => {});
-        rJob({current: job('running', ['1', '2']), recent: []});
-        rJob({current: null, recent: [Object.assign(job('done'), {ended: Date.now() / 1000, rc: 0})]});
+        feed({job: {current: job('running', ['1', '2']), recent: []}});
+        feed({job: {current: null, recent: [Object.assign(job('done'), {ended: Date.now() / 1000, rc: 0})]}});
         await __settle();
-        report({fetched: __fetches.filter(f => f.url === '/api/jobs/j1').length, log: txt('joblog')});
+        report({fetched: __fetches.filter(f => f.url === '/api/jobs/j1').length, log: txt('dock-pre'), shown: !$('dock').hidden});
         """)
         self.assertEqual(r["fetched"], 1)
         self.assertTrue(r["log"].endswith("the end"), r["log"])
+        self.assertTrue(r["shown"])
 
 
 class ANewLaneIsNotNamedAfterTheOldCheckpoint(unittest.TestCase):
@@ -133,17 +201,16 @@ class ANewLaneIsNotNamedAfterTheOldCheckpoint(unittest.TestCase):
     and outlived a change of lane: a flash lane that had just replaced the 27B read
     "flash 176B stock" until the next read."""
 
-    def test_label_and_selector(self):
+    def test_label_spine_and_selector(self):
         r = run(self, r"""
-        rUnits(UNITS);
-        rEngineInfo({served_target: 'stock', prompt_ceiling_tokens: 0,
-                     info: {served_model_name: 'qwen3.8-27b', max_total_num_tokens: 800000, context_length: 1048576}});
-        rLifecycle(life({'qwen38-sglang.service': eng('ready')}));
-        rLifecycle(life({'qwen38-sglang.service': eng('stopped'), 'qwen38-flash.service': eng('ready', {target: 'flash-uncensored'})}));
-        report({label: laneLabel('qwen38-flash.service'), pill: txt('lanename'), sel: $('switchsel').value});
+        feed({units: UNITS, engine_info: {served_target: 'stock', prompt_ceiling_tokens: 0,
+              info: {served_model_name: 'qwen3.8-27b', max_total_num_tokens: 800000, context_length: 1048576}},
+              lifecycle: life({'qwen38-sglang.service': eng('ready')})});
+        feed({lifecycle: life({'qwen38-sglang.service': eng('stopped'), 'qwen38-flash.service': eng('ready', {target: 'flash-uncensored'})})});
+        report({label: laneLabel('qwen38-flash.service'), spine: txt('serving-name'), sel: LCARDS.get('qwen38-flash.service').tsel.value});
         """)
         self.assertEqual(r["label"], "flash 176B uncensored")
-        self.assertEqual(r["pill"], "flash 176B uncensored")
+        self.assertIn("flash 176B uncensored", r["spine"])
         self.assertEqual(r["sel"], "flash-uncensored")
 
 
@@ -151,8 +218,8 @@ class DurationsNeverReadSixtySeconds(unittest.TestCase):
     """U20: minutes were floored and seconds rounded, so 539.6 s read "8 min 60"."""
 
     def test_rounding_carries(self):
-        r = run(self, "report([fmtDur(539.6), fmtDur(3599.7), fmtDur(89.6), fmtDur(61)]);")
-        self.assertEqual(r, ["9 min 00", "1 h 00", "1 min 30", "61 s"])   # under 90 s it reads in seconds
+        r = run(self, "report([fmtDur(539.6), fmtDur(3599.7), fmtDur(89.6), fmtDur(61), fmtMin(759.6), fmtMin(45)]);")
+        self.assertEqual(r, ["9 min 00", "1 h 00", "1 min 30", "61 s", "13 min", "45 s"])
 
 
 class AStopIsNotABoot(unittest.TestCase):
@@ -160,10 +227,10 @@ class AStopIsNotABoot(unittest.TestCase):
 
     def test_the_badge_says_stopping(self):
         r = run(self, r"""
-        rLifecycle(life({'qwen38-sglang.service': eng('stopping')}));
-        const stopping = txt('bdg-engines');
-        rLifecycle(life({'qwen38-sglang.service': eng('loading-weights')}));
-        report([stopping, txt('bdg-engines')]);
+        feed({lifecycle: life({'qwen38-sglang.service': eng('stopping')})});
+        const stopping = txt('bdg-lanes');
+        feed({lifecycle: life({'qwen38-sglang.service': eng('loading-weights')})});
+        report([stopping, txt('bdg-lanes')]);
         """)
         self.assertEqual(r, ["stopping", "booting"])
 
@@ -174,67 +241,71 @@ class SwitchPhrasesNameTheLane(unittest.TestCase):
 
     def test_every_target_reads_differently(self):
         r = run(self, r"""
-        const ts = ['stock', 'uncensored', 'fp8', 'uncensored-fp8', 'flash', 'flash-uncensored', 'flash-nvda', 'image'];
+        const ts = ['stock', 'uncensored', 'fp8', 'uncensored-fp8', 'flash', 'flash-uncensored', 'flash-nvda', 'image', 'video'];
         report(ts.map(t => actionPhrase('switch', {target: t})));
         """)
         self.assertEqual(len(set(r)), len(r), r)
         self.assertIn("27B", r[1])
         self.assertIn("flash", r[5])
+        self.assertIn("MiniMax-H3", r[8])
 
 
 class GibibytesAreSaidAsSuch(unittest.TestCase):
-    """U23: bytes divided by 1024 cubed were printed "GB" (the memory and disk gauges), and
-    the image lane's peak, MiB over 1024, too."""
+    """U23: bytes divided by 1024 cubed were printed "GB", and the image lane's peak, MiB
+    over 1024, too."""
 
     def test_the_units(self):
         r = run(self, r"""
-        imgDraw({data: [{b64_json: 'AAAA'}], peak_memory_mb: 35635.2, inference_time_s: 38.2}, 'png');
-        report({b: fmtB(GB), peak: txt('imgmeta')});
+        imgShow({data: [{b64_json: 'AAAA'}], peak_memory_mb: 35635.2, inference_time_s: 38.2}, 'png');
+        report({b: fmtGiB(GIB), peak: txt('img-meta')});
         """)
         self.assertEqual(r["b"], "1.0 GiB")
-        self.assertIn("peak memory: 34.8 GiB", r["peak"])
+        self.assertIn("peak memory 34.8 GiB", r["peak"])
 
 
 class OneBootEstimate(unittest.TestCase):
-    """U24: a flash boot was "about 13 min" in the boot bar and the Start tooltip (the
-    reference box's default, or this box's own median), and "the full 12 to 15 min" in the
-    warning a stop mid-boot gives. The warning reads the same estimate now."""
+    """U24: a flash boot was "about 13 min" in the boot bar and "the full 12 to 15 min" in
+    the warning a stop mid-boot gives. The warning reads the same estimate."""
 
     def test_the_stop_warning_uses_the_lanes_own_estimate(self):
         r = run(self, r"""
-        rConfig(CONFIG); rUnits(UNITS);
-        rLifecycle(life({'qwen38-flash.service': eng('loading-weights', {target: 'flash', boots: [700, 760, 800], elapsed: 60})}));
-        CARDS.get('qwen38-flash.service').btn.click();
-        report({warn: txt('mwarn'), ready: readyIn('qwen38-flash.service')});
+        feed({config: CONFIG, units: UNITS,
+              lifecycle: life({'qwen38-flash.service': eng('loading-weights', {target: 'flash', boots: [700, 760, 800], elapsed: 60})})});
+        LCARDS.get('qwen38-flash.service').stop.click();
+        report({warn: txt('sh-warns'), ready: readyIn('qwen38-flash.service')});
         """)
         self.assertEqual(r["ready"], "about 12 min 40")
         self.assertIn("about 12 min 40", r["warn"])
         self.assertNotIn("12 to 15", r["warn"])
 
 
-class TheServedEnginePanelKnowsTheImageLaneIsNotOne(unittest.TestCase):
+class TheTextEnginePanelKnowsADiffusionLaneIsNotOne(unittest.TestCase):
     """U25: with only the image lane serving, the text engine's panel said "no text engine"
-    under a chip that read READY."""
+    under a chip that read READY; the video lane is the same case."""
 
-    def test_the_chip(self):
-        r = run(self, r"""
-        rLifecycle(life({'qwen38-sglang.service': eng('stopped'), 'qwen38-image.service': eng('ready', {target: 'image'})}));
-        rEngineFast({load: null, healthy: false});
-        report(txt('engchip'));
-        """)
-        self.assertNotEqual(r, "ready")
-        self.assertIn("no text engine", r)
+    def test_the_panel_says_which_lane_serves(self):
+        for unit, target, word in (("qwen38-image.service", "image", "image"), ("qwen38-video.service", "video", "video")):
+            with self.subTest(unit=unit):
+                r = run(self, r"""
+                feed({lifecycle: life({'qwen38-sglang.service': eng('stopped'), '%s': eng('ready', {target: '%s'})}),
+                      engine_fast: {load: null, healthy: false}});
+                report({down: txt('eng-down'), hidden: $('eng-facts').hidden, cap: txt('tr-cap')});
+                """ % (unit, target))
+                self.assertTrue(r["hidden"])
+                self.assertIn(word + " lane is serving", r["down"])
+                self.assertIn(word + " lane serves", r["cap"])
+                self.assertIn("no text engine", r["cap"])
 
 
-class WarningsWearTheirColourEverywhere(unittest.TestCase):
-    """U26: .why.warn was styled inside an engine card only (the Overview's wedge note and
-    the image tab's boot notes are not in one), and #upd.warn not at all."""
+class StatesWearTheirColourEverywhere(unittest.TestCase):
+    """U26: a warning colour was styled inside one component only; every state has its rule
+    wherever it is drawn: capsules, tags, lamps, banners, text."""
 
     def test_the_rules_exist(self):
-        sels = {s.strip() for sel, media, _ in rules() for s in sel.split(",") if not media}
-        self.assertIn(".why.warn", sels)
-        self.assertIn("#upd.warn", sels)
-        self.assertIn(".why", sels)
+        sels = {s.strip() for sel, media, _ in css_rules() for s in sel.split(",") if not media}
+        for s in (".cap.warn", ".cap.err", ".tag.warn", ".tag.err", ".lamp.warn", ".lamp.err", ".banner.err", ".warn-t", ".err-t"):
+            with self.subTest(s=s):
+                self.assertIn(s, sels)
 
 
 class AnIndeterminateBarDoesNotReadFullWithoutMotion(unittest.TestCase):
@@ -243,38 +314,21 @@ class AnIndeterminateBarDoesNotReadFullWithoutMotion(unittest.TestCase):
 
     def test_the_bars_pulse(self):
         found = {}
-        for sel, media, decl in rules():
+        for sel, media, decl in css_rules():
             if any("prefers-reduced-motion" in m for m in media):
                 for s in sel.split(","):
                     found[s.strip()] = decl
-        for s in (".bfill.indet", ".jobstrip .bar i", ".img .prog.indet .fl"):
+        for s in (".meter.indet > i", ".ring.indet .fill"):
             with self.subTest(s=s):
                 self.assertIn(s, found)
                 self.assertRegex(found[s], r"animation:\s*indetpulse[^;]*!important")
-        frames = re.search(r"@keyframesindetpulse\{(.*?)\}\}", PAGE.replace(" ", ""), re.S)
+        css = (pagejs.STATIC / "css" / "cockpit.css").read_text().replace(" ", "")
+        frames = re.search(r"@keyframesindetpulse\{(.*?)\}\}", css, re.S)
         self.assertTrue(frames, "the pulse has keyframes")
         self.assertEqual(set(re.findall(r"\{([a-z-]+):", frames.group(1) + "}")), {"opacity"}, "opacity only, no motion")
 
 
-class TheTopBarShrinksBack(unittest.TestCase):
-    """U28: the bar's min-height is --top, and --top was set to the bar's own height: once
-    two rows tall (a narrow window, a zoom, a wrap) it could never be shorter again."""
-
-    def test_the_height_is_measured_without_the_old_one(self):
-        r = run(self, r"""
-        const bar = document.querySelector('header.top'); let content = 90;
-        bar.getBoundingClientRect = () => {
-          const min = parseFloat(document.documentElement.style.getPropertyValue('--top')) || 58;
-          const h = Math.max(content, min); return {height: h, width: 1200, top: 0, left: 0, right: 1200, bottom: h};
-        };
-        syncTop(); const tall = document.documentElement.style.getPropertyValue('--top');
-        content = 58; syncTop();
-        report([tall, document.documentElement.style.getPropertyValue('--top')]);
-        """)
-        self.assertEqual(r, ["90px", "58px"])
-
-
-class TheCollapsedRailsButtonsHaveNames(unittest.TestCase):
+class TheRailsButtonsHaveNames(unittest.TestCase):
     """U29: collapsed, the rail's labels are display:none, which takes them out of the
     buttons' accessible names: eleven unnamed buttons."""
 
@@ -287,11 +341,11 @@ class TheCollapsedRailsButtonsHaveNames(unittest.TestCase):
 
 
 class RestartKeepsItsTooltip(unittest.TestCase):
-    """U30: applyBusy() gave every unit button its blocked reason or nothing, and the Agent
-    tab's Restart is one: its tooltip was gone at the first refresh."""
+    """U30: the busy pass gave every action button its blocked reason or nothing, and the
+    Agent view's Restart lost its tooltip at the first refresh."""
 
     def test_the_tooltip_survives(self):
-        r = run(self, "const before = $('agrestart').title; applyBusy(); report([before, $('agrestart').title]);")
+        r = run(self, "const before = $('ag-restart').title; applyBusy(); feed({config: CONFIG}); report([before, $('ag-restart').title]);")
         self.assertTrue(r[0])
         self.assertEqual(r[1], r[0])
 
@@ -302,9 +356,9 @@ class AnUnreadableOpencodeConfigSaysSo(unittest.TestCase):
 
     def test_the_error_is_shown(self):
         r = run(self, r"""
-        rOpencode({enabled: true, real: {present: true, default: null, limits: {}, error: 'Expecting value: line 3 column 5 (char 20)'},
-                   launcher: {present: true, ours: true, cap: 200000}, follows: false, why: 'differs', fit: null});
-        report({state: txt('ocstate'), def: txt('ocdefault'), lim: txt('oclim27')});
+        feed({opencode: {enabled: true, real: {present: true, default: null, limits: {}, error: 'Expecting value: line 3 column 5 (char 20)'},
+                         launcher: {present: true, ours: true, cap: 200000}, follows: false, why: 'differs', fit: null}});
+        report({state: txt('oc-state'), def: txt('oc-default'), lim: txt('oc-lim27')});
         """)
         self.assertIn("Expecting value", r["state"])
         self.assertNotIn("none", r["def"])
@@ -317,22 +371,22 @@ class EveryOfferedSizeCanBeAskedFor(unittest.TestCase):
 
     def test_each_size_passes(self):
         r = run(self, r"""
-        $('imgprompt').value = 'a cat';
+        $('img-prompt').value = 'a cat';
         const bad = [];
-        for (const [v] of IMG_SIZES){ if (v === 'custom') continue; $('imgsize').value = v; imgSync(); if (imgProblem()) bad.push(v); }
+        for (const [v] of IMG_SIZES){ if (v === 'custom') continue; $('img-size').value = v; imgSync(); if (imgProblem()) bad.push(v); }
         report(bad);
         """)
         self.assertEqual(r, [])
 
 
-class TheSystemOneCommandSurvivesAnApostrophe(unittest.TestCase):
+class TheDecideCommandSurvivesAnApostrophe(unittest.TestCase):
     """U34: the state went into the curl line inside single quotes as it was typed, so
     "I'm losing sales" ended the shell string halfway."""
 
     def test_the_pasted_command_sends_the_payload(self):
         r = run(self, r"""
-        $('s1state').value = "I'm losing sales, it's urgent"; s1Curl();
-        report({cmd: txt('s1curl'), payload: s1Payload()});
+        $('s1-state').value = "I'm losing sales, it's urgent"; s1Curl();
+        report({cmd: txt('s1-curl'), payload: s1Payload()});
         """)
         with tempfile.TemporaryDirectory() as d:
             p = subprocess.run(["bash", "-c", "curl(){ printf '%s\\n' \"$@\"; }\ncat(){ echo KEY; }\n" + r["cmd"]],
@@ -342,7 +396,7 @@ class TheSystemOneCommandSurvivesAnApostrophe(unittest.TestCase):
         self.assertEqual(json.loads(body), r["payload"])
 
 
-class SystemOneQuestionIdsStayUnique(unittest.TestCase):
+class DecideQuestionIdsStayUnique(unittest.TestCase):
     """U35: a new question took its type and the list's length plus one as its id, so after
     a removal two questions could share one, and the payload, keyed by id, kept one."""
 
@@ -361,12 +415,12 @@ class SystemOneQuestionIdsStayUnique(unittest.TestCase):
         r = run(self, r"""
         __fetch = async () => __response(200, {token: 't'});
         s1Questions = [{id: 'q', type: 'noul', instructions: 'a'}, {id: 'q', type: 'noul', instructions: 'b'}];
-        $('s1state').value = 'x';
+        $('s1-state').value = 'x';
         await s1Run();
-        report({asked: __fetches.filter(f => f.url === '/api/systemone').length, toast: txt('toast')});
+        report({asked: __fetches.filter(f => f.url === '/api/systemone').length, toast: toastText()});
         """)
         self.assertEqual(r["asked"], 0)
-        self.assertIn("q", r["toast"])
+        self.assertIn('"q"', r["toast"])
 
 
 class ABusyLaneLeavesTheLastImageInPlace(unittest.TestCase):
@@ -378,11 +432,11 @@ class ABusyLaneLeavesTheLastImageInPlace(unittest.TestCase):
         __fetch = async url => url === '/api/csrf' ? __response(200, {token: 't'})
           : url === '/api/image/generate' ? __response(409, {error: 'this lane serves one image at a time'})
           : url === '/api/image' ? __response(200, {available: true, installed: true, progress: {}}) : new Promise(() => {});
-        rLifecycle(life({'qwen38-sglang.service': eng('stopped'), 'qwen38-image.service': eng('ready', {target: 'image'})}));
-        imgDraw({data: [{b64_json: 'AAAA'}], inference_time_s: 38.2}, 'png');
-        $('imgprompt').value = 'a cat'; imgSync();
+        feed({lifecycle: life({'qwen38-sglang.service': eng('stopped'), 'qwen38-image.service': eng('ready', {target: 'image'})})});
+        imgShow({data: [{b64_json: 'AAAA'}], inference_time_s: 38.2}, 'png');
+        $('img-prompt').value = 'a cat'; imgSync();
         await imgRun();
-        report({imgs: document.querySelectorAll('#imgout img').length, meta: txt('imgmeta')});
+        report({imgs: document.querySelectorAll('#img-screen img').length, meta: txt('img-meta')});
         """)
         self.assertEqual(r["imgs"], 1)
         self.assertIn("engine time", r["meta"])
@@ -397,12 +451,12 @@ class TenReferencesAtMost(unittest.TestCase):
         let answer;
         __fetch = url => url === '/api/csrf' ? Promise.resolve(__response(200, {token: 't'}))
           : url === '/api/image/generate' ? new Promise(ok => { answer = ok; }) : new Promise(() => {});
-        rLifecycle(life({'qwen38-sglang.service': eng('stopped'), 'qwen38-image.service': eng('ready', {target: 'image'})}));
-        imgMode('edit'); imgRefs = Array.from({length: 9}, (_, i) => ({name: 'r' + i, dataUrl: 'data:image/png;base64,AA', w: 1, h: 1}));
-        $('imgrefsample').click(); await __settle();
-        imgRefs.push({name: 'late', dataUrl: 'data:image/png;base64,AA', w: 1, h: 1});
+        feed({lifecycle: life({'qwen38-sglang.service': eng('stopped'), 'qwen38-image.service': eng('ready', {target: 'image'})})});
+        IS.mode = 'edit'; IS.refs = Array.from({length: 9}, (_, i) => ({name: 'r' + i, dataUrl: 'data:image/png;base64,AA', w: 1, h: 1}));
+        $('img-refsample').click(); await __settle();
+        IS.refs.push({name: 'late', dataUrl: 'data:image/png;base64,AA', w: 1, h: 1});
         answer(__response(200, {image: {data: [{b64_json: 'BBBB'}]}})); await __settle(); await __settle();
-        report(imgRefs.length);
+        report(IS.refs.length);
         """)
         self.assertLessEqual(r, 10)
 
@@ -415,7 +469,7 @@ class ThePhonesSessionCardIsNotRewrittenForNothing(unittest.TestCase):
               '<body><div id="root"><div>opencode</div></div></body></html>')
 
     def test_one_write_for_one_list(self):
-        r = run(self, r"""
+        r = pagejs.run(self, HELPERS + r"""
         await __advance(1000);
         const card = document.getElementById('spark-sessions');
         let writes = 0; const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(card), 'innerHTML').set;
@@ -444,24 +498,24 @@ class TheEditEstimateCountsItsReferences(unittest.TestCase):
 
 
 class TheUpdateCommandsNameThisCheckout(unittest.TestCase):
-    """U40: the update banner and the Agent tab's install hint said cd ~/dgx-spark-qwen38
+    """U40: the update banner and the Agent view's install hint said cd ~/dgx-spark-qwen38
     whatever the checkout; the cockpit knows its own."""
 
     def test_both_commands(self):
         r = run(self, r"""
-        rConfig(Object.assign({}, CONFIG, {repo_dir: '/opt/qwen', terminal_only: {update_stack: 'cd /opt/qwen && ./install.sh'}}));
-        rUpdate({installed: 'v1.18.6', latest: 'v1.18.7', behind: true});
-        banners({}, {});
-        rAgent({enabled: false, opencode_found: null, pinned: '1.18.32'});
-        report({banner: txt('banners'), agent: txt('agcmd')});
+        feed({config: Object.assign({}, CONFIG, {repo_dir: '/opt/qwen', terminal_only: {update_stack: 'cd /opt/qwen && ./install.sh'}}),
+              update: {installed: 'v1.18.6', latest: 'v1.18.7', behind: true},
+              agent: {enabled: false, opencode_found: null, pinned: '1.18.32'}});
+        report({banner: txt('banners'), agent: txt('ag-cmd'), settings: txt('st-update')});
         """)
         self.assertIn("cd /opt/qwen", r["banner"])
         self.assertNotIn("~/dgx-spark-qwen38", r["banner"])
         self.assertEqual(r["agent"], "cd /opt/qwen && ./install.sh")
+        self.assertEqual(r["settings"], "cd /opt/qwen && ./install.sh")
 
 
 class ExampleNamesCountRight(unittest.TestCase):
-    """U41: the "Twenty options" example has eight."""
+    """U41: the "Twenty options" example had eight."""
 
     def test_counts(self):
         r = run(self, "report(Object.entries(S1_EXAMPLES).map(([n, e]) => [n, e.questions.map(q => (q.criteria || q.levels || []).length)]));")
@@ -473,35 +527,67 @@ class ExampleNamesCountRight(unittest.TestCase):
                     self.assertIn(words[m.group(1).lower()], counts)
 
 
-class TheImageExampleShowsWhichIsLoaded(unittest.TestCase):
-    """U42: the first Image example stayed highlighted whichever was loaded."""
+class TheExampleShowsWhichIsLoaded(unittest.TestCase):
+    """U42: the first example stayed highlighted whichever was loaded."""
 
     def test_the_highlight_moves(self):
         r = run(self, r"""
-        const bs = [...document.querySelectorAll('#imgexamples .btn')];
-        bs[2].click();
-        report(bs.map(b => b.classList.contains('low')));
+        const out = {};
+        for (const box of ['img-examples', 's1-examples', 'vid-examples']){
+          const bs = [...document.querySelectorAll('#' + box + ' button')];
+          bs[2].click();
+          out[box] = bs.map(b => b.getAttribute('aria-pressed'));
+        }
+        report(out);
         """)
-        self.assertEqual(r[2], False)
-        self.assertEqual(r.count(False), 1)
+        for box, pressed in r.items():
+            with self.subTest(box=box):
+                self.assertEqual(pressed[2], "true")
+                self.assertEqual(pressed.count("true"), 1)
+
+
+class TheModeControlsSayWhichIsChosen(unittest.TestCase):
+    """The Video tab's "Text only" and "First + last frames" were two grey buttons: which one
+    was on could not be seen (Hasan's screenshot, 2026-09-29). Each mode is a radio in a
+    group, and exactly one is checked."""
+
+    def test_one_checked_radio_per_group(self):
+        r = run(self, r"""
+        const out = {};
+        for (const g of ['vid-mode', 'vid-size', 'img-mode']){
+          const bs = [...document.querySelectorAll('#' + g + ' button')];
+          bs[1].click();
+          out[g] = {role: $(g).getAttribute('role'), checked: bs.map(b => b.getAttribute('aria-checked')), roles: bs.map(b => b.getAttribute('role'))};
+        }
+        report(out);
+        """)
+        for g, v in r.items():
+            with self.subTest(g=g):
+                self.assertEqual(v["role"], "radiogroup")
+                self.assertEqual(v["checked"], ["false", "true"])
+                self.assertEqual(set(v["roles"]), {"radio"})
+        rules = {s.strip() for sel, media, _ in css_rules() for s in sel.split(",")}
+        self.assertIn('.seg button[aria-checked="true"]', rules, "the chosen one looks chosen")
 
 
 class LiveRegionsSayWhatChanged(unittest.TestCase):
-    """The lane pill and the job strip were live regions whose text changed every second
-    (a boot's elapsed time, a job's clock and its last line): a screen reader read them
-    again every second, the defect of U11 in two more places. Each now says a sentence when
-    the lane or the job changes state, and nothing on a tick."""
+    """The lane pill and the job strip were live regions whose text changed every second (a
+    boot's elapsed time, a job's clock): a screen reader read them again every second. One
+    quiet region says a sentence when the lane or the job changes state, and nothing on a
+    tick."""
 
-    def test_the_containers_are_not_live(self):
-        self.assertNotRegex(PAGE, r'id="lanepill"[^>]*aria-live')
-        self.assertNotRegex(PAGE, r'id="jobstrip"[^>]*aria-live')
+    def test_the_moving_containers_are_not_live(self):
+        for anchor in ('id="serving"', 'id="dock"', 'id="minipool"'):
+            with self.subTest(anchor=anchor):
+                tag = PAGE[PAGE.rindex("<", 0, PAGE.index(anchor)):PAGE.index(">", PAGE.index(anchor))]
+                self.assertNotIn("aria-live", tag)
 
     def test_the_lane_says_its_state_once(self):
         r = run(self, r"""
         const said = [];
-        const tick = (state, elapsed) => { rLifecycle(life({'qwen38-flash.service': eng(state, {target: 'flash', elapsed})})); said.push(txt('lanesay')); };
+        const tick = (state, elapsed) => { feed({lifecycle: life({'qwen38-flash.service': eng(state, {target: 'flash', elapsed})})}); said.push(txt('sayer')); };
         tick('loading-weights', 10); tick('loading-weights', 11); tick('loading-weights', 12); tick('ready', 13); tick('ready', 14);
-        report({said, live: $('lanesay').getAttribute('aria-live')});
+        report({said, live: $('sayer').getAttribute('aria-live')});
         """)
         self.assertEqual(r["live"], "polite")
         self.assertEqual(len(set(r["said"])), 2, r["said"])
@@ -512,11 +598,10 @@ class LiveRegionsSayWhatChanged(unittest.TestCase):
         const job = (status, elapsed, last) => ({id: 'j', action: 'smoke', params: {}, status, started: Date.now() / 1000 - elapsed,
                                                  elapsed, lines: [last]});
         const said = [];
-        [1, 2, 3].forEach(s => { rJob({current: job('running', s, 'line ' + s), recent: []}); said.push(txt('jobsay')); });
-        rJob({current: null, recent: [Object.assign(job('done', 4, 'end'), {ended: Date.now() / 1000, rc: 0})]}); said.push(txt('jobsay'));
-        report({said, live: $('jobsay').getAttribute('aria-live')});
+        [1, 2, 3].forEach(s => { feed({job: {current: job('running', s, 'line ' + s), recent: []}}); said.push(txt('sayer')); });
+        feed({job: {current: null, recent: [Object.assign(job('done', 4, 'end'), {ended: Date.now() / 1000, rc: 0})]}}); said.push(txt('sayer'));
+        report({said});
         """)
-        self.assertEqual(r["live"], "polite")
         self.assertEqual(len(set(r["said"])), 2, r["said"])
 
 
@@ -525,14 +610,60 @@ class AVideoLaneIsNotNamedAfterItsOwnModel(unittest.TestCase):
     The video unit is named after the model it serves, and the target short said it again."""
 
     def test_the_label_says_the_model_once(self):
-        # both lanes in the ONE rLifecycle: it replaces F.life whole, and the label
-        # only sees a target while its unit is in the snapshot it replaced
         r = run(self, r"""
-        rLifecycle(life({'qwen38-video.service': eng('ready', {target: 'video'}),
-                        'qwen38-image.service': eng('ready', {target: 'image'})}));
+        feed({lifecycle: life({'qwen38-video.service': eng('ready', {target: 'video'}), 'qwen38-image.service': eng('ready', {target: 'image'})})});
         report([laneLabel('qwen38-video.service'), laneLabel('qwen38-image.service')]);
         """)
         self.assertEqual(r, ["MiniMax-H3", "Qwen-Image 2.1"])
+
+
+class LoadingALaneIsOneJourney(unittest.TestCase):
+    """Loading a lane took three buttons in an order the page explained in a list (switch,
+    stop the serving lane, start this one), and the list stayed on screen after its steps
+    were done (seen live, 2026-09-29). Load is one sheet that names each step and its exact
+    command, and runs them one job after the other."""
+
+    def test_the_steps_are_the_ones_still_to_do(self):
+        r = run(self, r"""
+        feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-flash.service': eng('ready', {target: 'flash'}), 'qwen38-video.service': eng('stopped', {target: 'video'})})});
+        askJourney('video');
+        const steps = [...$('sh-journey').children].map(li => li.textContent);
+        closeSheet();
+        const video = JSON.parse(JSON.stringify(UNITS)); video.units['qwen38-video.service'].enabled = 'enabled'; video.units['qwen38-sglang.service'].enabled = 'disabled';
+        feed({units: video, lifecycle: life({'qwen38-video.service': eng('stopped', {target: 'video'})})});
+        askJourney('video');
+        const after = [...$('sh-journey').children].map(li => li.textContent);
+        report({steps, after});
+        """)
+        self.assertEqual(len(r["steps"]), 3, r["steps"])
+        self.assertIn("switch-model.sh video", r["steps"][0])
+        self.assertIn("systemctl stop qwen38-flash.service", r["steps"][1])
+        self.assertIn("systemctl start qwen38-video.service", r["steps"][2])
+        self.assertEqual(len(r["after"]), 1, "switched and nothing serving: one step left")
+        self.assertIn("start qwen38-video.service", r["after"][0])
+
+    def test_it_runs_each_step_after_the_last_one_finished(self):
+        r = run(self, r"""
+        const jobs = []; let n = 0;
+        __fetch = async (url, init) => {
+          if (url === '/api/csrf') return __response(200, {token: 't'});
+          if (url === '/api/action'){ const b = JSON.parse(init.body); jobs.push(b); return __response(202, {job: 'j' + (++n)}); }
+          return new Promise(() => {});
+        };
+        feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-flash.service': eng('ready', {target: 'flash'}), 'qwen38-video.service': eng('stopped', {target: 'video'})})});
+        askJourney('video'); $('sh-go').click(); await __settle();
+        const afterFirst = jobs.length;
+        feed({job: {current: null, recent: [{id: 'j1', action: 'switch', params: {target: 'video'}, status: 'done', rc: 0, started: 1, ended: 2, elapsed: 1}]}});
+        await __advance(600); await __settle();
+        const afterSecond = jobs.length;
+        feed({job: {current: null, recent: [{id: 'j2', action: 'unit', params: {verb: 'stop', unit: 'qwen38-flash.service'}, status: 'done', rc: 0, started: 3, ended: 4, elapsed: 1}]},
+              lifecycle: life({'qwen38-flash.service': eng('stopped', {target: 'flash'}), 'qwen38-video.service': eng('stopped', {target: 'video'})})});
+        await __advance(1200); await __settle();
+        report({afterFirst, afterSecond, names: jobs.map(j => j.name + ':' + (j.params.verb || j.params.target))});
+        """)
+        self.assertEqual(r["afterFirst"], 1, "the second step waits for the first job to finish")
+        self.assertEqual(r["afterSecond"], 2)
+        self.assertEqual(r["names"], ["switch:video", "unit:stop", "unit:start"])
 
 
 if __name__ == "__main__":

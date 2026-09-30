@@ -695,7 +695,7 @@ class ReadRoutes(Base):
     # What only each page has: the login form, and the app's lane selector. "<" and the
     # product name are in both, so either page passed for the other (found in review,
     # 2026-09-24).
-    LOGIN_MARK, APP_MARK = b'<form class="card" id="f">', b'id="switchsel"'
+    LOGIN_MARK, APP_MARK = b'<form class="gate" id="f">', b'id="serving"'
 
     def test_the_root_serves_the_login_page_without_a_session(self):
         st, _, body = self.req("GET", "/")
@@ -1004,13 +1004,13 @@ class UpdateCheck(Base):
 
     def test_code_older_than_the_files_on_disk_is_reported(self):
         self.cp.CODE_AT_START = dict(self.cp.code_fingerprint())
-        self.cp.CODE_AT_START["static/app.js"] = "0:0"
+        self.cp.CODE_AT_START["static/js/base.js"] = "0:0"
         self.cp.UPDATE_CHECK = False
-        self.assertIn("static/app.js", self.cp.collect_update().get("stale_code", []))
+        self.assertIn("static/js/base.js", self.cp.collect_update().get("stale_code", []))
 
 
 class SystemOneRoute(Base):
-    """The System One tab is a browser sending someone else's state to a lane. Two
+    """The Decide tab is a browser sending someone else's state to a lane. Two
     things matter and neither is the answer: the serving key never leaves this process,
     and the browser cannot choose anything but the state and the questions."""
 

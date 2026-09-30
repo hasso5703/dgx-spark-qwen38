@@ -82,7 +82,7 @@ class TheCodeBlocksClose(unittest.TestCase):
 
 def nav_labels():
     html = (REPO / "dashboard/static/index.html").read_text()
-    labels = re.findall(r'<button class="nav" data-tab="[a-z]+"[^>]*>.*?<span class="lab">([^<]+)</span>', html)
+    labels = re.findall(r'<button class="nav" data-view="[a-z]+"[^>]*>.*?<span class="lab">([^<]+)</span>', html)
     return set(labels)
 
 

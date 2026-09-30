@@ -1,7 +1,7 @@
 """Run the cockpit's page scripts in node, against a small DOM built from index.html.
 
-A test hands over JavaScript that runs in the page's own global scope once app.js has
-loaded, drives it (renderers, clicks, fetch answers, virtual time) and ends with
+A test hands over JavaScript that runs in the page's own global scope once the
+page's scripts have loaded, drives it (renderers, clicks, fetch answers, virtual time) and ends with
 report(value); run() returns that value. What this cannot see is layout: every box
 measures 0 (fakedom.js says what it covers). node is in the CI image, which already
 checks the opencode plugin's syntax with it, so a missing node fails there instead of
@@ -9,6 +9,7 @@ skipping a test that then counts as run.
 """
 import html.parser
 import json
+import re
 import os
 import pathlib
 import shutil
@@ -18,6 +19,16 @@ import tempfile
 DASH = pathlib.Path(__file__).resolve().parents[1]
 STATIC = DASH / "static"
 FAKEDOM = pathlib.Path(__file__).with_name("fakedom.js")
+
+
+def page_scripts() -> tuple:
+    """The page's own scripts, in the order index.html loads them: the page is several
+    files sharing one global scope, and a test runs them as the browser does."""
+    markup = (STATIC / "index.html").read_text()
+    return tuple(re.findall(r'<script src="/static/([^"]+)"', markup))
+
+
+SCRIPTS = page_scripts()
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
         "track", "wbr"}
 
@@ -67,7 +78,7 @@ def node_binary(test):
     test.skipTest("node is not installed here")
 
 
-def run(test, body: str, *, setup: str = "", scripts=("app.js",), markup: str | None = None,
+def run(test, body: str, *, setup: str = "", scripts=SCRIPTS, markup: str | None = None,
         opts: dict | None = None, timeout: float = 60.0):
     """Load the page, run `setup`, then the page scripts, then `body`; return what `body`
     passed to report(). A page script that throws while loading fails the test, and so

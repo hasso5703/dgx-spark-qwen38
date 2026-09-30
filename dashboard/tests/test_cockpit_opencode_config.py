@@ -1,4 +1,4 @@
-"""The Setup tab reads opencode's config the way opencode does.
+"""The Settings tab reads opencode's config the way opencode does.
 
 collect_opencode() read it with json.loads: a config with a comment or a trailing comma,
 which opencode reads (jsonc-parser), came out unreadable, and an unreadable one showed as

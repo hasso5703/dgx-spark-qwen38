@@ -101,6 +101,90 @@ def _parse_diffusion_boot_log(lines: list[str], markers: list, stages: tuple) ->
     return {"stage": stage, "done": done, "fired_up": fired, "detail": detail}
 
 
+# ── The video lane's request in flight, from its own journal ──────────────────
+# The lane's API says "queued", progress 0, from the POST until the video is done: its
+# job store sets "completed" and 100 at the end and nothing in between (measured
+# 2026-09-29, and read in its video_api.py). Its journal, though, logs each pipeline
+# stage and one tqdm line per denoise step, each its own entry (one every 11 to 55 s).
+# So the phase and the step come from there, in the engine's own words and numbers.
+_ANSI = re.compile(r"\x1b\[[0-?;]*[@-~]")
+_VIDEO_STAGE = re.compile(r"\[(MiniMaxH3\w+Stage)\] (started|finished)")
+_VIDEO_STEP = re.compile(r"denoise:\s+\d+%\|[^|]*\|\s*(\d+)/(\d+)\s+\[([\d:]+)<([^,\]]+),\s*([^\]]+)\]")
+VIDEO_PHASES = ("encode", "denoise", "decode")
+VIDEO_PHASE_LABEL = {"encode": "encoding the prompt", "denoise": "denoising",
+                     "decode": "decoding video and audio"}
+_VIDEO_STAGE_PHASE = {"MiniMaxH3DenoisingStage": "denoise", "MiniMaxH3DecodingStage": "decode"}
+# a line that ends a request, whatever its outcome
+_VIDEO_RUN_END = ("Pixel data generated", "Error executing request", "Failed to generate")
+
+
+def _clock_s(txt: str) -> float | None:
+    """tqdm's [MM:SS] or [H:MM:SS] as seconds; None for its '?'."""
+    parts = txt.strip().split(":")
+    if not all(p.isdigit() for p in parts):
+        return None
+    s = 0.0
+    for p in parts:
+        s = s * 60 + int(p)
+    return s
+
+
+def _rate_s_per_step(txt: str) -> float | None:
+    """tqdm's rate as seconds per step: '14.78s/it' or '1.52it/s'; None for '?it/s'."""
+    t = txt.strip()
+    try:
+        if t.endswith("s/it"):
+            return float(t[:-4])
+        if t.endswith("it/s"):
+            v = float(t[:-4])
+            return 1.0 / v if v > 0 else None
+    except ValueError:
+        return None
+    return None
+
+
+def parse_video_run(messages: list[str]) -> dict:
+    """The request the video lane is working on, from its journal messages in time
+    order. {} when nothing runs. Otherwise the phase (encode, denoise, decode), its
+    label, and while denoising the step, the step count, tqdm's seconds per step and
+    its estimate of the time left.
+
+    A request starts at "Running pipeline stages" and ends at the line that reports its
+    outcome. A step line with no start before it still counts: the start can fall out of
+    the window read, and a step is proof enough that a request runs."""
+    run: dict | None = None
+    for raw in messages:
+        for part in _ANSI.sub("", raw).replace("\r", "\n").split("\n"):
+            if "Running pipeline stages" in part:
+                run = {"phase": "encode", "step": None, "steps": None,
+                       "s_per_step": None, "elapsed_s": None, "left_s": None}
+                continue
+            if any(k in part for k in _VIDEO_RUN_END):
+                run = None
+                continue
+            m = _VIDEO_STAGE.search(part)
+            if m and m.group(2) == "started" and m.group(1) in _VIDEO_STAGE_PHASE:
+                run = run or {"phase": "encode", "step": None, "steps": None,
+                              "s_per_step": None, "elapsed_s": None, "left_s": None}
+                run["phase"] = _VIDEO_STAGE_PHASE[m.group(1)]
+                continue
+            m = _VIDEO_STEP.search(part)
+            if m:
+                run = run or {"phase": "denoise", "step": None, "steps": None,
+                              "s_per_step": None, "elapsed_s": None, "left_s": None}
+                # the 100% line closes the denoise; decode follows at once, and saying
+                # "denoising 49/49" for the whole decode would read as stuck
+                run["phase"] = run["phase"] if run["phase"] == "decode" else "denoise"
+                run["step"], run["steps"] = int(m.group(1)), int(m.group(2))
+                run["elapsed_s"] = _clock_s(m.group(3))
+                run["left_s"] = _clock_s(m.group(4))
+                run["s_per_step"] = _rate_s_per_step(m.group(5))
+    if not run:
+        return {}
+    run["label"] = VIDEO_PHASE_LABEL[run["phase"]]
+    return run
+
+
 def parse_image_boot_log(lines: list[str]) -> dict:
     """The image lane's journal, reduced to the same shape parse_boot_log returns.
 

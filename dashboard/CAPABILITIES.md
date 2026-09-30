@@ -8,7 +8,7 @@ Nothing shells out free-form; every action is a fixed argv template.
 ## Install and upgrade
 | capability | shell today | UI |
 |---|---|---|
-| First install / upgrade (converging) | `get.sh` one-liner / `install.sh` | Setup tab prints the exact terminal command: the installer needs an interactive sudo that a service cannot give, and a half-applied install is the one failure the cockpit must never cause |
+| First install / upgrade (converging) | `get.sh` one-liner / `install.sh` | Settings tab prints the exact terminal command: the installer needs an interactive sudo that a service cannot give, and a half-applied install is the one failure the cockpit must never cause |
 | Choose target model | `MODEL_CHOICE=stock/uncensored/fp8/uncensored-fp8/flash/flash-uncensored/flash-nvda`, and the image lane with `--with-image` | Target selector and Switch in the top bar: the seven text targets and Qwen-Image 2.1, each one `switch-model.sh <target>` job |
 | 1M context mode (27B) | `CONTEXT_MODE=1m` (the default since v1.12.1) or `native` | None: an install choice. The lane card shows the window the engine serves |
 | Custom port / HF cache / PLE dir | `PORT= HF_CACHE= PLE_DIR=` | None: install-time choices, kept by every re-run |
@@ -17,19 +17,19 @@ Nothing shells out free-form; every action is a fixed argv template.
 ## Serving control
 | capability | shell today | UI |
 |---|---|---|
-| Which lane serves | `systemctl start/stop qwen38-sglang / qwen38-flash / qwen38-image` | Start/Stop of the lane in the top bar, and on each engine's card in the Engines tab; the server refuses a second engine while one runs, and every action is confirmed first |
+| Which lane serves | `systemctl start/stop qwen38-sglang / qwen38-flash / qwen38-image` | Start/Stop of the lane in the top bar, and on each lane's card in the Lanes tab; the server refuses a second engine while one runs, and every action is confirmed first |
 | Boot enablement | `systemctl enable/disable` | No toggle: a switch enables the target's unit and disables the others. Each card says whether its unit starts at boot |
-| Keepalive proxy | `systemctl ... qwen38-keepalive` | Its row in the Engines tab: state, whether it starts at boot, the running version and whether it is the repo's copy, Start/Stop |
+| Keepalive proxy | `systemctl ... qwen38-keepalive` | Its row in the Lanes tab: state, whether it starts at boot, the running version and whether it is the repo's copy, Start/Stop |
 | Switch target model | `./switch-model.sh <target>` | Switch: the confirmation shows the exact command, the job's live output shows what it changes. It writes the target's unit or launcher and never starts, stops or restarts an engine: Start is its own click |
-| Model revisions served | `--revision` in unit/launcher | Revision on the lane card; the Models tab's Recipes compare it with the pin, and its Upstream watch compares each pin with Hugging Face's `main` |
+| Model revisions served | `--revision` in unit/launcher | Revision on the lane card; the Library tab's Recipes compare it with the pin, and its Upstream watch compares each pin with Hugging Face's `main` |
 | Kill a stuck generation | proxy auto-abort / restart service | "Abort all": `POST /abort_request` with `abort_all` to the engine, confirmed first |
 
 ## Observability
 | capability | shell today | UI |
 |---|---|---|
 | Server state | `systemctl status`, `journalctl`, `docker logs` | Logs tab: the last 120 lines of an engine container's log or of a unit's journal, re-read every 3 s with follow ticked (no filter, no download) |
-| Engine internals | `/server_info`, `/v1/loads`, `/health` | Engines tab (model, revision, quantization, window, KV pool, speculative, attention, radix cache, engine version, image) and Overview's Right now (running, waiting, tokens in KV, accept length) |
-| Decode telemetry | docker log scheduler lines | Requests tab, Pool and decode: KV pool held, KV usage from the engine log, Mamba state slots, accept length |
+| Engine internals | `/server_info`, `/v1/loads`, `/health` | Lanes tab (model, revision, quantization, window, KV pool, speculative, attention, radix cache, engine version, image) and the Now view's Activity (running, waiting, tokens in KV, accept length) |
+| Decode telemetry | docker log scheduler lines | Traffic tab: KV pool held, KV usage from the engine log, Mamba state slots, accept length |
 | Requests through proxy | keepalive proxy request lines | Requests table: start, client, path, bytes, duration, outcome |
 | Machine | nvidia-smi (power/temp/procs), /proc, df | Machine tab: unified memory, page cache and swap, free disk at home and under Docker, GPU power, temperature and processes, CPU load, the safety belts |
 | Benchmarks | `./bench.sh`, `./bench-matrix.sh` | None: terminal tools (BENCHMARKS.md) |
@@ -38,13 +38,13 @@ Nothing shells out free-form; every action is a fixed argv template.
 ## Housekeeping
 | capability | shell today | UI |
 |---|---|---|
-| Inventory of everything installed | `./uninstall.sh --list` | Models tab, Inventory: the same rows, read-only |
+| Inventory of everything installed | `./uninstall.sh --list` | Library tab, Inventory: the same rows, read-only |
 | Reclaim superseded images | the `docker rmi` lines `install.sh` and `./uninstall.sh` print | None: never run from the page |
 | Uninstall | `./uninstall.sh [--yes]` | None: a terminal job |
 | API key | `~/.config/qwen38/api-key` | It is the login. No panel shows or regenerates it; the diagnostics bundle masks it |
 | opencode | `~/.config/qwen38/opencode.off` marker, `~/.config/opencode/opencode.json`, `~/.local/bin/oc` | State-aware panel in Setup: on/off (the installer's --no-opencode choice), default model, per-lane limits, launcher, whether the limits fit the served pool, and Fit the limits to this engine |
 | Chat templates | patch-template.py outputs | None: `install.sh` and `switch-model.sh` write them |
-| Repo state | git status/log/tags | Setup tab, Repo: version, branch, head, working tree, the running proxy's version, and whether a newer release is out (a banner too) |
+| Repo state | git status/log/tags | Settings tab, Repo: version, branch, head, working tree, the running proxy's version, and whether a newer release is out (a banner too) |
 
 ## Agent tab (v1.7.0)
 | capability | shell today | UI |

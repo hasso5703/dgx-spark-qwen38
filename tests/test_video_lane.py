@@ -26,7 +26,13 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 UNIT_TPL = REPO / "qwen38-video.service.template"
 INSTALLER = REPO / "install-video.sh"
 COCKPIT = REPO / "dashboard" / "cockpit.py"
-APP_JS = REPO / "dashboard" / "static" / "app.js"
+JS_DIR = REPO / "dashboard" / "static" / "js"
+def PAGE_JS():
+    """The page's own scripts, concatenated in the order index.html loads them:
+    one global scope, so an assertion may land in any of them."""
+    return "".join((JS_DIR / f).read_text() for f in
+                   ("base.js", "now.js", "lanes.js", "ops.js", "agent.js",
+                    "decide.js", "image.js", "video.js", "boot.js"))
 INDEX = REPO / "dashboard" / "static" / "index.html"
 SWITCH = REPO / "switch-model.sh"
 INSTALL = REPO / "install.sh"
@@ -386,36 +392,43 @@ class TheProxyLeavesVideoAlone(unittest.TestCase):
 
 
 class ThePageShowsVideoTruthfully(unittest.TestCase):
-    def test_the_switcher_offers_minimax_h3(self):
-        self.assertIn('<option value="video">MiniMax-H3</option>', INDEX.read_text())
+    def test_the_switch_offers_minimax_h3(self):
+        js = PAGE_JS()
+        targets = re.search(r"const LANE_TARGETS = \{(.*?)\};", js, re.S).group(1)
+        self.assertIn("[VIDEO_UNIT]: ['video']", targets)
+        names = re.search(r"const TARGET_NAME = \{(.*?)\};", js, re.S).group(1)
+        self.assertIn("video: 'MiniMax-H3'", names)
 
     def test_the_video_tab_is_a_panel_not_a_promise(self):
         body = INDEX.read_text()
         self.assertNotIn("Coming soon", body)
-        self.assertIn('id="tab-video"', body)
-        self.assertIn('id="vidrun"', body)
-        self.assertIn('<option value="qwen38-video.service">video lane (journal)</option>', body)
+        self.assertIn('id="view-video"', body)
+        self.assertIn('id="vid-run"', body)
+        self.assertIn('<option value="qwen38-video.service">MiniMax-H3 journal</option>', body)
 
     def test_the_target_unit_is_the_video_unit(self):
-        self.assertIn("t === 'video' ? VIDEO_UNIT", APP_JS.read_text())
+        self.assertIn("t === 'video' ? VIDEO_UNIT", PAGE_JS())
 
     def test_cancel_restarts_the_lane(self):
         """The runtime has no abort: Cancel restarts the lane, like the image lane."""
-        js = APP_JS.read_text()
+        js = PAGE_JS()
         i = js.index("function vidCancel(){")
         self.assertIn("verb: 'restart', unit: VIDEO_UNIT", js[i:i + 400])
 
     def test_generate_stays_off_until_the_lane_answers(self):
-        js = APP_JS.read_text()
-        i = js.index("function vidRenderLane(){")
-        self.assertIn("$('vidrun').disabled = !ready", js[i:i + 2500])
+        js = PAGE_JS()
+        body = js[js.index("function vidSync(){"):js.index("function vidLaneWhy(){")]
+        self.assertIn("$('vid-run').disabled = !!why", body)
+        why = [ln for ln in body.splitlines() if "const why =" in ln][0]
+        for term in ("VS.available", "VS.inflight", "VS.busy"):
+            self.assertIn(term, why, term)
 
     def test_keyframes_are_capped_before_they_leave_the_browser(self):
         """A phone photo is megabytes against the 10 MiB the cockpit reads: capped on
         the long side and re-encoded to PNG, like the image lane's references."""
-        js = APP_JS.read_text()
+        js = PAGE_JS()
         i = js.index("function vidReadFile(")
-        body = js[i:js.index("function vidRun(){")]
+        body = js[i:js.index("function vidDrawFrames(){")]
         self.assertIn("1280", body)
         self.assertIn("toDataURL('image/png')", body)
 
@@ -423,13 +436,13 @@ class ThePageShowsVideoTruthfully(unittest.TestCase):
         """One condition per attached frame: a placeholder slot in the preview would
         advertise conditioning on an image nobody attached, and the cockpit sends
         only attached frames."""
-        js = APP_JS.read_text()
+        js = PAGE_JS()
         block = js[js.index("function vidWireBody()"):js.index("function vidSync()")]
         self.assertNotIn("|| tag === 'first'", block)
-        self.assertIn("filter(([tag]) => vidFrames[tag])", block)
+        self.assertIn("filter(([t]) => VS.frames[t])", block)
 
     def test_the_tab_refuses_what_the_server_refuses(self):
-        js = APP_JS.read_text()
+        js = PAGE_JS()
         self.assertIn("const VID_BUDGET_S = 2 * 3600", js)
         block = js[js.index("function vidProblem()"):js.index("function vidWireBody()")]
         self.assertIn("VID_BUDGET_S", block)
@@ -438,12 +451,14 @@ class ThePageShowsVideoTruthfully(unittest.TestCase):
     def test_a_run_too_long_to_hold_keeps_its_id(self):
         """A 504 means the page stopped waiting, not that the video failed: the id
         must survive into something the reader can fetch when the lane is done."""
-        js = APP_JS.read_text()
-        i = js.index("r.status === 504", js.index("function vidRun("))
+        js = PAGE_JS()
+        i = js.index("status === 504", js.index("async function vidRun("))
         self.assertIn("out.video_id", js[i - 40:i + 120])
-        self.assertIn("vidParked", js)
-        j = js.index("} finally {", i)
-        self.assertIn("vidParked", js[j:j + 300])
+        # the id is parked in this browser's storage, not just the tab's memory
+        self.assertIn("VS.parked = out.video_id", js)
+        self.assertIn("parkedSet(out.video_id)", js)
+        # and the reader recovers it when the lane answers again, foreign runs apart
+        self.assertIn("if (parkedGet() === p.id) VS.parked = p.id", js)
 
 
 class TheUninstallKnowsVideo(unittest.TestCase):

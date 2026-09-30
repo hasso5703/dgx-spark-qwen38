@@ -66,7 +66,7 @@ class Unanswered(unittest.TestCase):
         self.assertIsNone(out["untracked"])
 
     def test_the_page_says_unknown(self):
-        js = (DASH / "static" / "app.js").read_text()
+        js = (DASH / "static" / "js" / "ops.js").read_text()
         self.assertIn("d.dirty == null ? 'unknown (git did not answer)'", js)
         self.assertIn("'unknown (docker did not answer)'", js)
 

@@ -28,7 +28,13 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 UNIT_TPL = REPO / "qwen38-image.service.template"
 INSTALLER = REPO / "install-image.sh"
 COCKPIT = REPO / "dashboard" / "cockpit.py"
-APP_JS = REPO / "dashboard" / "static" / "app.js"
+JS_DIR = REPO / "dashboard" / "static" / "js"
+def PAGE_JS():
+    """The page's own scripts, concatenated in the order index.html loads them:
+    one global scope, so an assertion may land in any of them."""
+    return "".join((JS_DIR / f).read_text() for f in
+                   ("base.js", "now.js", "lanes.js", "ops.js", "agent.js",
+                    "decide.js", "image.js", "video.js", "boot.js"))
 INDEX = REPO / "dashboard" / "static" / "index.html"
 
 def exec_start():
@@ -531,25 +537,27 @@ class ThePageNeverShowsAStaleOrRacingState(unittest.TestCase):
     fail in one left open, which is how the cockpit is actually used."""
 
     def setUp(self):
-        self.js = APP_JS.read_text()
+        self.js = PAGE_JS()
 
     def test_the_text_engines_target_never_labels_the_image_lane(self):
         # the text engine's target, and only when it is one of this unit's (ownTarget)
-        self.assertIn("unit !== IMAGE_UNIT && ownTarget(unit)", self.js)
-        self.assertIn('s[0] !== IMAGE_UNIT && s[0] !== VIDEO_UNIT && ownTarget(unit)', self.js)
+        self.assertIn("unit !== IMAGE_UNIT && unit !== VIDEO_UNIT && ownTarget(unit)", self.js)
         self.assertIn("F.target && TARGET_UNIT(F.target) === unit", self.js)
-        down = self.js[self.js.index("function rEngineInfoDown("):self.js.index("function showEngineFacts(")]
-        self.assertIn("F.target = null", down)
+        # every lifecycle snapshot restates the served target, so a text engine's
+        # answer cannot survive as the image lane's label once that engine is gone
+        self.assertIn("F.target = d.served_target || null", self.js)
 
     def test_this_pages_own_request_keeps_generate_off(self):
-        for fn in ("function imgSync(){", "function imgRenderLane(){"):
-            body = self.js[self.js.index(fn):]
-            line = [ln for ln in body.splitlines() if "$('imgrun').disabled" in ln][0]
-            self.assertIn("imgInflight", line, fn)
+        tab = (REPO / "dashboard" / "static" / "js" / "image.js").read_text()
+        sync = tab[tab.index("function imgSync(){"):tab.index("function imgReset(){")]
+        line = [ln for ln in sync.splitlines() if "$('img-run').disabled" in ln]
+        self.assertEqual(len(line), 1, "imgSync must decide that in one place")
+        why = [ln for ln in sync.splitlines() if "const why =" in ln][0]
+        self.assertIn("IS.inflight", why)
 
     def test_nothing_is_claimed_before_the_first_lifecycle_snapshot(self):
         render = self.js[self.js.index("function imgRenderLane(){"):]
-        self.assertLess(render.index("if (!F.life){"), render.index("} else if (!e){"))
+        self.assertLess(render.index("!F.life ? 'wait'"), render.index("!e ? 'absent'"))
 
 
 class AGenerationCanBeCancelled(unittest.TestCase):
@@ -560,53 +568,58 @@ class AGenerationCanBeCancelled(unittest.TestCase):
     makes that request read as cancelled, not as a lane that failed to answer."""
 
     def setUp(self):
-        self.js = APP_JS.read_text()
+        self.js = PAGE_JS()
 
     def test_the_button_is_hidden_until_something_generates(self):
         html = INDEX.read_text()
-        self.assertRegex(html, r'<button class="btn mini danger" id="imgcancel" hidden')
-        # beside the run's clock, where the eye is while it waits, not under the settings
-        head = html[html.index("<h3>The image "):]
-        self.assertLess(head.index('id="imgtime"'), head.index('id="imgcancel"'))
-        self.assertLess(head.index('id="imgcancel"'), head.index("</h3>"))
-        self.assertIn("$('imgcancel').addEventListener('click', imgCancel);", self.js)
+        self.assertRegex(html, r'<button class="btn danger" id="img-cancel" type="button" hidden')
+        # beside the run button, where the eye is while it waits, not under the settings
+        self.assertLess(html.index('id="img-run"'), html.index('id="img-cancel"'))
+        self.assertLess(html.index('id="img-cancel"'), html.index('id="img-reset"'))
+        self.assertIn("show('img-cancel', !!(IS.inflight || IS.busy));", self.js)
+        self.assertIn("$('img-cancel').addEventListener('click', imgCancel);", self.js)
 
     def test_only_a_stop_or_restart_of_the_image_lane_marks_a_request_cancelled(self):
         self.assertIn("if (name === 'unit' && params.unit === IMAGE_UNIT && params.verb !== 'start') "
-                      "IMG_INTERRUPTED = Date.now();", self.js)
+                      "IMG_INTERRUPTED_AT.t = Date.now();", self.js)
 
     def test_a_cut_request_reads_as_cancelled_before_it_reads_as_refused(self):
-        run = self.js[self.js.index("async function imgRun(){"):self.js.index("let imgPoll = null;")]
-        self.assertLess(run.index("if (!r.ok && (IMG_INTERRUPTED > t0 || out.interrupted)){"), run.index("if (!r.ok){"))
-        self.assertIn("setChip('imgtime', 'cancelled', 'warn')", run)
+        run = self.js[self.js.index("async function imgRun(){"):self.js.index("function imgCancel(){")]
+        self.assertLess(run.index("out.interrupted || IMG_INTERRUPTED_AT.t > t0"), run.index("if (!ok){"))
+        self.assertIn("Cancelled: the lane was stopped or restarted", run)
 
 
 class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
-    """Switched to from the one switcher at the top, started and stopped by the action
-    bar's lane button, gated by the same "never two engines at once" rule, drawn by the
-    same Engines card. The first version put a Start button inside the Image tab, which
-    started the lane by a path none of the other lanes use and, through the unit's
-    Conflicts=, stopped the text lane silently where the cockpit's rule for every other
-    lane is to refuse and say "stop it first"."""
+    """Loaded from the one Lanes card, gated by the same "never two engines at once"
+    rule, drawn by the same lane journey as every other lane. The first version put a
+    Start button inside the Image tab, which started the lane by a path none of the
+    other lanes use and, through the unit's Conflicts=, stopped the text lane silently
+    where the cockpit's rule for every other lane is to refuse and say "stop it
+    first". The redesigned page kept that lesson: the view's own Load goes through
+    askJourney, and the only unit action it sends is the cancel restart."""
 
-    def test_it_is_in_the_switcher(self):
-        html = INDEX.read_text()
-        sel = re.search(r'<select id="switchsel".*?</select>', html, re.S).group(0)
-        self.assertIn('<option value="image">', sel)
-        # and grouped apart: it is not one more LLM checkpoint
-        self.assertIn('<optgroup label="Images">', sel)
+    def test_it_is_a_lane_the_switch_can_load(self):
+        js = PAGE_JS()
+        targets = re.search(r"const LANE_TARGETS = \{(.*?)\};", js, re.S).group(1)
+        self.assertIn("[IMAGE_UNIT]: ['image']", targets)
+        # and named apart: it is not one more LLM checkpoint
+        names = re.search(r"const TARGET_NAME = \{(.*?)\};", js, re.S).group(1)
+        self.assertIn("image: 'Qwen-Image 2.1'", names)
+        # reached through the one journey, never its own start path
+        self.assertIn("askJourney('image')", js)
 
-    def test_the_tab_says_switch_before_stop_like_the_readme(self):
-        """Stopped first, the lane button offers "Start 27B", the unit still enabled: one
-        click from a 7-minute boot nobody asked for. The README, the installer and the
-        tab give the same order, switch first."""
-        js = APP_JS.read_text()
-        render = js[js.index("function imgRenderLane(){"):]
-        self.assertLess(render.index("then press Switch"), render.index("two engines never run at once"))
-        readme = (REPO / "README.md").read_text()
-        self.assertIn("switcher, **Switch**, stop the serving lane, **Start Qwen-Image**", readme)
-        self.assertIn("pick Qwen-Image 2.1 in the switcher, Switch, stop the serving lane, Start",
-                      INSTALLER.read_text())
+    def test_the_journey_keeps_the_order_the_readme_gives(self):
+        """Stopped first, the boot still points at the old lane and the card offers a
+        one-click Start of the wrong engine. The journey cannot get the order wrong:
+        switch, then the stop, then the start, and the README and the installer say so."""
+        js = PAGE_JS()
+        steps = js[js.index("function laneJourneySteps("):js.index("function askJourney(")]
+        self.assertLess(steps.index("'switch'"), steps.index("verb: 'stop'"))
+        self.assertLess(steps.index("verb: 'stop'"), steps.index("verb: 'start'"))
+        readme = " ".join((REPO / "README.md").read_text().split())
+        self.assertIn("switches the boot, stops the serving lane and starts this one", readme)
+        self.assertIn("it switches, stops the serving lane, starts this one",
+                      " ".join(INSTALLER.read_text().split()))
 
     def test_the_switch_accepts_it_everywhere_it_is_checked(self):
         cock = COCKPIT.read_text()
@@ -626,20 +639,17 @@ class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
     def test_the_image_tab_has_no_lane_control_of_its_own(self):
         """One place starts and stops lanes. A second one is how the image lane came to
         behave differently from the two others in the first place."""
-        js = APP_JS.read_text()
-        tab = js[js.index("async function imgLane(){"):js.index("function imgInit(){")]
-        # The one unit action the tab sends is the restart that cancels a generation:
+        tab = (REPO / "dashboard" / "static" / "js" / "image.js").read_text()
+        # The one unit action the view sends is the restart that cancels a generation:
         # SGLang Diffusion cannot abort a request, so that is the only way to end one, and
         # a 47-minute call (ten 2048x2048 images at 60 steps, 2026-09-23) had no way out
-        # but the lane's Stop. It starts and stops nothing: no Start, no Stop, here.
+        # but the lane's Stop. It starts and stops nothing itself: loading goes through
+        # the one journey, and stopping is the Lanes card's.
         calls = re.findall(r"askAction\('unit', \{verb: '(\w+)'", tab)
-        self.assertEqual(calls, ["restart"], "the Image tab starts or stops a lane again")
-        cancel = tab[tab.index("function imgCancelSync(){"):tab.index("function imgCancel(){")]
-        self.assertIn("imgInflight || IMG_STATE.busy", cancel, "Cancel must only show while a generation runs")
-        self.assertNotIn("function imgUnitButton", js)
-        # and it points at the controls that do exist, named as they read on screen
-        self.assertIn("Start Qwen-Image", tab)
-        self.assertIn("press Switch", tab)
+        self.assertEqual(calls, ["restart"], "the Image view starts or stops a lane again")
+        self.assertIn("askJourney('image')", tab)
+        self.assertIn("show('img-cancel', !!(IS.inflight || IS.busy));", tab)
+        self.assertNotIn("function imgUnitButton", tab)
 
     def test_switching_to_a_text_target_takes_the_image_lane_off_the_boot(self):
         """Exactly one serving unit enabled at boot. Leaving the image lane enabled when a
@@ -666,9 +676,13 @@ class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
             self.assertIn(f"/usr/bin/systemctl {verb} qwen38-image.service", sudoers, verb)
 
     def test_the_confirmation_says_how_this_lane_starts(self):
-        js = APP_JS.read_text()
-        self.assertIn("IMAGE_EXPLAIN", js)
-        self.assertIn("only offered once no other engine is running", js)
+        """The switch step tells the truth about the weights: they do not fit beside a
+        text lane, which is why the journey stops that lane first. It never claims a
+        switch itself stops anything."""
+        js = PAGE_JS()
+        notes = re.search(r"const TARGET_NOTE = \{(.*?)\};", js, re.S).group(1)
+        image_note = re.search(r"image: '([^']+)'", notes).group(1)
+        self.assertIn("do not fit beside a text lane", image_note)
         self.assertNotIn("stops whichever text lane", js)
 
 
@@ -677,8 +691,8 @@ class TheTabTellsTheTruth(unittest.TestCase):
     like facts: a drift here is a page that promises what the engine refuses."""
 
     def js_object(self, name):
-        text = APP_JS.read_text()
-        m = re.search(r"const %s = (\{.*?\n\}|\[[\s\S]*?\n\]);" % name, text, re.S)
+        text = PAGE_JS()
+        m = re.search(r"const %s = (\{.*?\};|\[[\s\S]*?\];)" % name, text, re.S)
         self.assertIsNotNone(m, name)
         return m.group(1)
 
@@ -712,51 +726,52 @@ class TheTabTellsTheTruth(unittest.TestCase):
         to be in that one expression. Without the availability term, typing a character
         re-enabled it on a stopped lane; without the busy term it offers a request the
         cockpit will refuse with 409, because this lane takes one at a time."""
-        js = APP_JS.read_text()
-        sync = js[js.index("function imgSync(){"):js.index("function imgReset(){")]
-        line = [ln for ln in sync.splitlines() if "$('imgrun').disabled" in ln]
+        tab = (REPO / "dashboard" / "static" / "js" / "image.js").read_text()
+        sync = tab[tab.index("function imgSync(){"):tab.index("function imgReset(){")]
+        line = [ln for ln in sync.splitlines() if "$('img-run').disabled" in ln]
         self.assertEqual(len(line), 1, "imgSync must decide that in one place")
-        for term in ("IMG_STATE.available", "IMG_STATE.busy", "problem", "imgprompt"):
-            self.assertIn(term, line[0], term)
+        why = [ln for ln in sync.splitlines() if "const why =" in ln][0]
+        for term in ("IS.available", "IS.busy", "problem", "img-prompt"):
+            self.assertIn(term, why, term)
 
     def test_the_copyable_curl_carries_no_key_the_lane_cannot_check(self):
         """The cockpit's own call had that header removed and gated; the snippet next to
         it must not keep offering one."""
-        js = APP_JS.read_text()
-        curl = js[js.index("function imgCurl(){"):js.index("function imgSync(){")]
+        tab = (REPO / "dashboard" / "static" / "js" / "image.js").read_text()
+        curl = tab[tab.index("function imgCurl(){"):tab.index("function imgSync(){")]
         self.assertNotIn("Authorization", curl)
         self.assertNotIn("api-key", curl)
         # and it addresses the lane's own bind, not whatever host this browser is on
         self.assertNotIn("location.hostname", curl)
-        self.assertIn("IMG_STATE.host", curl)
+        self.assertIn("IS.host", curl)
 
     def test_a_prompt_with_an_apostrophe_does_not_break_the_snippet(self):
-        js = APP_JS.read_text()
+        js = PAGE_JS()
         self.assertIn("const shq =", js)
 
     def test_jpeg_is_not_offered_at_all(self):
         """Offering a format the engine cannot produce is offering a 500."""
-        fmt = re.search(r'<select id="imgfmt">(.*?)</select>', INDEX.read_text(), re.S)
+        fmt = re.search(r'<select class="input" id="img-fmt">(.*?)</select>', INDEX.read_text(), re.S)
         self.assertIsNotNone(fmt)
         self.assertNotIn("jpeg", fmt.group(1).lower())
         self.assertIn('value="png"', fmt.group(1))
 
     def test_the_page_says_cfg_needs_both_halves(self):
-        js = APP_JS.read_text()
+        js = PAGE_JS()
         self.assertIn("does nothing without a negative prompt", js)
         self.assertIn("does nothing without a CFG scale above 1", js)
 
     def test_the_reset_button_exists_and_restores_every_field(self):
         """Every control the page offers has to come back, or Reset is a lie about the
         two it forgot."""
-        js = APP_JS.read_text()
+        js = PAGE_JS()
         reset = re.search(r"function imgReset\(\)\{(.*?)\n\}", js, re.S)
         self.assertIsNotNone(reset)
         body = reset.group(1)
-        for field in ("imgsize", "imgw", "imgh", "imgsteps", "imgn", "imgbg", "imgfmt",
-                      "imgdev", "imgseed", "imgcfg", "imgshift", "imgneg", "imgprompt"):
+        for field in ("img-size", "img-w", "img-h", "img-steps", "img-n", "img-bg", "img-fmt",
+                      "img-dev", "img-seed", "img-cfg", "img-shift", "img-neg", "img-prompt"):
             self.assertIn(field, body, field)
-        self.assertIn('id="imgreset"', INDEX.read_text())
+        self.assertIn('id="img-reset"', INDEX.read_text())
 
     def test_the_licence_is_on_the_page(self):
         """Qwen Research License: research and evaluation, not commercial use. A box that

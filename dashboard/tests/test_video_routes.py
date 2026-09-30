@@ -181,15 +181,21 @@ class TheRefusals(Base):
         hours the lock is held (the wait plus the hand-off watcher), the lock frees
         while the lane still works and the next call could start beside the first,
         which is the pair this box does not survive. Budgeted at admission, the way
-        the image lane budgets pixels."""
-        code, out = self.call({"prompt": "a cat", "seconds": 15, "size": "1280x704",
-                               "num_inference_steps": 100})
+        the image lane budgets pixels. The memory ceiling refuses this call first
+        since 2026-09-29, so the ceiling is lifted here to hold the budget on its own."""
+        was = self.ck.VIDEO_LARGE_MAX_SECONDS
+        self.ck.VIDEO_LARGE_MAX_SECONDS = 15
+        try:
+            code, out = self.call({"prompt": "a cat", "seconds": 15, "size": "1280x704",
+                                   "num_inference_steps": 100})
+        finally:
+            self.ck.VIDEO_LARGE_MAX_SECONDS = was
         self.assertEqual(code, 400)
         self.assertIn("steps", out["error"])
 
     def test_the_budget_guard_leaves_the_measured_runs_alone(self):
-        # 15 s at 720P on the 50-step default is about 96 min: legal, inside the guard.
-        code, out = self.call({"prompt": "a cat", "seconds": 15, "size": "1280x720"})
+        # 4 s at 720P on the 50-step default: the measured run, about 25 min
+        code, out = self.call({"prompt": "a cat", "seconds": 4, "size": "1280x720"})
         self.assertEqual(code, 200, out)
         # 15 s at 480P on the 100-step cap is about 76 min: legal too.
         code, out = self.call({"prompt": "a cat", "seconds": 15, "num_inference_steps": 100})
@@ -214,34 +220,63 @@ class TheRefusals(Base):
             with self.subTest(size=size):
                 code, out = self.call({"prompt": "a cat", "size": size})
                 self.assertEqual(code, 400, size)
-        # both orientations of the two measured ratios pass the gate
+        # both orientations of the two measured ratios pass the gate, at the 4 s every
+        # size was measured at (720P past 4 s is TheMemoryCeilingOfLongVideos's)
         for size in ("864x480", "480x864", "1280x720", "720x1280"):
             with self.subTest(size=size):
-                code, out = self.call({"prompt": "a cat", "size": size})
+                code, out = self.call({"prompt": "a cat", "size": size, "seconds": 4})
                 self.assertEqual(code, 200, f"{size}: {out}")
+
+
+class TheMemoryCeilingOfLongVideos(Base):
+    """A video's memory grows far faster than its length: 4 s at 480P peaked at 9.6 GB and
+    15 s at 78.3 GB (measured 2026-09-29), and 4 s at 720P at 82 GB of this box's 121.6
+    (2026-09-25). The time budget alone admitted 720P up to about 15 s, where the memory
+    cannot fit, and on unified memory running out hangs the machine (a power cycle by
+    hand). Only what was measured is admitted."""
+
+    def test_past_4_s_at_720p_is_refused_before_anything_is_sent(self):
+        for size in ("1280x720", "720x1280", "1280x704"):
+            for secs in (5, 8, 15):
+                with self.subTest(size=size, secs=secs):
+                    code, out = self.call({"prompt": "a cat", "seconds": secs, "size": size})
+                    self.assertEqual(code, 400, out)
+                    self.assertIn("4 s", out["error"])
+                    self.assertIn("hangs", out["error"])
+        self.assertEqual(self.spy.calls, [], "a refused call reached the lane")
+
+    def test_the_measured_shapes_are_admitted(self):
+        for size, secs in (("1280x720", 4), ("720x1280", 4), ("864x480", 15), ("480x864", 15), ("864x480", 4)):
+            with self.subTest(size=size, secs=secs):
+                code, out = self.call({"prompt": "a cat", "seconds": secs, "size": size})
+                self.assertEqual(code, 200, out)
 
 
 class TheEstimateParity(Base):
     """The tab shows a cost and refuses at a bound; the server refuses at a bound too.
     When the two formulas drift, the button promises what the server refuses - the
     exact defect class this branch was reviewed for, twice. Same source of truth:
-    the constants parsed out of app.js must answer like video_call does."""
+    the constants parsed out of the page's video.js must answer like video_call does."""
 
     JS_SIZES = ("864x480", "480x864", "1280x720", "720x1280")
     JS_COMBO = ((50, 4), (50, 15), (100, 15), (100, 4), (100, 9), (1, 15), (100, 7))
 
     def js_numbers(self):
-        js = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text()
+        js = (Path(__file__).resolve().parents[1] / "static" / "js" / "video.js").read_text()
         m = re.search(r"perStep = sw \* sh <= (\d+) \* (\d+) \? ([\d.]+) : ([\d.]+)", js)
-        self.assertIsNotNone(m, "app.js no longer carries the budget formula in the held shape")
+        self.assertIsNotNone(m, "video.js no longer carries the budget formula in the held shape")
         bound = int(m.group(1)) * int(m.group(2))
         per480, per720 = float(m.group(3)), float(m.group(4))
-        cond = float(re.search(r"vidMode === 'fl2v' \? ([\d.]+) : 1", js).group(1))
+        cond = float(re.search(r"(?:vidMode|VS\.mode) === 'fl2v' \? ([\d.]+) : 1", js).group(1))
         budget = int(re.search(r"VID_BUDGET_S = (\d+) \* (\d+)", js).group(1)) * \
             int(re.search(r"VID_BUDGET_S = (\d+) \* (\d+)", js).group(2))
         # the tenth kept in hand: an accepted estimate must leave slack under the
         # lock's deadline, and both files have to keep the same one (review 2026-09-28)
         margin = float(re.search(r"if \(est \* ([\d.]+) > VID_BUDGET_S\)", js).group(1))
+        m = re.search(r"const VID_LONG_MAX_PIXELS = (\d+) \* (\d+), VID_LARGE_MAX_SECONDS = (\d+);", js)
+        self.assertIsNotNone(m, "video.js no longer carries the memory ceiling in the held shape")
+        self.assertEqual(int(m.group(1)) * int(m.group(2)), self.ck.VIDEO_LONG_MAX_PIXELS, "page and server bound different sizes")
+        self.assertEqual(int(m.group(3)), self.ck.VIDEO_LARGE_MAX_SECONDS, "page and server cap different lengths")
         srv = (Path(__file__).resolve().parents[1] / "cockpit.py").read_text()
         srv_margin = float(re.search(r"if est \* ([\d.]+) > 2 \* 3600\.0", srv).group(1))
         self.assertEqual(margin, srv_margin, "tab and server keep different slack")
@@ -261,7 +296,8 @@ class TheEstimateParity(Base):
                     if frames:
                         payload["first_frame"] = frames
                     code, out = self.call(dict(payload))
-                    self.assertEqual(code, 200 if est * margin <= budget else 400,
+                    ceiling = sw * sh > self.ck.VIDEO_LONG_MAX_PIXELS and secs > self.ck.VIDEO_LARGE_MAX_SECONDS
+                    self.assertEqual(code, 200 if est * margin <= budget and not ceiling else 400,
                                      f"{size} {steps}x{secs} frames={bool(frames)} est={round(est)}: {out}")
 
     def test_the_server_constants_are_the_measured_ones(self):

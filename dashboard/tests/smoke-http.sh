@@ -52,9 +52,9 @@ print("ok" if n == int("'"$NTARGETS"'") and exact and not bad else
 # The switch itself is not run here: this asks the validator, not the box.
 ck "chaque cible du selecteur est acceptee par l'action" "ok" "$(python3 - <<'PYEOF'
 import json, re, pathlib, subprocess, sys
-html = pathlib.Path("dashboard/static/index.html").read_text()
-m = re.search(r'<select id="switchsel".*?</select>', html, re.S)
-ui = re.findall(r'<option value="([^"]+)"', m.group(0))
+jsc = pathlib.Path("dashboard/static/js/base.js").read_text()
+m = re.search(r"const LANE_TARGETS = \{(.*?)\};", jsc, re.S)
+ui = re.findall(r"'([a-z0-9|-]+)'", m.group(1))
 cock = pathlib.Path("dashboard/cockpit.py").read_text()
 m = re.search(r'"switch":\s*\{.*?"params":\s*\{"target":\s*\[(.*?)\]\}', cock, re.S)
 enum = re.findall(r'"([^"]+)"', m.group(1))

@@ -23,14 +23,13 @@ that disk and on the one the runtime goes to (`VIDEO_LANE_DIR`).
 Once installed, the video lane is driven exactly like the 27B, flash and image lanes,
 from the same three controls at the top of the cockpit, and it obeys the same rule.
 
-1. **Pick `MiniMax-H3`** in the switcher (it sits under its own *Video* heading)
-   and press **Switch**. `switch-model.sh video` verifies the checkpoint and makes the
-   video lane the one unit enabled at boot. Like every switch, it never starts or
+1. **Load it.** On the cockpit's Lanes view pick `MiniMax-H3` and press **Load**: one
+   journey that switches the boot, stops the serving lane and starts the video lane,
+   each step its own job, asking first and showing the exact command. Like every
+   switch, `switch-model.sh video` itself verifies the checkpoint and never starts or
    stops an engine.
-2. **Stop** the lane that is serving.
-3. **Start MiniMax-H3**. It answers in about 12 min; the lane pill, the Engines card
-   and the Video tab all follow the boot in the engine's own words, and Generate turns
-   on by itself.
+2. It answers in about 12 min; the lane pill, the Lanes view and the Video view all
+   follow the boot in the engine's own words, and Generate turns on by itself.
 
 Back is the same three moves the other way. From a terminal the switch is
 `./switch-model.sh video` (or `stock`), and it prints the two commands that follow.
@@ -41,7 +40,7 @@ lane. The cockpit refuses to start any engine while another one is busy, and say
 one to stop, for all four lanes alike. The unit also carries `Conflicts=` with the
 other engine units, as a second belt for a `systemctl start` typed at a terminal.
 
-The Engines tab's Flush cache, Abort all and Smoke are greyed out while the video lane
+The engine actions menu's Flush cache, Abort all and Smoke are greyed out while the video lane
 serves: they talk to the text engine on :30000, which is closed then.
 
 ## Why this model, and why with no flags

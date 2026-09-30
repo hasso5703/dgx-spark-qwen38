@@ -247,7 +247,7 @@ curl -s http://127.0.0.1:30001/v1/systemone \
 Every question becomes one chat completion of exactly one token: the options are named by
 single-token letters and the probability of each letter is the probability of its option. A
 question answers in **0.2 s** warm at any state size. The TypeSafe SDK runs against it with one
-base URL changed, and the cockpit's **System One** tab exercises the whole contract from a
+base URL changed, and the cockpit's **Decide** tab exercises the whole contract from a
 browser, with prefilled examples and the matching curl.
 
 **Measured against the hosted model, byte-identical payloads to both:** 92.9% against 93.2% on
@@ -269,8 +269,9 @@ plain re-run keeps it.
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --with-image
 ```
 
-Then it is a third lane, driven like the other two: pick **Qwen-Image 2.1** in the cockpit's
-switcher, **Switch**, stop the serving lane, **Start Qwen-Image** (about a minute). From a terminal,
+Then it is a third lane, driven like the other two: on the cockpit's Lanes view, pick
+**Qwen-Image 2.1** and press **Load**: one action that switches the boot, stops the serving
+lane and starts this one (about a minute to answer). From a terminal,
 `./switch-model.sh image` does the switch and prints the rest.
 
 31 GB of weights do not fit beside a serving LLM, so the lanes take turns: the cockpit refuses
@@ -315,8 +316,9 @@ plain re-run keeps it.
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --with-video
 ```
 
-Then it is a fourth lane, driven like the other three: pick **MiniMax-H3** in the cockpit's
-switcher, **Switch**, stop the serving lane, **Start MiniMax-H3** (about 12 min). From a terminal,
+Then it is a fourth lane, driven like the other three: on the cockpit's Lanes view, pick
+**MiniMax-H3** and press **Load**: one action that switches the boot, stops the serving
+lane and starts this one (about 12 min to answer). From a terminal,
 `./switch-model.sh video` does the switch and prints the rest.
 
 It serves the SGLang cookbook's MiniMax-H3 recipe exactly as upstream wrote it, with no local
@@ -600,26 +602,26 @@ from a laptop or a phone over a private network, and `127.0.0.1` otherwise. A re
 that. The login is the same API key over plain HTTP, so this belongs on a tailnet or a LAN you
 trust and never on the open internet.
 
-![The cockpit's Overview tab: KV pool held, the serving lane with its model, revision, context window and image, unified memory with the driver-refusal counter, and the event stream](docs/img/cockpit-overview.png)
+![The cockpit's Now view: KV pool held, the serving lane with its model, revision, context window and image, unified memory with the driver-refusal counter, and the event stream](docs/img/cockpit-overview.png)
 
-*Overview: what is served, on what pool, with how much memory left. The events on the right are the engine's own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
+*Now: what is served, on what pool, with how much memory left. The events on the right are the engine's own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
 
 Every panel answers one question about this box, and the tab it sits in is the
 question you had when you opened the page.
 
 | Tab | What it answers | What you can do there |
 |---|---|---|
-| **Overview** | Is the box serving, and on what? KV pool held right now, serving lane, unified memory, the last events | Start or stop the lane, switch target, flush the prefix cache, abort all, smoke probe, diagnostics bundle (the bar at the top, on every tab) |
+| **Now** | Is the box serving, and on what? KV pool held right now, serving lane, unified memory, the last events | Start or stop the lane, switch target, flush the prefix cache, abort all, smoke probe, diagnostics bundle (the bar at the top, on every tab) |
 | **Agent** | opencode's own web interface, framed behind this login | Run a session on the box from a laptop or a phone, no terminal |
-| **Engines** | Which units exist, which one is served, what the probes and containers say | Act on any unit this repo installed |
-| **Requests** | What the engine and the proxy each did with the same traffic: live feed, zombie guard, pool and decode | Read a dead decode from both sides of the wire |
+| **Lanes** | Which lanes exist, which one serves, what the probes and containers say, the engine's facts and the proxy | Act on any lane this repo installed: Load runs the switch-stop-start journey in one path |
+| **Traffic** | What the engine and the proxy each did with the same traffic: live feed, abandoned-request guard, pool and decode | Read a dead decode from both sides of the wire |
 | **Machine** | Unified memory, the GB10, the CPU, and whether the safety belts are holding | Watch the memory edge this hardware actually has |
-| **Models** | Every target as data: recipes, drift against what is running, registry of what is on disk, upstream watch, full inventory | Read what is installed and what it costs in bytes; rescan (the panels are read-only: `./uninstall.sh --list` shows the same inventory, and `./uninstall.sh` prints the reclaim commands) |
-| **System One** | The typed-decisions endpoint, from a browser: is it served, and what does it answer? | Ask the lane with prefilled examples, copy the matching curl, read the probabilities |
+| **Library** | Every target as data: recipes, drift against what is running, registry of what is on disk, upstream watch, full inventory | Read what is installed and what it costs in bytes; rescan (the panels are read-only: `./uninstall.sh --list` shows the same inventory, and `./uninstall.sh` prints the reclaim commands) |
+| **Decide** | The typed-decisions endpoint, from a browser: is it served, and what does it answer? | Ask the lane with prefilled examples, copy the matching curl, read the probabilities |
 | **Image** | Qwen-Image 2.1, when it is the serving lane: generation, editing with up to ten references, native RGBA | Generate and edit at the model's defaults (**Reset settings**), start from the sample prompts, follow each stage of a request, copy the matching curl |
 | **Video** | MiniMax-H3, when it is the serving lane: text to video with joint video-and-audio, first/last-frame conditioning | Generate at the cookbook's defaults (**Reset settings**), follow the request to completed, play and download the MP4, copy the matching curl |
 | **Logs** | Live logs, the last 30 events, recent jobs | Tail or follow a service's log, read what each recent job printed |
-| **Setup** | The repo itself, opencode integration, whether a newer release is out, the cockpit's own settings | Fit opencode's limits to the engine that serves; copy the command that updates the stack, which runs in a terminal because the installer needs an interactive sudo |
+| **Settings** | The repo itself, opencode integration, whether a newer release is out, the cockpit's own settings | Fit opencode's limits to the engine that serves; copy the command that updates the stack, which runs in a terminal because the installer needs an interactive sudo |
 
 The three other screenshots, what each panel does that a terminal does not, how it behaves on a
 phone, and the Agent tab that runs opencode in the browser behind this same login:

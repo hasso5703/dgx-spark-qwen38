@@ -124,32 +124,39 @@ try {
   const jsErrors = () => events.filter(m => m.method === 'Runtime.exceptionThrown').map(m => m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
 
   await send('Page.navigate', { url: BASE + '/' }, sessionId);
-  ok('the page connects to the live stream', await waitFor("document.getElementById('connlabel').textContent === 'live'"),
-     await evalJs("document.getElementById('connlabel').textContent"));
-  ok('data is flowing', await waitFor("document.getElementById('lanename').textContent !== '...'"));
+  ok('the page connects to the live stream', await waitFor("document.getElementById('conn-lbl').textContent === 'live'"),
+     await evalJs("document.getElementById('conn-lbl').textContent"));
+  ok('data is flowing', await waitFor("!document.getElementById('serving-name').textContent.startsWith('Reading')"));
 
   // ── pull the plug ─────────────────────────────────────────────────────────
   events = [];
   stopServer();
   await waitHealth(false, 15000);
   ok('the header stops claiming the stream is live',
-     await waitFor("document.getElementById('connlabel').textContent !== 'live'", 15000),
-     await evalJs("document.getElementById('connlabel').textContent"));
+     await waitFor("document.getElementById('conn-lbl').textContent !== 'live'", 15000),
+     await evalJs("document.getElementById('conn-lbl').textContent"));
   ok('a banner says the connection is lost',
      await waitFor("[...document.querySelectorAll('#banners .banner')].some(b => /Connection lost/i.test(b.textContent))", 15000),
      await evalJs("[...document.querySelectorAll('#banners .banner')].map(b=>b.textContent.slice(0,60)).join(' | ')"));
   ok('the panels are marked stale rather than looking fresh',
-     await waitFor("document.querySelectorAll('section.panel.stale').length > 0", 20000),
-     await evalJs("document.querySelectorAll('section.panel.stale').length + ' stale panels'"));
+     await waitFor("document.querySelectorAll('[data-src].stale').length > 0", 20000),
+     await evalJs("document.querySelectorAll('[data-src].stale').length + ' stale panels'"));
   ok('every action is disabled while the cockpit is unreachable',
-     await waitFor("[...document.querySelectorAll('.actbar .btn')].every(b => b.disabled)", 8000),
-     await evalJs("[...document.querySelectorAll('.actbar .btn')].filter(b=>!b.disabled).map(b=>b.textContent).join(',')"));
+     await waitFor("(openMenu(), [...document.querySelectorAll('#menu-list [data-act]')].every(b => b.disabled))", 8000),
+     await evalJs("[...document.querySelectorAll('#menu-list [data-act]')].filter(b=>!b.disabled).map(b=>b.textContent).join(',')"));
+  await evalJs("(closeMenu(), 1)");
   await evalJs("(()=>{const b=document.querySelector('[data-act=\"smoke\"]'); b.disabled=false; b.click(); return 1;})()");
   await sleep(400);
   ok('forcing a click while offline explains itself instead of doing nothing',
-     await evalJs("!document.getElementById('toast').hidden && /unreachable/i.test(document.getElementById('toast').textContent)"),
-     await evalJs("document.getElementById('toast').textContent"));
-  ok('no modal was opened while offline', await evalJs("document.getElementById('modal').hidden"));
+     await evalJs("/unreachable/i.test(document.getElementById('toasts').textContent)"),
+     await evalJs("document.getElementById('toasts').textContent"));
+  ok('no sheet was opened while offline', await evalJs("document.getElementById('scrim').hidden"));
+  // the lane rack is the other way in: loading a lane while offline explains itself too
+  await evalJs("(()=>{document.querySelectorAll('#toasts .toast').forEach(t=>t.remove()); askJourney('flash'); return 1;})()");
+  await sleep(300);
+  ok('a lane journey asked while offline is refused in words',
+     await evalJs("document.getElementById('scrim').hidden && /unreachable/i.test(document.getElementById('toasts').textContent)"),
+     await evalJs("document.getElementById('toasts').textContent"));
   ok('losing the server raises no exception', jsErrors().length === 0, jsErrors().join(' | '));
 
   // ── plug it back in ───────────────────────────────────────────────────────
@@ -157,18 +164,19 @@ try {
   startServer();
   ok('the cockpit answers again', await waitHealth(true, 25000));
   ok('the page reconnects on its own, without a reload',
-     await waitFor("['live','polling'].includes(document.getElementById('connlabel').textContent)", 30000),
-     await evalJs("document.getElementById('connlabel').textContent"));
+     await waitFor("['live','polling'].includes(document.getElementById('conn-lbl').textContent)", 30000),
+     await evalJs("document.getElementById('conn-lbl').textContent"));
   ok('the lost-connection banner clears',
      await waitFor("![...document.querySelectorAll('#banners .banner')].some(b => /Connection lost/i.test(b.textContent))", 15000));
   ok('the panels are fresh again',
-     await waitFor("document.querySelectorAll('section.panel.stale').length === 0", 25000),
-     await evalJs("[...document.querySelectorAll('section.panel.stale')].map(s=>s.querySelector('h3').textContent.trim().slice(0,30)).join(' | ')"));
+     await waitFor("document.querySelectorAll('[data-src].stale').length === 0", 25000),
+     await evalJs("[...document.querySelectorAll('[data-src].stale')].map(s=>(s.querySelector('h2')||s).textContent.trim().slice(0,30)).join(' | ')"));
   ok('actions can be used again',
-     await waitFor("[...document.querySelectorAll('.actbar .btn')].some(b => !b.disabled)", 12000));
+     await waitFor("(openMenu(), [...document.querySelectorAll('#menu-list [data-act=\"diag_bundle\"]')].some(b => !b.disabled))", 12000));
+  await evalJs("(closeMenu(), 1)");
   ok('it climbs back to the live stream, not just polling',
-     await waitFor("document.getElementById('connlabel').textContent === 'live'", 30000),
-     await evalJs("document.getElementById('connlabel').textContent"));
+     await waitFor("document.getElementById('conn-lbl').textContent === 'live'", 30000),
+     await evalJs("document.getElementById('conn-lbl').textContent"));
   ok('recovery raises no exception', jsErrors().length === 0, jsErrors().join(' | '));
 } finally {
   // Both are waited for: the temporary directory goes when this process exits, and a

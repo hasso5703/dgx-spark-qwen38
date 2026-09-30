@@ -97,7 +97,7 @@ class Fingerprint(unittest.TestCase):
 
     def test_it_watches_the_files_its_behaviour_comes_from(self):
         fp = self.ck.code_fingerprint()
-        for name in ("cockpit.py", "recipes.py", "static/index.html", "static/app.js"):
+        for name in ("cockpit.py", "recipes.py", "static/index.html", "static/js/base.js", "static/js/video.js"):
             self.assertIn(name, fp, name)
             self.assertNotEqual(fp[name], "missing", name)
         # every watched name exists in the shipped tree, or the check is noise
@@ -116,14 +116,14 @@ class Fingerprint(unittest.TestCase):
             (root / "tests").mkdir(exist_ok=True)
             ck = load_cockpit(root)
             self.assertEqual(ck.code_is_stale(), [])
-            target = root / "static" / "app.js"
+            target = root / "static" / "js" / "base.js"
             target.write_text(target.read_text() + "\n// touched by a test\n")
             os.utime(target, (0, 0))          # a different mtime AND size
-            self.assertEqual(ck.code_is_stale(), ["static/app.js"])
+            self.assertEqual(ck.code_is_stale(), ["static/js/base.js"])
             # two files, both reported, sorted
             other = root / "recipes.py"
             other.write_text(other.read_text() + "\n# touched\n")
-            self.assertEqual(ck.code_is_stale(), ["recipes.py", "static/app.js"])
+            self.assertEqual(ck.code_is_stale(), ["recipes.py", "static/js/base.js"])
 
     def test_a_deleted_file_is_reported_too(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -136,38 +136,48 @@ class Fingerprint(unittest.TestCase):
 
 
 class TabsAgree(unittest.TestCase):
-    """Three lists describe the tabs, and a tab exists only if all three carry it: the
-    rail's buttons, the panels they reveal, and the router's own array. Adding a tab to
-    two of the three is a rail entry that opens nothing, or a panel nobody can reach.
-    The System One, Image and Video tabs were added on 2026-09-21 and this is the gate
+    """Three lists describe the views, and a view exists only if all three carry it: the
+    rail's buttons, the sections they reveal, and the router's own array. Adding a view to
+    two of the three is a rail entry that opens nothing, or a section nobody can reach.
+    The System One, Image and Video views were added on 2026-09-21 and this is the gate
     that says the next one is added everywhere."""
 
     def setUp(self):
         self.html = (DASH / "static/index.html").read_text()
-        self.js = (DASH / "static/app.js").read_text()
+        self.js = (DASH / "static/js/base.js").read_text()
 
-    def test_the_rail_the_panels_and_the_router_carry_the_same_tabs(self):
+    def test_the_rail_the_views_and_the_router_carry_the_same_views(self):
         import re
-        rail = re.findall(r'class="nav" data-tab="([a-z-]+)"', self.html)
-        panels = re.findall(r'class="tab[^"]*" id="tab-([a-z-]+)"', self.html)
-        m = re.search(r"const TABS = \[([^\]]+)\]", self.js)
-        self.assertTrue(m, "app.js no longer declares a TABS array")
+        rail = re.findall(r'class="nav" data-view="([a-z-]+)"', self.html)
+        views = re.findall(r'class="view[^"]*" id="view-([a-z-]+)"', self.html)
+        m = re.search(r"const VIEWS = \[([^\]]+)\]", self.js)
+        self.assertTrue(m, "base.js no longer declares a VIEWS array")
         router = re.findall(r"'([a-z-]+)'", m.group(1))
-        self.assertEqual(sorted(rail), sorted(panels),
-                         "a rail button opens no panel, or a panel has no button")
-        self.assertEqual(sorted(rail), sorted(router),
-                         "the router and the rail disagree on which tabs exist")
-        self.assertEqual(rail, router, "the rail and the router disagree on tab ORDER")
+        self.assertEqual(sorted(rail), sorted(views), "a rail button opens no view, or a view has no button")
+        self.assertEqual(sorted(rail), sorted(router), "the router and the rail disagree on which views exist")
+        self.assertEqual(rail, router, "the rail and the router disagree on view ORDER")
 
-    def test_every_tab_the_browser_checks_walk_is_a_tab_that_exists(self):
+    def test_every_old_address_still_lands_on_a_view(self):
+        """Links in the docs and bookmarks name the old tabs (#agent, #engines, #overview)."""
         import re
-        rail = re.findall(r'class="nav" data-tab="([a-z-]+)"', self.html)
+        m = re.search(r"const ALIAS = \{([^}]+)\}", self.js)
+        self.assertTrue(m, "base.js no longer maps the old tab names")
+        router = re.findall(r"'([a-z-]+)'", re.search(r"const VIEWS = \[([^\]]+)\]", self.js).group(1))
+        old = ["overview", "agent", "engines", "requests", "machine", "models", "systemone", "image", "video", "logs", "setup"]
+        alias = dict(re.findall(r"(\w+): '([a-z-]+)'", m.group(1)))
+        for name in old:
+            with self.subTest(name=name):
+                self.assertIn(alias.get(name, name), router)
+
+    def test_every_view_the_browser_checks_walk_is_a_view_that_exists(self):
+        import re
+        rail = re.findall(r'class="nav" data-view="([a-z-]+)"', self.html)
         for name in ("monkey-check.mjs", "mobile-check.mjs"):
             src = (DASH / "tests" / name).read_text()
-            m = re.search(r"const TABS = \[([^\]]+)\]", src)
-            self.assertTrue(m, f"{name} no longer declares a TABS array")
-            self.assertEqual(sorted(re.findall(r"'([a-z-]+)'", m.group(1))), sorted(rail),
-                             f"{name} walks a different set of tabs than the cockpit has")
+            m = re.search(r"const VIEWS = \[([^\]]+)\]", src)
+            self.assertTrue(m, f"{name} no longer declares a VIEWS array")
+            walked = re.findall(r"'([a-z-]+)'", m.group(1))
+            self.assertEqual(sorted(walked), sorted(rail), f"{name} walks views the page does not have, or misses one")
 
 
 if __name__ == "__main__":

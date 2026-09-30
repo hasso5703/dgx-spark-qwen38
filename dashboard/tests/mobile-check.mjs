@@ -1,6 +1,6 @@
 // Phone-layout check of the cockpit: a headless Chromium emulates real iPhone
 // viewports (device metrics, touch, the device pixel ratio) and measures what a
-// phone actually gets on every tab. It reports, per device and per tab:
+// phone actually gets on every view. It reports, per device and per tab:
 //
 //   * horizontal overflow of the document (the phone tell: the page slides sideways)
 //   * every element wider than the viewport that is NOT inside a scroller of its
@@ -38,7 +38,7 @@ const DEVICES = [
   { name: 'iPhone 15 Pro Max (430x932)', w: 430, h: 932, dpr: 3 },
   { name: 'iPhone 15 landscape (852x393)', w: 852, h: 393, dpr: 3 },
 ];
-const TABS = ['overview', 'agent', 'engines', 'requests', 'machine', 'models', 'systemone', 'image', 'video', 'logs', 'setup'];
+const VIEWS = ['now', 'lanes', 'traffic', 'machine', 'agent', 'decide', 'image', 'video', 'library', 'logs', 'settings'];
 
 const key = readFileSync(KEYFILE, 'utf8').trim();
 const login = await fetch(`${BASE}/api/login`, {
@@ -127,7 +127,7 @@ const AUDIT = `(() => {
   const frame = document.querySelector('.agentframe');
   const fr = frame ? frame.getBoundingClientRect() : null;
   const agentmax = document.body.classList.contains('agentmax');
-  const agentnote = !document.getElementById('agnote')?.hidden;
+  const agentnote = !document.getElementById('ag-note')?.hidden;
   return JSON.stringify({
     vw, vh,
     docScrollW: document.documentElement.scrollWidth,
@@ -147,10 +147,10 @@ for (const d of DEVICES) {
     width: d.w, height: d.h, deviceScaleFactor: d.dpr, mobile: true,
   }, sessionId);
   await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }, sessionId);
-  await send('Page.navigate', { url: BASE + '/#overview' }, sessionId);
+  await send('Page.navigate', { url: BASE + '/#now' }, sessionId);
   await sleep(4500);
-  for (const tab of TABS) {
-    await evalJs(`(() => { const b = document.querySelector('.rail .nav[data-tab="${tab}"]'); if (b) b.click(); else location.hash = '#${tab}'; })()`);
+  for (const tab of VIEWS) {
+    await evalJs(`(() => { const b = document.querySelector('.rail .nav[data-view="${tab}"]'); if (b) b.click(); else location.hash = '#${tab}'; })()`);
     await sleep(tab === 'agent' ? 2500 : 700);
     const a = JSON.parse(await evalJs(AUDIT));
     report.push({ device: d.name, tab, ...a });
@@ -192,5 +192,5 @@ const pass = checks.filter(c => c.ok).length;
 const fails = checks.filter(c => !c.ok);
 for (const c of checks) if (!c.ok) console.log(`  ECHEC ${c.name}\n        ${c.detail}`);
 if (process.env.MOBILE_VERBOSE === '1') console.log(JSON.stringify(report, null, 1));
-console.log(`\n${pass}/${checks.length} checks passed on ${DEVICES.length} iPhone viewports x ${TABS.length} tabs`);
+console.log(`\n${pass}/${checks.length} checks passed on ${DEVICES.length} iPhone viewports x ${VIEWS.length} views`);
 process.exit(fails.length ? 1 : 0);

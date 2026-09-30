@@ -52,11 +52,11 @@ that script with `AGENT_BIND=`.
 
 ## What it looks like
 
-![The cockpit's Overview tab: KV pool held, the serving lane with its model, revision, context window and image, unified memory with the driver-refusal counter, and the event stream](img/cockpit-overview.png)
+![The cockpit's Now view: KV pool held, the serving lane with its model, revision, context window and image, unified memory with the driver-refusal counter, and the event stream](img/cockpit-overview.png)
 
 *Overview: what is served, on what pool, with how much memory left. The events on the right are the engine's own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
 
-![The Models tab: every target as a table with its engine image, checkpoint, drafter, serving flags, what is on this box, and the drift against what is installed](img/cockpit-models.png)
+![The Library tab: every target as a table with its engine image, checkpoint, drafter, serving flags, what is on this box, and the drift against what is installed](img/cockpit-models.png)
 
 *Models: the seven targets as data, derived from `install.sh` and the unit templates, each compared flag by flag against the invocation actually running. "2 DIFFER" is a recipe that would change something if you switched to it.*
 
@@ -64,7 +64,7 @@ that script with `AGENT_BIND=`.
 
 *Agent: opencode's own web interface, framed behind this login, mid-answer on a real session. It starts at boot and its tool calls are already approved, so a laptop or a phone is enough to run a coding session on the box. The model picker at the bottom names what is answering: the 27B served by this same machine, at the `lean` effort level.*
 
-![The Requests tab: the keepalive proxy's request feed with client, path, body size, duration and outcome, next to the zombie guard panel](img/cockpit-requests.png)
+![The Traffic tab: the keepalive proxy's request feed with client, path, body size, duration and outcome, next to the zombie guard panel](img/cockpit-requests.png)
 
 *Requests: both sides of the wire. The feed is what the proxy relayed; the guard is whether any client walked away from an answer the engine is still generating.*
 
@@ -87,7 +87,7 @@ that script with `AGENT_BIND=`.
   covers value-less flags too (`switch.--sleep-on-idle: recipe true, installed false` is
   what the panel said the morning the flash lane was caught spinning a core).
 - **Zombie guard.** A client that gives up leaves the engine decoding unless something
-  stops it, so the Requests tab reads both sides of the wire: the engine's own flood
+  stops it, so the Traffic tab reads both sides of the wire: the engine's own flood
   lines grouped by request, worst first, with the span between a request's first and
   last line, which is the dead decode; what the proxy did about it over the same window
   (aborted, drained, the longest drain, aborts the engine never answered); the version
@@ -143,7 +143,7 @@ sudo rm -f /etc/systemd/system/qwen38-dashboard.service \
 sudo systemctl daemon-reload
 ```
 
-## The System One tab: the typed-decisions endpoint, from a browser
+## The Decide tab: the typed-decisions endpoint, from a browser
 
 `POST /v1/systemone` answers probabilities instead of text, and until this tab the only way
 to see one was curl. The tab is the console for it, and it exercises the whole contract:
@@ -177,10 +177,10 @@ serves (text to video with joint video-and-audio, first/last-frame conditioning;
 ## Being told there is a newer version
 
 A box that runs an old release does not know it. The answer existed from v1.6 in the
-Models tab, printed after a button press, which means it reached whoever already
+Library tab, printed after a button press, which means it reached whoever already
 suspected there was news. Since v1.15.2 the cockpit volunteers it: every six hours it
 asks GitHub whether a newer release is published, and if there is one the banner strip
-says so with the command that installs it. The Setup tab carries the same line
+says so with the command that installs it. The Settings tab carries the same line
 permanently, next to the repo's own version.
 
 Two details decide whether this is useful or irritating. It compares version **numbers**,

@@ -3,7 +3,7 @@
 
    Built from the page's own markup (pagejs.py parses index.html and hands the tree over),
    so an id, a class or an <option> the tests rely on is the one the page really has. It
-   covers what app.js and agent-mobile.js touch: elements, text, attributes and dataset,
+   covers what the page's scripts touch: elements, text, attributes and dataset,
    classList, tables, the selectors they use (descendant, tag, #id, .class, [attr],
    [attr="v"], comma lists), events, storage, matchMedia, fetch and timers on a virtual
    clock. Layout does not exist here: every box measures 0. A test that needs geometry
@@ -257,6 +257,8 @@ class FDocument extends FElement {
   constructor(){ super(null, '#document'); this.ownerDocument = this; this.nodeType = 9;
     this.readyState = 'interactive'; this.hidden = false; this.activeElement = null; this.visibilityState = 'visible'; }
   createElement(tag){ return new FElement(this, tag); }
+  // SVG built in script (the progress ring): a namespaced element is an element here
+  createElementNS(ns, tag){ return new FElement(this, tag); }
   createTextNode(s){ return new FText(this, s); }
   getElementById(id){ for (const e of this._walk()) if (e.getAttribute('id') === id) return e; return null; }
   get documentElement(){ return this.children[0]; }
@@ -358,7 +360,7 @@ function runJob(job){
   let result, reported = false;
   win.report = v => { result = v; reported = true; };
   if (job.setup) vm.runInContext(job.setup, ctx, {filename: 'setup.js'});
-  // deferred scripts run while the document is 'interactive', the way the page loads app.js
+  // deferred scripts run while the document is 'interactive', the way the page loads its scripts
   for (const s of job.scripts || []) vm.runInContext(fs.readFileSync(s, 'utf8'), ctx, {filename: s});
   win.document.readyState = 'complete';
   const body = vm.runInContext('(async () => {\n' + (job.body || '') + '\n})()', ctx, {filename: 'body.js'});
