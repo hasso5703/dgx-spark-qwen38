@@ -2031,9 +2031,14 @@ if [ "$LANE" = "flash" ]; then
   bash -n "$TMP_LAUNCH" || die "rendered flash launch script does not parse (report this repo bug)"
   # rewritten only when it changes: the engine reads it at start, and a rewrite, even an
   # identical one, would make the next run restart a running engine (engine-inputs.py)
-  cmp -s "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh" || install -m 755 "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh"
+  # said as it is: an update that changed nothing here read "wrote" all the same
+  if cmp -s "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh"; then
+    echo "launch script unchanged: $CONFIG_DIR/launch-flash.sh"
+  else
+    install -m 755 "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh"
+    echo "wrote $CONFIG_DIR/launch-flash.sh"
+  fi
   rm -f "$TMP_LAUNCH"
-  echo "wrote $CONFIG_DIR/launch-flash.sh"
 fi
 TMP_UNIT="$(mktemp)"
 render_tpl "$UNIT_TPL" > "$TMP_UNIT"
