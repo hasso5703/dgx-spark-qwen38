@@ -251,7 +251,12 @@ class TheInstallerDecides(unittest.TestCase):
         # unit and the flash launcher were compared first (the template, in patch-template.py).
         text = (REPO / "install.sh").read_text()
         self.assertIn('cmp -s "$TMP_UNIT" "/etc/systemd/system/$UNIT_NAME" || sudo install -m 644 "$TMP_UNIT"', text)
-        self.assertIn('cmp -s "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh" || install -m 755 "$TMP_LAUNCH"', text)
+        # the launcher is installed in the branch where the comparison found a difference,
+        # and only there (it also says which of the two happened, since 2026-09-30)
+        self.assertRegex(text, r'if cmp -s "\$TMP_LAUNCH" "\$CONFIG_DIR/launch-flash\.sh"; then\n'
+                               r'\s*echo "launch script unchanged[^\n]*\n\s*else\n'
+                               r'\s*install -m 755 "\$TMP_LAUNCH" "\$CONFIG_DIR/launch-flash\.sh"\n')
+        self.assertEqual(text.count('install -m 755 "$TMP_LAUNCH"'), 1, "no other path writes the launcher")
 
     def test_the_restart_itself_is_the_one_the_decision_guards(self):
         self.assertIn('[ "$ENGINE_KEEP" -eq 1 ] || sudo systemctl restart "$UNIT_NAME"',
