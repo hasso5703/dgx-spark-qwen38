@@ -113,7 +113,7 @@ function renderLanes(){
       ['At boot', has ? (en === 'enabled' ? 'starts' : 'manual start') : null],
       ['Boot takes', has ? readyIn(unit) : null],
       ['Up for', seated && e && e.elapsed && (st === 'ready' || st === 'degraded') ? fmtDur(e.elapsed) : null],
-      ['Install', !has ? LANE_INSTALL[unit] : null, 'code']]);
+      ['Install', !has ? installFor(unit, target) : null, 'code']]);
     c.root.classList.toggle('seated-card', seated);
     c.root.style.borderColor = seated && (st === 'ready' || st === 'degraded') ? 'color-mix(in srgb, var(--gold) 45%, transparent)' : '';
     if (e) bootChart(c.hist, e, unit); else clear(c.hist);
