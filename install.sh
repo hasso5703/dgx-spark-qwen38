@@ -1451,8 +1451,11 @@ else
 rm -f "$OC_OFF_MARK"
 step "7/10 opencode provider config + oc launcher"
 # What opencode-web reads, as it stands before this step writes any of it: the server is
-# restarted at the end of the step only when one of them changed (see there).
-oc_configs_sum(){ cat "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json" 2>/dev/null | sha256sum; }
+# restarted at the end of the step only when one of them changed (see there). A file that
+# is not there yet is part of the answer, not a failure: cat fails on a missing file, and
+# under pipefail that failed the assignment, so set -e ended every first install here,
+# where neither file exists yet (v1.18.7 on a box with nothing installed, 2026-09-30).
+oc_configs_sum(){ { cat "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json" 2>/dev/null || true; } | sha256sum; }
 OC_SUM_BEFORE="$(oc_configs_sum)"
 # ── opencode itself, at the pinned version (see the OPENCODE_VERSION pin) ─────────
 # Absent: the release asset is downloaded, checked against its pinned sha256 and put

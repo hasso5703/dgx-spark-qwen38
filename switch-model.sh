@@ -656,8 +656,10 @@ else
 # the invocation this switch just wrote, which is what the box will serve.
 # The label is read but not used here: the picker name is set by the python
 # block below, from the same table's LABEL dict, so it is read into a throwaway.
-# what the opencode server reads, before this switch writes any of it (see 4d)
-oc_configs_sum(){ cat "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json" 2>/dev/null | sha256sum; }
+# what the opencode server reads, before this switch writes any of it (see 4d); a missing
+# file is part of the answer, not a failure (install.sh's first installs died on the same
+# line under pipefail)
+oc_configs_sum(){ { cat "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json" 2>/dev/null || true; } | sha256sum; }
 SW_OC_SUM_BEFORE="$(oc_configs_sum)"
 if read -r SW_CTX SW_OUT _SW_LABEL \
      <<<"$("$REPO_DIR/oc-limits.sh" "$CHOICE" --from "$INVOCATION")" \
