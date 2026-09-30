@@ -5,10 +5,10 @@ and it is not one model: **large language models** (the Qwen3.8 family, seven
 switchable targets, 27B at 71 tok/s and Flash-Next 176B on one box), **typed decisions**
 (a System One endpoint speaking TypeSafe's Jev contract: calibrated probabilities
 instead of generated text), **image generation** (Qwen-Image 2.1, opt-in) and **video
-generation** (MiniMax-H3, opt-in). One cockpit drives all four lanes, one switcher moves
+generation** (MiniMax-H3, opt-in). One cockpit drives all four lanes, one Load button moves
 between them, and text answers on the same OpenAI-compatible API.
 
-The text lanes come with **seven switchable targets** and **zero quality loss** on each (NVFP4 is the quantization floor, Qwen's own FP8 is available above it; every speculative path is lossless by construction). Since v1.8 the flash lane serves an **official SGLang image** for this hardware with nothing added, serves **4 concurrent requests** where it used to serve one, and got **14 to 25% of its decode back from one flag** (`--speculative-token-map`, see below):
+The text lanes come with **seven switchable targets** and **zero quality loss** on each (NVFP4 is the quantization floor, Qwen's own FP8 is available above it; every speculative path is lossless by construction). Since v1.8 the flash lane serves an **official SGLang image** for this hardware with nothing added, serves **8 concurrent requests** by default where it used to serve one (since v1.19; `FLASH_TIER=context` keeps 4 with the larger window per conversation), and got **14 to 25% of its decode back from one flag** (`--speculative-token-map`, see below):
 
 | target | model | engine | headline (measured here) |
 |---|---|---|---|
@@ -35,7 +35,7 @@ The README is the entry point. Everything longer lives next to it, one subject p
 | Every number this repo publishes, how it was measured, and the failed experiments | [BENCHMARKS.md](BENCHMARKS.md) |
 | The 1M context mode: what it serves, what it costs, how limits are fitted to your boot | [docs/context-1m.md](docs/context-1m.md) |
 | The flash lane in full: how a 176B fits, the three tiers, what each one measured | [docs/flash-lane.md](docs/flash-lane.md) |
-| The cockpit, tab by tab, including the Agent tab and how it behaves on a phone | [docs/cockpit.md](docs/cockpit.md) |
+| The cockpit, view by view, including the Agent view and how it behaves on a phone | [docs/cockpit.md](docs/cockpit.md) |
 | Day-to-day commands, the opt-in extras, upgrading from an earlier version | [docs/operations.md](docs/operations.md) |
 | What the installer writes for opencode, and how to opt out | [docs/opencode.md](docs/opencode.md) |
 | Clients: Claude Code, VS Code Copilot, Open WebUI, Cursor, TLS, per-client identity | [docs/clients.md](docs/clients.md) |
@@ -70,17 +70,17 @@ The README is the entry point. Everything longer lives next to it, one subject p
                          | (one lane at a time)        |  OpenAI + Anthropic dialects
                          +-----------------------------+
   you, from a browser -->| Spark Cockpit :30090        |  health that is real, actions,
-  (desk or phone)        | + Agent tab (opencode web)  |  jobs, registry, recipes, logs
+  (desk or phone)        | + Agent view (opencode web) |  jobs, registry, recipes, logs
                          +-----------------------------+
 ```
 
-The engine answers `/health` even when it is wedged, so the cockpit runs a real generation canary and reports `ready`, `loading`, `wedged` or `stopped` from that. Everything privileged the cockpit can do (unit start/stop/restart, lane switch, flush, abort) goes through an exact-argv sudoers allowlist and is audited. The Agent tab frames opencode's own web interface behind the cockpit login, so sessions on the box run from a laptop or a phone with no terminal. Full tour: [docs/cockpit.md](docs/cockpit.md). Since v1.12 it is **installed by the one-liner like everything else**: when the installer finishes it prints the URL, and that page is where this box is meant to be driven from. `--no-cockpit` opts out, and the choice sticks.
+The engine answers `/health` even when it is wedged, so the cockpit runs a real generation canary and reports `ready`, `loading`, `wedged` or `stopped` from that. Everything privileged the cockpit can do (unit start/stop/restart, lane switch, flush, abort) goes through an exact-argv sudoers allowlist and is audited. The Agent view frames opencode's own web interface behind the cockpit login, so sessions on the box run from a laptop or a phone with no terminal. Full tour: [docs/cockpit.md](docs/cockpit.md). Since v1.12 it is **installed by the one-liner like everything else**: when the installer finishes it prints the URL, and that page is where this box is meant to be driven from. `--no-cockpit` opts out, and the choice sticks.
 
 ## Quickstart
 
 Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). Free disk, as the installer checks it before it downloads anything: for a 27B target, **45 GB** on the disk of `HF_CACHE` (`~/.cache/huggingface` by default) for the checkpoints and caches, and **40 GB** on Docker's (`/var/lib/docker`) for its 33 GB image; for a flash target, **230 GB** on the disk of `HF_CACHE` (180 for the checkpoint and its caches, 50 for the 47.7 GiB PLE table the lane rewrites at every boot, counted on the disk of `PLE_DIR` instead when that is another one) and **35 GB** on Docker's for its 30 GB image. When both are one disk, as on a stock box, the installer asks for the sum there: **85 GB** for a 27B target, **265 GB** for a flash one. What the cache already holds of a checkpoint comes off its share (a checkpoint that is all there needs 10 GB of working room instead), and an image already pulled needs 5 GB instead of its own size. Caching the other 27B targets adds ~22 GB per NVFP4 target and ~31 GB per FP8 one.
 
-One command, first install and updates alike. It clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer, which installs **the whole box**: engine, keepalive proxy, opencode wiring, the cockpit and its Agent tab. It ends by printing the cockpit URL, and there is nothing left to run by hand.
+One command, first install and updates alike. It clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer, which installs **the whole box**: engine, keepalive proxy, opencode wiring, the cockpit and its Agent view. It ends by printing the cockpit URL, and there is nothing left to run by hand.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
@@ -130,13 +130,13 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 | Reasoning effort | `lean` (default), `xhigh`, `medium`, `low` | **`lean`** | the level this repo adds and defaults to: 74 words in the chat template that cost 0.71x the thinking tokens of `medium` on 364 public problems and 0.436x on 58 underspecified requests, with no measured quality cost. Qwen's three levels are left byte-identical. `LEAN_DEFAULT=0 ./install.sh` installs it without taking the default. Numbers, method and negative results in [LEAN.md](LEAN.md) |
 | Context mode (27B) | `CONTEXT_MODE=native` or `1m` | **`1m`** since v1.12.1 | 1,010,000 window via YaRN, mem-fraction 0.76, proxy required, limits fitted to the real pool at the end of the install (see the 1M section). The flash lane and `--no-service` are native either way, with no refusal, except `--no-service` on a box whose installed unit serves 1m: that is refused with both ways out, since it would leave the unit on configs it cannot start from. A re-run keeps whatever is already installed, both directions |
 | systemd service | default, or `--no-service` | service | `--no-service`: foreground with `./run.sh`, no sudo, 27B native only |
-| Start now | default, or `--no-start` | starts | install and enable the engine and the proxy without starting them (`sudo systemctl start` later, as the installer prints); that path skips the smoke test, the fit of the 1M limits, the cockpit with its Agent tab, and the image lane |
+| Start now | default, or `--no-start` | starts | install and enable the engine and the proxy without starting them (`sudo systemctl start` later, as the installer prints); that path skips the smoke test, the fit of the 1M limits, the cockpit with its Agent view, and the image lane |
 | opencode integration | default, or `--no-opencode` | on | on = ready config + `oc` launcher + default model following every switch; off = none of that, your own opencode config is never touched. `--with-opencode` turns it back on |
 | Ports | `PORT=`, `PROXY_PORT=` | 30000, 30001 | agent clients use the proxy port |
 | Storage | `HF_CACHE=`, `PLE_DIR=` | `~/.cache/huggingface`, `~/flashnext-ple` | checkpoints, and the 48 GB flash PLE backing file |
 | Clone location | `DIR=` (one-liner only) | `~/dgx-spark-qwen38` | must be a clone of this repo on `main` |
 | Cockpit dashboard | default, or `--no-cockpit` | installed and enabled; bound to the tailnet address when the box has one, else loopback | installed by `install.sh` since v1.12, and its URL is the last thing the installer prints. `DASH_PORT=`/`DASH_BIND=` on `dashboard/install-dashboard.sh` change port and bind; a re-run keeps them. Installs a sudoers allowlist, see [the cockpit tour](docs/cockpit.md) |
-| Agent tab (opencode in the cockpit) | default (the installer puts the pinned opencode in place when there is none, see [docs/opencode.md](docs/opencode.md)), or `--no-cockpit` | installed with the cockpit; relay on the tailnet address | skipped with a note when opencode is missing, which costs one tab and never the install; `dashboard/install-agent.sh` with `AGENT_PORT=`, `AGENT_BIND=`, `OPENCODE_PORT=` to retune. opencode itself stays on loopback, see [the Agent tab](docs/cockpit.md) |
+| Agent view (opencode in the cockpit) | default (the installer puts the pinned opencode in place when there is none, see [docs/opencode.md](docs/opencode.md)), or `--no-cockpit` | installed with the cockpit; relay on the tailnet address | skipped with a note when opencode is missing, which costs one view and never the install; `dashboard/install-agent.sh` with `AGENT_PORT=`, `AGENT_BIND=`, `OPENCODE_PORT=` to retune. opencode itself stays on loopback, see [the Agent view](docs/cockpit.md) |
 
 Combinations that make sense:
 
@@ -155,7 +155,7 @@ CONTEXT_MODE=native ./install.sh                         # the 262144 window on 
 ./switch-model.sh stock | uncensored | flash             # change model later, no reinstall (then stop/start the units it prints)
 ```
 
-Re-running the installer (upgrades included) remembers what you chose: the installed model, the context mode, the port, the HF cache, and the opencode on/off choice. Pass the variable or flag again only to change something. It restarts the engine only when something the engine reads changed since it started (its unit, image, chat template, checkpoint config, API key): an update that touches only the cockpit, the proxy or opencode keeps it serving, and `RESTART_ENGINE=1 ./install.sh` forces a restart. The same holds for the services around it since v1.18.7: the proxy, the cockpit and opencode-web restart only when what they run or read changed (the proxy also follows an engine restart), so a run that changes nothing cuts no request in flight and no turn of the Agent tab. `./uninstall.sh --list` shows everything the repo put on the box before removing anything.
+Re-running the installer (upgrades included) remembers what you chose: the installed model, the context mode, the port, the HF cache, and the opencode on/off choice. Pass the variable or flag again only to change something. It restarts the engine only when something the engine reads changed since it started (its unit, image, chat template, checkpoint config, API key): an update that touches only the cockpit, the proxy or opencode keeps it serving, and `RESTART_ENGINE=1 ./install.sh` forces a restart. The same holds for the services around it since v1.18.7: the proxy, the cockpit and opencode-web restart only when what they run or read changed (the proxy also follows an engine restart), so a run that changes nothing cuts no request in flight and no turn of the Agent view. `./uninstall.sh --list` shows everything the repo put on the box before removing anything.
 
 ## What speed and quality to expect
 
@@ -288,7 +288,7 @@ else is a bare HTTP 500), **an output format must always be sent** (left out, th
 to JPEG, this model always returns RGBA, and the plainest possible request fails), and **CFG needs
 both a scale above 1 and a negative prompt** (either alone is ignored byte for byte). The cockpit's
 **Image** tab refuses all three before they leave the box, exposes every parameter at the model's
-own defaults with a **Reset settings** button, and ships prompts and sample images to try.
+own defaults with a **Reset** button, and ships prompts and sample images to try.
 
 **One image at a time.** The diffusion scheduler has no admission cap, so two concurrent
 requests do not queue, they each take a working set: measured, one generation holds 31.2 GB
@@ -296,7 +296,7 @@ and eight in a row hold exactly the same, but two at once held 90.5 GB of this b
 and the engine stopped answering. The cockpit refuses a second one in under a millisecond
 and says why, and it refuses a call whose images add up to more pixels than the largest
 call measured here (one 2752x1536 image): the images of a call are one batch. The runtime
-cannot abort a generation, so the Image tab's **Cancel** restarts the lane, in about a
+cannot abort a generation, so the Image view's **Cancel** restarts the lane, in about a
 minute.
 
 Editing redraws the whole picture rather than patching it: the edit you ask for happens, and the
@@ -324,7 +324,7 @@ lane and starts this one (about 12 min to answer). From a terminal,
 It serves the SGLang cookbook's MiniMax-H3 recipe exactly as upstream wrote it, with no local
 patch: the cookbook verifies about 12.1 s per denoise step, about 40 s of decode and about
 12 min per warm 4 s 480P request on the DGX Spark, with no flags at all. One request at a
-time; the Video tab refuses a second one, and a duration outside the cookbook's 4 to 15 s band.
+time; the Video view refuses a second one, and a duration outside the cookbook's 4 to 15 s band.
 
 Every number, every refusal and how the runtime is pinned: **[docs/video-lane.md](docs/video-lane.md)**.
 
@@ -602,29 +602,29 @@ from a laptop or a phone over a private network, and `127.0.0.1` otherwise. A re
 that. The login is the same API key over plain HTTP, so this belongs on a tailnet or a LAN you
 trust and never on the open internet.
 
-![The cockpit's Now view: KV pool held, the serving lane with its model, revision, context window and image, unified memory with the driver-refusal counter, and the event stream](docs/img/cockpit-overview.png)
+![The cockpit's Now view: the unified memory pool with what holds it, the four lanes in their rack with the serving one lit, activity, the timeline of the engine's own state transitions, and the machine's vitals](docs/img/cockpit-now.png)
 
-*Now: what is served, on what pool, with how much memory left. The events on the right are the engine's own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
+*Now: one pool of unified memory, four lanes that take turns in it, and which one holds the box. The timeline is the engines' own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
 
-Every panel answers one question about this box, and the tab it sits in is the
+Every panel answers one question about this box, and the view it sits in is the
 question you had when you opened the page.
 
-| Tab | What it answers | What you can do there |
+| View | What it answers | What you can do there |
 |---|---|---|
-| **Now** | Is the box serving, and on what? KV pool held right now, serving lane, unified memory, the last events | Start or stop the lane, switch target, flush the prefix cache, abort all, smoke probe, diagnostics bundle (the bar at the top, on every tab) |
+| **Now** | Is the box serving, and on what? The pool of unified memory and what holds it, the four lanes, activity, the last events | Load a lane from the rack; the Engine actions button at the top, on every view, runs a smoke generation, flushes the prefix cache, aborts every generation, writes a diagnostics bundle and fits opencode's limits |
 | **Agent** | opencode's own web interface, framed behind this login | Run a session on the box from a laptop or a phone, no terminal |
 | **Lanes** | Which lanes exist, which one serves, what the probes and containers say, the engine's facts and the proxy | Act on any lane this repo installed: Load runs the switch-stop-start journey in one path |
 | **Traffic** | What the engine and the proxy each did with the same traffic: live feed, abandoned-request guard, pool and decode | Read a dead decode from both sides of the wire |
 | **Machine** | Unified memory, the GB10, the CPU, and whether the safety belts are holding | Watch the memory edge this hardware actually has |
 | **Library** | Every target as data: recipes, drift against what is running, registry of what is on disk, upstream watch, full inventory | Read what is installed and what it costs in bytes; rescan (the panels are read-only: `./uninstall.sh --list` shows the same inventory, and `./uninstall.sh` prints the reclaim commands) |
 | **Decide** | The typed-decisions endpoint, from a browser: is it served, and what does it answer? | Ask the lane with prefilled examples, copy the matching curl, read the probabilities |
-| **Image** | Qwen-Image 2.1, when it is the serving lane: generation, editing with up to ten references, native RGBA | Generate and edit at the model's defaults (**Reset settings**), start from the sample prompts, follow each stage of a request, copy the matching curl |
-| **Video** | MiniMax-H3, when it is the serving lane: text to video with joint video-and-audio, first/last-frame conditioning | Generate at the cookbook's defaults (**Reset settings**), follow the request to completed, play and download the MP4, copy the matching curl |
+| **Image** | Qwen-Image 2.1, when it is the serving lane: generation, editing with up to ten references, native RGBA | Generate and edit at the model's defaults (**Reset**), start from the sample prompts, follow each stage of a request, copy the matching curl |
+| **Video** | MiniMax-H3, when it is the serving lane: text to video with joint video-and-audio, first/last-frame conditioning | Generate at the cookbook's defaults (**Reset**), follow the request to completed, play and download the MP4, copy the matching curl |
 | **Logs** | Live logs, the last 30 events, recent jobs | Tail or follow a service's log, read what each recent job printed |
 | **Settings** | The repo itself, opencode integration, whether a newer release is out, the cockpit's own settings | Fit opencode's limits to the engine that serves; copy the command that updates the stack, which runs in a terminal because the installer needs an interactive sudo |
 
-The three other screenshots, what each panel does that a terminal does not, how it behaves on a
-phone, and the Agent tab that runs opencode in the browser behind this same login:
+The other screenshots, what each panel does that a terminal does not, how it behaves on a
+phone, and the Agent view that runs opencode in the browser behind this same login:
 **[docs/cockpit.md](docs/cockpit.md)**.
 
 ## Credits

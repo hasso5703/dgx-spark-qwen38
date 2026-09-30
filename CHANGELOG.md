@@ -1,6 +1,137 @@
 # Changelog
 
-## Unreleased: the flash lane defaults to the concurrency tier, the engine to the nightly
+## v1.19.0 (2026-10-01): MiniMax-H3 as a fourth lane, and a cockpit rebuilt and checked under a finger
+
+Three things arrive together. **MiniMax-H3 is a fourth lane**, opt-in with `--with-video`:
+text to video with its sound made in the same pass, and first/last-frame conditioning,
+served from the SGLang cookbook's recipe with no local patch and driven from the cockpit
+like the other three. **The cockpit is rebuilt** around one pool of unified memory and the
+four lanes that take turns in it, with a lane change as one journey, and it is now checked
+under a finger: a browser test in CI taps where a finger lands on five touch screens,
+because the first phone that tried the rebuilt page could not change view at all. **The
+flash lane serves eight requests** by default, on the nightly engine the reference box
+validated. Proxy v6.26 and v6.27 close the guard findings the v1.18.7 review left open.
+A box that updates keeps its lanes, its flash tier and its choices; what an update restarts
+is only what changed.
+
+### The cockpit rebuilt, and checked under a finger
+
+**The cockpit, rebuilt.** The page that was one script and a tab selector is a rail of
+eleven views sharing one scope: Now (one pool of unified memory, the four lanes that take
+turns in it, a rack to load one), Lanes, Traffic, Machine, Agent, Decide, Image, Video,
+Library, Logs and Settings. Changing lanes is one journey, switch, stop and start, one job
+per step, each asking first and showing its exact command, stopping at the first gate
+that refuses; in dry run the journey no longer waits 90 s for an engine that never goes
+down, and says up front that a later gate can refuse because the box still reads as it
+was. The Video view reads the lane's real progress from its journal (the lane itself says
+"queued 0 %" for the whole run), and refuses a canvas larger than 864x480 for longer than
+4 s: 720P is measured at 4 s only, at 82 GB, and the time budget alone admitted it up to
+15 s. Every test that read the old script now reads the page the browser loads, and none
+was weakened to get there.
+
+**On a phone, the rail answered no tap.** Found on the reference box's phone: a tap on a
+view closed the drawer and changed nothing. `.shell` carried `z-index: 1`, which made it a
+stacking context, so the drawer inside it (60) stacked as a whole at 1, under the veil its
+own opening draws (55): every tap landed on the veil, whose click closes the drawer. The
+same trap held the Agent's fullscreen frame under the head and over its own exit button,
+on every device, and the view's entry animation, left filling after it ended, kept a
+second stacking context around it. The drawer was also as tall as its items (the desktop
+rule's `align-self: start` sized the fixed drawer to its content), so on a phone on its
+side it never scrolled and its last four items sat below the screen. All three are fixed,
+and the page now keeps what an iPhone reserves (it asks for the whole screen with
+`viewport-fit=cover` and kept none of it): the head, the rail, the page, the dock, the
+toasts, the sheets and the fullscreen frame stay clear of the notch in landscape and of
+the home indicator, with opencode inside the frame held to the safe area. The drawer takes
+the focus to the view you are on and gives it back on Escape; a closed dialog gives it
+back to what opened it.
+
+**The Agent frame, the phone tables, and smaller things that were not true.** Inline, the
+Agent frame was sized on a guess of 150 px above it and left opencode's composer below
+the fold on a phone, a tablet and a laptop: it now fills what is really left under the
+view's buttons, or takes a screen and scrolls under the head when too little is (measured
+62 to 89 % of the screen, the composer on it, on three phones, two tablets and three
+desktop sizes).
+On a phone the request log put each request's outcome three columns past the edge of the
+screen; it is one card per request now, outcome beside the time, and the Library's wide
+tables stack into cards whose lines carry their column's name. Long facts were cut with no
+way to read them under a finger; they wrap. Every dense table's first cell sat 12 px right
+of its header (a padding shorthand of the same specificity as the rule it undid), the
+proxy's state pill stretched across its row, empty tags drew empty pills, and the rack and
+the Lanes view called the last recorded boot's KV pool "this boot" beside the live one
+(400,384 against 491,136 on the reference box): the serving lane shows what its engine
+reports now.
+
+**A cockpit restart logged a warm-up, and a silent engine read as a boot.** Every restart
+of the cockpit logged "warming-up -> ready" for the serving lane two seconds later (five
+in the event log of 2026-09-29/30): the sampler tiers started together, and the lifecycle's
+first pass read "no health sample yet" as "unhealthy". The health tier now starts first and
+the others once it has sampled, without holding the HTTP server. The same line hid a worse
+case: an engine that really was not answering when the cockpit came up read "warming up"
+for as long as it lasted, a boot state, which holds every switch back. Past the lane's
+usual boot plus five minutes it now reads "degraded", unless this cockpit watched the
+boot.
+
+**Two answers that pointed the wrong way.** The request log painted the Decide view's
+availability probe a red failure once a minute while the view was open: it is a body with
+no state, refused at the schema by design so no model runs, and it now reads as the
+cockpit's own probe, in no alarm colour. And a video call made while the lane ran its three
+warm-up requests waited a minute and was told to start the lane, which was running: it is
+told the lane is warming up or busy. The cockpit's answers when the image or the video
+lane is down still sent people to the switcher and the action bar the rebuild removed; they
+name the Load button of the Lanes view. And the Video view read "Reading the prompt" again
+for the last seconds of every run, once the decode was done: a request never goes back a
+phase now.
+
+**The video lane's boot bar went back to starting halfway through its warm-up.** The cockpit
+reads the last 300 lines of the lane's run, and its own `/health` probe writes one every 2 s
+through the ten-minute warm-up, so the boot's markers left the window before it ended and
+the lane read "starting" again (found on the reference box on 2026-09-30, FastAPI's start at
+line 74 of 395). As on the text lanes, a boot no longer goes back within one activation, and
+a cockpit that came up after the markers left reads the run's first lines, once.
+
+**The engines' coordination ports, written down.** Each engine process opens PyTorch's
+distributed store on every interface, whatever its API's bind, and torch has no setting to
+narrow it: on the reference box the flash scheduler answers on `*:45385` from the LAN and
+the tailnet, the video lane on `*:30005` with four gloo ports. It takes no key and serves no
+data, but a hostile connection can disturb the engine. `SECURITY.md` says so, shows how to
+see them and how to firewall a box on a network you do not control, and the video lane's
+doc no longer calls its loopback bind the only thing in front of it. Taking these ports off
+the network by default is on the roadmap, to be measured first.
+
+**The video lane's validation of 2026-09-29, in its doc.** 4 s at 480P took 759.6 s (592 s
+four days earlier: the DiT was read back from the NVMe at every step, the drive at 76 °C),
+15 s at 480P took 2,830 s at a peak of 78.3 GB, an idle lane holds 1.04 cores, and a second
+request sent straight to the lane queues behind the first; the largest call the cockpit
+admits still ends inside its two-hour lock at the hot rate.
+
+**Held by a browser that taps.** Every browser check switched views with `click()` from
+script, which ignores what covers the element, so all of them stayed green over the phone
+drawer. `touch-check.mjs`, new and in CI, drives a cockpit of its own with real touch
+events on five touch screens and a laptop, reads what the page did, audits every control
+of every view for anything covering it, and checks the safe areas: 244 checks, 128 of them
+failing on the previous revision. `mobile-check.mjs`, the manual check against a live box,
+taps too and checks both Agent modes.
+
+### An update touches only what changed
+
+**The first update after a switch restarted opencode-web for a name.** A flash install
+named the 27B entry of opencode's config generically, whatever its unit served, and the next
+switch back renamed it after its target: so the first update after every switch rewrote the
+config and restarted opencode-web, cutting whatever the Agent view was doing (seen on the
+reference box, an update that changed nothing else). The lane that is not being installed now
+keeps the name of the checkpoint its unit serves, from the same table as the served one.
+
+**Said as it is.** The installer printed "wrote launch-flash.sh" on runs that changed
+nothing, and the installers' closing lines still pointed at the switcher the rebuild
+removed; they say unchanged, and name the Load button of the Lanes view.
+
+Measured on the reference box on 2026-09-30, updating while the video lane served: the first
+run rewrote the flash launcher (the key moved off the engine's command line to its secrets
+file, which the flash lane's next start confirmed: no process carries it) and, before the
+fix above, renamed the 27B entry; the run with the fix put the name back, and the run after
+it changed no file and restarted no service.
+
+### The flash lane defaults to the concurrency tier, the engine to the nightly
 
 The 2026-09-29 campaign (bench, canaries, needle, prefix cache, memory
 flash_palier8_nightly_2026_09_29) validated `--mamba-max-states-per-path 2` and
@@ -15,7 +146,14 @@ needed. Without this, the next `./install.sh` silently walked a concurrency box
 back to the 07/09 image at 4/20: the debt the campaign note listed under
 "Reste a faire", now paid.
 
-## Unreleased: the MiniMax-H3 video lane (fourth lane, opt-in)
+What a new install changes for opencode: on the default tier its flash limits are the
+concurrency tier's, 100,000 tokens of context and 16,000 of output (116,000 at worst, the
+figures measured on 2026-09-12), where the context tier gives 205,000 and 32,000. They stay
+until eight heavy streams at once are measured on this pool. `FLASH_TIER=context
+./install.sh` keeps one conversation's larger window, and an update keeps whichever tier a
+box already serves.
+
+### The MiniMax-H3 video lane (fourth lane, opt-in)
 
 `./install.sh --with-video` adds text-to-video with joint video-and-audio
 (MiniMax-H3, `MiniMaxAI/MiniMax-H3` at `42ed227e`), driven like the other three lanes:

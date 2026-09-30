@@ -83,7 +83,10 @@ the decode sits close enough to the cap that fragmentation otherwise tips it ove
 `HF_HUB_OFFLINE=1`, `PYTHONUNBUFFERED=1`, `--output-path` naming the lane's own
 `outputs/` directory, and `--input-save-path ""`. No `--api-key` and no `--sleep-on-idle`: the
 diffusion parser has neither, so the loopback bind is the only thing standing in front
-of the lane, and the cockpit is the authenticated door.
+of the lane's API, and the cockpit is the authenticated door. The process's own
+coordination ports are another matter: PyTorch's store listens on `*:30005` and gloo on
+four ports of the LAN address (measured 2026-09-29 and 2026-09-30), with no setting to narrow them, like
+every engine here; SECURITY.md says what they expose and how to firewall them.
 
 One deliberate difference from the image lane: the lane's own `outputs/` directory
 instead of an emptied one. Left empty, the server answers into a
@@ -104,8 +107,15 @@ this user owns and removed with the call.
 
 One request at a time: the cookbook sizes one 480P request near what this box holds,
 and on unified memory running out hangs the machine rather than failing the request.
-The cockpit refuses a second one in under a millisecond and says why. That is caution,
-not a measurement: re-measure with two overlapping calls before ever lifting it.
+The cockpit refuses a second one in under a millisecond and says why. Sent straight to
+the lane, a second call waits in the lane's own queue and starts when the first ends
+(measured 2026-09-29): the runtime never runs two at once, and the cockpit's refusal
+tells the person at once instead of leaving them ten minutes or more behind an
+unannounced first call.
+
+While the lane runs its three warm-up requests, about 10 min after it loads, it holds a
+new call until they are done. The cockpit's call gives up after a minute and says the
+lane is warming up or busy; it said to start the lane until 2026-09-30, which it was.
 
 The page itself refuses before anything leaves the box: no prompt, a duration outside
 4 to 15 s (the cookbook's band), steps outside 1 to 100, a seed that is not a whole
@@ -116,14 +126,18 @@ unknown task, keyframes on the `ref2va` weights, a malformed keyframe, undeclare
 cannot serve), a ratio other than
 16:9 or 9:16, and a canvas past 1280x720 -- the image lane's `IMAGE_MAX_PIXELS` rule,
 because the largest canvas measured here peaks at 81.9 GB of 121.6 and past it the cost
-is a guess and the OOM is a certain one.
+is a guess and the OOM is a certain one. The page and the cockpit also refuse a canvas
+larger than 864x480 for longer than 4 s: 720P is measured at 4 s only, at 82 GB, and the
+time budget alone would have admitted it up to 15 s (found in the validation of
+2026-09-29).
 
 The lock is held for up to two hours: one hour holding the call open, then the hand-off
 watcher taking it back from the lane once the generation ends. So a call estimated past
 two hours' nine tenths is refused at admission -- the tenth is slack, added 2026-09-28
 when a review found the guard had none: the largest accepted estimate landed the lock's
 deadline exactly on the lane's expected finish. Cost is linear in step-seconds at the
-sizes measured here, 3.05 s each at 480P and 7.65 at 720P (the decodes folded in), plus
+sizes measured here, 3.05 s each at 480P (3.8 with the NVMe hot, 2026-09-29: the
+largest call admitted still ends inside the lock) and 7.65 at 720P (the decodes folded in), plus
 the ~10 % a keyframe conditioning measured; the tab carries the same numbers and refuses
 the same calls, a parity test holds the two files equal. A call that outlives the hour of
 waiting answers 504 with its video id kept: the tab shows the content URL, which serves
@@ -150,13 +164,24 @@ about 10 min with the download proven. The text encoder runs ~5.5 min per reques
 and does not warm up (cookbook figure, not measured here: the measured sum above
 leaves it about 9 s, which is what the cockpit budgets).
 
-Not yet measured here: 15 s durations, idle cores, second request while one runs
-(refused until measured). A 4 s fl2va from a keyframe completed the same night in
-about 11 min with the download proven, continuing the frame's scene; a 4 s 720P
-completed in about 25 min (server reports 1280x704 for a 1280x720 ask), peak memory
-81934 MB against 9242 MB at 480P: pixels cost far more than linear here, and 720P is
-near what this box holds. The Video tab's cost table is fully measured here as of
+A 4 s fl2va from a keyframe completed the same night in about 11 min with the
+download proven, continuing the frame's scene; a 4 s 720P completed in about 25 min
+(server reports 1280x704 for a 1280x720 ask), peak memory 81934 MB against 9242 MB at
+480P: pixels cost far more than linear here, and 720P is near what this box holds.
+
+The validation of 2026-09-29, on the same box:
+
+- **4 s at 480P took 759.6 s**, against 592 s on 2026-09-25: the DiT was read back from
+  the NVMe at every step (4.36 GB/s, the drive at 76 °C). A request costs 9:52 to 12:40
+  depending on how hot the NVMe runs, and the tab says so.
+- **15 s at 480P took 2,830 s** (47 min), peak memory 78.3 GB, the box's MemAvailable
+  never under 25.2 GiB.
+- **An idle lane holds 1.04 cores**, the diffusion scheduler's loop that never waits
+  (the image lane patches it; this lane keeps the cookbook's code).
+- **A second request sent straight to the lane queues** and runs after the first.
+- A keyframe call removed its staged PNGs; a seed past a 64-bit integer is refused by
+  the lane itself; a stop during a generation ends it as `cancelled`. The Video view's cost table is fully measured here as of
 2026-09-25, every row from this box; the cookbook figures live on as prose reference
 where no row exists yet. The cost estimate extrapolates these two rows linearly
-in step-seconds to the tab's caps (15 s, 100 steps); the 720P row is all-in, so its
+in step-seconds to the view's caps (15 s, 100 steps); the 720P row is all-in, so its
 denoise/decode split is one assumed number, and 15 s runs are not yet timed here.

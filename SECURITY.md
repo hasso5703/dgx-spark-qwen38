@@ -140,7 +140,7 @@ discussion, not a disclosure.
   every journal line of its requests), and naming is all it does: there are no
   per-client quotas or ceilings, and the engine behind it still has one key.
 - **`AGENT_AUTO=1` is deliberate escalation.** It sets opencode to allow
-  every tool call in the Agent tab, behind the cockpit login, on this
+  every tool call in the Agent view, behind the cockpit login, on this
   machine, by the operator's own choice. The explicit deny rules of your
   own `opencode.json` still apply.
 - **The abliterated targets are a policy choice.** `uncensored`,
@@ -158,6 +158,32 @@ discussion, not a disclosure.
   existing trust model (a trusted network by design, see the plain HTTP edge
   above); the metrics endpoint adds counters to it, not a new surface to
   authenticate against. The image and video lanes export no metrics.
+- **Each engine opens its own coordination port on every interface.** The API of a
+  lane binds where it is told (loopback by default), but the engine process also runs
+  PyTorch's distributed store, and torch binds that listener to all interfaces with no
+  setting to narrow it. Measured on the reference box on 2026-09-30: the flash lane's
+  scheduler listens on `*:45385` (a random port, new at each boot) beside its API on
+  `127.0.0.1:30000`, and a TCP connection to it succeeds on the LAN and the tailnet
+  addresses; its four other listeners are on loopback. The video lane does the same on
+  `*:30005`, with four gloo ports on the LAN address (measured 2026-09-29, again on 2026-09-30). The port
+  takes no key and serves no model and no data, but PyTorch states that its distributed
+  features are not built for untrusted networks: a hostile connection can disturb the
+  engine, a denial of service. It sits inside the trusted-network edge above, like the
+  plain HTTP ports. To see them on your box while a lane serves:
+  `sudo ss -ltnp | grep -v 127.0.0.1`. On a LAN you do not control, firewall the box to
+  the ports you use before anything else; with ufw (inactive on the reference box):
+
+  ```bash
+  sudo ufw allow in on lo
+  sudo ufw allow in on tailscale0      # the cockpit, the proxy and the relay over the tailnet
+  sudo ufw allow 22/tcp                # SSH from the LAN, if you use it
+  sudo ufw default deny incoming
+  sudo ufw enable
+  ```
+
+  Docker does not bypass this here: every lane runs on the host network or natively, so
+  no port of theirs goes through Docker's own rules. Allow `30001/tcp` too if LAN
+  clients use the proxy.
 - **The cockpit assumes one admin user.** The sudo allowlist covers this
   repo's argv, but a hostile local user with your shell can do what you can
   do: this box is yours, and it is not a multi-tenant host.

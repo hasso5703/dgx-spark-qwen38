@@ -8,8 +8,8 @@ Nothing shells out free-form; every action is a fixed argv template.
 ## Install and upgrade
 | capability | shell today | UI |
 |---|---|---|
-| First install / upgrade (converging) | `get.sh` one-liner / `install.sh` | Settings tab prints the exact terminal command: the installer needs an interactive sudo that a service cannot give, and a half-applied install is the one failure the cockpit must never cause |
-| Choose target model | `MODEL_CHOICE=stock/uncensored/fp8/uncensored-fp8/flash/flash-uncensored/flash-nvda`, and the image lane with `--with-image` | Target selector and Switch in the top bar: the seven text targets and Qwen-Image 2.1, each one `switch-model.sh <target>` job |
+| First install / upgrade (converging) | `get.sh` one-liner / `install.sh` | Settings view prints the exact terminal command: the installer needs an interactive sudo that a service cannot give, and a half-applied install is the one failure the cockpit must never cause |
+| Choose target model | `MODEL_CHOICE=stock/uncensored/fp8/uncensored-fp8/flash/flash-uncensored/flash-nvda`, and the image lane with `--with-image` | Each lane's checkpoint selector and Load in the Lanes view, and the rack in Now: the seven text targets, Qwen-Image 2.1 and MiniMax-H3, Load running the switch (`switch-model.sh <target>`), the stop and the start as one journey, a job per step |
 | 1M context mode (27B) | `CONTEXT_MODE=1m` (the default since v1.12.1) or `native` | None: an install choice. The lane card shows the window the engine serves |
 | Custom port / HF cache / PLE dir | `PORT= HF_CACHE= PLE_DIR=` | None: install-time choices, kept by every re-run |
 | No-service foreground run | `install.sh --no-service && run.sh` | Documented only (interactive terminal concept), not a UI job |
@@ -17,40 +17,40 @@ Nothing shells out free-form; every action is a fixed argv template.
 ## Serving control
 | capability | shell today | UI |
 |---|---|---|
-| Which lane serves | `systemctl start/stop qwen38-sglang / qwen38-flash / qwen38-image` | Start/Stop of the lane in the top bar, and on each lane's card in the Lanes tab; the server refuses a second engine while one runs, and every action is confirmed first |
+| Which lane serves | `systemctl start/stop qwen38-sglang / qwen38-flash / qwen38-image` | Load and Stop on each lane's card in the Lanes view, Load from the rack in Now; the server refuses a second engine while one runs, and every action is confirmed first |
 | Boot enablement | `systemctl enable/disable` | No toggle: a switch enables the target's unit and disables the others. Each card says whether its unit starts at boot |
-| Keepalive proxy | `systemctl ... qwen38-keepalive` | Its row in the Lanes tab: state, whether it starts at boot, the running version and whether it is the repo's copy, Start/Stop |
+| Keepalive proxy | `systemctl ... qwen38-keepalive` | Its row in the Lanes view: state, whether it starts at boot, the running version and whether it is the repo's copy, Start/Stop |
 | Switch target model | `./switch-model.sh <target>` | Switch: the confirmation shows the exact command, the job's live output shows what it changes. It writes the target's unit or launcher and never starts, stops or restarts an engine: Start is its own click |
-| Model revisions served | `--revision` in unit/launcher | Revision on the lane card; the Library tab's Recipes compare it with the pin, and its Upstream watch compares each pin with Hugging Face's `main` |
+| Model revisions served | `--revision` in unit/launcher | Revision on the lane card; the Library view's Recipes compare it with the pin, and its Upstream watch compares each pin with Hugging Face's `main` |
 | Kill a stuck generation | proxy auto-abort / restart service | "Abort all": `POST /abort_request` with `abort_all` to the engine, confirmed first |
 
 ## Observability
 | capability | shell today | UI |
 |---|---|---|
-| Server state | `systemctl status`, `journalctl`, `docker logs` | Logs tab: the last 120 lines of an engine container's log or of a unit's journal, re-read every 3 s with follow ticked (no filter, no download) |
-| Engine internals | `/server_info`, `/v1/loads`, `/health` | Lanes tab (model, revision, quantization, window, KV pool, speculative, attention, radix cache, engine version, image) and the Now view's Activity (running, waiting, tokens in KV, accept length) |
-| Decode telemetry | docker log scheduler lines | Traffic tab: KV pool held, KV usage from the engine log, Mamba state slots, accept length |
+| Server state | `systemctl status`, `journalctl`, `docker logs` | Logs view: the last 120 lines of an engine container's log or of a unit's journal, re-read every 3 s with follow ticked (no filter, no download) |
+| Engine internals | `/server_info`, `/v1/loads`, `/health` | Lanes view (model, revision, quantization, window, KV pool, speculative, attention, radix cache, engine version, image) and the Now view's Activity (running, waiting, tokens in KV, accept length) |
+| Decode telemetry | docker log scheduler lines | Traffic view: KV pool held, KV usage from the engine log, Mamba state slots, accept length |
 | Requests through proxy | keepalive proxy request lines | Requests table: start, client, path, bytes, duration, outcome |
-| Machine | nvidia-smi (power/temp/procs), /proc, df | Machine tab: unified memory, page cache and swap, free disk at home and under Docker, GPU power, temperature and processes, CPU load, the safety belts |
+| Machine | nvidia-smi (power/temp/procs), /proc, df | Machine view: unified memory, page cache and swap, free disk at home and under Docker, GPU power, temperature and processes, CPU load, the safety belts |
 | Benchmarks | `./bench.sh`, `./bench-matrix.sh` | None: terminal tools (BENCHMARKS.md) |
 | Quality canaries | (campaign scripts) | No battery. The cockpit runs one real generation of its own when the engine has been quiet a minute (Generation probe), and Smoke sends one through the proxy on demand |
 
 ## Housekeeping
 | capability | shell today | UI |
 |---|---|---|
-| Inventory of everything installed | `./uninstall.sh --list` | Library tab, Inventory: the same rows, read-only |
+| Inventory of everything installed | `./uninstall.sh --list` | Library view, Inventory: the same rows, read-only |
 | Reclaim superseded images | the `docker rmi` lines `install.sh` and `./uninstall.sh` print | None: never run from the page |
 | Uninstall | `./uninstall.sh [--yes]` | None: a terminal job |
 | API key | `~/.config/qwen38/api-key` | It is the login. No panel shows or regenerates it; the diagnostics bundle masks it |
 | opencode | `~/.config/qwen38/opencode.off` marker, `~/.config/opencode/opencode.json`, `~/.local/bin/oc` | State-aware panel in Setup: on/off (the installer's --no-opencode choice), default model, per-lane limits, launcher, whether the limits fit the served pool, and Fit the limits to this engine |
 | Chat templates | patch-template.py outputs | None: `install.sh` and `switch-model.sh` write them |
-| Repo state | git status/log/tags | Settings tab, Repo: version, branch, head, working tree, the running proxy's version, and whether a newer release is out (a banner too) |
+| Repo state | git status/log/tags | Settings view, Repo: version, branch, head, working tree, the running proxy's version, and whether a newer release is out (a banner too) |
 
-## Agent tab (v1.7.0)
+## Agent view (v1.7.0)
 | capability | shell today | UI |
 |---|---|---|
-| opencode from the laptop | `oc` in a terminal on the box | Agent tab: opencode's web interface framed from the relay, behind the cockpit login (no second login, no Basic prompt) |
-| Server state | `systemctl status opencode-web`, `journalctl -u opencode-web` | chip (ready, starting, stopped, relay waiting), served version, installed binary if newer, Logs tab source |
+| opencode from the laptop | `oc` in a terminal on the box | Agent view: opencode's web interface framed from the relay, behind the cockpit login (no second login, no Basic prompt) |
+| Server state | `systemctl status opencode-web`, `journalctl -u opencode-web` | chip (ready, starting, stopped, relay waiting), served version, installed binary if newer, Logs view source |
 | Restart after `opencode upgrade` | `sudo systemctl restart opencode-web` | Restart server button (exact-argv sudoers lines, confirmed like every action) |
 | Reach it on its own | none | Open in a tab (same relay, same session); Fullscreen inside the cockpit (corner button or Escape to come back, remembered) |
 | Autonomy (no approval clicks) | `oc` runs with `--yolo` | `AGENT_AUTO=1` at install (unit sets `OPENCODE_PERMISSION`); the tab shows the mode the running server applies |

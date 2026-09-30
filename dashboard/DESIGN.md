@@ -87,7 +87,7 @@ GET for the fallback path. Actions are POST with JSON, CSRF-protected.**
 None of this section exists at v1.18.7. The cockpit runs from the repo checkout
 and imports its code at start, so an update is the one-liner (`get.sh` updates the
 checkout, then `install.sh` restarts the cockpit); updating the serving stack is a terminal
-command the Settings tab prints, because the installer needs an interactive sudo
+command the Settings view prints, because the installer needs an interactive sudo
 (the `ACTIONS` table in `cockpit.py` says why there is no `update_stack`). Only
 the last point below is real: one job at a time. The design, as written:
 
@@ -339,3 +339,32 @@ Rules the app follows from here:
 - **Prose stops at 78 characters** whatever the panel width.
 - **The top bar is one row by construction**, and `--top` is measured, not assumed, so
   a bar that wraps anyway takes the sticky rail and job strip with it.
+
+
+## The rebuild (2026-09-29/30)
+
+The page was rebuilt around one pool and four lanes. The top bar and seven tabs became a
+head and a rail of eleven views in three groups: Operate (Now, Lanes, Traffic, Machine),
+Create (Agent, Decide, Image, Video) and Maintain (Library, Logs, Settings). The head
+carries what serves (a tap opens Lanes), the pool at a glance, the running job, the
+connection and the engine actions. Changing lanes left the bar's selector for one journey
+per lane, switch, stop and start, from the Lanes view or from Now's rack. Below 980 px the
+rail is a drawer behind the menu button. The sections above describe the page before
+this, and their rules (one spacing scale, written empty states, no wire format in the
+interface) carried over.
+
+What the phone taught the day after (2026-09-30), found with the reference box's phone:
+
+- **Nothing takes a z-index unless it is meant to be a stacking context.** One on `.shell`
+  trapped the drawer under the veil its own opening draws, so a tap on a view only closed
+  the drawer, and held the Agent's fullscreen frame under the head. An animation left
+  filling after it ends is a stacking context too.
+- **A fixed box inside a grid keeps the grid's alignment.** The desktop rail's
+  `align-self: start` made the fixed phone drawer as tall as its items, so on a short
+  screen it never scrolled and its last items were out of reach.
+- **The whole screen, asked for, has to be kept.** With `viewport-fit=cover` the head, the
+  dock, the toasts, the sheets and the fullscreen frame read the safe-area insets.
+- **A check that clicks from script proves nothing about a finger.** `element.click()`
+  ignores what covers the element; `touch-check.mjs` sends real touch events where a finger
+  lands and audits every control of every view for anything covering it.
+

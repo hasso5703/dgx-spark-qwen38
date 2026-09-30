@@ -21,7 +21,7 @@ CI keeps true.
   HF cache (weights, pinned revisions)    ~/flashnext-ple (176B N-gram table)
 
   cockpit :30090 ── sudo exact argv ──> systemd (start/stop/switch/flush)
-      └── relay :30091 ──> opencode serve 127.0.0.1:4096 (Agent tab)
+      └── relay :30091 ──> opencode serve 127.0.0.1:4096 (Agent view)
 ```
 
 Everything the stack writes to the machine lives in one config dir,

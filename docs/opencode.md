@@ -6,7 +6,7 @@ The installer writes a complete, ready-to-use [opencode](https://opencode.ai) co
 
 A box with no opencode config of its own gets this one as `~/.config/opencode/opencode.json`
 (since v1.18.4: before, it was printed as a `cp` command, and a first install left opencode,
-`oc` and the Agent tab with no provider for the box's own model, "Provider not found: qwen38").
+`oc` and the Agent view with no provider for the box's own model, "Provider not found: qwen38").
 A config you already have is kept: the installer merges the served lane's limits into it,
 and adds the provider of a lane installed since (the 27B first, the flash lane later) when
 it already has one of this repo's providers. When it has none of them, the installer says
@@ -17,7 +17,7 @@ so and leaves it alone: merge the `qwen38` (and/or `flashnext`) block from
 oc        # opencode on this box's model, with the output cap lifted (see below)
 ```
 
-`oc` and the cockpit's Agent tab also load that generated config through
+`oc` and the cockpit's Agent view also load that generated config through
 `OPENCODE_CONFIG`, which opencode reads over your global one: their default is the model
 this box serves even when your own config names another, and opencode can never fall back
 to its free hosted model there. That fallback is what a fresh box got before v1.18.4 (with
@@ -30,7 +30,7 @@ Four things this repo does were read out of one opencode binary and checked agai
 behaviour: the compaction threshold `oc-fit-limits.py` sizes the limits for, the hidden
 32,000-token output cap the `oc` launcher lifts, the overflow phrases the proxy answers
 with so that a refusal makes opencode compact instead of failing, and `--yolo` /
-`OPENCODE_PERMISSION` for the Agent tab. So `install.sh` pins the opencode it runs:
+`OPENCODE_PERMISSION` for the Agent view. So `install.sh` pins the opencode it runs:
 **1.18.32** (`OPENCODE_VERSION`, with the sha256 GitHub publishes for
 `opencode-linux-arm64.tar.gz` in `OPENCODE_SHA256`). It was checked against the 1.18.27
 the repo was measured on, on 2026-09-23: the same 21 overflow phrases and 3 exclusions
@@ -52,7 +52,7 @@ Left alone, opencode installs its own patch releases (read out of its binary: on
 `"autoupdate": false`, `"notify"` or a minor/major release stop it), which is how two boxes
 installed a week apart end up on two versions. With the pin, the generated config and
 yours get `"autoupdate": "notify"`: opencode still announces a release, and does not
-install it itself. A stricter `false` you set is kept. The Agent tab says when the
+install it itself. A stricter `false` you set is kept. The Agent view says when the
 opencode it serves is not the pinned one.
 
 `OPENCODE_PIN=0 ./install.sh` keeps whatever opencode you have and leaves `autoupdate`

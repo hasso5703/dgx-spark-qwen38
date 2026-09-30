@@ -1,6 +1,6 @@
 # The cockpit
 
-The full tour. The README carries the short version: what the cockpit is, how it is installed, what it binds to, and the table of its tabs. This is everything else, starting with what it looks like.
+The full tour. The README carries the short version: what the cockpit is, how it is installed, what it binds to, and the table of its views. This is everything else, starting with what it looks like.
 
 ## Installing it, and what it binds to
 
@@ -45,28 +45,28 @@ sudo systemctl edit qwen38-dashboard    # [Service] Environment=COCKPIT_BIND=0.0
 sudo systemctl restart qwen38-dashboard
 ```
 
-That moves the page only. The Agent tab's relay keeps its own address,
+That moves the page only. The Agent view's relay keeps its own address,
 `COCKPIT_AGENT_BIND`, which a re-run of `dashboard/install-agent.sh` keeps too: set it in
 the same drop-in (`Environment=COCKPIT_AGENT_BIND=tailscale`, or an address), or re-run
 that script with `AGENT_BIND=`.
 
 ## What it looks like
 
-![The cockpit's Now view: KV pool held, the serving lane with its model, revision, context window and image, unified memory with the driver-refusal counter, and the event stream](img/cockpit-overview.png)
+![The cockpit's Now view: the unified memory pool with what holds it, the four lanes in their rack with the serving one lit, activity, the timeline of the engine's own state transitions, and the machine's vitals](img/cockpit-now.png)
 
-*Overview: what is served, on what pool, with how much memory left. The events on the right are the engine's own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
+*Now: one pool of unified memory, four lanes that take turns in it, and which one holds the box. The timeline is the engines' own state transitions, including the kernel's GPU-allocation refusals that precede the memory edge on this hardware.*
 
-![The Library tab: every target as a table with its engine image, checkpoint, drafter, serving flags, what is on this box, and the drift against what is installed](img/cockpit-models.png)
+![The Lanes view: each lane with its checkpoint selector, its Load or Stop button, its boot times and KV pools, then the text engine's facts and the keepalive proxy](img/cockpit-lanes.png)
 
-*Models: the seven targets as data, derived from `install.sh` and the unit templates, each compared flag by flag against the invocation actually running. "2 DIFFER" is a recipe that would change something if you switched to it.*
+*Lanes: each lane with what it serves, what its boots took on this box and the KV pool each one won, and one button that loads it: switch, stop, start, each step asking first and showing its command.*
 
-![The Agent tab: opencode running in the browser behind the cockpit login, started at boot with tool calls pre-approved](img/cockpit-agent.png)
+![The Traffic view: the requests the keepalive proxy relayed with client, route, size, duration and outcome, and the abandoned-request guard](img/cockpit-traffic.png)
 
-*Agent: opencode's own web interface, framed behind this login, mid-answer on a real session. It starts at boot and its tool calls are already approved, so a laptop or a phone is enough to run a coding session on the box. The model picker at the bottom names what is answering: the 27B served by this same machine, at the `lean` effort level.*
+*Traffic: both sides of the wire. The feed is what the proxy relayed; the guard is whether any client walked away from an answer the engine is still generating.*
 
-![The Traffic tab: the keepalive proxy's request feed with client, path, body size, duration and outcome, next to the zombie guard panel](img/cockpit-requests.png)
+![The Video view: the prompt, length, size, quality and seed of a MiniMax-H3 call with its measured cost, beside where the video appears](img/cockpit-video.png)
 
-*Requests: both sides of the wire. The feed is what the proxy relayed; the guard is whether any client walked away from an answer the engine is still generating.*
+*Video: MiniMax-H3 when it is the serving lane, with what a call costs on this box before it is made.*
 
 ## What it does that a terminal does not
 
@@ -87,7 +87,7 @@ that script with `AGENT_BIND=`.
   covers value-less flags too (`switch.--sleep-on-idle: recipe true, installed false` is
   what the panel said the morning the flash lane was caught spinning a core).
 - **Zombie guard.** A client that gives up leaves the engine decoding unless something
-  stops it, so the Traffic tab reads both sides of the wire: the engine's own flood
+  stops it, so the Traffic view reads both sides of the wire: the engine's own flood
   lines grouped by request, worst first, with the span between a request's first and
   last line, which is the dead decode; what the proxy did about it over the same window
   (aborted, drained, the longest drain, aborts the engine never answered); the version
@@ -109,9 +109,9 @@ that script with `AGENT_BIND=`.
   is no panel for the API key, which is what you log in with; the diagnostics
   bundle masks it.
 
-On a phone the chrome collapses to one identity row plus a swipeable section
-rail, controls are 44 px targets, and the Agent tab opens fullscreen (see "On a
-phone" below): the whole box is operable from a hand.
+On a phone the rail is a drawer behind the menu button, controls are 44 px
+targets, and the Agent view opens fullscreen (see "On a phone" below): the whole
+box is operable from a hand.
 
 **The privileged surface, stated plainly.** The unit actions need root, so the
 installer writes `/etc/sudoers.d/qwen38-cockpit`: an exact argv allowlist,
@@ -143,10 +143,10 @@ sudo rm -f /etc/systemd/system/qwen38-dashboard.service \
 sudo systemctl daemon-reload
 ```
 
-## The Decide tab: the typed-decisions endpoint, from a browser
+## The Decide view: the typed-decisions endpoint, from a browser
 
-`POST /v1/systemone` answers probabilities instead of text, and until this tab the only way
-to see one was curl. The tab is the console for it, and it exercises the whole contract:
+`POST /v1/systemone` answers probabilities instead of text, and until this view the only way
+to see one was curl. The view is the console for it, and it exercises the whole contract:
 
 - **five prefilled examples**, one per shape the endpoint is actually used for: routing a
   support ticket, choosing an agent's next tool, moderating a comment, extracting a field,
@@ -160,7 +160,7 @@ to see one was curl. The tab is the console for it, and it exercises the whole c
   much of the model's first-token probability landed on a label, and how many tokens the
   radix cache served
 - **the same call as a curl** that updates as you type and copies in one click, because the
-  point of the tab is the request, not the tab
+  point of the view is the request, not the view
 - **the measured comparison against the hosted Jev**, task by task, from BENCHMARKS.md
 
 The serving key never reaches the page. The browser sends the state and the questions to the
@@ -177,10 +177,10 @@ serves (text to video with joint video-and-audio, first/last-frame conditioning;
 ## Being told there is a newer version
 
 A box that runs an old release does not know it. The answer existed from v1.6 in the
-Library tab, printed after a button press, which means it reached whoever already
+Library view, printed after a button press, which means it reached whoever already
 suspected there was news. Since v1.15.2 the cockpit volunteers it: every six hours it
 asks GitHub whether a newer release is published, and if there is one the banner strip
-says so with the command that installs it. The Settings tab carries the same line
+says so with the command that installs it. The Settings view carries the same line
 permanently, next to the repo's own version.
 
 Two details decide whether this is useful or irritating. It compares version **numbers**,
@@ -200,35 +200,44 @@ request this stack makes that the operator did not type.
 
 ## On a phone
 
-The cockpit is built for a hand as well as for a desk, and the layout is checked
-rather than assumed: `dashboard/tests/mobile-check.mjs` drives a headless
-Chromium through four real iPhone geometries (SE, 15, 15 Pro Max, and 15 in
-landscape) on every tab and asserts what a phone actually gets.
+The cockpit is built for a hand as well as for a desk, and that is checked with a finger
+rather than assumed. Below 980 px the rail is a drawer behind the menu button at the top
+left: a tap opens it, a tap on a view shows that view and closes it, and a tap beside it or
+Escape closes it. The head keeps what is serving and the engine actions, and the cards
+stack. On a phone the request log shows one card per request, outcome beside time, and the
+Library's wide tables stack into cards whose lines carry their column's name. Controls are
+at least 44x44 CSS px, every form control is 16 px or larger (iOS Safari zooms the whole
+page when a smaller one takes focus and never zooms back), heights use `dvh`, and the page
+keeps clear of what an iPhone reserves: the notch or island in landscape, the home
+indicator at the foot.
 
-Below 980 px the top bar keeps one identity row and gives the actions a row of
-their own that scrolls sideways, the section rail becomes one swipeable row of
-pills with the current section scrolled into view, and the cards stack. Controls
-are at least 44x44 CSS px, and every form control is 16 px or larger, because
-iOS Safari zooms the whole page when a smaller one takes focus and never zooms
-back. The heights use `dvh`, not `vh`: on iOS the browser's own chrome counts
-inside `100vh`, so a full-height panel written that way overflows by exactly the
-toolbar.
+![The cockpit on a phone, with the drawer open over the Now view: the rail's eleven views in three groups, Operate, Create and Maintain](img/cockpit-phone.png)
 
-The Agent tab opens **fullscreen on a phone**, because there the tab is the
-frame: opencode gets the whole screen and the corner chip brings the cockpit
-back. That choice is remembered per device, so exiting once makes the embedded
-frame the default from then on. It never opens fullscreen when the panel cannot
-load (a relay bound to another address, a stopped server): covering the
-explanation with a blank frame would leave nothing to act on.
+The Agent view opens **fullscreen on a phone**, because there the view is the frame:
+opencode gets the whole screen, held to the safe area, and **Back to the cockpit** brings
+the rest back. That choice is remembered per device, so leaving fullscreen once makes the
+embedded frame the default from then on; embedded, the frame fills what is left under the
+view's buttons, or takes a screen and scrolls under the head when too little is. It never
+opens fullscreen when the panel cannot load (a relay bound to another address, a stopped
+server): covering the explanation with a blank frame would leave nothing to act on.
 
-Run it against the address the phone uses, so the Agent tab is exercised the way
-it behaves in a hand:
+Two browser checks hold this. `dashboard/tests/touch-check.mjs` runs in CI against a
+cockpit of its own: real touch events on five touch screens (four iPhone sizes and an iPad)
+and a laptop, every rail item tapped where a finger lands, every control of every view
+audited for anything covering it, and the safe areas emulated. It exists because every
+earlier check switched views with `click()` from script, which ignores what covers an
+element: on a phone the drawer's veil covered every rail item while every check stayed
+green (found on the reference box's phone, 2026-09-30). `dashboard/tests/mobile-check.mjs`
+runs against a live box, taps the same way, and measures the layout on four iPhone
+geometries, the Agent view in both of its modes included. Run it against the address the
+phone uses, so the Agent view behaves the way it does in a hand:
 
 ```bash
+node dashboard/tests/touch-check.mjs                                          # a cockpit of its own
 node dashboard/tests/mobile-check.mjs http://<the box's tailnet address>:30090
 ```
 
-## The Agent tab: opencode in the browser, behind the cockpit login
+## The Agent view: opencode in the browser, behind the cockpit login
 
 Since v1.7.0 the cockpit can hold opencode's own web interface, so a session on the
 box runs from the laptop without a terminal: sessions, the project picker, file
@@ -236,7 +245,7 @@ diffs, the terminal panel, the same config, plugins, skills and MCP servers as t
 `oc` command. Since v1.12 `install.sh` installs it with the cockpit whenever
 opencode is on your PATH, and since v1.18.3 the installer puts the pinned opencode there
 when there is none (docs/opencode.md); when it still is not, the installer says so
-and skips that one tab rather than failing an install that is otherwise up. Run
+and skips that one view rather than failing an install that is otherwise up. Run
 it by hand after installing opencode, or to retune it:
 
 ```bash
@@ -262,24 +271,24 @@ Two pieces land, and the shape is the security model:
   so no other page can frame the interface.
 
 The browser therefore sees one host for the cockpit and the relay (cookies ignore
-ports): the Agent tab frames the interface with no second login and no Basic-auth
+ports): the Agent view frames the interface with no second login and no Basic-auth
 prompt, which Chrome would block inside a cross-origin frame anyway. That is also
 the one rule: open the cockpit through the address the relay binds. With the
 cockpit on `0.0.0.0` or on the tailnet address, that is
-`http://<tailnet address>:30090/#agent`; the tab says so when you arrive by
+`http://<tailnet address>:30090/#agent`; the view says so when you arrive by
 another name. A cockpit bound to `127.0.0.1` gets a loopback relay, usable on the
 box itself.
 
-What the tab shows: the state of the server and the relay, the served opencode
+What the view shows: the state of the server and the relay, the served opencode
 version and, after `opencode upgrade`, that a newer binary is installed with a
 **Restart server** button (systemd restart, through the same exact-argv sudoers
 allowlist as the other units, three more lines). **Fullscreen** makes the
-interface cover the whole browser window; the corner button or Escape brings the
-cockpit back, and a reload on the tab comes back the way it was left. Prefer it
-to opening more browser tabs: every tab of the interface holds one permanent
+interface cover the whole browser window; **Back to the cockpit** (drag it wherever
+it is least in the way) or Escape brings the cockpit back, and a reload comes back the
+way it was left. Prefer it to opening more browser tabs: every browser tab of the interface holds one permanent
 event stream, browsers allow six connections per origin, and a sixth tab freezes
 them all (the interface handles any number of sessions in one tab). **Open in a
-tab** still exists for a second screen. The Logs tab reads the server's journal.
+new tab** still exists for a second screen. The Logs view reads the server's journal.
 
 Permissions are opencode's own. Its defaults (opencode 1.18) allow most tool
 calls and ask before a tool touches a path outside the session's project and
@@ -288,7 +297,7 @@ the autonomy of the `oc` launcher's `--yolo` (a flag `opencode serve` rejects),
 install with `AGENT_AUTO=1`: the unit then carries `OPENCODE_PERMISSION` set to
 allow everything, which opencode honours (verified: the served config reads
 `{"*": "allow"}`), explicit `deny` rules of your config still apply, and your
-`opencode.json` is not touched. The tab says which mode the running server
+`opencode.json` is not touched. The view says which mode the running server
 applies. Re-runs remember the choice; `AGENT_AUTO=0` turns it back off.
 
 ```bash
