@@ -38,9 +38,9 @@ on('feed', d => {
     const cp = tr.insertCell(); cp.textContent = r.path; cp.title = r.path;
     const c2 = tr.insertCell(); c2.className = 'r num'; c2.textContent = r.bytes >= 1024 ? (r.bytes / 1024).toFixed(0) + ' KB' : r.bytes + ' B';
     const c3 = tr.insertCell(); c3.className = 'r num'; c3.textContent = r.secs != null ? r.secs.toFixed(1) + ' s' : '';
-    // the kind comes from the server: an ok request wears no colour, only a client who
-    // left (ember) and a failure (clay) light up
-    const kind = {ok: '', gone: 'warn', fail: 'err', live: 'gold', unknown: ''}[r.kind] ?? 'err';
+    // the kind comes from the server: an ok request wears no colour, nor does the cockpit's
+    // own probe; only a client who left (ember) and a failure (clay) light up
+    const kind = {ok: '', gone: 'warn', fail: 'err', live: 'gold', unknown: '', probe: ''}[r.kind] ?? 'err';
     const c4 = tr.insertCell(); c4.append(el('span', 'tag ' + kind, r.outcome));
     if (r.detail) c4.append(el('div', 'help', r.detail));
   });

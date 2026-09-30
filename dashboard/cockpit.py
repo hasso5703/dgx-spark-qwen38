@@ -688,7 +688,8 @@ def collect_feed():
     """Last requests seen by the keepalive proxy: client, path, size, outcome, guard detail."""
     raw = run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "800",
                "--no-pager", "-o", "short-iso"], timeout=6)
-    return {"node_id": "local", "rows": lc.parse_feed(raw)}
+    return {"node_id": "local",
+            "rows": lc.mark_probes(lc.parse_feed(raw), "/v1/systemone", len(SYSTEMONE_PROBE_BODY))}
 
 
 ZOMBIE_WINDOW = "10m"          # one window per sample: no overlap, no double count
@@ -1203,6 +1204,16 @@ def monotonic_now() -> float:
     return float(Path("/proc/uptime").read_text().split()[0])
 
 
+# The boot a text lane is expected to take when this box has recorded none of its own
+# (the reference box's medians, as the page's READY_DEFAULT), and the grace after it
+# during which "fired up but not answering" still reads as the warm-up it usually is.
+TEXT_BOOT_DEFAULT_S = {"qwen38-sglang.service": 540.0, "qwen38-flash.service": 780.0}
+WARMUP_GRACE_S = 300.0
+# How long the other sampler tiers wait for the first health sample (start_samplers): the
+# engine is asked /v1/loads then, when idle, /health, 3 s and 4 s at most.
+FIRST_HEALTH_WAIT_S = 10.0
+
+
 @guard
 def collect_lifecycle():
     """Explicit per-engine state + progress + ETA + action gates (2s tier)."""
@@ -1295,7 +1306,22 @@ def collect_lifecycle():
             # we had already reached ready in this activation.
             # (wedged is only reachable from ready, so an engine that was wedged has served)
             if st["state"] == "degraded" and prev.get(unit) not in ("ready", "degraded", "wedged"):
-                st["state"] = "warming-up"
+                # A cockpit that did not watch this activation start cannot tell "fired up a
+                # moment ago" from "fired up hours ago, not answering since": the second read
+                # "warming up" for as long as it lasted, a boot state, which holds every
+                # switch back. Past the lane's usual boot and a grace, it is the second.
+                with LIFE_LOCK:
+                    watched = LIFE["witnessed"].get(unit, False)
+                age = None
+                try:
+                    mono_us = int(d.get("ActiveEnterTimestampMonotonic") or 0)
+                    if mono_us > 0:
+                        age = monotonic_now() - mono_us / 1e6
+                except ValueError:
+                    pass
+                usual = lc.eta_for(history, unit) or TEXT_BOOT_DEFAULT_S.get(unit, 780.0)
+                if watched or age is None or age <= usual + WARMUP_GRACE_S:
+                    st["state"] = "warming-up"
         if st["state"] == "ready" and not is_image and not is_video:
             with STATE_LOCK:
                 load = ((STATE.get("engine_fast") or {}).get("data", {})
@@ -1838,6 +1864,8 @@ def served_model_name() -> str:
 SYSTEMONE_CACHE = {"data": None, "ts": 0.0}
 SYSTEMONE_LOCK = threading.Lock()
 SYSTEMONE_MAX_STATE = 48_000        # the cockpit's own POST cap is 64 KiB for every route
+# the availability probe: no state, so the proxy refuses it at the schema and no model runs
+SYSTEMONE_PROBE_BODY = json.dumps({"model": "jev-latest", "questions": {}}).encode()
 
 
 def systemone_available(max_age: float = 60.0) -> dict:
@@ -1869,8 +1897,7 @@ def systemone_available(max_age: float = 60.0) -> dict:
             SYSTEMONE_CACHE.update(data=out, ts=time.time(), key=key)
             return out
         out = {"available": False, "lane": key[1], "reason": "", "status": None}
-        body = json.dumps({"model": "jev-latest", "questions": {}}).encode()
-        req = urllib.request.Request(PROXY_BASE + "/v1/systemone", body,
+        req = urllib.request.Request(PROXY_BASE + "/v1/systemone", SYSTEMONE_PROBE_BODY,
                                      {"Content-Type": "application/json",
                                       "Authorization": f"Bearer {api_key()}"})
         try:
@@ -3744,13 +3771,42 @@ def _sweep_staged_frames() -> None:
             pass
 
 
+def start_samplers(tiers=None, first="engine_fast", wait_s=None, spawn=None) -> None:
+    """One sampler thread per tier, the tier that samples engine health first.
+
+    The lifecycle tier derives every engine's state from that health. Started together,
+    its first pass ran before the first health sample existed, read "no sample yet" as
+    "unhealthy", drew a serving engine as warming up, and logged a "warming-up -> ready"
+    two seconds after every cockpit restart (five in the event log of 2026-09-29/30). The
+    other tiers now start once that sample is in, or after wait_s, from a thread of their
+    own: the HTTP server does not wait for them."""
+    tiers = TIERS if tiers is None else tiers
+    wait_s = FIRST_HEALTH_WAIT_S if wait_s is None else wait_s
+    spawn = spawn or (lambda period, cols: threading.Thread(target=sampler, args=(period, cols),
+                                                            daemon=True).start())
+    head = [t for t in tiers if first in t[1]]
+    rest = [t for t in tiers if first not in t[1]]
+    for period, cols in head:
+        spawn(period, cols)
+
+    def _rest():
+        deadline = time.time() + wait_s
+        while head and time.time() < deadline:
+            with STATE_LOCK:
+                if first in STATE:
+                    break
+            time.sleep(0.05)
+        for period, cols in rest:
+            spawn(period, cols)
+    threading.Thread(target=_rest, daemon=True).start()
+
+
 def main():
     load_events()
     _sweep_staged_frames()
     if not shutil.which("nvidia-smi"):
         print("note: nvidia-smi not found, GPU panel will degrade")
-    for period, cols in TIERS:
-        threading.Thread(target=sampler, args=(period, cols), daemon=True).start()
+    start_samplers()
     if AGENT_PORT > 0:
         threading.Thread(target=agent_relay_thread, daemon=True).start()
     srv = Server((BIND, PORT), Handler)

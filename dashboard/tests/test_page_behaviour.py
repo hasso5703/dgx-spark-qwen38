@@ -599,5 +599,20 @@ class TheCollapsedRailIsADesktopThing(unittest.TestCase):
                 self.assertTrue(any("min-width:981px" in m.replace(" ", "") for m in media), media)
 
 
+
+class TheCockpitsProbeWearsNoAlarmColour(unittest.TestCase):
+    """The request log painted the cockpit's own route probe the red of a failure."""
+
+    def test_a_probe_row_is_not_painted_as_a_failure(self):
+        out = run(self, r"""
+        feed({feed: {rows: [{ts: '2026-09-30T17:04:05', peer: '127.0.0.1:56836', path: '/v1/systemone', bytes: 40, secs: 0,
+                             kind: 'probe', outcome: "422 as designed: the cockpit's probe"},
+                            {ts: '2026-09-30T17:04:06', peer: '100.78.198.77:1', path: '/v1/chat/completions', bytes: 9, secs: 0,
+                             kind: 'fail', outcome: '503 engine unreachable'}]}});
+        report([...$('feed').tBodies[0].rows].map(tr => tr.cells[5].querySelector('.tag').className.trim()));
+        """)
+        self.assertEqual(sorted(out), ["tag", "tag err"])
+
+
 if __name__ == "__main__":
     unittest.main()

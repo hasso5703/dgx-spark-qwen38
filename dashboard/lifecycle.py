@@ -534,6 +534,8 @@ FEED_FIT = re.compile(r"\[proxy\] (\S+)" + _KEY + r" oversize check: (\d+) token
 #   fail    the request did not get an answer: the engine, the guard or the stream
 #   live    still in flight
 #   unknown no end line was ever written (a proxy restart mid-request)
+#   probe   the cockpit's own route probe, refused at the schema as it is meant to be
+#           (mark_probes): no client asked anything
 def outcome_kind(outcome: str) -> str:
     if outcome == "in flight":
         return "live"
@@ -546,6 +548,20 @@ def outcome_kind(outcome: str) -> str:
     if "CLIENT GONE" in outcome or "client vanished" in outcome:
         return "gone"
     return "fail"
+
+
+def mark_probes(rows: list[dict], path: str, size: int) -> list[dict]:
+    """The cockpit's own probe of a route, in the request log: a request from this box to
+    `path` carrying the probe's exact body, refused with a 422 at the schema as designed
+    (it has no state, so no model runs). It read as a failed client request, in red, once
+    a minute while the Decide view was open (2026-09-30). Rows are marked in place."""
+    for r in rows:
+        if (r.get("path") == path and r.get("bytes") == size
+                and str(r.get("peer", "")).startswith("127.0.0.1:")
+                and str(r.get("outcome", "")).startswith("422")):
+            r["kind"] = "probe"
+            r["outcome"] = "422 as designed: the cockpit's probe"
+    return rows
 
 
 def _feed_open(records: list[dict], method: str | None = None,

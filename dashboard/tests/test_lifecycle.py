@@ -1777,5 +1777,38 @@ class TheVideoRunFixtureIsReadEndToEnd(unittest.TestCase):
         self.assertIsNone(r["step"])
 
 
+
+class TheCockpitsRouteProbeIsNotAFailure(unittest.TestCase):
+    """The Decide view asks the proxy whether it serves /v1/systemone with a body that has no
+    state, which the proxy refuses at the schema without running a model. The request log
+    painted each of those a red failure, once a minute while the view was open. These are
+    the proxy's own lines for that probe, from the reference box on 2026-09-30."""
+    PROBE = ("2026-09-30T17:04:05+02:00 gx10-eff9 python3[4726]: [proxy] {peer} -> POST {path} body={size}b\n"
+             "2026-09-30T17:04:05+02:00 gx10-eff9 python3[4726]: [proxy] {peer} systemone INVALID: ['body', 'state'] Field required\n"
+             "2026-09-30T17:04:05+02:00 gx10-eff9 python3[4726]: [proxy] {peer} POST {path} {outcome} in 0.0s\n")
+
+    def row(self, peer="127.0.0.1:56836", path="/v1/systemone", size=40, outcome="422 systemone refused"):
+        rows = lc.parse_feed(self.PROBE.format(peer=peer, path=path, size=size, outcome=outcome))
+        self.assertEqual(len(rows), 1)
+        return lc.mark_probes(rows, "/v1/systemone", 40)[0]
+
+    def test_the_probe_reads_as_the_cockpits_own(self):
+        r = self.row()
+        self.assertEqual(r["kind"], "probe")
+        self.assertTrue(r["outcome"].startswith("422"), "the status stays in the words")
+
+    def test_the_same_refusal_from_a_client_is_still_a_failure(self):
+        self.assertEqual(self.row(peer="100.78.198.77:51000")["kind"], "fail")
+
+    def test_a_request_from_this_box_that_is_not_the_probe_body_is_still_a_failure(self):
+        self.assertEqual(self.row(size=57)["kind"], "fail")
+
+    def test_another_route_is_never_taken_for_the_probe(self):
+        self.assertEqual(self.row(path="/v1/chat/completions", outcome="422 bad request")["kind"], "fail")
+
+    def test_an_answered_request_keeps_its_own_outcome(self):
+        r = self.row(outcome="ok non-sse")
+        self.assertEqual((r["kind"], r["outcome"]), ("ok", "ok non-sse"))
+
 if __name__ == '__main__':
     unittest.main()

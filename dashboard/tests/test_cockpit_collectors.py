@@ -595,6 +595,112 @@ class AWedgedEngineThatLosesHealthIsDegraded(Base):
         self.assertEqual(out.get("data", out)["engines"][self.U]["state"], "degraded")
 
 
+class ACockpitRestartFacingAServingEngine(Base):
+    """Every cockpit restart logged "warming-up -> ready" for the serving lane two seconds
+    later (five times in the event log of 2026-09-29/30). The lifecycle tier's first pass
+    ran before the first health sample existed, read "no sample" as "unhealthy", and
+    turned the "degraded" that gave into "warming-up", having no previous state. And an
+    engine that really was not answering when the cockpit came up read "warming up" for as
+    long as it lasted: a boot state, which holds every switch back."""
+    U = "qwen38-flash.service"
+    FIRED = ("[2026-09-30 15:16:03] KV Cache is allocated. dtype: torch.bfloat16, #tokens: 491136\n"
+             "[2026-09-30 15:16:35] The server is fired up and ready to roll!\n")
+    NOW = 100_000.0
+
+    def setUp(self):
+        self.cp.BOOT_HEAD_READ.clear()
+        self.cp.BOOT_SEEN.clear()
+        self.cp.UNHEALTHY_TICKS.clear()
+        self.cp.LAST_PROGRESS["ts"] = None
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"], self.cp.LIFE["witnessed"], self.cp.LIFE["enter"] = {}, {}, {}
+        (self.tmp / self.cp.HISTORY_FILE_NAME).unlink(missing_ok=True)
+        self.saved_mono = self.cp.monotonic_now
+        self.cp.monotonic_now = lambda: self.NOW
+
+    def tearDown(self):
+        self.cp.monotonic_now = self.saved_mono
+        (self.tmp / self.cp.HISTORY_FILE_NAME).unlink(missing_ok=True)
+        super().tearDown()
+
+    def tick(self, healthy, age_s):
+        with self.cp.STATE_LOCK:
+            self.cp.STATE["engine_fast"] = {"data": {"healthy": healthy}}
+        enter = int((self.NOW - age_s) * 1e6)
+        self.box({f"systemctl show {self.U}": "ActiveState=active\nSubState=running\n"
+                                              f"ActiveEnterTimestampMonotonic={enter}\n",
+                  "docker ps -q -f name=^qwen38-flash$": "c0ffee\n",
+                  "docker logs --tail 300 qwen38-flash": self.FIRED,
+                  "docker logs --since": self.FIRED})
+        out = self.cp.collect_lifecycle()
+        return out.get("data", out)
+
+    def test_the_other_tiers_start_once_health_has_been_sampled(self):
+        import threading
+        import time
+        seen = []
+        with self.cp.STATE_LOCK:
+            self.cp.STATE.pop("engine_fast", None)
+
+        def spawn(period, cols):
+            if "engine_fast" in cols:
+                def first_sample():
+                    time.sleep(0.3)
+                    with self.cp.STATE_LOCK:
+                        self.cp.STATE["engine_fast"] = {"data": {"healthy": True}}
+                threading.Thread(target=first_sample, daemon=True).start()
+                return
+            with self.cp.STATE_LOCK:
+                seen.append((tuple(cols), "engine_fast" in self.cp.STATE))
+        self.cp.start_samplers(spawn=spawn, wait_s=5)
+        rest = [t for t in self.cp.TIERS if "engine_fast" not in t[1]]
+        deadline = time.time() + 6
+        while len(seen) < len(rest) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(len(seen), len(rest), seen)
+        self.assertTrue(all(had for _, had in seen), seen)
+        self.assertIn((("lifecycle",), True), seen)
+
+    def test_a_health_tier_that_never_answers_does_not_hold_the_others_back(self):
+        import time
+        started = []
+        with self.cp.STATE_LOCK:
+            self.cp.STATE.pop("engine_fast", None)
+        self.cp.start_samplers(spawn=lambda period, cols: started.append(tuple(cols)), wait_s=0.2)
+        deadline = time.time() + 3
+        while len(started) < len(self.cp.TIERS) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(len(started), len(self.cp.TIERS), started)
+
+    def test_an_engine_fired_up_hours_ago_and_silent_is_degraded(self):
+        d = self.tick(healthy=False, age_s=3 * 3600)
+        self.assertEqual(d["engines"][self.U]["state"], "degraded")
+        self.assertNotIn("switch", d["blocked"], "a lane that has served is no boot in progress")
+
+    def test_an_activation_younger_than_a_boot_still_reads_warming_up(self):
+        d = self.tick(healthy=False, age_s=60)
+        self.assertEqual(d["engines"][self.U]["state"], "warming-up")
+        self.assertIn("switch", d["blocked"], "a warm-up holds the switch back, which is why the line matters")
+
+    def test_a_boot_this_cockpit_watched_keeps_its_warm_up(self):
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["witnessed"][self.U] = True
+        d = self.tick(healthy=False, age_s=3 * 3600)
+        self.assertEqual(d["engines"][self.U]["state"], "warming-up")
+
+    def test_the_line_is_the_boxs_own_median_boot_plus_the_grace(self):
+        (self.tmp / self.cp.HISTORY_FILE_NAME).write_text(json.dumps({self.U: [600.0, 610.0, 620.0]}))
+        edge = 610.0 + self.cp.WARMUP_GRACE_S
+        self.assertEqual(self.tick(healthy=False, age_s=edge - 5)["engines"][self.U]["state"], "warming-up")
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"] = {}
+        self.assertEqual(self.tick(healthy=False, age_s=edge + 5)["engines"][self.U]["state"], "degraded")
+
+    def test_an_engine_that_answers_is_ready_at_the_first_pass(self):
+        d = self.tick(healthy=True, age_s=3 * 3600)
+        self.assertEqual(d["engines"][self.U]["state"], "ready")
+
+
 class AStopTimeoutIsNotACrash(Base):
     """A unit systemd killed because it did not stop in time ends "failed" with
     Result=timeout: that is how a Stop during a generation looked on 2026-09-23, and the
