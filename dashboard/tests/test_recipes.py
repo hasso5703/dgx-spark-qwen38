@@ -76,8 +76,13 @@ class ProfileFromText(unittest.TestCase):
 
     def test_flash_tiers_resolve(self):
         lat = rc.builtin("flash", ASSIGNS, TEMPLATES)
-        self.assertEqual(lat["serve"]["max_running_requests"], 4)
-        self.assertEqual(lat["serve"]["max_mamba_cache_size"], 20)
+        self.assertEqual(lat["serve"]["max_running_requests"], 8)
+        self.assertEqual(lat["serve"]["max_mamba_cache_size"], 40)
+        self.assertEqual(lat["serve"]["mamba_max_states_per_path"], 2)
+        ctx = rc.builtin("flash", {**ASSIGNS, "FLASH_TIER": "context"}, TEMPLATES)
+        self.assertEqual(ctx["serve"]["max_running_requests"], 4)
+        self.assertEqual(ctx["serve"]["max_mamba_cache_size"], 20)
+        self.assertNotIn("mamba_max_states_per_path", ctx["serve"])
         self.assertEqual(lat["serve"]["mamba_cache_strategy"], "extra_buffer")
         self.assertEqual(lat["serve"]["quantization"], "modelopt_fp4")
         self.assertEqual(lat["drafter"]["algorithm"], "NEXTN")
@@ -265,7 +270,7 @@ class Drift(unittest.TestCase):
                      "__MODEL_REV_ARGS__": "--revision " + f["model"]["revision"],
                      "__MODEL_REV__": f["model"]["revision"],
                      "__FLASH_QUANT_ARGS__": quant_args,
-                     "__FLASH_TIER_ARGS__": rc.TIER_ARGS["context"] + " --enable-linear-replayssm-spec",
+                     "__FLASH_TIER_ARGS__": rc.TIER_ARGS["concurrency"] + " --enable-linear-replayssm-spec",
                      "__FLASH_MEM_FRACTION__": ASSIGNS["FLASH_MEM_FRACTION"],
                      "__PLE_RSS_BUDGET_GB__": ASSIGNS["PLE_RSS_BUDGET_GB"],
                      "__SPEC_TOKEN_MAP_LINE__":

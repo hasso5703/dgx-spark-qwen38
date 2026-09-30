@@ -36,7 +36,8 @@ _MTP = ("--mamba-radix-cache-strategy extra_buffer "
         "--speculative-eagle-topk 1 --speculative-num-draft-tokens 4")
 TIER_ARGS = {
     "context": "--max-running-requests 4 --max-mamba-cache-size 20 " + _MTP,
-    "concurrency": "--max-running-requests 8 --max-mamba-cache-size 40 " + _MTP,
+    "concurrency": ("--max-running-requests 8 --max-mamba-cache-size 40 "
+                    "--mamba-max-states-per-path 2 " + _MTP),
     "throughput": ("--max-running-requests 24 --max-mamba-cache-size 96 "
                    "--mamba-radix-cache-strategy extra_buffer_lazy"),
 }
@@ -75,6 +76,7 @@ FLAGS = {
     "max_total_tokens": ("--max-total-tokens", int, (4096, 1_100_000)),
     "chunked_prefill": ("--chunked-prefill-size", int, (256, 32768)),
     "max_mamba_cache_size": ("--max-mamba-cache-size", int, (1, 4096)),
+    "mamba_max_states_per_path": ("--mamba-max-states-per-path", int, (1, 8)),
     "attention_backend": ("--attention-backend", str, ("flashinfer", "triton", "trtllm_mha", "fa3")),
     "prefill_attention": ("--prefill-attention-backend", str, ("flashinfer", "triton", "trtllm_mha", "fa3")),
     "decode_attention": ("--decode-attention-backend", str, ("flashinfer", "triton", "trtllm_mha", "fa3")),
@@ -280,7 +282,7 @@ def builtin(recipe_id: str, assigns: dict[str, str], templates: dict[str, str],
                       "--speculative-draft-model-quantization unquant ")
     else:
         quant_args = ""
-    tier = assigns.get("FLASH_TIER", "context")
+    tier = assigns.get("FLASH_TIER", "concurrency")
     tier_args = (TIER_ARGS.get(tier) or TIER_ARGS["context"]) if lane == "flash" else ""
     # The reduced draft vocabulary is rendered as a whole line, and only when the
     # tier speculates, exactly as install.sh decides it. Leaving the placeholder

@@ -169,7 +169,7 @@ FLASH_UNC_REV="be794b990578ef3031eccf9f28e675a289a09ee9"
 # router fix for the GB10 MTP output collapse (sglang#36811 via #38308/#38290,
 # which is the root cause of the wall of "!" the proxy learned to detect in
 # v1.6), and the mixed-precision loader (sglang#38121).
-FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:9d2a843c706c74bc259c0d9abf360551eb2734e1e7d255ab012a6965f10480b6}"  # = lmsysorg/sglang:dev-qwen38-next-local (qwen4-main-squashed 4ccff141db), 2026-09-07
+FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:cb6ed363800a5bea98ac90b4c6447e9ba66cef7db881ac1f108046b6622d22b8}"  # = lmsysorg/sglang:nightly-cu134-20260928-6caf0ff, measured 2026-09-29 on this box: boot 11 min, bench median 46.9 tok/s, needle 120k/200k 2/2, prefix cache 99.9%. The previous pin 9d2a843c (qwen4-main-squashed 4ccff141db, 2026-09-07) stays tagged qwen38-pinned:flash-9d2a843c706c for rollback.
 # Backing store for the flash target's file-backed 47.7 GiB PLE table. The
 # server rewrites it on every boot (~10 min from a fresh sparse file, ~55 min
 # over a populated one), so the launcher deletes the previous file first.
@@ -233,16 +233,19 @@ esac
 # extra_buffer_lazy, so concurrency and the longest servable prompt trade against
 # each other one for one:
 #   context      4 requests, 20 slots, MTP: KV pool 295,936 tokens, so a full
-#                262,144-token prompt fits. The default, because this lane exists
-#                for long context and an agent client runs one or two streams.
-#   concurrency  8 requests, 40 slots, MTP: the cookbook's low-latency cell.
-#                Measured here: pool 129,792 tokens (prompts stop near 119k),
-#                96.5 tok/s aggregate on prose at 8 streams, single stream
-#                unchanged. Upstream: 71.7 tok/s at 8, GSM8K 97.1% full set.
+#                262,144-token prompt fits.
+#   concurrency  8 requests, 40 slots, 2 states per path, MTP: the default since
+#                2026-09-30, measured on this box (~/flashtest-palier8,
+#                ~/flashtest-nightly2809): pool 477,056 tokens, so a full 262K
+#                prompt fits at 8 requests, bench median 46.9 tok/s single
+#                stream (vs 46.2 without the per-path cap), canaries 4/4,
+#                needle 120k/200k 2/2, prefix cache 99.9% on a repeated prefix.
+#                The per-path cap halves the state each speculative path holds,
+#                which is what makes 8 requests fit in 40 slots.
 #   throughput   24 requests, 96 lazy slots, no speculation: the cookbook's
 #                high-throughput cell, 83 tok/s of output at 24 upstream and a
 #                ~286k pool, at 15.9 tok/s single stream.
-FLASH_TIER="${FLASH_TIER:-context}"
+FLASH_TIER="${FLASH_TIER:-concurrency}"
 # MTP verify intermediates on a fixed ring instead of per-request state slots
 # (the cookbook's EAGLE row on SM120/SM121). Measured on this box 2026-09-12,
 # context tier, same target: pool 463,936 -> 557,312 (+20%, above the previous
@@ -258,7 +261,7 @@ resolve_flash_tier_args() {
     context)
       FLASH_TIER_ARGS="--max-running-requests 4 --max-mamba-cache-size 20 --mamba-radix-cache-strategy extra_buffer --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4" ;;
     concurrency)
-      FLASH_TIER_ARGS="--max-running-requests 8 --max-mamba-cache-size 40 --mamba-radix-cache-strategy extra_buffer --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4" ;;
+      FLASH_TIER_ARGS="--max-running-requests 8 --max-mamba-cache-size 40 --mamba-max-states-per-path 2 --mamba-radix-cache-strategy extra_buffer --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4" ;;
     throughput)
       FLASH_TIER_ARGS="--max-running-requests 24 --max-mamba-cache-size 96 --mamba-radix-cache-strategy extra_buffer_lazy" ;;
     *) printf 'ERROR: FLASH_TIER must be "context", "concurrency" or "throughput" (got: %s)\n' "$FLASH_TIER" >&2; exit 1 ;;
@@ -688,14 +691,15 @@ if [ "$INSTALLED_CHOICE" = "flash" ]; then
     # The tier lives in the launcher as the concurrency it pins, so a re-run
     # without FLASH_TIER keeps the tier the box is serving.
     if [ -z "${FLASH_TIER_ENV:-}" ]; then
-      for t in concurrency throughput; do
+      for t in context concurrency throughput; do
         case "$t" in
+          context)     mrr=4 ;;
           concurrency) mrr=8 ;;
           throughput)  mrr=24 ;;
         esac
         if grep -q -- "--max-running-requests $mrr" "$FLASH_LAUNCH" 2>/dev/null; then
           FLASH_TIER="$t"
-          echo "Keeping the installed flash tier: $t. Pass FLASH_TIER=context to change."
+          echo "Keeping the installed flash tier: $t. Set FLASH_TIER on the command line to change it."
         fi
       done
       resolve_flash_tier_args

@@ -67,17 +67,21 @@ silently caps `--max-running-requests` to what the mamba pool admits while
 
 | `FLASH_TIER=` | requests | KV pool | measured here |
 |---|---|---|---|
-| **`context`** (default) | 4 | **279,872 to 463,488 tokens** across boots, and every one of them above the 262,144-token window, so a full-context prompt always fits | **47.9 / 47.1 / 30.9 tok/s** single stream (code, math, prose FR), **71.6 tok/s aggregate at 4 streams** (17.9-18.7 each) |
-| `concurrency` | 8 | **468,480 tokens** measured 2026-09-12 with replayssm-spec (was 129,792 before it), so a full 262K prompt fits at 8 requests too | **43.7 / 44.2 / 29.5 tok/s** single stream (code, reasoning, prose FR, warmed, uncensored), **90.4 tok/s aggregate at 4 streams**, needle 8/8 exact to 140K at 13.5 GiB floor |
+| `context` | 4 | **279,872 to 463,488 tokens** across boots, and every one of them above the 262,144-token window, so a full-context prompt always fits | **47.9 / 47.1 / 30.9 tok/s** single stream (code, math, prose FR), **71.6 tok/s aggregate at 4 streams** (17.9-18.7 each) |
+| **`concurrency`** (default since 2026-09-30) | 8, 2 states per path | **477,056 tokens** measured 2026-09-29 with the per-path cap (468,480 without it, 129,792 before replayssm-spec), so a full 262K prompt fits at 8 requests too | **43.7 / 44.2 / 29.5 tok/s** single stream (code, reasoning, prose FR, warmed, uncensored), **90.4 tok/s aggregate at 4 streams**, needle 8/8 exact to 140K at 13.5 GiB floor |
 | `throughput` | 24, no speculation | ~286K tokens (upstream) | upstream: 83 tok/s of output at 24, 15.9 single |
 
 Both speculative tiers are the cookbook's own verified single-Spark cells, which
-score **GSM8K 97.1-97.3% on the full 1,319-question set** upstream. `context` stays
-this repo's default after measuring 8 requests too: the 8-request pool came out
-larger than the 4-request pool used to (replayssm-spec frees the draft depth
-out of the state budget), but the per-session limits that make long agent
-sessions work (205K/32K) are sized for one or two streams, and concurrent-load
-memory is not measured yet. Same cell, concurrency pinned lower, longer sessions.
+score **GSM8K 97.1-97.3% on the full 1,319-question set** upstream. `concurrency`
+became the default on 2026-09-30 with `--mamba-max-states-per-path 2` added,
+after the campaign measured it on this box (memory flash_palier8_nightly_2026_09_29:
+canaries 4/4, needle 120k/200k 2/2, prefix cache 99.5 to 99.9% on repeated
+prefixes, the pool never saturated, mamba peaked at 22 of 40). The per-path cap
+halves the state each speculative path holds, which is what makes 8 requests fit
+in 40 slots while a full 262K prompt still fits. `context` stays one
+`FLASH_TIER=context ./install.sh` away, and a re-run keeps the tier already
+installed, in both directions (the detection now reads a 4-request launcher
+too, which the old default never needed).
 
 The pool is still sized from what the host has free at the instant SGLang
 profiles, so it is a range rather than a number: boots of the identical launcher

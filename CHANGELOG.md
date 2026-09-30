@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased: the flash lane defaults to the concurrency tier, the engine to the nightly
+
+The 2026-09-29 campaign (bench, canaries, needle, prefix cache, memory
+flash_palier8_nightly_2026_09_29) validated `--mamba-max-states-per-path 2` and
+the nightly engine `cb6ed363` on this box, and the box has been serving both
+since. This writes what the box already does back into the plan: `FLASH_TIER`
+defaults to `concurrency` (8 requests, 40 slots, 2 states per path),
+`FLASH_IMAGE` pins `lmsysorg/sglang@sha256:cb6ed363...` (the 9d2a843c pin stays
+tagged `qwen38-pinned:flash-9d2a843c706c` for rollback), and `uninstall.sh`
+knows both digests. A re-run keeps an installed `context` box on `context`: the
+tier detection now reads the 4-request launcher too, which the old default never
+needed. Without this, the next `./install.sh` silently walked a concurrency box
+back to the 07/09 image at 4/20: the debt the campaign note listed under
+"Reste a faire", now paid.
+
 ## Unreleased: the MiniMax-H3 video lane (fourth lane, opt-in)
 
 `./install.sh --with-video` adds text-to-video with joint video-and-audio

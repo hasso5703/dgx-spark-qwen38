@@ -1673,7 +1673,19 @@ class TheVideoRunComesFromItsOwnJournal(unittest.TestCase):
     def test_it_per_second_is_read_as_seconds_per_step(self):
         r = self.run_of("denoise:  10%| | 5/50 [00:10<00:10, 1.52it/s]")
         self.assertAlmostEqual(r["s_per_step"], 1 / 1.52, places=6)
-        self.assertEqual(r["step"], 5)
+
+    def test_the_rate_helper_reads_both_arms_and_garbage(self):
+        self.assertEqual(lc._rate_s_per_step("14.78s/it"), 14.78)
+        self.assertEqual(lc._rate_s_per_step("2it/s"), 0.5)
+        for junk in ("?it/s", "0it/s", "x s/it", ""):
+            self.assertIsNone(lc._rate_s_per_step(junk), junk)
+
+    def test_a_zero_rate_reads_none_and_not_a_crash(self):
+        # 0it/s is tqdm's own before the first step completes: inverting it
+        # would crash the parser inside a live progress read
+        r = self.run_of("denoise:  0%| | 0/50 [00:00<?, 0it/s]")
+        self.assertIsNone(r["s_per_step"])
+        self.assertEqual(r["step"], 0)
         self.assertEqual(r["steps"], 50)
 
     def test_pipeline_start_is_encode_until_a_stage_names_otherwise(self):
