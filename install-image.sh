@@ -287,6 +287,11 @@ if len(sha) == 40 and sha == rev:
 PY
 
 step "5/6 Service"
+# The unit runs engine-preflight.sh before every start: run on its own, this installer
+# must put it in place, or the lane would never start.
+mkdir -p "$CONFIG_DIR"
+cmp -s "$HERE/engine-preflight.sh" "$CONFIG_DIR/engine-preflight.sh" \
+  || install -m 755 "$HERE/engine-preflight.sh" "$CONFIG_DIR/engine-preflight.sh"
 RENDER="$(mktemp)"; trap 'rm -f "$RENDER"' EXIT
 sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" \
     -e "s|__IMAGE_LANE_DIR__|$LANE_DIR|g" -e "s|__IMAGE_VENV__|$VENV|g" \

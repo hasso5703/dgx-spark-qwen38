@@ -100,6 +100,24 @@ class WhatTheEngineReads(unittest.TestCase):
         self.assertIn(DIGEST, out.stdout.splitlines()[1])
         self.assertIn("qwen38-sglang", out.stdout.splitlines()[2])
 
+    def test_the_guard_the_unit_runs_first_is_no_input(self):
+        """Every engine unit runs engine-preflight.sh before it starts the engine, which never
+        reads it: a new guard, or one rewritten after the start, must not restart a healthy
+        engine. Both lookups found it, the scripts the unit runs and the config files it names."""
+        for flash in (False, True):
+            with self.subTest(flash=flash):
+                box = Box(flash=flash)
+                guard = box.cfg / "engine-preflight.sh"
+                guard.write_text("#!/usr/bin/env bash\necho guard one\n")
+                box.unit.write_text(box.unit.read_text().replace(
+                    "[Service]\n", f"[Service]\nExecStartPre=/bin/bash {guard} {box.unit.name}\n"))
+                fp = box.run("fingerprint")
+                guard.write_text("#!/usr/bin/env bash\necho guard two\n")
+                self.assertEqual(box.run("fingerprint"), fp)
+                later = time.time() + 600
+                os.utime(guard, (later, later))
+                self.assertTrue(box.run("running").startswith("yes"), box.run("running"))
+
     def test_the_flash_unit_brings_in_its_launcher_and_what_it_names(self):
         box = Box(flash=True)
         fp = box.run("fingerprint")

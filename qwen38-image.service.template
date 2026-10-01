@@ -20,6 +20,9 @@ WorkingDirectory=__IMAGE_LANE_DIR__
 Environment=HF_HOME=__HF_CACHE__
 Environment=HF_HUB_OFFLINE=1
 Environment=PYTHONUNBUFFERED=1
+# The memory the last engine held has to be back before this one starts: a start piled on
+# memory the driver kept is how sglang#40948 froze a DGX Spark (see engine-preflight.sh).
+ExecStartPre=/bin/bash __HOME__/.config/qwen38/engine-preflight.sh qwen38-image.service
 # The cookbook's DGX Spark recipe, and nothing else: one GPU, every component resident,
 # the runtime picking its own attention (it logs "Defaulting to Torch SDPA backend on
 # SM12.x"), full-image VAE decode, eager execution, batch 1. Forcing any of those is how

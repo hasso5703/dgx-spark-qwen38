@@ -6,6 +6,9 @@ Day-to-day commands, the opt-in extras, and what an upgrade from an earlier vers
 
 The command list is in the README, under "Operations". What follows is what does not fit there.
 
+What the box does when an engine dies or restarts (the start guard, requests held through
+the boot, a server left without its scheduler) is in [engine-restarts.md](engine-restarts.md).
+
 **Killing an abandoned generation.** If a client dies mid-generation the server keeps
 decoding for nothing (symptom: power draw and GPU busy with no active session). Behind
 the keepalive proxy this heals itself: the proxy aborts the upstream the moment the

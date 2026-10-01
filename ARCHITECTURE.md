@@ -91,6 +91,11 @@ launcher in `~/.local/bin`, and the two weight trees (HF cache, PLE dir).
     `/root` with a new API key and leaves every client on 401 against a
     healthy engine, which is the one failure shape this stack has that
     produces no error anywhere.
+13. No engine starts on memory the last one has not given back: every engine unit runs
+    `engine-preflight.sh` before its engine, every installer that writes such a unit puts
+    the script in place first (run on its own, the image installer would otherwise leave a
+    lane that never starts), one attempt fits in the unit's start timeout, and the script
+    is no input of the engine, so a new one never restarts a healthy engine.
 
 ## How a change moves through the repo
 

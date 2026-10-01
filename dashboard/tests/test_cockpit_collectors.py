@@ -568,6 +568,156 @@ class TheBootBarNeverGoesBack(Base):
 
 
 
+class TheLaneSaysWhyTheStartGuardHoldsIt(Base):
+    """engine-preflight.sh writes to the unit's journal, and while it waits there is no
+    container, so the container log the lifecycle reads never had its reason: a held lane
+    read "starting", a refused one "keeps crashing" (issue #26)."""
+    U = "qwen38-sglang.service"
+    W = ("preflight: qwen38-sglang.service waits: what is left of an engine still holds 16 GiB of GPU "
+         "memory: 1756018 sglang::stuck 16578 MiB\n")
+    R = ("preflight: NOT starting qwen38-sglang.service: the GPU driver holds 50.9 GiB that no process "
+         "accounts for, still after 60 s. Starting into memory the driver has not given back is how "
+         "sglang#40948 froze a DGX Spark until a power cycle. Stop what holds it, or reboot if nothing "
+         "does; systemd tries again in 15 s.\n")
+
+    def setUp(self):
+        self.cp.BOOT_SEEN.clear()
+        with self.cp.STATE_LOCK:
+            self.cp.STATE["engine_fast"] = {"data": {"healthy": False}}
+
+    def tick(self, active, sub, journal, container=""):
+        fake = self.box({f"systemctl show {self.U}": f"ActiveState={active}\nSubState={sub}\n"
+                                                     "ActiveEnterTimestampMonotonic=0\nInvocationID=abc123\n",
+                         "docker ps -q -f name=^qwen38-sglang$": container,
+                         "_SYSTEMD_INVOCATION_ID=abc123": journal})
+        out = self.cp.collect_lifecycle()
+        return out.get("data", out)["engines"][self.U], fake
+
+    def test_held_while_it_waits(self):
+        e, fake = self.tick("activating", "start-pre", self.W)
+        self.assertEqual(e["state"], "starting")
+        self.assertEqual(e["held"], "what is left of an engine still holds 16 GiB of GPU memory: "
+                                    "1756018 sglang::stuck 16578 MiB")
+        self.assertIsNone(e["refused"])
+        reads = [c for c in fake.calls if c[:1] == ["journalctl"] and self.U in c]
+        self.assertEqual(len(reads), 1)
+        self.assertIn("-g", reads[0])
+        self.assertIn("_SYSTEMD_INVOCATION_ID=abc123", reads[0], "this run's lines, never an older run's")
+
+    def test_refused_between_two_attempts(self):
+        e, _ = self.tick("activating", "auto-restart", self.R)
+        self.assertEqual((e["state"], e["restarting"]), ("failed", True))
+        self.assertEqual(e["refused"], "the GPU driver holds 50.9 GiB that no process accounts for")
+        self.assertIsNone(e["held"])
+
+    def test_a_lane_that_is_simply_starting_has_no_reason(self):
+        e, _ = self.tick("activating", "start-pre", "")
+        self.assertEqual(e["state"], "starting")
+        self.assertIsNone(e["held"])
+
+    def test_a_serving_lane_never_reads_it(self):
+        _, fake = self.tick("active", "running", self.W, container="c0ffee\n")
+        self.assertFalse([c for c in fake.calls if c[:1] == ["journalctl"] and self.U in c and "-g" in c])
+
+
+class AServerWithoutItsSchedulerIsRestartedOnce(Base):
+    """SGLang v0.5.19 can be left with its server process alive and no scheduler (a SIGQUIT
+    that reaches the server while the scheduler runs; reproduced on the reference box,
+    2026-10-01): no HTTP, a unit systemd calls active, and nothing restarts it."""
+    U = "qwen38-sglang.service"
+    FIRED = ("[2026-10-01 12:12:30] Load weight end. elapsed=119.55 s\n"
+             "[2026-10-01 12:17:42] The server is fired up and ready to roll!\n")
+
+    def setUp(self):
+        self.cp.BOOT_SEEN.clear()
+        self.cp.BOOT_HEAD_READ.clear()
+        self.cp.ZOMBIE_SINCE.clear()
+        self.cp.LAST_ZOMBIE_RESTART.clear()
+        self.actions = []
+        real_alive, real_start = self.cp.scheduler_alive, self.cp.start_action
+        self.addCleanup(setattr, self.cp, "scheduler_alive", real_alive)
+        self.addCleanup(setattr, self.cp, "start_action", real_start)
+        self.cp.start_action = lambda kind, args, origin="": (self.actions.append((kind, args, origin)), (0, "ok"))[1]
+        self.alive = False
+        self.cp.scheduler_alive = lambda container: self.alive
+
+    def tick(self):
+        with self.cp.STATE_LOCK:
+            self.cp.STATE["engine_fast"] = {"data": {"healthy": False}}
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"] = {self.U: "degraded"}
+        self.cp.UNHEALTHY_TICKS[self.U] = 5
+        self.cp.LAST_PROGRESS["ts"] = None
+        self.box({f"systemctl show {self.U}": "ActiveState=active\nSubState=running\n"
+                                              "ActiveEnterTimestampMonotonic=1000\nInvocationID=abc\n",
+                  "docker ps -q -f name=^qwen38-sglang$": "c0ffee\n",
+                  "docker logs --tail 300 qwen38-sglang": self.FIRED,
+                  "docker logs --since": self.FIRED})
+        out = self.cp.collect_lifecycle()
+        return out.get("data", out)["engines"][self.U]
+
+    def test_it_is_named_then_restarted_once_after_its_delay(self):
+        e = self.tick()
+        self.assertEqual((e["state"], e["zombie"], e["zombie_in"]), ("degraded", True, 120))
+        self.assertEqual(self.actions, [])
+        self.cp.ZOMBIE_SINCE[self.U] = __import__("time").time() - 121
+        self.tick()
+        self.assertEqual(self.actions, [("unit", {"verb": "restart", "unit": self.U}, "zombie")])
+        self.tick()
+        self.assertEqual(len(self.actions), 1, "one restart per half hour, not one per tick")
+
+    def test_a_server_with_its_scheduler_is_left_alone(self):
+        self.alive = True
+        e = self.tick()
+        self.assertFalse(e["zombie"])
+        self.assertNotIn(self.U, self.cp.ZOMBIE_SINCE)
+        self.alive = None                     # an unreadable process list decides nothing
+        self.assertFalse(self.tick()["zombie"])
+        self.assertEqual(self.actions, [])
+
+    def test_off_it_says_so_and_does_nothing(self):
+        self.cp.ZOMBIE_RESTART = False
+        self.addCleanup(setattr, self.cp, "ZOMBIE_RESTART", True)
+        self.cp.ZOMBIE_SINCE[self.U] = __import__("time").time() - 600
+        self.assertTrue(self.tick()["zombie"])
+        self.assertEqual(self.actions, [])
+
+
+class ACrashWhileServingIsNoCrashLoop(Base):
+    """A serving engine that crashes waits 15 s for its next attempt, exactly like a boot that
+    keeps dying, and the page said "keeps crashing, it dies during startup" for both (seen
+    2026-10-01 after one crash of the serving flash lane). The lane tells them apart now."""
+    U = "qwen38-sglang.service"
+
+    def tick(self, active, sub, prev):
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"] = {self.U: prev}
+        with self.cp.STATE_LOCK:
+            self.cp.STATE["engine_fast"] = {"data": {"healthy": False}}
+        self.box({f"systemctl show {self.U}": f"ActiveState={active}\nSubState={sub}\n"
+                                              "ActiveEnterTimestampMonotonic=0\nInvocationID=abc\nNRestarts=1\n",
+                  "docker ps -q -f name=^qwen38-sglang$": ""})
+        out = self.cp.collect_lifecycle()
+        return out.get("data", out)["engines"][self.U]
+
+    def test_down_while_serving_then_down_at_boot(self):
+        self.cp.CRASHED_SERVING.clear()
+        e = self.tick("activating", "auto-restart", "ready")
+        self.assertEqual((e["state"], e["restarting"], e["crashed_serving"]), ("failed", True, True))
+        e = self.tick("activating", "auto-restart", "failed")       # the rest of the same 15 s
+        self.assertTrue(e["crashed_serving"])
+        e = self.tick("activating", "start", "failed")              # the next attempt boots
+        self.assertEqual((e["state"], e["crashed_serving"]), ("starting", False))
+        e = self.tick("activating", "auto-restart", "starting")     # and dies at boot: a loop
+        self.assertEqual((e["state"], e["restarting"], e["crashed_serving"]), ("failed", True, False))
+
+    def test_a_degraded_or_wedged_engine_that_goes_down_was_serving_too(self):
+        for prev in ("degraded", "wedged"):
+            with self.subTest(prev=prev):
+                self.cp.CRASHED_SERVING.clear()
+                self.assertTrue(self.tick("activating", "auto-restart", prev)["crashed_serving"])
+
+
 class AWedgedEngineThatLosesHealthIsDegraded(Base):
     """A wedge is only reachable from ready, so when that engine also stops answering it has
     long been serving: "degraded". The check that keeps a fresh boot in warming-up did not
@@ -863,6 +1013,96 @@ class TheEngineIsAskedItsCurrentRoutes(Base):
         with self.assertRaises(Exception):
             self.cp.engine_load()
         self.assertEqual(self.cp.ENGINE_ROUTES["load"], "/v1/loads?include=core")
+
+
+class AnEngineThatServedLosesHealthAsDegraded(Base):
+    """The cockpit reads an engine's log only while its health is down, so in a boot it
+    watched, the last stage it saw was the one before "fired up". When the engine lost health
+    later with no milestone left in the last 300 lines (a crash's tracebacks), that stage came
+    back: the lane read "capturing graphs", a boot, and the zombie restart, which follows
+    "degraded" only, never came (the reference box, 2026-10-01)."""
+    U = "qwen38-flash.service"
+    # the flash lane's own lines, from its journal of 2026-10-01
+    BOOTING = ("[2026-10-01 19:23:17] Load weight begin. avail mem=109.83 GB\n"
+               "[2026-10-01 19:30:58] Load weight end. elapsed=461.30 s, type=Qwen4ExpForConditionalGeneration, "
+               "quant=modelopt_fp4, quant_algo=NVFP4, avail mem=30.04 GB\n"
+               "[2026-10-01 19:32:30] KV Cache is allocated. dtype: torch.bfloat16, #tokens: 482176, K size: 5.52 GB\n"
+               "[2026-10-01 19:33:06] Capture target verify CUDA graph begin. backend=full, num_tokens_per_req=4, "
+               "bs=[1, 2, 3, 4, 5, 6, 7, 8], avail mem=12.92 GB\n")
+    CRASH = ("Traceback (most recent call last):\n"
+             '  File "/usr/lib/python3.12/asyncio/locks.py", line 212, in wait\n'
+             "    await fut\n"
+             "asyncio.exceptions.CancelledError\n") * 70
+
+    def setUp(self):
+        for d in (self.cp.BOOT_SEEN, self.cp.BOOT_HEAD_READ, self.cp.ZOMBIE_SINCE):
+            d.clear()
+        real_alive = self.cp.scheduler_alive
+        self.addCleanup(setattr, self.cp, "scheduler_alive", real_alive)
+        self.cp.scheduler_alive = lambda container: True     # a scheduler: no zombie here
+
+    def tick(self, healthy, tail, prev):
+        with self.cp.STATE_LOCK:
+            self.cp.STATE["engine_fast"] = {"data": {"healthy": healthy}}
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"] = {self.U: prev}
+        self.cp.UNHEALTHY_TICKS[self.U] = 0 if healthy else 5
+        self.cp.LAST_PROGRESS["ts"] = None
+        self.box({f"systemctl show {self.U}": "ActiveState=active\nSubState=running\n"
+                                              "ActiveEnterTimestampMonotonic=1000\nInvocationID=abc\n",
+                  "docker ps -q -f name=^qwen38-flash$": "c0ffee\n",
+                  "docker logs --tail 300 qwen38-flash": tail,
+                  "docker logs --since": tail})
+        out = self.cp.collect_lifecycle()
+        return out.get("data", out)["engines"][self.U]["state"]
+
+    def test_a_boot_it_watched_then_served_reads_degraded_once_health_goes(self):
+        self.assertEqual(self.tick(False, self.BOOTING, "loading-weights"), "capturing-graphs")
+        self.assertEqual(self.tick(True, "", "capturing-graphs"), "ready")
+        self.assertEqual(self.tick(False, self.CRASH, "ready"), "degraded")
+
+    def test_a_boot_that_never_served_still_reads_its_stage(self):
+        self.assertEqual(self.tick(False, self.BOOTING, "loading-weights"), "capturing-graphs")
+        self.assertEqual(self.tick(False, self.CRASH, "capturing-graphs"), "capturing-graphs")
+
+
+class TheSchedulerProbeAsksDockerTheWayItAnswers(Base):
+    """scheduler_alive() against a docker that answers as the daemon does. `docker top`
+    refuses a field list without the PID ("Couldn't find PID field in ps output"): asked for
+    `comm` alone, the probe never answered on the reference box, so no zombie was ever
+    decided there. The tests above stand a lambda in for the probe and could not see it
+    (found by the end-to-end test of a real zombie, 2026-10-01)."""
+
+    DOCKER = """#!/bin/sh
+[ "$1" = top ] || exit 2
+c="$2"; shift 2
+[ "$1" = -eo ] || { echo "unexpected: $*" >&2; exit 2; }
+case ",$2," in
+  *,pid,*) ;;
+  *) echo "Error response from daemon: Couldn't find PID field in ps output" >&2; exit 1 ;;
+esac
+case "$c" in
+  serving) printf 'PID                 COMMAND\n2218964             python3\n2220142             sglang::schedul\n' ;;
+  zombie) printf 'PID                 COMMAND\n2218964             python3\n' ;;
+  *) echo "Error response from daemon: No such container: $c" >&2; exit 1 ;;
+esac
+"""
+
+    def setUp(self):
+        bin_dir = Path(tempfile.mkdtemp(prefix="fake-docker-"))
+        self.addCleanup(shutil.rmtree, bin_dir, True)
+        (bin_dir / "docker").write_text(self.DOCKER)
+        (bin_dir / "docker").chmod(0o755)
+        path = os.environ["PATH"]
+        self.addCleanup(os.environ.__setitem__, "PATH", path)
+        os.environ["PATH"] = f"{bin_dir}:{path}"
+
+    def test_a_scheduler_listed_is_alive_and_one_gone_is_not(self):
+        self.assertIs(self.cp.scheduler_alive("serving"), True)
+        self.assertIs(self.cp.scheduler_alive("zombie"), False)
+
+    def test_a_container_it_cannot_read_decides_nothing(self):
+        self.assertIsNone(self.cp.scheduler_alive("gone"))
 
 
 if __name__ == "__main__":

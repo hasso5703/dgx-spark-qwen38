@@ -287,12 +287,20 @@ class NonStreamedAndCutStreams(Base):
         self.assertIn(b"0\r\n\r\n", got, "the chunked body was not terminated")
         self.assertNotIn(b"[DONE]", got, "the proxy invented an end the engine never sent")
 
-    def test_a_transport_error_mid_stream_is_named_on_the_anthropic_route(self):
-        """A reset is different from a close: the read raises, and an Anthropic
-        client gets an error event rather than a stream that just stops."""
-        got = self.ask("reset", path="/v1/messages")
-        self.assertIn(b"one", got)
-        self.assertIn(b"interrupted", got.lower(), got[-200:])
+    def test_a_transport_error_mid_stream_reaches_the_client_as_one(self):
+        """A reset is different from a close: the read raises, and the client's stream is
+        cut the same way, with no chunk to end the body, so no client takes what it got for
+        a whole answer, and no event in the engine's place. The error event this test wanted
+        made Claude Code send the request again without a stream, held in silence by v6.28
+        while the engine came back, which it gave up on after about 330 s (an engine made a
+        zombie under real clients, 2026-10-01); a cut stream it sends again as a stream."""
+        for path in ("/v1/messages", "/v1/chat/completions"):
+            with self.subTest(path=path):
+                got = self.ask("reset", path=path)
+                self.assertIn(b"one", got)
+                self.assertNotIn(b"0\r\n\r\n", got, "the cut body was closed as if it were whole")
+                self.assertNotIn(b"interrupted", got.lower())
+                self.assertNotIn(b"[DONE]", got)
 
     def test_a_transport_error_mid_stream_ends_an_openai_stream_without_a_lie(self):
         got = self.ask("reset")

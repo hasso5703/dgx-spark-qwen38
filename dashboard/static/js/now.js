@@ -116,7 +116,7 @@ function renderRack(){
     const st = e ? e.state : 'absent';
     b.root.className = 'bay' + (seated && (st === 'ready' || st === 'degraded') ? ' seated' : '') + (TRANSITIONAL.has(st) || st === 'stopping' ? ' booting' : '')
       + (st === 'failed' || st === 'wedged' || st === 'orphan' ? ' broken' : '') + (!has ? ' absent' : '');
-    cap(b.state, !has ? 'not installed' : STATE_LABEL[st] || st, !has ? '' : stateKind(st), !has ? false : stateLive(st));
+    cap(b.state, !has ? 'not installed' : stateLabel(e), !has ? '' : stateKind(st), !has ? false : stateLive(st));
     const t = laneTarget(unit);
     setText(b.h, LANE_META[unit].title + (t && TARGET_SHORT[t] && !['image', 'video', 'flash'].includes(t) ? ` ${TARGET_SHORT[t]}` : ''));
     // the boot bar, when it boots
@@ -124,7 +124,7 @@ function renderRack(){
       b.boot.hidden = false; clear(b.boot);
       const eta = e.eta || READY_DEFAULT[unit], pct = eta && e.elapsed ? Math.min(97, 100 * e.elapsed / eta) : 8;
       const m = el('div', 'meter'); const i = el('i'); i.style.width = pct.toFixed(1) + '%'; m.append(i); b.boot.append(m);
-      b.boot.append(el('span', 'faint', `${STATE_LABEL[st]}${e.detail && e.detail !== 'ready' ? ', ' + e.detail : ''}, ${fmtDur(e.elapsed)} of about ${fmtDur(eta)}`));
+      b.boot.append(el('span', 'faint', e.held ? `waiting for GPU memory: ${e.held}` : `${STATE_LABEL[st]}${e.detail && e.detail !== 'ready' ? ', ' + e.detail : ''}, ${fmtDur(e.elapsed)} of about ${fmtDur(eta)}`));
     } else if (e && st === 'stopping'){
       b.boot.hidden = false; clear(b.boot);
       const m = el('div', 'meter indet'); m.append(el('i')); b.boot.append(m);
@@ -141,7 +141,7 @@ function renderRack(){
     const en = (F.units[unit] || {}).enabled;
     setText(b.note, !has ? LANE_INSTALL[unit] : en === 'enabled' ? 'starts at boot' : 'manual start');
     setText(b.act, !has ? 'Not installed' : seated ? (st === 'ready' || st === 'degraded' ? `Open ${LANE_META[unit].view === 'agent' ? 'the agent' : LANE_META[unit].view}` : 'Details') : 'Load this lane');
-    b.root.setAttribute('aria-label', `${LANE_META[unit].title}: ${!has ? 'not installed' : STATE_LABEL[st] || st}. ${b.act.textContent}.`);
+    b.root.setAttribute('aria-label', `${LANE_META[unit].title}: ${!has ? 'not installed' : stateLabel(e)}. ${b.act.textContent}.`);
   });
 }
 
@@ -159,7 +159,7 @@ function renderServing(){
   }
   const [unit, e] = s, st = e.state;
   $('serving-lamp').className = 'lamp ' + (stateKind(st) || '') + (stateLive(st) === 'live' ? ' live' : '');
-  setText('serving-name', `${laneLabel(unit)}, ${STATE_LABEL[st] || st}`);
+  setText('serving-name', `${laneLabel(unit)}, ${stateLabel(e)}`);
   let sub = '';
   const l = F.load || {};
   if ((st === 'ready' || st === 'degraded') && unit === VIDEO_UNIT) sub = VID_NOW.label || 'idle, one video at a time';
@@ -168,10 +168,12 @@ function renderServing(){
   else if (TRANSITIONAL.has(st)){ const eta = e.eta || READY_DEFAULT[unit]; sub = `${fmtDur(e.elapsed)} elapsed` + (eta && e.elapsed ? `, about ${fmtDur(Math.max(0, eta - e.elapsed))} left` : ''); }
   else if (st === 'stopping') sub = `${e.state_elapsed != null ? fmtDur(e.state_elapsed) : ''} elapsed`;
   setText('serving-sub', sub);
-  sayOnce('lane', `${laneLabel(unit)}: ${STATE_LABEL[st] || st}`);
+  sayOnce('lane', `${laneLabel(unit)}: ${stateLabel(e)}`);
   // the lede: one sentence about the box, in words
   let lede;
-  if (st === 'ready' || st === 'degraded') lede = `${laneLabel(unit)} holds the box` + (e.elapsed ? ` and has served for ${fmtDur(e.elapsed)}` : '') + '. ' +
+  if (e.zombie) lede = `${laneLabel(unit)} lost its scheduler: its server answers nothing.`;
+  else if (e.held) lede = `${laneLabel(unit)} is not up yet: it waits for the last engine's GPU memory to come back.`;
+  else if (st === 'ready' || st === 'degraded') lede = `${laneLabel(unit)} holds the box` + (e.elapsed ? ` and has served for ${fmtDur(e.elapsed)}` : '') + '. ' +
     (unit === VIDEO_UNIT ? (VID_NOW.label ? `It is ${VID_NOW.label}.` : 'It is idle.') : unit === IMAGE_UNIT ? (IMG_NOW.label ? `It is ${IMG_NOW.label}.` : 'It is idle.')
       : (runningReqs(l) ? `${runningReqs(l)} request${runningReqs(l) > 1 ? 's are' : ' is'} running` : 'No request is running')
         + (waitingReqs(l) ? `, ${waitingReqs(l)} waiting.` : '.'));

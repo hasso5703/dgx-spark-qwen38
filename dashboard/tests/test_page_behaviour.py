@@ -801,5 +801,69 @@ class RunningIsWhatTheEngineRuns(unittest.TestCase):
         self.assertEqual((r["act"], r["actk"]), ("0", "nothing running"), r)
 
 
+
+class TheStartGuardAndALostSchedulerAreSaidAsTheyAre(unittest.TestCase):
+    """A lane the start guard held read "starting", one it refused "keeps crashing: it dies
+    during startup", and a server left without its scheduler only "stopped answering",
+    which says it may come back (issue #26: none of the three does by waiting)."""
+    U = 'qwen38-sglang.service'
+    HELD = 'what is left of an engine still holds 16 GiB of GPU memory: 1756018 sglang::stuck 16578 MiB'
+
+    def page(self, engine, config="{}"):
+        return run(self, r"""
+        const units = {units: Object.assign({}, UNITS.units, {'qwen38-sglang.service': {active: 'activating', enabled: 'enabled'}})};
+        feed({config: Object.assign({}, CONFIG, %s), units, lifecycle: life({'qwen38-sglang.service': %s})});
+        report({banner: txt('banners'), card: laneCard('qwen38-sglang.service').state.textContent,
+                boot: laneCard('qwen38-sglang.service').boot.textContent, bay: bay('qwen38-sglang.service').state.textContent});
+        """ % (config, engine))
+
+    def test_a_held_start_says_what_holds_it(self):
+        r = self.page("eng('starting', {held: '%s', elapsed: 20})" % self.HELD)
+        self.assertIn("waits for GPU memory.", r["banner"])
+        self.assertIn("What is left of an engine still holds 16 GiB", r["banner"])
+        self.assertIn("It starts by itself once that memory is back", r["banner"])
+        self.assertNotIn("crashing", r["banner"])
+        self.assertEqual((r["card"], r["bay"]), ("waiting for GPU memory", "waiting for GPU memory"))
+        self.assertIn("Waiting for GPU memory: " + self.HELD, r["boot"])
+
+    def test_a_refused_start_is_no_crash_loop(self):
+        r = self.page("eng('failed', {restarting: true, restarts: 4, refused: 'the GPU driver holds 50.9 GiB that no process accounts for'})")
+        self.assertIn("is not starting.", r["banner"])
+        self.assertIn("The GPU driver holds 50.9 GiB that no process accounts for.", r["banner"])
+        self.assertIn("systemd checks again every 15 s", r["banner"])
+        self.assertNotIn("keeps crashing", r["banner"])
+        self.assertEqual(r["card"], "not starting: GPU memory held")
+
+    def test_a_crash_while_serving_is_no_crash_loop(self):
+        r = self.page("eng('failed', {restarting: true, restarts: 1, crashed_serving: true})")
+        self.assertIn("stopped while it was serving and is starting again.", r["banner"])
+        self.assertIn("comes back by itself", r["banner"])
+        self.assertNotIn("keeps crashing", r["banner"])
+        self.assertEqual(r["card"], "restarting after a crash")
+
+    def test_a_real_crash_loop_still_says_so(self):
+        r = self.page("eng('failed', {restarting: true, restarts: 4})")
+        self.assertIn("keeps crashing.", r["banner"])
+        self.assertNotIn("not starting", r["banner"])
+
+    def test_a_server_without_its_scheduler_says_who_restarts_it(self):
+        r = self.page("eng('degraded', {zombie: true, zombie_in: 90})", "{zombie_restart: true}")
+        self.assertIn("lost its scheduler.", r["banner"])
+        self.assertIn("would never come back by itself", r["banner"])
+        self.assertIn("The cockpit restarts it in 1 min 30", r["banner"])
+        self.assertNotIn("stopped answering", r["banner"])
+        self.assertEqual(r["card"], "lost its scheduler")
+        r = self.page("eng('degraded', {zombie: true, zombie_in: 0})", "{zombie_restart: true}")
+        self.assertIn("The cockpit restarts it now.", r["banner"])
+        r = self.page("eng('degraded', {zombie: true, zombie_in: 0})", "{zombie_restart: false}")
+        self.assertIn("Restart it from Lanes", r["banner"])
+        self.assertNotIn("The cockpit restarts it", r["banner"])
+
+    def test_a_plain_degraded_engine_keeps_its_own_words(self):
+        r = self.page("eng('degraded')")
+        self.assertIn("stopped answering.", r["banner"])
+        self.assertNotIn("scheduler", r["banner"])
+
+
 if __name__ == "__main__":
     unittest.main()

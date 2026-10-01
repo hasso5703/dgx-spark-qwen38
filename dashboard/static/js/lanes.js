@@ -68,7 +68,7 @@ function renderLanes(){
     const c = laneCard(unit), e = engines()[unit], has = installed(unit);
     const st = e ? e.state : null, seated = !!(s && s[0] === unit);
     setText(c.h, LANE_META[unit].title + (seated ? ', serving' : ''));
-    cap(c.state, !has ? 'not installed' : STATE_LABEL[st] || st || 'unknown', has ? stateKind(st) : '', has ? stateLive(st) : false);
+    cap(c.state, !has ? 'not installed' : stateLabel(e) || 'unknown', has ? stateKind(st) : '', has ? stateLive(st) : false);
     setText(c.desc, LANE_META[unit].desc + ' ' + LANE_META[unit].kind + '.');
     const served = laneTarget(unit);
     if (c.touched && served && served === c.tsel.value && (engines()[unit] || {}).state === 'ready') c.touched = false;
@@ -99,7 +99,8 @@ function renderLanes(){
       const eta = e.eta || READY_DEFAULT[unit], pct = eta && e.elapsed ? Math.min(97, 100 * e.elapsed / eta) : 8 + done * 80 / stages.length;
       const m = el('div', 'meter'); const i = el('i'); i.style.width = pct.toFixed(1) + '%'; m.append(i); c.boot.append(m);
       const ph = el('div', 'phases'); stages.forEach((sg, k) => ph.append(el('span', k < done ? 'done' : k === done ? 'now' : '', STAGE_LABEL[sg] || sg))); c.boot.append(ph);
-      c.boot.append(el('p', 'help', `${STATE_LABEL[st]}${e.detail && e.detail !== 'ready' ? ' (' + e.detail + ')' : ''}, ${fmtDur(e.elapsed)} elapsed, ` +
+      c.boot.append(el('p', 'help', e.held ? `Waiting for GPU memory: ${e.held}. It starts by itself once that memory is back.`
+        : `${STATE_LABEL[st]}${e.detail && e.detail !== 'ready' ? ' (' + e.detail + ')' : ''}, ${fmtDur(e.elapsed)} elapsed, ` +
         (e.elapsed && eta ? `about ${fmtDur(Math.max(0, eta - e.elapsed))} left` : 'learning the duration') + (e.eta ? ` (median of ${(e.boots || []).length} boots)` : ' (reference box)')));
       if (e.overdue) c.boot.append(el('p', 'help warn-t', 'This boot takes more than twice the usual time: read its journal.'));
     } else if (e && st === 'stopping'){

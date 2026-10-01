@@ -579,6 +579,19 @@ WEDGED_SINCE: dict = {}
 READY_SINCE: dict = {}          # per unit: when this activation first reached ready
 WEDGE_MIN_READY_S = float(os.environ.get("COCKPIT_WEDGE_MIN_READY_S", "180"))
 LAST_HEAL: dict = {"ts": 0.0}
+# An engine whose server lives on without its scheduler (lifecycle.zombie_plan) is restarted,
+# unlike a wedge: there is nothing to judge, the scheduler is gone, and the start guard
+# (engine-preflight.sh) keeps the restart off memory still held. COCKPIT_ZOMBIE_RESTART=0
+# leaves it to the operator.
+ZOMBIE_RESTART = os.environ.get("COCKPIT_ZOMBIE_RESTART", "1") == "1"
+ZOMBIE_AFTER_S = 120.0
+ZOMBIE_COOLDOWN_S = 1800.0
+ZOMBIE_SINCE: dict = {}
+LAST_ZOMBIE_RESTART: dict = {}
+# A crash while serving goes through the same 15 s between two attempts as a boot that keeps
+# dying, and both read "keeps crashing, it dies during startup" (seen 2026-10-01 after one
+# crash of a serving engine). Per unit: it was serving when it went down this time.
+CRASHED_SERVING: dict = {}
 LAST_PROGRESS: dict = {"ts": None}
 UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
 IMAGE_READY_ENTER: dict = {}   # image lane: the activation (enter timestamp) it served in
@@ -1225,6 +1238,30 @@ WARMUP_GRACE_S = 300.0
 FIRST_HEALTH_WAIT_S = 10.0
 
 
+def preflight_said(unit: str, invocation: str):
+    """What engine-preflight.sh last wrote in this run of the unit (its journal, not the
+    container's log: while it waits there is no container), or None."""
+    if not invocation:
+        return None
+    return lc.parse_preflight(run(["journalctl", "-u", unit, f"_SYSTEMD_INVOCATION_ID={invocation}",
+                                   "-o", "cat", "--no-pager", "-n", "20", "-g", "preflight: "],
+                                  timeout=5).splitlines())
+
+
+def scheduler_alive(container: str):
+    """True when the engine's container runs its scheduler, False when it runs without it,
+    None when its process list cannot be read (then nothing is decided from it). docker top
+    refuses a field list without the PID ("Couldn't find PID field in ps output"): asked for
+    `comm` alone it never answered, and no zombie was ever seen (the reference box, a real
+    one, 2026-10-01)."""
+    out = run(["docker", "top", container, "-eo", "pid,comm"], timeout=6)
+    rows = [ln.split(None, 1) for ln in str(out).splitlines()[1:]]
+    names = [row[1].strip() for row in rows if len(row) == 2]
+    if not getattr(out, "ok", True) or not names:
+        return None
+    return any(n.startswith("sglang::schedul") for n in names)
+
+
 @guard
 def collect_lifecycle():
     """Explicit per-engine state + progress + ETA + action gates (2s tier)."""
@@ -1293,6 +1330,8 @@ def collect_lifecycle():
                 except ValueError:
                     pass
             if boot["stage"] is not None:
+                if seen and seen[0] == activation and seen[1].get("fired_up") and not boot["fired_up"]:
+                    boot = {**boot, "fired_up": True}   # this activation served: it fired up
                 BOOT_SEEN[unit] = (activation, boot)
             elif seen and seen[0] == activation and activation != "0":
                 boot = seen[1]
@@ -1333,6 +1372,18 @@ def collect_lifecycle():
                 usual = lc.eta_for(history, unit) or TEXT_BOOT_DEFAULT_S.get(unit, 780.0)
                 if watched or age is None or age <= usual + WARMUP_GRACE_S:
                     st["state"] = "warming-up"
+            # An activation that served has fired up, whatever the last 300 lines say later.
+            # The cockpit reads the log only while health is down, so the last stage it saw in
+            # a boot it watched was the one before "fired up"; when the engine lost health
+            # later (a zombie under a crash's tracebacks: no milestone left in the window),
+            # that stage came back and the lane read "capturing graphs" instead of "degraded",
+            # which no zombie restart follows (the reference box, 2026-10-01).
+            act = d.get("ActiveEnterTimestampMonotonic", "0")
+            if st["state"] == "ready" and act != "0":
+                seen = BOOT_SEEN.get(unit)
+                was = seen[1] if seen and seen[0] == act else lc.parse_boot_log([])
+                if not was.get("fired_up"):
+                    BOOT_SEEN[unit] = (act, {**was, "fired_up": True})
         if st["state"] == "ready" and not is_image and not is_video:
             with STATE_LOCK:
                 load = ((STATE.get("engine_fast") or {}).get("data", {})
@@ -1432,6 +1483,41 @@ def collect_lifecycle():
                     audit({"kind": "autoheal", "unit": unit, "code": code, "out": out})
             else:
                 WEDGED_SINCE.pop(unit, None)
+        if not is_image and not is_video:
+            zp = lc.zombie_plan(state=st["state"],
+                                scheduler_alive=scheduler_alive(UNIT2CONT[unit])
+                                if st["state"] == "degraded" and running else None,
+                                since=ZOMBIE_SINCE.get(unit), now=time.time(), after_s=ZOMBIE_AFTER_S,
+                                enabled=ZOMBIE_RESTART,
+                                cooldown_ok=time.time() - LAST_ZOMBIE_RESTART.get(unit, 0.0) > ZOMBIE_COOLDOWN_S,
+                                job_running=JOB_LOCK.locked())
+            if zp["zombie"]:
+                if ZOMBIE_SINCE.get(unit) is None:
+                    add_event("zombie", f"{unit}: its server answers nothing and its scheduler is gone; "
+                              "nothing restarts that by itself"
+                              + (f", the cockpit does in {ZOMBIE_AFTER_S:.0f} s" if ZOMBIE_RESTART else ""))
+                    audit({"kind": "zombie", "unit": unit})
+                ZOMBIE_SINCE[unit] = zp["since"]
+                st = {**st, "zombie": True, "zombie_in": round(zp["in"])}
+                if zp["restart"]:
+                    LAST_ZOMBIE_RESTART[unit] = time.time()
+                    add_event("zombie", f"{unit}: restarting it (no scheduler for {ZOMBIE_AFTER_S:.0f} s)"
+                              + (" (dry run: not really)" if DRY_RUN else ""))
+                    code, out = start_action("unit", {"verb": "restart", "unit": unit}, origin="zombie")
+                    audit({"kind": "zombie_restart", "unit": unit, "code": code, "out": out})
+            else:
+                ZOMBIE_SINCE.pop(unit, None)
+        if st["state"] == "failed" and st.get("restarting"):
+            if prev.get(unit) in ("ready", "degraded", "wedged"):
+                CRASHED_SERVING[unit] = True
+            if CRASHED_SERVING.get(unit):
+                st = {**st, "crashed_serving": True}
+        elif st["state"] != "failed":
+            CRASHED_SERVING.pop(unit, None)
+        # what the start guard said, when it is why the lane is not up (held, refused)
+        if active in ("activating", "failed"):
+            st = lc.preflight_flags(st, unit_sub=d.get("SubState", "?"),
+                                    preflight=preflight_said(unit, d.get("InvocationID", "")))
         elapsed = None
         try:
             mono_us = int(d.get("ActiveEnterTimestampMonotonic", "0"))
@@ -1478,6 +1564,12 @@ def collect_lifecycle():
                          "result": d.get("Result", ""),
                          # a crash loop reads failed between attempts; the page says so
                          "restarting": bool(st.get("restarting")),
+                         # the start guard's reason while it holds the start, or once it refused
+                         "held": st.get("held"), "refused": st.get("refused"),
+                         # a server alive without its scheduler, and when the cockpit restarts it
+                         "zombie": bool(st.get("zombie")), "zombie_in": st.get("zombie_in"),
+                         # down between two attempts after it stopped while serving, not at boot
+                         "crashed_serving": bool(st.get("crashed_serving")),
                          "restarts": int(d.get("NRestarts") or 0) if str(d.get("NRestarts", "")).isdigit() else 0,
                          "elapsed": round(elapsed, 1) if elapsed else None,
                          "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,
@@ -1582,6 +1674,7 @@ STATE["config"] = {"data": {"usable_frac": USABLE_FRAC, "version": VERSION, "dry
                             # the page says what happens to a wedged engine, and on a default
                             # install that is nothing: it promised the belt's restart regardless
                             "autoheal": AUTOHEAL, "autoheal_grace_s": AUTOHEAL_GRACE,
+                            "zombie_restart": ZOMBIE_RESTART,
                             "terminal_only": {"update_stack": f"cd {REPO_DIR} && ./install.sh",
                                               "install_agent": f"cd {REPO_DIR} && dashboard/install-agent.sh"}},
                    "ts": time.time()}

@@ -23,6 +23,9 @@ Environment=HF_HUB_OFFLINE=1
 Environment=PYTHONUNBUFFERED=1
 # The decode sits close enough to the cap that fragmentation tips it over (cookbook).
 Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# The memory the last engine held has to be back before this one starts: a start piled on
+# memory the driver kept is how sglang#40948 froze a DGX Spark (see engine-preflight.sh).
+ExecStartPre=/bin/bash __HOME__/.config/qwen38/engine-preflight.sh qwen38-video.service
 # The cookbook's DGX Spark recipe, and nothing else: every component resident, no
 # offload flags. The cookbook verifies about 12.1 s per denoise step, about 40 s of
 # decode and about 12 min per warm request at 480P with no flags at all, and adding

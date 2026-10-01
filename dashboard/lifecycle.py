@@ -7,8 +7,10 @@ Every function here is pure so the whole module is unit-testable offline.
 States (a strict superset of what the UI shows):
   stopped, failed, starting, loading-weights, loading-draft, allocating-kv,
   capturing-graphs, warming-up, ready, degraded, stopping
-Flags: restarting (a crash loop between two attempts). The cockpit adds overdue (a stage
-that took more than twice the ETA).
+Flags: restarting (a crash loop between two attempts); held and refused (engine-preflight.sh
+waits for, or would not start on, GPU memory the last engine has not given back); zombie (a
+server process alive with no scheduler, which nothing restarts). The cockpit adds overdue (a
+stage that took more than twice the ETA).
 """
 from __future__ import annotations
 
@@ -391,6 +393,10 @@ def warn_reasons(action: str, params: dict, states: dict,
             # same text-door reason as the image lane; a video boot is the long one
             warns.append("a video being generated right now is lost, and the Video "
                           "tab has nothing to talk to until this lane is back (about 12 min)")
+        elif state == "ready" and params.get("verb") == "restart":
+            # the proxy holds what reaches it while a lane's unit is on its way back (v6.28)
+            warns.append("requests on :30001 wait for it while it boots (a streamed one hears "
+                         "keepalives) and go to it once it answers")
         elif state == "ready":
             warns.append("clients on :30001 will get errors until an engine "
                          "is back")
@@ -493,6 +499,63 @@ def wedge_plan(*, decided: bool, prev_state: str | None, wedged_since: float | N
     first = prev_state != "wedged"
     restart = bool(autoheal and cooldown_ok and (now - since) >= grace and not job_running)
     return {"state": "wedged", "first": first, "since": since, "restart": restart}
+
+
+# ── the start guard and the zombie (pure) ───────────────────────────────────
+# Every engine unit runs engine-preflight.sh before its engine (issue #26). Its lines are in
+# the unit's journal, never in a container's log, and while it waits there is no container:
+# without them the lane read "starting" while it was held, and "keeps crashing" when it was
+# refused, which sends the operator after the wrong thing.
+PREFLIGHT_RE = re.compile(r"preflight: (?:NOT starting (\S+): (.+?), still after \d+ s\."
+                          r"|(\S+) (waits|starts): (.+))")
+
+
+def parse_preflight(lines: list[str]) -> dict | None:
+    """The guard's last word among these journal lines: {"verdict": "waits" | "refused" |
+    "starts", "reason": str}, or None when it said nothing."""
+    last = None
+    for ln in lines:
+        m = PREFLIGHT_RE.search(ln)
+        if m is None:
+            continue
+        if m.group(1) is not None:
+            last = {"verdict": "refused", "reason": m.group(2)}
+        else:
+            last = {"verdict": m.group(4), "reason": m.group(5)}
+    return last
+
+
+def preflight_flags(state: dict, *, unit_sub: str, preflight: dict | None) -> dict:
+    """The state with what the guard said, when it is why the lane is not up: held while it
+    waits (the unit runs its start step and nothing else), refused once it would not start
+    (the unit failed, or waits for its next attempt)."""
+    if not preflight:
+        return state
+    out = dict(state)
+    if preflight["verdict"] == "waits" and unit_sub == "start-pre" and state.get("state") == "starting":
+        out["held"] = preflight["reason"]
+    elif preflight["verdict"] == "refused" and state.get("state") == "failed":
+        out["refused"] = preflight["reason"]
+    return out
+
+
+def zombie_plan(*, state: str, scheduler_alive: bool | None, since: float | None, now: float,
+                after_s: float, enabled: bool, cooldown_ok: bool, job_running: bool) -> dict:
+    """What to do this tick about an engine whose server lives on without its scheduler.
+    SGLang v0.5.19 ends up so after a SIGQUIT that reaches its server while the scheduler
+    still runs (the exit is raised inside an asyncio task and swallowed; reproduced on the
+    reference box, 2026-10-01): no HTTP, no scheduler, a unit systemd calls active, and
+    nothing restarts it. Only an engine that served and stopped answering qualifies, and only
+    a read that found no scheduler (None, an unreadable process list, never does). Since the
+    start guard, a restart cannot land on memory still held, so it is safe to make.
+
+    Returns {"zombie": bool, "since": float | None, "restart": bool, "in": float}"""
+    if state != "degraded" or scheduler_alive is not False:
+        return {"zombie": False, "since": None, "restart": False, "in": 0.0}
+    since = since if since is not None else now
+    left = max(0.0, after_s - (now - since))
+    restart = bool(enabled and left == 0.0 and cooldown_ok and not job_running)
+    return {"zombie": True, "since": since, "restart": restart, "in": left}
 
 
 def decide_mem_floor(*, avail_gib: float | None, floor_gib: float, num_reqs: int,

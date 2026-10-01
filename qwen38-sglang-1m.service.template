@@ -15,6 +15,9 @@ Type=simple
 User=__USER__
 Group=__GROUP__
 ExecStartPre=-/usr/bin/docker rm -f qwen38-sglang
+# The memory the last engine held has to be back before this one starts: a start piled on
+# memory the driver kept is how sglang#40948 froze a DGX Spark (see engine-preflight.sh).
+ExecStartPre=/bin/bash __HOME__/.config/qwen38/engine-preflight.sh qwen38-sglang.service
 # The key goes to the server in a file SGLang merges in memory (see engine-secrets.sh),
 # written again before every start, so it is on no command line.
 ExecStartPre=/bin/bash __HOME__/.config/qwen38/engine-secrets.sh

@@ -72,6 +72,12 @@ const STATE_LABEL = {
   'capturing-graphs': 'capturing CUDA graphs', 'warming-up': 'warming up', ready: 'ready',
   degraded: 'ready but not answering', stopping: 'stopping', wedged: 'wedged: no generation',
   orphan: 'running outside systemd'};
+// the word for a lane, with what the start guard or a lost scheduler adds to its state: a lane
+// held by the guard read "starting", one it refused "failed" (engine-preflight.sh, issue #26)
+const stateLabel = e => !e ? '' : e.held ? 'waiting for GPU memory' : e.refused ? 'not starting: GPU memory held'
+  : e.zombie ? 'lost its scheduler' : e.state === 'failed' && e.crashed_serving ? 'restarting after a crash'
+  : (STATE_LABEL[e.state] || e.state);
+const sentence = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
 const STATE_KIND = {ready: 'ok', degraded: 'warn', failed: 'err', stopped: '', stopping: 'warn', wedged: 'err', orphan: 'err'};
 const TRANSITIONAL = new Set(['starting', 'loading-weights', 'loading-draft', 'allocating-kv', 'capturing-graphs', 'warming-up']);
 // a unit that is not running, whatever its container does: its button offers Start
@@ -621,10 +627,18 @@ function renderBanners(state, errors){
   Object.entries(engines()).forEach(([n, e]) => {
     const name = LANE_NAME[n] || n;
     if (e.state === 'wedged') add('err', `${name} is wedged.`, `It answers health checks but generates nothing. ${wedgeNext()}. The Logs view has the scheduler forensics.`);
-    if (e.state === 'failed' && e.restarting) add('err', `${name} keeps crashing.`, `It dies during startup and systemd relaunches it every 15 s${e.restarts ? ` (${e.restarts} so far)` : ''}. Stop it from Lanes to end the loop; its journal is in Logs.`);
+    // the start guard holds a start while the last engine's GPU memory is not back, and refuses
+    // it if it stays held: that is no crash, and saying "keeps crashing" sent people after one
+    if (e.held) add('warn', `${name} waits for GPU memory.`, `${sentence(e.held)}. It starts by itself once that memory is back: starting on memory the driver kept is how sglang#40948 froze a DGX Spark until a power cycle.`);
+    if (e.state === 'failed' && e.refused) add('err', `${name} is not starting.`, `${sentence(e.refused)}. ` + (e.restarting ? 'systemd checks again every 15 s and starts it once that memory is back; if nothing holds it, a reboot frees it.' : 'Start it again from Lanes once that memory is back; if nothing holds it, a reboot frees it.'));
+    else if (e.state === 'failed' && e.restarting && e.crashed_serving) add('warn', `${name} stopped while it was serving and is starting again.`, 'systemd starts it again 15 s after it stops, and the lane comes back by itself. Its journal in Logs says why it stopped.');
+    else if (e.state === 'failed' && e.restarting) add('err', `${name} keeps crashing.`, `It dies during startup and systemd relaunches it every 15 s${e.restarts ? ` (${e.restarts} so far)` : ''}. Stop it from Lanes to end the loop; its journal is in Logs.`);
     else if (e.state === 'failed' && e.result === 'timeout') add('warn', `${name} was killed while stopping.`, 'It did not exit within its stop timeout. Nothing broke while it served: start it again when you need it.');
     else if (e.state === 'failed') add('err', `${name} failed.`, 'systemd reports the unit failed. Read its journal in Logs, then start it again from Lanes.');
-    if (e.state === 'degraded') add('warn', `${name} stopped answering.`, 'It was serving; health probes retry every 2 s. If it stays here, Logs says why.');
+    // a server alive without its scheduler answers nothing, and systemd sees nothing wrong
+    if (e.zombie) add('err', `${name} lost its scheduler.`, 'Its server process lives on and answers nothing, and systemd sees nothing wrong, so it would never come back by itself. '
+      + ((F.config || {}).zombie_restart ? (e.zombie_in > 0 ? `The cockpit restarts it in ${fmtDur(e.zombie_in)}.` : 'The cockpit restarts it now.') : 'Restart it from Lanes (COCKPIT_ZOMBIE_RESTART=0 keeps the cockpit from doing it).'));
+    else if (e.state === 'degraded') add('warn', `${name} stopped answering.`, 'It was serving; health probes retry every 2 s. If it stays here, Logs says why.');
   });
   if (F.memFloor && F.memFloor.aborts && F.memFloor.last_abort && Date.now() / 1000 - F.memFloor.last_abort < 600)
     add('warn', 'The memory floor fired.', `Memory fell under ${F.memFloor.gib} GiB with requests running: every generation was aborted ${fmtDur(Date.now() / 1000 - F.memFloor.last_abort)} ago to keep the box out of a livelock.`);

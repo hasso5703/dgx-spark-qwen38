@@ -1435,6 +1435,10 @@ KEY="$(cat "$CONFIG_DIR/api-key")"   # used by the step-9 smoke test
 cmp -s "$REPO_DIR/engine-secrets.sh" "$CONFIG_DIR/engine-secrets.sh" \
   || install -m 755 "$REPO_DIR/engine-secrets.sh" "$CONFIG_DIR/engine-secrets.sh"
 bash "$CONFIG_DIR/engine-secrets.sh" || die "could not write the engine's key file from $CONFIG_DIR/api-key (see above)"
+# Every engine unit runs this before it starts (the last engine's GPU memory has to be back,
+# see engine-preflight.sh), so it is in place before any unit that names it can start.
+cmp -s "$REPO_DIR/engine-preflight.sh" "$CONFIG_DIR/engine-preflight.sh" \
+  || install -m 755 "$REPO_DIR/engine-preflight.sh" "$CONFIG_DIR/engine-preflight.sh"
 # One patched template per engine file name: the served template always follows
 # the served model (both fixes: reasoning_effort normalization + mid-conversation
 # system messages as <system-reminder> blocks; see patch-template.py).

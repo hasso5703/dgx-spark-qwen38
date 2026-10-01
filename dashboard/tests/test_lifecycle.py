@@ -440,6 +440,8 @@ class FeedOutcomes(unittest.TestCase):
         # v6.25: the caller of a non-streamed answer left while the engine worked; the
         # proxy ended the upstream and the engine dropped the request itself
         "CLIENT GONE during non-sse wait": "gone",
+        # v6.28: the caller left while its request waited for the engine to come back
+        "CLIENT GONE during hold": "gone",
         "no outcome (client vanished mid-request)": "gone",
         "DROPPED upstream silent": "fail",
         "UPSTREAM CUT": "fail",
@@ -821,6 +823,18 @@ class MutantsThatSurvived(unittest.TestCase):
                                 {"qwen38-sglang.service": "ready"})
         self.assertEqual(len(warns), 1, warns)
         self.assertIn(":30001", warns[0])
+
+    def test_restarting_a_ready_lane_says_requests_wait_for_it(self):
+        """Since proxy v6.28 a request that reaches :30001 while a lane's unit comes back is
+        held for it: "will get errors" was true of a stop only."""
+        warns = lc.warn_reasons("unit", {"unit": "qwen38-sglang.service", "verb": "restart"},
+                                {"qwen38-sglang.service": "ready"})
+        self.assertEqual(len(warns), 1, warns)
+        self.assertIn("wait for it while it boots", warns[0])
+        self.assertNotIn("errors", warns[0])
+        stop = lc.warn_reasons("unit", {"unit": "qwen38-sglang.service", "verb": "stop"},
+                               {"qwen38-sglang.service": "ready"})
+        self.assertIn("will get errors", stop[0])
 
     def test_stopping_a_stopped_lane_warns_about_nothing(self):
         self.assertEqual(
@@ -1869,6 +1883,94 @@ class TheCockpitsRouteProbeIsNotAFailure(unittest.TestCase):
     def test_an_answered_request_keeps_its_own_outcome(self):
         r = self.row(outcome="ok non-sse")
         self.assertEqual((r["kind"], r["outcome"]), ("ok", "ok non-sse"))
+
+
+class TheStartGuardsWords(unittest.TestCase):
+    """engine-preflight.sh's lines, as the cockpit reads them from a unit's journal. Without
+    them a lane the guard held read "starting", and one it refused "keeps crashing"."""
+    W = ("preflight: qwen38-sglang.service waits: what is left of an engine still holds 16 GiB of GPU "
+         "memory: 1756018 sglang::stuck 16578 MiB")
+    R = ("preflight: NOT starting qwen38-sglang.service: what is left of an engine still holds 16 GiB of "
+         "GPU memory: 1756018 sglang::stuck 16578 MiB, still after 60 s. Starting into memory the driver "
+         "has not given back is how sglang#40948 froze a DGX Spark until a power cycle. Stop what holds "
+         "it, or reboot if nothing does; systemd tries again in 15 s.")
+    S = "preflight: qwen38-sglang.service starts: no GPU memory held from before, 115.7 GiB available (0 s)"
+    HELD = "what is left of an engine still holds 16 GiB of GPU memory: 1756018 sglang::stuck 16578 MiB"
+
+    def test_each_word_and_its_reason(self):
+        self.assertEqual(lc.parse_preflight([self.W]), {"verdict": "waits", "reason": self.HELD})
+        self.assertEqual(lc.parse_preflight([self.R]), {"verdict": "refused", "reason": self.HELD})
+        self.assertEqual(lc.parse_preflight([self.S])["verdict"], "starts")
+
+    def test_the_last_word_wins(self):
+        self.assertEqual(lc.parse_preflight([self.W, self.S])["verdict"], "starts")
+        self.assertEqual(lc.parse_preflight([self.S, self.W])["verdict"], "waits")
+        self.assertEqual(lc.parse_preflight([self.W, self.R])["verdict"], "refused")
+        self.assertEqual(lc.parse_preflight([self.W, "Started qwen38-sglang.service"])["verdict"], "waits")
+
+    def test_silence_and_noise_are_none(self):
+        for lines in ([], ["Starting qwen38-sglang.service..."], ["preflight: half a line"], [""]):
+            self.assertIsNone(lc.parse_preflight(lines), lines)
+
+    def test_a_journal_prefix_does_not_hide_it(self):
+        line = "2026-10-01T14:47:50+02:00 gx10-eff9 bash[1757029]: " + self.W
+        self.assertEqual(lc.parse_preflight([line])["verdict"], "waits")
+
+
+class TheGuardsFlags(unittest.TestCase):
+    W = {"verdict": "waits", "reason": "the GPU driver does not answer nvidia-smi"}
+    R = {"verdict": "refused", "reason": "the GPU driver does not answer nvidia-smi"}
+
+    def test_held_only_while_the_unit_runs_its_start_step(self):
+        st = {"state": "starting"}
+        self.assertEqual(lc.preflight_flags(st, unit_sub="start-pre", preflight=self.W)["held"], self.W["reason"])
+        # the guard passed and the engine's own command runs: its last word is history
+        self.assertNotIn("held", lc.preflight_flags(st, unit_sub="start", preflight=self.W))
+        self.assertNotIn("held", lc.preflight_flags({"state": "loading-weights"}, unit_sub="start-pre", preflight=self.W))
+
+    def test_refused_only_on_a_failed_unit(self):
+        st = {"state": "failed", "restarting": True}
+        out = lc.preflight_flags(st, unit_sub="auto-restart", preflight=self.R)
+        self.assertEqual((out["refused"], out["restarting"]), (self.R["reason"], True))
+        self.assertNotIn("refused", lc.preflight_flags({"state": "starting"}, unit_sub="start-pre", preflight=self.R))
+        self.assertNotIn("held", lc.preflight_flags(st, unit_sub="auto-restart", preflight=self.W))
+
+    def test_a_guard_that_let_it_start_or_said_nothing_adds_nothing(self):
+        st = {"state": "starting"}
+        self.assertIs(lc.preflight_flags(st, unit_sub="start-pre", preflight=None), st)
+        out = lc.preflight_flags(st, unit_sub="start-pre", preflight={"verdict": "starts", "reason": "x"})
+        self.assertEqual(out, st)
+        self.assertIsNot(out, st, "the state it was handed is not changed in place")
+
+
+class TheZombie(unittest.TestCase):
+    """A server alive without its scheduler: nothing restarts it unless the cockpit does."""
+
+    def plan(self, **kw):
+        args = dict(state="degraded", scheduler_alive=False, since=None, now=1000.0, after_s=120.0,
+                    enabled=True, cooldown_ok=True, job_running=False)
+        args.update(kw)
+        return lc.zombie_plan(**args)
+
+    def test_only_a_degraded_engine_with_no_scheduler_is_one(self):
+        for kw in ({"state": "ready"}, {"state": "warming-up"}, {"state": "wedged"},
+                   {"scheduler_alive": True}, {"scheduler_alive": None}):
+            with self.subTest(**kw):
+                self.assertEqual(self.plan(**kw), {"zombie": False, "since": None, "restart": False, "in": 0.0})
+
+    def test_it_waits_its_delay_from_the_first_sighting(self):
+        first = self.plan()
+        self.assertEqual(first, {"zombie": True, "since": 1000.0, "restart": False, "in": 120.0})
+        self.assertEqual(self.plan(since=1000.0, now=1060.0)["in"], 60.0)
+        self.assertFalse(self.plan(since=1000.0, now=1119.9)["restart"])
+        due = self.plan(since=1000.0, now=1120.0)
+        self.assertEqual((due["restart"], due["in"], due["since"]), (True, 0.0, 1000.0))
+
+    def test_it_restarts_only_when_allowed(self):
+        for kw in ({"enabled": False}, {"cooldown_ok": False}, {"job_running": True}):
+            with self.subTest(**kw):
+                out = self.plan(since=0.0, now=1000.0, **kw)
+                self.assertEqual((out["zombie"], out["restart"]), (True, False))
 
 if __name__ == '__main__':
     unittest.main()

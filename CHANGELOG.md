@@ -1,5 +1,90 @@
 # Changelog
 
+## v1.21.0 (2026-10-01): an engine restart no longer ends a session, and no engine starts on memory still held
+
+[Issue #26](https://github.com/hasso5703/dgx-spark-qwen38/issues/26) reported a 27B engine
+dying about once a day with `CUDA error: operation not permitted`, systemd starting it again
+17 s later, and the fear that this restart falls in the window
+[sglang#40948](https://github.com/sgl-project/sglang/issues/40948) blames for a DGX Spark
+frozen 9.5 h. The crash was not reproduced on the reference box (driver 580.178.04); everything
+around it was measured, and this release changes what a restart does to the box and to the
+clients. The whole account, with the settings, is in
+[docs/engine-restarts.md](docs/engine-restarts.md).
+
+**No engine starts on memory the last one has not given back.** On a healthy driver the
+restart is in no window: an emulated crash of the 27B 1M lane gave back its 92 GB in 2 to 5 s,
+and systemd started it again at +21 s, about 15 s later. sglang#40948 froze in the other case,
+a driver that kept a dead engine's memory while the next start piled on top. Every engine unit
+(27B, flash, image, video) now runs `engine-preflight.sh` first: it waits up to 60 s and
+refuses the start while what is left of an engine holds GPU memory, while the driver holds
+memory no process accounts for (past 16 GiB), or while `nvidia-smi` does not answer; systemd
+tries again every 15 s and the lane starts by itself once the memory is back. Nothing else
+blocks a start, another program's GPU memory included. Tested on the reference box with a fake
+engine remnant holding 16 GiB: two refusals, then a start 7 s after the memory was released.
+The cockpit says why: "waiting for GPU memory" with the reason, "not starting: GPU memory
+held", never "starting" or "keeps crashing". A new guard never restarts a running engine
+(`engine-inputs.py` leaves it out of what the engine reads).
+
+**A request that reaches the proxy while its engine comes back waits for it (proxy v6.28).**
+Measured with the real clients against fake engines: on a 503 with `Retry-After: 30`, opencode
+1.18.32 failed the session after 6 attempts and 151 s, Claude Code 2.1.286 after 11 attempts
+and 325 s, so every engine restart (7.5 min on the 27B, 11 on flash) ended every session it
+caught. A request that finds the engine not answering while `qwen38-sglang` or `qwen38-flash`
+is starting, between two attempts, up, or in the stop half of a restart is now held, at most
+1200 s (`PROXY_HOLD_UNITS`,
+`PROXY_HOLD_MAX_S`, set in the proxy's unit): a streamed one gets its 200 and the keepalives
+at once, which both clients waited on for 400 s and then took the answer; a non-streamed one
+waits in silence. One that still fails after the wait ends its stream with an error event,
+which both clients answer by sending it again (measured). The request in flight when an engine
+dies still gets the engine's own answer: a 500 before any token, which opencode retries after
+2 s and Claude Code after 0.5 s, or a stream cut short, which the proxy now passes on as a cut
+(no closing chunk), and both clients send again at once as a stream: that retry is the one held.
+On the Anthropic dialect the proxy used to end a cut stream with an error event, and Claude Code
+answered it with a request without a stream, held in silence, which it gave up on after about
+330 s, three times over one restart, before it ended with no answer (found by the end-to-end
+test below). Not held: a lane stopped on
+purpose, the image and video lanes, `GET` routes, a proxy run by hand, and an engine that
+answers and still fails the request (once a hold began, a boot not quite done gets it again
+10 times at most, each after a pause: found in review, the first version sent it back in a
+loop with no pause). The suite runs every case against a proxy process and in-process, where
+the coverage floor sees it; the floor moves from 83 to 85 % (87 % measured).
+
+**A server alive without its scheduler is restarted.** SGLang v0.5.19 can be left with its
+server process alive and no scheduler: a SIGQUIT that reaches the server while the scheduler
+runs raises its exit inside an asyncio task, which swallows it (reproduced). Nothing answered,
+the unit stayed active, and nothing restarted it; the cockpit read it "degraded" for as long
+as it lasted. The cockpit now restarts that one case, after 2 min, at most once per half hour
+per lane, through the start guard; `COCKPIT_ZOMBIE_RESTART=0` leaves it to the operator. The
+general autoheal stays off.
+
+**Tested end to end on the reference box** (the flash lane serving, the real opencode and
+Claude Code streaming long answers, its server sent SIGQUIT, twice): the runs found four
+faults the unit tests could not, fixed here. The cockpit's zombie probe asked `docker top`
+for a column list it refuses, so it never saw a zombie; a cockpit that had watched the boot
+read the zombie as "capturing graphs", which no restart follows; a restart's stop half ended
+the waits; and the error event on a cut stream left Claude Code without an answer. With
+them fixed, opencode's request was held 632 s in one run and 1,066 s in the other and got
+its whole answer both times, and Claude Code's was held 1,068 s and got its whole answer.
+The account is in docs/engine-restarts.md.
+
+**One crash of a serving lane no longer reads "keeps crashing, it dies during startup"**: the
+15 s systemd waits between two attempts look the same after a crash while serving and after a
+boot that dies, and the cockpit now tells them apart (seen on the reference box). The warning
+before a restart from the cockpit says requests wait for the lane now; before a stop it still
+says clients get errors.
+
+**The NVRM line the issue reads as the restart race is routine**: `NV_ERR_NO_MEMORY ...
+mem_desc.c:1359` appears 4,286 times in three weeks of the reference box's journal, two thirds
+during ordinary engine boots, the rest when another GPU client creates a context while an
+engine holds the pool. Every public report of the crash itself that we found runs driver
+580.159.03 (sglang#40948, vllm#52877, issue #26); 580.173.02 lists GB10 fixes that match its
+chain, which is the version boundary we see, not a proof. Update a driver through the DGX
+Dashboard's OTA: an `apt upgrade` alone has left GPUs unusable (driver and GSP firmware not
+paired).
+
+An update restarts the proxy once (v6.28) and the serving engine once, its unit having
+changed; from then on every engine start goes through the guard.
+
 ## v1.20.5 (2026-10-01): the collapsed rail's button stays in its box
 
 With the rail collapsed, its footer is a box one icon wide, and the button in it still wrote
