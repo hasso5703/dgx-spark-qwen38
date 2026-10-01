@@ -722,6 +722,15 @@ if systemctl list-unit-files opencode-web.service >/dev/null 2>&1 \
 fi
 fi
 
+# 4f) pi and omp (docs/pi.md): the same dynamic the block above gives opencode.
+#     Their configs carry no second table of names and limits: pi-gen.py
+#     regenerates them from the opencode.json this switch just rewrote, as
+#     artifacts under ~/.config/qwen38 (pi/ JSON, omp/ YAML converted from it).
+#     No agent directory is ever written: the agents' own files are the user's
+#     copies, so re-copy them after a switch to pick up the new lane.
+python3 "$REPO_DIR/pi-gen.py" \
+  || echo "NOTE: could not regenerate the pi/omp artifacts; run ./pi-gen.py by hand"
+
 RUNNING=""
 systemctl is-active --quiet "$OTHER_UNIT_NAME" 2>/dev/null && RUNNING="$OTHER_UNIT_NAME"
 systemctl is-active --quiet "$IMAGE_UNIT_NAME" 2>/dev/null && RUNNING="$IMAGE_UNIT_NAME"
