@@ -246,7 +246,7 @@ class TheParentStartsIt(unittest.TestCase):
     def test_a_lane_that_fails_does_not_fail_the_run(self):
         out = self.parent("27b", 1, unit_there=False, child_rc=1)
         self.assertIn("AFTER FRESH=1 STATE=failed", out)
-        self.assertIn("the 27b lane goes on", out)
+        self.assertIn("the 27B lane goes on", out)
 
     def test_no_service_installs_one_lane(self):
         out = self.parent("27b", 1, unit_there=False, no_service=1)
@@ -341,7 +341,7 @@ class TheOtherLanesAndTheirProofs(unittest.TestCase):
     def test_a_served_lane_that_does_not_come_back_ends_the_run_and_says_how(self):
         rc, out, calls = self.end(prove_fail="qwen38-sglang.service")
         self.assertEqual(rc, 1)
-        self.assertIn("DIE the 27b lane did not come back", out)
+        self.assertIn("DIE the 27B lane did not come back", out)
         self.assertIn("sudo systemctl start qwen38-sglang.service", out)
 
 

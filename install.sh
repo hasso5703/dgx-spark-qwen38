@@ -469,10 +469,10 @@ decision endpoint, the opencode wiring, the cockpit and its Agent view. Each
 lane a run installs for the first time proves it serves before the run ends.
 All of it takes about 440 GB of disk (27B 54, flash 203, image 40, video 144):
 a little over an hour of work on the box, plus the downloads (about 75 minutes
-at 100 MB/s). A lane that does
-not fit on the disk is left out and named at the end, with the command that
-adds it later. When it finishes it prints the cockpit URL, and from there you
-start, stop, switch, watch and benchmark without a terminal.
+at 100 MB/s). A lane that does not fit on the disk is left out and named at the
+end, with the command that adds it later. When it finishes it prints the
+cockpit URL, and from there you start, stop, switch, watch and benchmark
+without a terminal.
 
   --no-start            install everything but don't start the service now
   --no-service          no systemd, no sudo: just prepare one text lane (image,
@@ -1032,7 +1032,7 @@ if [ "$NO_SERVICE" -eq 1 ] && [ "$LANE" = "flash" ]; then
   printf -- 'The flash targets are service-only in this release (the lane was validated as a systemd unit).\nDrop --no-service, or install one of the 27B targets for the foreground ./run.sh path.\n' >&2; exit 1
 fi
 
-step() { printf '\n\033[1;36m── %s%s\033[0m\n' "${SECONDARY:+$SECONDARY lane, }" "$*"; }
+step() { printf '\n\033[1;36m── %s%s\033[0m\n' "${SECONDARY:+${SECONDARY/27b/27B} lane, }" "$*"; }
 # True (0) when a service has to be restarted to run what is on disk: it is not running,
 # or it started before the last change of one of the files it reads. The files are only
 # rewritten when their content changes (cmp before install), so a date that moved is a
@@ -1522,7 +1522,7 @@ if [ -z "$SECONDARY" ] && [ "$NO_SERVICE" -eq 0 ]; then
   fi
   if [ "$SECOND_WANT" -eq 1 ]; then
     [ -f "/etc/systemd/system/$SECOND_UNIT" ] || SECOND_FRESH=1
-    step "The $SECOND_LANE lane, installed beside the $LANE lane (it serves when it is loaded)"
+    step "The ${SECOND_LANE/27b/27B} lane, installed beside the ${LANE/27b/27B} lane (it serves when it is loaded)"
     SECOND_ENV=()
     [ "$SECOND_FRESH" -eq 1 ] && SECOND_ENV=(MODEL_CHOICE="$SECOND_TARGET")
     if env -u MODEL_CHOICE -u MODEL_REV -u CONTEXT_MODE -u RESTART_ENGINE \
@@ -1532,7 +1532,7 @@ if [ -z "$SECONDARY" ] && [ "$NO_SERVICE" -eq 0 ]; then
       SECOND_STATE=installed
     else
       SECOND_STATE=failed
-      echo "NOTE: the $SECOND_LANE lane did not install (the lines above say why); the $LANE lane goes on."
+      echo "NOTE: the ${SECOND_LANE/27b/27B} lane did not install (the lines above say why); the ${LANE/27b/27B} lane goes on."
     fi
   else
     SECOND_STATE=off
@@ -2579,11 +2579,11 @@ except Exception as e:
     { [ "$IMAGE_STATE" = installed ] && { [ "$IMAGE_FRESH" -eq 1 ] || [ "$WITH_IMAGE" -eq 1 ]; }; } && PROVE_IMAGE=1
     { [ "$VIDEO_STATE" = installed ] && { [ "$VIDEO_FRESH" -eq 1 ] || [ "$WITH_VIDEO" -eq 1 ]; }; } && PROVE_VIDEO=1
     if [ $((PROVE_SECOND + PROVE_IMAGE + PROVE_VIDEO)) -gt 0 ]; then
-      step "Proving the new lanes serve: the $LANE lane stops meanwhile, then comes back"
+      step "Proving the new lanes serve: the ${LANE/27b/27B} lane stops meanwhile, then comes back"
       sudo systemctl stop "$UNIT_NAME"
       if [ "$PROVE_SECOND" -eq 1 ]; then
         SECOND_MODEL=qwen3.8-27b; [ "$SECOND_LANE" = flash ] && SECOND_MODEL=qwen3.8-flash-next
-        echo "starting the $SECOND_LANE lane ($SECOND_UNIT)"
+        echo "starting the ${SECOND_LANE/27b/27B} lane ($SECOND_UNIT)"
         if prove_text_lane "$SECOND_UNIT" "$SECOND_MODEL" stop; then SECOND_STATE=proved; else SECOND_STATE=failed; fi
       fi
       # Nothing serves while they run, so each leaves the box as it found it: stopped.
@@ -2593,9 +2593,9 @@ except Exception as e:
       if [ "$PROVE_VIDEO" -eq 1 ]; then
         if "$REPO_DIR/install-video.sh"; then VIDEO_STATE=proved; else VIDEO_STATE=failed; fi
       fi
-      step "The $LANE lane again"
+      step "The ${LANE/27b/27B} lane again"
       prove_text_lane "$UNIT_NAME" "$SMOKE_MODEL" \
-        || die "the $LANE lane did not come back after the other lanes' proofs (the lines above say why). Start it with: sudo systemctl start $UNIT_NAME"
+        || die "the ${LANE/27b/27B} lane did not come back after the other lanes' proofs (the lines above say why). Start it with: sudo systemctl start $UNIT_NAME"
       # A new boot is a new pool: the proxy reads it again, and opencode's 1m limits
       # follow it, as after the first boot above.
       ENGINE_KEEP=0
