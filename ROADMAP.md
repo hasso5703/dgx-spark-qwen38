@@ -7,6 +7,9 @@ have a reason they are not yet planned, stated here or in an issue).
 
 ## Shipped, current: v1.19
 
+- **A first install works again** (v1.19.0): v1.18.7 ended every install on a box that
+  never had this repo at step 7. Found by installing the reference box from nothing, its
+  own install moved aside, and checked the same way with the update from v1.18.7.
 - **MiniMax-H3, a fourth lane** (v1.19.0, opt-in with `--with-video`): text to video
   with sound made in the same pass, and first/last-frame conditioning, served from the
   SGLang cookbook's recipe with no local patch, driven like the other three lanes

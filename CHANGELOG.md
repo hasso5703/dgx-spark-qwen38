@@ -1,8 +1,11 @@
 # Changelog
 
-## v1.19.0 (2026-10-01): MiniMax-H3 as a fourth lane, and a cockpit rebuilt and checked under a finger
+## v1.19.0 (2026-10-01): a first install works again, MiniMax-H3 as a fourth lane, and a cockpit rebuilt and checked under a finger
 
-Three things arrive together. **MiniMax-H3 is a fourth lane**, opt-in with `--with-video`:
+**A first install works again.** v1.18.7 stopped every install on a box that had never had
+this repo at step 7, the opencode step, with `Install failed at line 1411`; an update of a
+complete install got through. The same one-liner finishes a box that v1.18.7 left there.
+Then three things arrive together. **MiniMax-H3 is a fourth lane**, opt-in with `--with-video`:
 text to video with its sound made in the same pass, and first/last-frame conditioning,
 served from the SGLang cookbook's recipe with no local patch and driven from the cockpit
 like the other three. **The cockpit is rebuilt** around one pool of unified memory and the
@@ -13,6 +16,49 @@ flash lane serves eight requests** by default, on the nightly engine the referen
 validated. Proxy v6.26 and v6.27 close the guard findings the v1.18.7 review left open.
 A box that updates keeps its lanes, its flash tier and its choices; what an update restarts
 is only what changed.
+
+### A box that never had this repo installs again
+
+**Step 7 ended every first install of v1.18.7.** The step fingerprints the two configs
+opencode-web reads, so that the server restarts only when one of them changed:
+`OC_SUM_BEFORE="$(oc_configs_sum)"`, whose body ran `cat` on both files. On a box with
+nothing installed neither exists yet, `cat` failed, `pipefail` failed the pipeline, the
+assignment took its status and `set -e` ended the run: `Install failed at line 1411
+(command: OC_SUM_BEFORE="$(oc_configs_sum)")`, after the image, the checkpoints and the key
+were in place and before anything was installed. An update of an install older than v1.18.7
+had both files and got through, which is why the reference box, updated at every release,
+never met it. It was found by running the one-liner there with the whole install moved
+aside, on 2026-09-30. A missing file is now part of the fingerprint, in `install.sh` and in
+`switch-model.sh`, which carried the same two lines. The suite had never run an install
+past step 1 (each of its runs stops at a wall before the part that acts on the machine), so
+a test now runs these lines under the scripts' own shell options from an empty HOME; it
+fails on v1.18.7.
+
+**The run after a first install restarted the engine it had just started.** The installer
+writes the unit, then restarts the engine in the same second, and systemd gives the start
+in whole seconds: compared with the file's fraction, the write read as a change made after
+the start, so the second run of the one-liner on a new box cost an 8-minute boot, a new
+pool, refitted opencode limits and a restart of opencode-web, for nothing. The engine's
+check now compares whole seconds on both sides, as the installer already did for the proxy,
+the cockpit and opencode-web.
+
+**A lane the box does not have names the command that installs it.** The cockpit told a
+flash-only box to run `./install.sh` for the 27B lane, which re-runs the lane the box
+serves and never brings the 27B one, and the target picked in a missing lane's card changed
+nothing in the command beside it. A text lane's command now names the target picked:
+`MODEL_CHOICE=stock ./install.sh` by default.
+
+Measured on the reference box on 2026-09-30 and 10-01, its own install moved aside for
+each run and put back after: the one-liner of v1.18.7 stops at step 7 as above, and this
+release, run on what that left, finishes in 7 min 42 s. On a box with nothing, it installs,
+boots and verifies the 27B lane, the proxy, the cockpit and the Agent view in 7 min 35 s
+(pool 917,099 tokens), and the flash lane (`MODEL_CHOICE=flash`) in 11 min 37 s, on the
+concurrency tier with the key on no command line. A v1.18.6 install updated to v1.18.7,
+then to this release, serves after each, and `--with-image` then adds the image lane in
+5 min 05 s, proved by an image before the box goes back to its text lane. The run after
+each first install and after the update took 10 to 11 s, changed no file and restarted no
+service, and the phone check passed 236 of 236 on each of those boxes. The checkpoints and
+images were already in the box's cache, so these times leave the downloads out.
 
 ### The cockpit rebuilt, and checked under a finger
 
