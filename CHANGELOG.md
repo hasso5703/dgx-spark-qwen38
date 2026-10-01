@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.22.0 (2026-10-02): pi and omp configs, generated from the opencode artifact
+
+[pi](https://pi.dev) and [omp](https://omp.sh) (oh-my-pi) read no `opencode.json`, so the box's facts (the providers, the default model, the limits, the template's effort tiers) existed for them only if a user typed them again. `./pi-gen.py` derives both agents' configs from the artifact install.sh already fits: `~/.config/qwen38/pi/` (pi's JSON pair, canonical) and `~/.config/qwen38/omp/` (the same values in omp's YAML), built once so they cannot disagree. The repo never writes into `~/.pi` or `~/.omp`: copying stays the user's, and `docs/pi.md` says how without overwriting a config that has other providers. Contributed by [@jimkont](https://github.com/jimkont) in [#30](https://github.com/hasso5703/dgx-spark-qwen38/pull/30).
+
+Checked with the real agents before it was merged, through the proxy to the flash lane, and two changes came out of it:
+
+- **pi's system prompt goes out as `system`.** pi sends it as the `developer` role to a reasoning model on a provider it does not know, and the served chat template refuses that role: every request got 400 "Unexpected message role." (pi 0.99.2). Each generated model now carries `compat.supportsDeveloperRole: false`.
+- **omp's effort rides `chat_template_kwargs` alone.** omp's default dialect also copies the effort into a top-level `reasoning_effort`, which SGLang validates against `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max` in both lanes' images: the template's own `lean`, omp's default level here, was a 400 on every request (omp 18.4.9). The generated models now set `compat.thinkingFormat: qwen-chat-template`, omp's dialect for vLLM and SGLang.
+
+With both, pi and omp answered at every thinking level and made a tool call (`read`) each. Two smaller changes: the `!cat <path>` that reads the key is quoted for the shell both agents run it in, and the files are regenerated only on a box that asked for them once (`./pi-gen.py` made their directory), by a switch as before and now by a fit too (`oc-fit-limits.py`, the cockpit's button), whose limits they carry.
+
 ## v1.21.1 (2026-10-02): a request whose body never arrived whole is not sent on
 
 The proxy's fuzz suite failed about one run in ten on its relay simulation, on v1.20.5

@@ -14,22 +14,27 @@ stays the user's one cp:
 <config> defaults to ~/.config/qwen38/opencode.json, <out> to ~/.config/qwen38.
 All read from the artifact: one provider per installed lane (the {file:...}
 key as "!cat <path>": read at request time, no secret copied, rotation-proof),
-per model name, modalities, contextWindow, maxTokens and a 1568x1568 /
-512 KiB image resize limit; pi's settings.json adds the default model,
+per model name, modalities, contextWindow, maxTokens, a 1568x1568 /
+512 KiB image resize limit and compat.supportsDeveloperRole false (the
+system prompt as "system": the served template refuses "developer");
+pi's settings.json adds the default model,
 modelThinkingLevels "off" for our models (unset sends no effort field, which
 is the patched template's lean default), keepRecentTokens from the artifact's
 compaction block and per-lane reserveTokens = the lane's output cap. omp
 gets the same values re-serialized: the same models array, thinking block
-added, inputLimits dropped (its schema has no room for it); default provider
-+ model id -> modelRoles.default. The thinking block lists the template's own
-tiers (the artifact's variants, lean included, what pi's fixed enum cannot
-offer) with defaultLevel lean; compat carries qwenTemplateReasoningEffort
-plus a reasoningEffortMap, which route the pick onto
-chat_template_kwargs.reasoning_effort, what the patched template reads.
+added, inputLimits and pi's compat dropped (its schema has no room for them);
+default provider + model id -> modelRoles.default. The thinking block lists
+the template's own tiers (the artifact's variants, lean included, what pi's
+fixed enum cannot offer) with defaultLevel lean; compat carries
+thinkingFormat qwen-chat-template, qwenTemplateReasoningEffort and a
+reasoningEffortMap, which route the pick onto
+chat_template_kwargs.reasoning_effort alone, what the patched template reads
+(SGLang refuses a top-level "lean").
 
-switch-model.sh regenerates these files on every switch (block 4f): re-copy
-them after a switch or an oc-fit-limits.py fit. A file whose content would
-not change is not touched; --dry-run prints what would change. The YAML comes
+Once this ran (its pi/ or omp/ directory exists), switch-model.sh (block 4f)
+and an oc-fit-limits.py fit regenerate these files: re-copy them after a
+switch or a fit. A file whose content would not change is not touched;
+--dry-run prints what would change. The YAML comes
 from a small stdlib writer: this repo's runtime imports nothing outside the
 stdlib, and PyYAML is a measuring-gate package (tests/testpy.sh). Exit 0 when
 done or with nothing to generate (no artifact, as on a --no-opencode box),
@@ -38,6 +43,7 @@ done or with nothing to generate (no artifact, as on a --no-opencode box),
 import argparse
 import json
 import os
+import shlex
 import sys
 
 OURS = ("qwen38", "flashnext")
@@ -121,10 +127,19 @@ def yd(d):
 
 
 def api_key(options):
+    """{file:<path>} -> "!cat <path>", which both agents run in a shell at request time:
+    the path is quoted for it (a home with a space in it)."""
     v = (options or {}).get("apiKey", "")
     if isinstance(v, str) and v.startswith("{file:") and v.endswith("}"):
-        return "!cat " + v[6:-1]
+        return "!cat " + shlex.quote(v[6:-1])
     return v if isinstance(v, str) and v else "qwen38"
+
+
+# pi sends its system prompt as the "developer" role to a reasoning model on a provider it
+# does not know, and the served chat template refuses that role: every request got
+# 400 "Unexpected message role." (pi 0.99.2 through the proxy to the flash lane,
+# 2026-10-01). With the role off, the prompt goes out as "system".
+PI_COMPAT = {"supportsDeveloperRole": False}
 
 
 def model_meta(mid, m):
@@ -132,7 +147,8 @@ def model_meta(mid, m):
     modal = (m.get("modalities") or {}).get("input") or ["text"]
     e = {"id": mid, "reasoning": True, "input": modal,
          "contextWindow": lim.get("context"), "maxTokens": lim.get("output"),
-         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}
+         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+         "compat": dict(PI_COMPAT)}
     if m.get("name"):
         e["name"] = m["name"]
     if "image" in modal:
@@ -184,8 +200,13 @@ def build(artifact):
 # 3.8+ ids on LM Studio, llama.cpp discovery and vLLM only, and this proxy's
 # provider id is none of those: without it the picker moved and no effort
 # field was sent (captured against omp 18.4.6, 2026-10-01). So the generator
-# sets it beside every thinking block. omp validates models.yml itself: these
-# spellings were fixed against its error output, not only the docs.
+# sets it beside every thinking block. Its default dialect also copies the
+# effort into a top-level reasoning_effort, and SGLang validates that field
+# against none/minimal/low/medium/high/xhigh/max: "lean" there was a 400 on
+# every request at the default level (omp 18.4.9, both lanes' images,
+# 2026-10-01). thinkingFormat "qwen-chat-template", omp's own dialect for
+# vLLM and SGLang, sends the kwargs alone. omp validates models.yml itself:
+# these spellings were fixed against its error output, not only the docs.
 OMP_LEVEL = {"lean": "minimal", "low": "low", "medium": "medium", "minimal": "minimal",
              "high": "high", "xhigh": "xhigh", "max": "max"}
 
@@ -204,11 +225,12 @@ def omp_thinking(tiers):
             levels.append(lvl)
         if lvl != t:
             rmap[lvl] = t
+    compat = {"thinkingFormat": "qwen-chat-template"}
     if not levels:
-        return None, None
+        return None, compat
     default = "minimal" if "lean" in tiers and "minimal" in levels else levels[0]
     thinking = {"mode": "effort", "efforts": levels, "defaultLevel": default}
-    compat = {"qwenTemplateReasoningEffort": True}
+    compat["qwenTemplateReasoningEffort"] = True
     if rmap:
         compat["reasoningEffortMap"] = rmap
     return thinking, compat
@@ -224,10 +246,11 @@ def omp_convert(models_doc, settings, efforts):
     for prov, b in models_doc["providers"].items():
         entries = []
         for m in b["models"]:
-            # inputLimits is pi's shape; omp's models.yml schema does not carry
-            # it, and a schema error makes omp skip the whole file. models is an
-            # ARRAY in omp too (verified against omp's own validation error).
-            e = {k: v for k, v in m.items() if k != "inputLimits"}
+            # inputLimits and pi's compat are pi's shapes; omp's models.yml schema
+            # does not carry them, and a schema error makes omp skip the whole
+            # file. models is an ARRAY in omp too (verified against omp's own
+            # validation error).
+            e = {k: v for k, v in m.items() if k not in ("inputLimits", "compat")}
             thinking, compat = omp_thinking(efforts.get(f"{prov}/{m['id']}", []))
             if thinking:
                 e["thinking"] = thinking

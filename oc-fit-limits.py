@@ -284,6 +284,15 @@ def main(argv: list[str]) -> int:
     elif rc == 0:
         print("opencode now asks for no more than this engine can serve; "
               "restart opencode to pick the new limits up")
+    if rc == 0 and changed and ((CONFIG_DIR / "pi").is_dir() or (CONFIG_DIR / "omp").is_dir()):
+        # pi and omp carry the same limits, generated from the artifact just fitted
+        # (docs/pi.md), on a box that asked for them once
+        out = subprocess.run([sys.executable, str(REPO_DIR / "pi-gen.py"), "--config",
+                              str(CONFIG_DIR / "opencode.json"), "--out", str(CONFIG_DIR)],
+                             capture_output=True, text=True)
+        print((out.stdout or out.stderr).strip() or "pi-gen.py said nothing")
+        if out.returncode == 0:
+            print("the pi and omp files follow the new limits: copy them into the agents again (docs/pi.md)")
     return rc
 
 

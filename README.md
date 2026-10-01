@@ -364,7 +364,7 @@ agentic clients. `./install.sh --no-opencode` installs the API and nothing else,
 sticks. What each piece is for, and why the config points at the proxy port rather than the
 engine: **[docs/opencode.md](docs/opencode.md)**.
 
-The same generated config is also the single source for **[pi](https://pi.dev)** and **[omp](https://omp.sh) (oh-my-pi)**: `./pi-gen.py` derives their ready configs (`~/.config/qwen38/pi/` JSON, `~/.config/qwen38/omp/` YAML converted from it, one build) and `./switch-model.sh` regenerates them on every switch; copying them into the agent's directory stays yours. **[docs/pi.md](docs/pi.md)**.
+The same generated config is also the single source for **[pi](https://pi.dev)** and **[omp](https://omp.sh) (oh-my-pi)**: `./pi-gen.py` derives their ready configs (`~/.config/qwen38/pi/` JSON, `~/.config/qwen38/omp/` YAML converted from it, one build), and once you ran it, a switch and a fit regenerate them; copying them into the agent's directory stays yours. **[docs/pi.md](docs/pi.md)**.
 
 ## The seven targets, and switching between them
 

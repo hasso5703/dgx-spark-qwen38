@@ -122,6 +122,34 @@ def main() -> None:
         assert len(restarts) == min(want, 1), (merge_said, restarts)
     m.subprocess.run = real_run
 
+    # 6b. A fit that changed the limits regenerates the pi and omp files (docs/pi.md), and
+    #     only on a box that asked for them once: their directory is the sign.
+    for asked, merge_said, want in ((True, "limits: 700000/200000 -> 567000/189000", 1),
+                                    (False, "limits: 700000/200000 -> 567000/189000", 0),
+                                    (True, "limits already 567000/189000: unchanged", 0)):
+        gens = []
+
+        def fake(argv, **kw):
+            argv = [str(a) for a in argv]
+            if any(a.endswith("pi-gen.py") for a in argv):
+                gens.append(argv)
+                return sp.CompletedProcess(argv, 0, stdout="wrote x", stderr="")
+            text = merge_said if any(a.endswith("oc-merge-limits.py") for a in argv) else ""
+            return sp.CompletedProcess(argv, 0, stdout=text, stderr="")
+        m.subprocess.run, home = fake, os.environ["HOME"]
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                m.CONFIG_DIR, os.environ["HOME"] = P(d), d      # and no look at the real one
+                (P(d) / "opencode.json").write_text("{}")
+                if asked:
+                    (P(d) / "omp").mkdir()
+                assert m.main([]) == 0
+                assert len(gens) == want, (asked, merge_said, gens)
+                if want:
+                    assert gens[0][-4:] == ["--config", str(P(d) / "opencode.json"), "--out", d], gens
+        finally:
+            m.subprocess.run, os.environ["HOME"] = real_run, home
+
     # 7. main() hands the ceiling the proxy applies to the lane that serves to fit(): the
     #    main() runs above had a `systemctl show` that answered "", so a main() calling
     #    fit(pool), or reading the ceiling without the served name, passed (found in
