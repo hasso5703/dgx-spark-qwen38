@@ -192,9 +192,10 @@ class TheInstaller(unittest.TestCase):
         self.assertFalse((REPO / "video-sglang").exists())
         self.assertNotIn("apply --check", self.text)
 
-    def test_it_checks_for_room_before_downloading_145_gb(self):
-        self.assertIn("WEIGHTS_GB=145", self.text)
-        self.assertIn("WEIGHTS_NEED", self.text)
+    def test_it_checks_for_room_before_downloading_the_135_gib(self):
+        # GiB, as the room check counts them: 145 read as GiB asked for 10 the lane never takes
+        self.assertIn("WEIGHTS_GB=135", self.text)
+        self.assertIn("WEIGHTS_NEED=$(( (WEIGHTS_GB * 1073741824 - ${HAVE_B:-0}) / 1073741824 ))", self.text)
 
     def test_an_unknown_option_is_refused_rather_than_ignored(self):
         self.assertIn('die "unknown option: $a"', self.text)
@@ -351,14 +352,14 @@ class TheBootLaneConvergence(unittest.TestCase):
         self.assertNotIn("systemctl start", early)
         self.assertIn("--no-smoke", early)
 
-    def test_that_path_respects_no_video(self):
+    def test_that_path_respects_a_left_out_video_lane(self):
         i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then')
         early = self.text[i:self.text.index("exit 0", i)]
         call = early.index('"$REPO_DIR/install-video.sh" --no-smoke')
-        self.assertIn('if [ "$NO_VIDEO" -eq 0 ]', early[:call])
+        self.assertIn('if [ "$WANT_VIDEO" -eq 1 ]', early[:call])
 
     def test_an_explicit_model_choice_is_honoured(self):
-        i = self.text.index("VIDEO_BOOT=0\nif systemctl is-enabled --quiet qwen38-video.service")
+        i = self.text.index('VIDEO_BOOT=0\nif [ -z "$SECONDARY" ] && systemctl is-enabled --quiet qwen38-video.service')
         block = self.text[i:i + 900]
         self.assertIn('if [ -n "$_ENV_MODEL_CHOICE" ]; then', block)
         self.assertLess(block.index('if [ -n "$_ENV_MODEL_CHOICE" ]; then'), block.index("VIDEO_BOOT=1"))

@@ -141,7 +141,7 @@ class TheStepRuns(unittest.TestCase):
     and tailscale are stubs, so nothing reaches the box."""
 
     START = '    COCKPIT_URL=""\n    if [ "$COCKPIT" -eq 1 ]; then\n'
-    END = "\n    # ── The image lane"
+    END = "\n    # ── Every other lane"
 
     def step10(self, dash_rc=0, agent_rc=0, opencode=True, bind="100.64.0.7", cockpit=1):
         src = pathlib.Path(INSTALL).read_text()

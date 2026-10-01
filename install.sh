@@ -72,6 +72,16 @@ _ENV_PLE_DIR="${PLE_DIR:-}"; FLASH_TIER_ENV="${FLASH_TIER:-}"
 _ENV_SPEC_TOKEN_MAP_SIZE="${SPEC_TOKEN_MAP_SIZE:-}"; _ENV_FLASH_REPLAYSSM_SPEC="${FLASH_REPLAYSSM_SPEC:-}"
 _ENV_DRAFT2_REPO="${DRAFT2_REPO:-}"; _ENV_DRAFT2_REV="${DRAFT2_REV:-}"
 _ENV_DRAFT2_QUANT="${DRAFT2_QUANT:-}"; _ENV_DRAFT2_TOKENS="${DRAFT2_TOKENS:-}"
+# A run installs the text lane that does not serve as well, beside the one it serves: it
+# starts this script again for that lane, with QWEN38_SECONDARY naming it (27b or flash).
+# That run converges on that lane's own installed choices, installs its unit without
+# enabling it, starts nothing, and leaves the proxy, the boot lane, opencode, the cockpit
+# and the side lanes to the run that started it.
+SECONDARY="${QWEN38_SECONDARY:-}"
+case "$SECONDARY" in
+  ""|27b|flash) ;;
+  *) echo "ERROR: QWEN38_SECONDARY names a text lane, 27b or flash (got: $SECONDARY)" >&2; exit 1 ;;
+esac
 
 # ── Pinned, validated versions (override via env if you know what you do) ──
 # The 27B lane's image, and since v1.14 it is the official release, served
@@ -418,6 +428,10 @@ WITH_IMAGE=0
 NO_IMAGE=0
 WITH_VIDEO=0
 NO_VIDEO=0
+WITH_FLASH=0
+NO_FLASH=0
+WITH_27B=0
+NO_27B=0
 for arg in "$@"; do
   case "$arg" in
     --no-start) NO_START=1 ;;
@@ -430,27 +444,39 @@ for arg in "$@"; do
     --no-image) NO_IMAGE=1 ;;
     --with-video) WITH_VIDEO=1 ;;
     --no-video) NO_VIDEO=1 ;;
+    --with-flash) WITH_FLASH=1 ;;
+    --no-flash) NO_FLASH=1 ;;
+    --with-27b) WITH_27B=1 ;;
+    --no-27b) NO_27B=1 ;;
     --with-claude-warmup)
       echo "NOTE: --with-claude-warmup was removed in v1.3 (the repo's client story moved to opencode)."
       echo "      The flag is ignored; an installed warmup drop-in from an earlier version is cleaned up." ;;
     -h|--help)
       cat <<'HLP'
 Usage: ./install.sh [--no-start] [--no-service] [--no-opencode | --with-opencode]
-                   [--no-cockpit | --with-cockpit] [--with-image | --no-image]
-                   [--with-video | --no-video]
+                   [--no-cockpit | --with-cockpit] [--no-image | --with-image]
+                   [--no-video | --with-video] [--no-flash | --with-flash]
+                   [--no-27b | --with-27b]
 
 Run it as yourself. Never with sudo in front: it calls sudo itself for the
 privileged steps, and under sudo every path it writes moves to /root (see the
 refusal at the top of this file).
 
-A plain run installs the whole box: engine, keepalive proxy, opencode wiring,
-the cockpit and its Agent view. When it finishes it prints the cockpit URL, and
-from there you start, stop, switch, watch and benchmark without a terminal.
+A plain run installs the whole box: both text lanes (the one MODEL_CHOICE names
+serves, the 27B by default, and the other is installed beside it, ready to
+load), the image lane, the video lane, the keepalive proxy with its typed
+decision endpoint, the opencode wiring, the cockpit and its Agent view. Each
+lane a run installs for the first time proves it serves before the run ends.
+All of it takes about 440 GB of disk (27B 54, flash 203, image 40, video 144)
+and, on a new box, two to three hours, most of it downloads. A lane that does
+not fit on the disk is left out and named at the end, with the command that
+adds it later. When it finishes it prints the cockpit URL, and from there you
+start, stop, switch, watch and benchmark without a terminal.
 
   --no-start            install everything but don't start the service now
-  --no-service          no systemd, no sudo: just prepare everything (image,
-                        checkpoints, key, template), then run in the foreground
-                        anytime with ./run.sh (Ctrl+C stops it)
+  --no-service          no systemd, no sudo: just prepare one text lane (image,
+                        checkpoints, key, template), then run it in the
+                        foreground anytime with ./run.sh (Ctrl+C stops it)
   --no-opencode         skip the opencode integration (no generated config, no
                         oc launcher, and switch-model.sh leaves your opencode
                         default model alone). Remembered by later runs.
@@ -458,24 +484,19 @@ from there you start, stop, switch, watch and benchmark without a terminal.
   --no-cockpit          skip the web cockpit and its Agent view (no dashboard
                         unit, no sudoers allowlist). Remembered by later runs.
   --with-cockpit        re-enable it after a --no-cockpit
-  --with-image          also install the Qwen-Image 2.1 lane: text-to-image,
-                        image editing and native RGBA, served on its own port
-                        and driven from the cockpit's Image view. Adds 38 GB
-                        (31 checkpoint, 7 runtime) and about 25 min, which is
-                        why a plain run does not. Once installed, later runs
-                        keep and update it.
-  --no-image            skip it on a box that already has it (the unit and the
-                        venv stay in place; ./install-image.sh --uninstall
-                        removes them)
-  --with-video          also install the MiniMax-H3 video lane: text-to-video
-                        with joint video-and-audio, served on its own port
-                        and driven from the cockpit's Video view. Adds about
-                        150 GB of headroom and an hour or more, which is why
-                        a plain run does not. Once installed, later runs keep
-                        and update it.
-  --no-video            skip it on a box that already has it (the unit and the
-                        venv stay in place; ./install-video.sh --uninstall
-                        removes them)
+  --no-image            leave the Qwen-Image 2.1 lane out (40 GB). Remembered
+                        by later runs; a lane already installed stays in place,
+                        not updated (./install-image.sh --uninstall removes it)
+  --with-image          bring it back after a --no-image
+  --no-video            leave the MiniMax-H3 video lane out (144 GB),
+                        remembered the same way (./install-video.sh --uninstall)
+  --with-video          bring it back after a --no-video
+  --no-flash            leave the flash 176B lane out when it is not the one
+                        serving (203 GB), remembered the same way
+  --with-flash          bring it back after a --no-flash
+  --no-27b              leave the 27B lane out when it is not the one serving
+                        (54 GB), remembered the same way
+  --with-27b            bring it back after a --no-27b
 
 Re-running over an existing install keeps the operator's choices: the target
 model (any of the seven), the context mode (native/1m), the flash serving tier,
@@ -615,7 +636,7 @@ systemctl is-enabled --quiet qwen38-sglang.service 2>/dev/null && SGL_ENABLED=1
 # unit beside the image one, and left two engines set to start at the next reboot, with
 # only the order systemd happened to pull them in deciding which one came up.
 IMAGE_BOOT=0
-if systemctl is-enabled --quiet qwen38-image.service 2>/dev/null \
+if [ -z "$SECONDARY" ] && systemctl is-enabled --quiet qwen38-image.service 2>/dev/null \
    && [ "$SGL_ENABLED" -eq 0 ] && [ "$FLASH_ENABLED" -eq 0 ]; then
   if [ -n "$_ENV_MODEL_CHOICE" ]; then
     # An explicit MODEL_CHOICE asks for a text lane: honour it, and the image lane leaves
@@ -631,7 +652,7 @@ fi
 # The video lane is a lane too, under the same promise: a plain re-run on a box
 # booting video must not enable a text unit beside it.
 VIDEO_BOOT=0
-if systemctl is-enabled --quiet qwen38-video.service 2>/dev/null \
+if [ -z "$SECONDARY" ] && systemctl is-enabled --quiet qwen38-video.service 2>/dev/null \
    && [ "$SGL_ENABLED" -eq 0 ] && [ "$FLASH_ENABLED" -eq 0 ]; then
   if [ -n "$_ENV_MODEL_CHOICE" ]; then
     # An explicit MODEL_CHOICE asks for a text lane: honour it, and the video lane
@@ -664,6 +685,14 @@ elif [ "$SGL_READABLE" -eq 1 ]; then
 elif [ "$FLASH_READABLE" -eq 1 ]; then
   # flash unit present but not enabled and no sglang unit: still the only choice
   INSTALLED_CHOICE=flash
+fi
+# The secondary run converges on its own lane's unit, whichever one is enabled: the
+# lane its parent serves is, and the detection above follows that one. A lane not
+# installed yet converges on nothing, and takes the target its parent passes.
+if [ -n "$SECONDARY" ]; then
+  INSTALLED_CHOICE=""
+  if [ "$SECONDARY" = flash ] && [ "$FLASH_READABLE" -eq 1 ]; then INSTALLED_CHOICE=flash; fi
+  if [ "$SECONDARY" = 27b ] && [ "$SGL_READABLE" -eq 1 ]; then INSTALLED_CHOICE=27b; fi
 fi
 if [ "$INSTALLED_CHOICE" = "flash" ]; then
   # Converge on the installed flash launch script (the unit only points at it;
@@ -883,6 +912,10 @@ fi
 if [ "$OPENCODE" -eq 1 ] && [ -n "$_ENV_OPENCODE_VERSION" ] && [ -z "$_ENV_OPENCODE_SHA256" ]; then
   die "OPENCODE_VERSION=$OPENCODE_VERSION needs OPENCODE_SHA256 too (GitHub's digest of opencode-linux-arm64.tar.gz for that release): a version with no checksum is not a pin"
 fi
+# A secondary run installs the lane it was started for, and nothing else.
+if [ -n "$SECONDARY" ] && [ "$LANE" != "$SECONDARY" ]; then
+  die "internal error: a run for the $SECONDARY lane resolved the $LANE lane (MODEL_CHOICE=$MODEL_CHOICE). Please open an issue with this line."
+fi
 # The same refusal as the one near the top, once the lane is final: without
 # MODEL_CHOICE that one reads LANE before the convergence has moved it to the
 # installed flash lane, and step 6 then patched YaRN into the flash checkpoint's
@@ -916,9 +949,15 @@ fi
 if [ "$NO_IMAGE" -eq 1 ] && [ "$WITH_IMAGE" -eq 1 ]; then
   printf -- '--no-image and --with-image contradict each other (drop one flag)\n' >&2; exit 1
 fi
-# The same for the video lane.
+# The same for the video lane and the two text lanes.
 if [ "$NO_VIDEO" -eq 1 ] && [ "$WITH_VIDEO" -eq 1 ]; then
   printf -- '--no-video and --with-video contradict each other (drop one flag)\n' >&2; exit 1
+fi
+if [ "$NO_FLASH" -eq 1 ] && [ "$WITH_FLASH" -eq 1 ]; then
+  printf -- '--no-flash and --with-flash contradict each other (drop one flag)\n' >&2; exit 1
+fi
+if [ "$NO_27B" -eq 1 ] && [ "$WITH_27B" -eq 1 ]; then
+  printf -- '--no-27b and --with-27b contradict each other (drop one flag)\n' >&2; exit 1
 fi
 
 # --no-start and --no-service both return before the image step, so the flag would be
@@ -951,6 +990,32 @@ elif [ -f "$CK_OFF_MARK" ]; then
 fi
 # --no-service means no systemd at all, and the cockpit is a systemd unit.
 [ "$NO_SERVICE" -eq 1 ] && COCKPIT=0
+# Since v1.20 a plain run installs every lane: the text lane MODEL_CHOICE names serves,
+# the other text lane is installed beside it, ready to load, and so are the image and
+# the video lanes. Each one can be left out, and that choice persists like the
+# cockpit's, in a marker file: --no-<lane> writes it, --with-<lane> removes it. A lane
+# already on the box when it is left out stays where it is, and is no longer updated.
+lane_wanted(){  # $1 lane (image, video, flash, 27b), $2 --no-$1 given, $3 --with-$1 given: sets WANT
+  local mark="$CONFIG_DIR/$1.off"
+  WANT=1
+  if [ "$2" -eq 1 ]; then
+    WANT=0
+    mkdir -p "$CONFIG_DIR"
+    [ -f "$mark" ] || printf 'left out with ./install.sh --no-%s on %s\n' "$1" "$(date -u +%Y-%m-%dT%H:%MZ)" > "$mark"
+  elif [ "$3" -eq 1 ]; then
+    rm -f "$mark"
+  elif [ -f "$mark" ]; then
+    WANT=0
+    echo "Leaving the $1 lane out (your earlier --no-$1). Pass --with-$1 to bring it back."
+  fi
+}
+WANT_IMAGE=0; WANT_VIDEO=0; WANT_FLASH=0; WANT_27B=0
+if [ -z "$SECONDARY" ]; then
+  lane_wanted image "$NO_IMAGE" "$WITH_IMAGE"; WANT_IMAGE="$WANT"
+  lane_wanted video "$NO_VIDEO" "$WITH_VIDEO"; WANT_VIDEO="$WANT"
+  lane_wanted flash "$NO_FLASH" "$WITH_FLASH"; WANT_FLASH="$WANT"
+  lane_wanted 27b "$NO_27B" "$WITH_27B"; WANT_27B="$WANT"
+fi
 
 if [ "$NO_SERVICE" -eq 1 ] && [ "$CONTEXT_MODE" = "1m" ]; then
   if [ -z "$_ENV_CONTEXT_MODE" ]; then
@@ -966,7 +1031,7 @@ if [ "$NO_SERVICE" -eq 1 ] && [ "$LANE" = "flash" ]; then
   printf -- 'The flash targets are service-only in this release (the lane was validated as a systemd unit).\nDrop --no-service, or install one of the 27B targets for the foreground ./run.sh path.\n' >&2; exit 1
 fi
 
-step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
+step() { printf '\n\033[1;36m── %s%s\033[0m\n' "${SECONDARY:+$SECONDARY lane, }" "$*"; }
 # True (0) when a service has to be restarted to run what is on disk: it is not running,
 # or it started before the last change of one of the files it reads. The files are only
 # rewritten when their content changes (cmp before install), so a date that moved is a
@@ -1093,7 +1158,9 @@ if [ -n "$HF_DEV" ] && [ "$HF_DEV" = "$DOCKER_DEV" ]; then
   BOTH_GB=$((NEED_GB + DOCKER_NEED_GB))
   [ "${FREE_DISK_GB:-0}" -ge "$BOTH_GB" ] || die "Need ~${BOTH_GB} GB free on the disk that holds both $HF_CACHE and $DOCKER_ROOT (${NEED_GB} for the checkpoints and caches, ${DOCKER_NEED_GB} for the $IMG_LABEL); found ${FREE_DISK_GB:-unknown} GB. Free some space, or set HF_CACHE to another disk."
 fi
-if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
+# A secondary run shares the port with the lane its parent serves, which holds it by
+# design: the parent checked both ports, and owns the proxy.
+if [ -z "$SECONDARY" ] && ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
   # The port may be held by either of OUR engines: same-engine reinstall
   # (converge) or a cross-engine switch (the old engine is stopped at step 9).
   if docker inspect qwen38-sglang --format '{{join .Args " "}}' 2>/dev/null | grep -qE -- "--port ${PORT}(\s|$)"; then
@@ -1105,7 +1172,7 @@ if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PORT\$"; then
     die "Port $PORT is already in use by another program (see: ss -tlnp | grep :$PORT). Free it, or install with PORT=<other> ./install.sh"
   fi
 fi
-if [ "$NO_SERVICE" -eq 0 ] && ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PROXY_PORT\$"; then
+if [ -z "$SECONDARY" ] && [ "$NO_SERVICE" -eq 0 ] && ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$PROXY_PORT\$"; then
   # Ours only if the proxy that runs is the one on that port: a running proxy made ANY
   # busy PROXY_PORT pass, another program's included, which then kept the new unit from
   # binding (found in review, 2026-09-24).
@@ -1437,7 +1504,43 @@ apply_context_configs(){
 }
 
 
-if [ "$OPENCODE" -eq 0 ]; then
+# ── The other text lane, installed beside this one ─────────────────────────────
+# Since v1.20 a run installs both text lanes: the one it serves, and the other one, ready
+# to load from the cockpit. The other one is this same script, started again for that
+# lane (QWEN38_SECONDARY above). Here, before step 7, so that opencode lists both lanes
+# from the first run on. What is shared with the lane served here (the port, the HF
+# cache, the binds) goes over explicitly; what belongs to one lane (its target, revision
+# and context mode) does not: a MODEL_CHOICE given for this lane must not pick the other
+# one's. A lane not installed yet gets its default target; one installed keeps its own.
+SECOND_LANE=""; SECOND_UNIT=""; SECOND_FRESH=0; SECOND_STATE=""
+if [ -z "$SECONDARY" ] && [ "$NO_SERVICE" -eq 0 ]; then
+  if [ "$LANE" = "27b" ]; then
+    SECOND_LANE=flash; SECOND_UNIT=qwen38-flash.service; SECOND_WANT="$WANT_FLASH"; SECOND_TARGET=flash
+  else
+    SECOND_LANE=27b; SECOND_UNIT=qwen38-sglang.service; SECOND_WANT="$WANT_27B"; SECOND_TARGET=stock
+  fi
+  if [ "$SECOND_WANT" -eq 1 ]; then
+    [ -f "/etc/systemd/system/$SECOND_UNIT" ] || SECOND_FRESH=1
+    step "The $SECOND_LANE lane, installed beside the $LANE lane (it serves when it is loaded)"
+    SECOND_ENV=()
+    [ "$SECOND_FRESH" -eq 1 ] && SECOND_ENV=(MODEL_CHOICE="$SECOND_TARGET")
+    if env -u MODEL_CHOICE -u MODEL_REV -u CONTEXT_MODE -u RESTART_ENGINE \
+         QWEN38_SECONDARY="$SECOND_LANE" PORT="$PORT" HF_CACHE="$HF_CACHE" \
+         ENGINE_BIND="$ENGINE_BIND" PROXY_BIND="$PROXY_BIND" PROXY_PORT="$PROXY_PORT" \
+         ${SECOND_ENV[@]+"${SECOND_ENV[@]}"} bash "$REPO_DIR/install.sh"; then
+      SECOND_STATE=installed
+    else
+      SECOND_STATE=failed
+      echo "NOTE: the $SECOND_LANE lane did not install (the lines above say why); the $LANE lane goes on."
+    fi
+  else
+    SECOND_STATE=off
+  fi
+fi
+
+if [ -n "$SECONDARY" ]; then
+  step "7/10 opencode: left to the run that serves, which lists this lane too"
+elif [ "$OPENCODE" -eq 0 ]; then
   step "7/10 opencode integration: off"
   mkdir -p "$CONFIG_DIR"
   [ -f "$OC_OFF_MARK" ] || printf 'disabled with ./install.sh --no-opencode on %s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" > "$OC_OFF_MARK"
@@ -2058,23 +2161,28 @@ if [ "$LANE" = "flash" ]; then
 else
   [ -f "$FLASH_UNIT_PATH" ] && OTHER_UNIT="qwen38-flash.service"
 fi
-if [ -n "$OTHER_UNIT" ] && systemctl is-enabled --quiet "$OTHER_UNIT" 2>/dev/null; then
+# A secondary run installs its lane beside the one serving and leaves the boot lane alone:
+# the three disables below, the proxy's unit and enabling its own are the serving run's.
+if [ -z "$SECONDARY" ] && [ -n "$OTHER_UNIT" ] && systemctl is-enabled --quiet "$OTHER_UNIT" 2>/dev/null; then
   echo "disabling the other engine's unit at boot: $OTHER_UNIT (file kept, switch back anytime with ./switch-model.sh)"
   sudo systemctl disable "$OTHER_UNIT"
 fi
 # The image lane is the third engine. When this run makes a text lane the boot lane (an
 # explicit MODEL_CHOICE on a box that booted images), leaving it enabled would put two
 # engines at the next boot.
-if [ "$IMAGE_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-image.service 2>/dev/null; then
+if [ -z "$SECONDARY" ] && [ "$IMAGE_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-image.service 2>/dev/null; then
   echo "disabling the image lane at boot (unit kept, switch back anytime from the cockpit)"
   sudo systemctl disable qwen38-image.service
 fi
 # The video lane is the fourth engine, under the same rule.
-if [ "$VIDEO_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-video.service 2>/dev/null; then
+if [ -z "$SECONDARY" ] && [ "$VIDEO_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-video.service 2>/dev/null; then
   echo "disabling the video lane at boot (unit kept, switch back anytime from the cockpit)"
   sudo systemctl disable qwen38-video.service
 fi
 KEEPALIVE_UNIT="qwen38-keepalive.service"
+KA_CHANGED=0      # whether this run changed what the proxy runs (see its restart below)
+# The proxy, its code and its unit are the serving run's (see the secondary run above).
+if [ -z "$SECONDARY" ]; then
 # One-prompt ceiling enforced by the proxy (tokens; 0 = pool share only). The proxy
 # always refuses a prompt above its share of the KV pool as well, so the smaller of
 # the two binds and a tier with a small pool needs no separate ceiling.
@@ -2110,7 +2218,6 @@ FLASH_PROMPT_CEILING="${FLASH_PROMPT_CEILING_TOKENS:-250000}"
 # arguments while they stream (127 s of measured silence on a 400-line write,
 # at native context) and agent CLIs abort a silent stream (~140-180 s for
 # opencode). It also aborts zombie generations when the client disconnects.
-KA_CHANGED=0      # whether this run changed what the proxy runs (see its restart below)
 cmp -s "$REPO_DIR/keepalive-proxy.py" "$CONFIG_DIR/keepalive-proxy.py" \
   || { install -m 755 "$REPO_DIR/keepalive-proxy.py" "$CONFIG_DIR/keepalive-proxy.py"; KA_CHANGED=1; }
 TMP_KA="$(mktemp)"
@@ -2136,6 +2243,7 @@ if [ -f "/etc/systemd/system/$KEEPALIVE_UNIT.d/ceiling.conf" ]; then
   KA_CHANGED=1
   sudo rmdir "/etc/systemd/system/$KEEPALIVE_UNIT.d" 2>/dev/null || true
 fi
+fi
 # The Claude Code warmup was removed in v1.3: clean up what earlier versions
 # installed (only the warmup drop-in; any other drop-in in the .d dir is kept).
 if [ -f "/etc/systemd/system/$UNIT_NAME.d/warmup.conf" ]; then
@@ -2145,6 +2253,11 @@ if [ -f "/etc/systemd/system/$UNIT_NAME.d/warmup.conf" ]; then
 fi
 rm -f "$CONFIG_DIR/warmup-claude-code.sh"
 sudo systemctl daemon-reload
+if [ -n "$SECONDARY" ]; then
+  # Installed, not enabled and not started: the serving run proves it once it is new.
+  step "Done: installed as $UNIT_NAME ($MODEL_CHOICE), not enabled at boot; Load it from the cockpit's Lanes view"
+  exit 0
+fi
 if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then
   sudo systemctl enable "$UNIT_NAME"
 else
@@ -2163,16 +2276,16 @@ else
     "$REPO_DIR/dashboard/install-dashboard.sh" \
       || echo "NOTE: the cockpit did not reinstall; retry with ./dashboard/install-dashboard.sh"
   fi
-  # --no-smoke always: the smoke test starts and stops the lane, and this lane is serving.
-  # Guarded by the unit file: on a box booting the other side lane, an unconditional
-  # update would install gigabytes nobody asked for.
-  if [ "$NO_IMAGE" -eq 0 ] && [ -f /etc/systemd/system/qwen38-image.service ]; then
+  # --no-smoke always: a proof starts and stops a lane, and a side lane is serving here.
+  # Since v1.20 a side lane missing here is installed too, unless it was left out
+  # (lane_wanted): installed and updated, proved by its first load from the cockpit.
+  if [ "$WANT_IMAGE" -eq 1 ]; then
     "$REPO_DIR/install-image.sh" --no-smoke \
-      || echo "NOTE: the image lane did not update; retry with ./install-image.sh --no-smoke"
+      || echo "NOTE: the image lane did not install or update; retry with ./install-image.sh --no-smoke"
   fi
-  if [ "$NO_VIDEO" -eq 0 ] && [ -f /etc/systemd/system/qwen38-video.service ]; then
+  if [ "$WANT_VIDEO" -eq 1 ]; then
     "$REPO_DIR/install-video.sh" --no-smoke \
-      || echo "NOTE: the video lane did not update; retry with ./install-video.sh --no-smoke"
+      || echo "NOTE: the video lane did not install or update; retry with ./install-video.sh --no-smoke"
   fi
   if [ "$VIDEO_BOOT" -eq 1 ]; then SERVING_LANE="video"; else SERVING_LANE="image"; fi
   step "Done: the text lane is up to date; the $SERVING_LANE lane stays this box's serving lane"
@@ -2234,6 +2347,51 @@ SMOKE_MODEL="qwen3.8-27b"
 # count now is the baseline and one more is a crash (found in review, 2026-09-24).
 engine_restarts() { systemctl show -p NRestarts --value "$UNIT_NAME" 2>/dev/null | tr -dc '0-9'; }
 ENGINE_RESTARTS0="$(engine_restarts)"
+# The same proof for a text lane started later in this run (the other text lane, new
+# beside this one, and this one again after the side lanes proved themselves): start the
+# unit, wait as the loop below waits (20 min; a failed unit or a relaunch is a death),
+# then one real generation judged as the smoke below judges it. Says why and returns 1
+# instead of dying: the caller decides what a failure costs. $1 unit, $2 the name it
+# serves, $3 "stop" to stop it once it answered or failed.
+prove_text_lane(){
+  local unit="$1" model="$2" after="${3:-}" r0 n st raw verdict rc=0
+  r0="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null | tr -dc '0-9')"
+  sudo systemctl start "$unit" || { echo "NOTE: $unit did not start (journalctl -u $unit -n 50)"; return 1; }
+  for n in $(seq 1 150); do
+    if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+      raw="$(curl -s -m 300 "http://127.0.0.1:$PORT/v1/chat/completions" \
+        -H @<(printf 'Authorization: Bearer %s\n' "$KEY") -H 'Content-Type: application/json' \
+        -d '{"model":"'"$model"'","messages":[{"role":"user","content":"Reply with exactly: READY"}],"max_tokens":600}')" \
+        || rc=$?
+      verdict="$(printf '%s' "$raw" | python3 -c 'import json,sys
+try:
+    m=json.load(sys.stdin)["choices"][0]["message"]
+    text=(m.get("content") or "")+(m.get("reasoning_content") or "")
+    print("CORRUPT" if "!"*32 in text else "OK" if text.strip() else "EMPTY")
+except Exception as e:
+    print(f"FAIL:{e}")')"
+      [ "$after" = stop ] && sudo systemctl stop "$unit"
+      if [ "$rc" -eq 0 ] && [ "$verdict" = OK ]; then
+        echo "$unit answered a real generation, up after ~$(( (n - 1) * 8 )) s"
+        return 0
+      fi
+      echo "NOTE: $unit came up, and its generation failed (curl exit $rc, $verdict): journalctl -u $unit -n 50"
+      return 1
+    fi
+    st="$(systemctl is-active "$unit" || true)"
+    if [ "$st" = failed ] || { [ -n "$r0" ] && [ "$(systemctl show -p NRestarts --value "$unit" 2>/dev/null | tr -dc '0-9')" -gt "$r0" ]; }; then
+      journalctl -u "$unit" --no-pager | tail -25
+      sudo systemctl stop "$unit" 2>/dev/null || true
+      echo "NOTE: $unit died during startup, logs above"
+      return 1
+    fi
+    [ $((n % 15)) -eq 0 ] && echo "  still loading... ($((n * 8)) s)"
+    sleep 8
+  done
+  [ "$after" = stop ] && sudo systemctl stop "$unit"
+  echo "NOTE: $unit did not answer within 20 min: journalctl -u $unit -n 50"
+  return 1
+}
 # what the wait is made of: the flash lane rewrites its PLE table on every boot, and said
 # "first boot compiles kernels" through a 13-minute load that compiled nothing
 LOAD_WHY="first boot compiles kernels, be patient"
@@ -2382,49 +2540,77 @@ except Exception as e:
         || echo "  NOTE: could not restart it; do it by hand or its controls and its checks disagree"
     fi
 
-    # ── The image lane, last, because it is the only step that stops the engine
-    # that is already serving above, and the only one that costs 38 GB. It is
-    # opt-in, and remembered: a box that has it keeps it across upgrades.
-    IMAGE_ON=0
-    [ -f /etc/systemd/system/qwen38-image.service ] && IMAGE_ON=1
-    [ "$WITH_IMAGE" -eq 1 ] && IMAGE_ON=1
-    [ "$NO_IMAGE" -eq 1 ] && IMAGE_ON=0
-    if [ "$IMAGE_ON" -eq 1 ]; then
+    # ── Every other lane ─────────────────────────────────────────────────────
+    # Since v1.20 the image and the video lanes are installed by default, like the other
+    # text lane above (lane_wanted: --no-image and --no-video leave them out, and a run
+    # remembers it). They are prepared here while this lane keeps serving. Each lane this
+    # run installs for the first time then proves it serves, and those proofs need the
+    # GPU to themselves, so they come last and together: this lane stops once, each new
+    # lane boots, answers and stops, and this lane comes back and proves itself again
+    # before the run says it is done. A routine update proves nothing twice: it updates
+    # the lanes it finds and leaves this one serving. A lane that does not install (a
+    # disk too small for it, a download that fails) is said, and the rest goes on.
+    IMAGE_FRESH=0; VIDEO_FRESH=0
+    [ -f /etc/systemd/system/qwen38-image.service ] || IMAGE_FRESH=1
+    [ -f /etc/systemd/system/qwen38-video.service ] || VIDEO_FRESH=1
+    IMAGE_STATE=off; VIDEO_STATE=off
+    if [ "$WANT_IMAGE" -eq 1 ]; then
       step "Qwen-Image 2.1 lane (text-to-image, editing, native RGBA)"
-      # The smoke test stops the engine this run just verified, loads 31 GB and puts it
-      # back: minutes of unserved traffic. Worth it once, on the install that asked for
-      # the lane; not on every routine upgrade of a box that happens to have it.
-      IMAGE_ARGS=()
-      [ "$WITH_IMAGE" -eq 0 ] && IMAGE_ARGS=(--no-smoke)
-      if "$REPO_DIR/install-image.sh" ${IMAGE_ARGS[@]+"${IMAGE_ARGS[@]}"}; then
-        IMAGE_READY=1
-      else
-        echo "NOTE: the image lane did not install. Everything above is up and serving."
-        echo "      retry on its own with ./install-image.sh (it resumes what it already did)"
+      if "$REPO_DIR/install-image.sh" --no-smoke; then IMAGE_STATE=installed; else
+        IMAGE_STATE=failed
+        echo "NOTE: the image lane did not install (the lines above say why); the rest goes on."
       fi
     fi
-
-    # ── The video lane, last with the image lane, for the same two reasons: it is
-    # the only other step that stops the engine already serving above, and the only
-    # other one that costs over 100 GB. It is opt-in, and remembered: a box that has
-    # it keeps it across upgrades.
-    VIDEO_ON=0
-    [ -f /etc/systemd/system/qwen38-video.service ] && VIDEO_ON=1
-    [ "$WITH_VIDEO" -eq 1 ] && VIDEO_ON=1
-    [ "$NO_VIDEO" -eq 1 ] && VIDEO_ON=0
-    if [ "$VIDEO_ON" -eq 1 ]; then
+    if [ "$WANT_VIDEO" -eq 1 ]; then
       step "MiniMax-H3 lane (text-to-video with joint video-and-audio)"
-      # The smoke test stops the engine this run just verified, loads the checkpoint
-      # and puts it back, then generates for about 12 min: worth it once, on the
-      # install that asked for the lane; not on every routine upgrade of a box that
-      # happens to have it.
-      VIDEO_ARGS=()
-      [ "$WITH_VIDEO" -eq 0 ] && VIDEO_ARGS=(--no-smoke)
-      if "$REPO_DIR/install-video.sh" ${VIDEO_ARGS[@]+"${VIDEO_ARGS[@]}"}; then
-        VIDEO_READY=1
-      else
-        echo "NOTE: the video lane did not install. Everything above is up and serving."
-        echo "      retry on its own with ./install-video.sh (it resumes what it already did)"
+      if "$REPO_DIR/install-video.sh" --no-smoke; then VIDEO_STATE=installed; else
+        VIDEO_STATE=failed
+        echo "NOTE: the video lane did not install (the lines above say why); the rest goes on."
+      fi
+    fi
+    # What to prove: what this run installed for the first time, or what was asked for
+    # by name (--with-<lane>, which also proves a lane already there).
+    SECOND_WITH=0
+    { [ "$SECOND_LANE" = flash ] && [ "$WITH_FLASH" -eq 1 ]; } && SECOND_WITH=1
+    { [ "$SECOND_LANE" = 27b ] && [ "$WITH_27B" -eq 1 ]; } && SECOND_WITH=1
+    PROVE_SECOND=0; PROVE_IMAGE=0; PROVE_VIDEO=0
+    { [ "$SECOND_STATE" = installed ] && { [ "$SECOND_FRESH" -eq 1 ] || [ "$SECOND_WITH" -eq 1 ]; }; } && PROVE_SECOND=1
+    { [ "$IMAGE_STATE" = installed ] && { [ "$IMAGE_FRESH" -eq 1 ] || [ "$WITH_IMAGE" -eq 1 ]; }; } && PROVE_IMAGE=1
+    { [ "$VIDEO_STATE" = installed ] && { [ "$VIDEO_FRESH" -eq 1 ] || [ "$WITH_VIDEO" -eq 1 ]; }; } && PROVE_VIDEO=1
+    if [ $((PROVE_SECOND + PROVE_IMAGE + PROVE_VIDEO)) -gt 0 ]; then
+      step "Proving the new lanes serve: the $LANE lane stops meanwhile, then comes back"
+      sudo systemctl stop "$UNIT_NAME"
+      if [ "$PROVE_SECOND" -eq 1 ]; then
+        SECOND_MODEL=qwen3.8-27b; [ "$SECOND_LANE" = flash ] && SECOND_MODEL=qwen3.8-flash-next
+        echo "starting the $SECOND_LANE lane ($SECOND_UNIT)"
+        if prove_text_lane "$SECOND_UNIT" "$SECOND_MODEL" stop; then SECOND_STATE=proved; else SECOND_STATE=failed; fi
+      fi
+      # Nothing serves while they run, so each leaves the box as it found it: stopped.
+      if [ "$PROVE_IMAGE" -eq 1 ]; then
+        if "$REPO_DIR/install-image.sh"; then IMAGE_STATE=proved; else IMAGE_STATE=failed; fi
+      fi
+      if [ "$PROVE_VIDEO" -eq 1 ]; then
+        if "$REPO_DIR/install-video.sh"; then VIDEO_STATE=proved; else VIDEO_STATE=failed; fi
+      fi
+      step "The $LANE lane again"
+      prove_text_lane "$UNIT_NAME" "$SMOKE_MODEL" \
+        || die "the $LANE lane did not come back after the other lanes' proofs (the lines above say why). Start it with: sudo systemctl start $UNIT_NAME"
+      # A new boot is a new pool: the proxy reads it again, and opencode's 1m limits
+      # follow it, as after the first boot above.
+      ENGINE_KEEP=0
+      if [ "$ENGINE_KEEP" -eq 0 ] || [ "$KA_CHANGED" -eq 1 ] \
+         || stale_since "$KEEPALIVE_UNIT" "/etc/systemd/system/$KEEPALIVE_UNIT" "$CONFIG_DIR/keepalive-proxy.py"; then
+        sudo systemctl restart "$KEEPALIVE_UNIT"
+      fi
+      PROXY_OK=0
+      for _ in 1 2 3 4 5; do
+        curl -s -m 5 "http://127.0.0.1:$PROXY_PORT/health" >/dev/null 2>&1 && { PROXY_OK=1; break; }
+        sleep 2
+      done
+      [ "$PROXY_OK" = 1 ] || die "the keepalive proxy did not come back on :$PROXY_PORT. Check: journalctl -u $KEEPALIVE_UNIT -n 30"
+      if [ "$CONTEXT_MODE" = "1m" ] && [ "$OPENCODE" -eq 1 ]; then
+        python3 "$REPO_DIR/oc-fit-limits.py" --engine "http://127.0.0.1:$PORT" --restart-agent \
+          || echo "  NOTE: could not fit them; run python3 oc-fit-limits.py yourself, or the cockpit's button"
       fi
     fi
 
@@ -2473,23 +2659,26 @@ except Exception as e:
       echo "  opencode   : integration off (--no-opencode); ./install.sh --with-opencode turns it on"
     fi
     [ "$COCKPIT" -eq 0 ] && echo "  cockpit    : off (--no-cockpit); ./install.sh --with-cockpit turns it on"
-    if [ "${IMAGE_READY:-0}" -eq 1 ]; then
-      echo "  Images     : a third lane; Load it from the cockpit's Lanes view (or ./switch-model.sh image)"
-    elif [ -f /etc/systemd/system/qwen38-image.service ] && [ "${IMAGE_ON:-0}" -eq 0 ]; then
-      # --no-image on a box that has the lane: it is there, only not updated by this run
-      # (it used to read "not installed", found in review, 2026-09-24)
-      echo "  Images     : installed, not updated by this run (--no-image); ./install-image.sh --uninstall removes it"
-    elif [ "${IMAGE_ON:-0}" -eq 0 ]; then
-      echo "  Images     : not installed; ./install.sh --with-image adds the Qwen-Image 2.1 lane (38 GB)"
+    # One line per lane this run did not serve, with what happened to it and what to do.
+    lane_line(){  # $1 label, $2 state, $3 its flag, $4 its switch target, $5 its size, $6 its unit file
+      case "$2" in
+        proved)    echo "  $1: installed and proved it serves; Load it from the cockpit's Lanes view (or ./switch-model.sh $4)" ;;
+        installed) echo "  $1: installed and up to date; Load it from the cockpit's Lanes view (or ./switch-model.sh $4)" ;;
+        failed)    echo "  $1: NOT ready, see its NOTE above; a plain ./install.sh tries again (it resumes what it did)" ;;
+        off)       if [ -f "$6" ]; then
+                     echo "  $1: left out by --no-$3, so not updated; ./install.sh --with-$3 brings it back"
+                   else
+                     echo "  $1: left out by --no-$3; ./install.sh --with-$3 adds it ($5)"
+                   fi ;;
+      esac
+    }
+    if [ "$SECOND_LANE" = flash ]; then
+      lane_line "Flash 176B " "$SECOND_STATE" flash flash "203 GB" "$FLASH_UNIT_PATH"
+    elif [ "$SECOND_LANE" = 27b ]; then
+      lane_line "Qwen3.8 27B" "$SECOND_STATE" 27b stock "54 GB" "$SGL_UNIT_PATH"
     fi
-    if [ "${VIDEO_READY:-0}" -eq 1 ]; then
-      echo "  Videos     : a fourth lane; Load it from the cockpit's Lanes view (or ./switch-model.sh video)"
-    elif [ -f /etc/systemd/system/qwen38-video.service ] && [ "${VIDEO_ON:-0}" -eq 0 ]; then
-      # --no-video on a box that has the lane: it is there, only not updated by this run
-      echo "  Videos     : installed, not updated by this run (--no-video); ./install-video.sh --uninstall removes it"
-    elif [ "${VIDEO_ON:-0}" -eq 0 ]; then
-      echo "  Videos     : not installed; ./install.sh --with-video adds the MiniMax-H3 lane (about 150 GB of headroom)"
-    fi
+    lane_line "Images     " "$IMAGE_STATE" image image "40 GB" /etc/systemd/system/qwen38-image.service
+    lane_line "Videos     " "$VIDEO_STATE" video video "144 GB" /etc/systemd/system/qwen38-video.service
     [ "$LANE" = "27b" ] && echo "  Benchmark  : ./bench.sh"
     exit 0
   fi

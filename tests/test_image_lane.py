@@ -228,10 +228,12 @@ class TheInstaller(unittest.TestCase):
         self.assertNotIn('if [ -n "$WAS_LLM" ]; then sudo systemctl start', after)
 
     def test_a_routine_rerun_does_not_stop_the_engine_to_redo_the_smoke_test(self):
-        """An upgrade of a box that happens to have the lane must not cost it minutes of
-        unserved traffic. The smoke test runs on the install that asked for the lane."""
+        """An upgrade of a box that has the lane must not cost it minutes of unserved
+        traffic. Since v1.20 the lane is prepared without its smoke test on every run, and
+        proved only by the run that installs it, or that names it."""
         text = (REPO / "install.sh").read_text()
-        self.assertIn('[ "$WITH_IMAGE" -eq 0 ] && IMAGE_ARGS=(--no-smoke)', text)
+        self.assertIn('if "$REPO_DIR/install-image.sh" --no-smoke; then IMAGE_STATE=installed; else', text)
+        self.assertIn('{ [ "$IMAGE_STATE" = installed ] && { [ "$IMAGE_FRESH" -eq 1 ] || [ "$WITH_IMAGE" -eq 1 ]; }; } && PROVE_IMAGE=1', text)
 
     def test_flags_that_would_silently_do_nothing_are_refused_at_parse_time(self):
         """--no-start and --no-service both return before the image step, so the flag
@@ -427,15 +429,12 @@ class TheOneLinerReachesIt(unittest.TestCase):
         get = (REPO / "get.sh").read_text()
         self.assertIn('"$@"', get)
 
-    def test_an_installed_lane_survives_a_plain_rerun(self):
-        """An upgrade must not silently drop a lane someone installed on purpose, which
-        is the same promise the cockpit, opencode and the bind choices already make."""
-        self.assertIn("[ -f /etc/systemd/system/qwen38-image.service ] && IMAGE_ON=1", self.text)
-        self.assertIn('[ "$WITH_IMAGE" -eq 1 ] && IMAGE_ON=1', self.text)
-        self.assertIn('[ "$NO_IMAGE" -eq 1 ] && IMAGE_ON=0', self.text)
-        # and the order matters: an explicit --no-image has to win over the installed unit
-        self.assertLess(self.text.index("[ -f /etc/systemd/system/qwen38-image.service ] && IMAGE_ON=1"),
-                        self.text.index('[ "$NO_IMAGE" -eq 1 ] && IMAGE_ON=0'))
+    def test_a_plain_run_installs_it_and_a_left_out_lane_stays_out(self):
+        """Since v1.20 a plain run installs the lane, and an update keeps it updated; a
+        --no-image is remembered like --no-cockpit, so the next plain run does not bring
+        back gigabytes someone left out. lane_wanted is held by its own tests."""
+        self.assertIn('lane_wanted image "$NO_IMAGE" "$WITH_IMAGE"; WANT_IMAGE="$WANT"', self.text)
+        self.assertIn('if [ "$WANT_IMAGE" -eq 1 ]; then\n      step "Qwen-Image 2.1 lane', self.text)
 
     def test_it_runs_after_the_engine_is_up_and_cannot_fail_the_install(self):
         """It is the only step that stops the engine that is already serving, and the
@@ -447,14 +446,15 @@ class TheOneLinerReachesIt(unittest.TestCase):
         cockpit = self.text.index("10/10 Spark Cockpit")
         i = self.text.index('"$REPO_DIR/install-image.sh"', cockpit)
         self.assertLess(cockpit, i)
-        tail = self.text[i:i + 500]
-        self.assertIn("Everything above is up and serving", tail)
-        self.assertEqual(self.text.count('"$REPO_DIR/install-image.sh"'), 2,
-                         "one call per path, the normal one and the image-boot one")
+        tail = self.text[i:i + 300]
+        self.assertIn("IMAGE_STATE=failed", tail)
+        self.assertIn("the rest goes on", tail)
+        self.assertEqual(self.text.count('"$REPO_DIR/install-image.sh"'), 3,
+                         "the normal path prepares then proves it, and the image-boot path updates it")
 
     def test_the_help_says_what_it_costs_before_someone_spends_it(self):
-        self.assertIn("--with-image", self.text)
-        self.assertIn("38 GB", self.text)
+        self.assertIn("--no-image            leave the Qwen-Image 2.1 lane out (40 GB)", self.text)
+        self.assertIn("about 440 GB", self.text)
 
 
 class AnUpdateKeepsTheImageLaneAsTheBootLane(unittest.TestCase):
@@ -495,14 +495,14 @@ class TheBootLaneConvergenceHoldsEveryWay(unittest.TestCase):
     def test_an_explicit_model_choice_is_honoured(self):
         """MODEL_CHOICE=flash on a box booting images asks for flash. Keeping the image
         lane answered "flash updated, not served" and exited 0."""
-        i = self.text.index("IMAGE_BOOT=0\nif systemctl is-enabled --quiet qwen38-image.service")
+        i = self.text.index('IMAGE_BOOT=0\nif [ -z "$SECONDARY" ] && systemctl is-enabled --quiet qwen38-image.service')
         block = self.text[i:i + 900]
         self.assertIn('if [ -n "$_ENV_MODEL_CHOICE" ]; then', block)
         self.assertLess(block.index('if [ -n "$_ENV_MODEL_CHOICE" ]; then'), block.index("IMAGE_BOOT=1"))
 
     def test_the_normal_path_takes_the_image_lane_off_the_boot(self):
         """Enabling a text lane beside an enabled image lane is two engines at the next boot."""
-        self.assertIn('if [ "$IMAGE_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-image.service', self.text)
+        self.assertIn('if [ -z "$SECONDARY" ] && [ "$IMAGE_BOOT" -eq 0 ] && systemctl is-enabled --quiet qwen38-image.service', self.text)
         self.assertIn("sudo systemctl disable qwen38-image.service", self.text)
 
     def test_the_image_boot_path_restarts_the_proxy_it_rewrote(self):
@@ -510,11 +510,11 @@ class TheBootLaneConvergenceHoldsEveryWay(unittest.TestCase):
         early = self.text[i:self.text.index("exit 0", i)]
         self.assertIn('sudo systemctl restart "$KEEPALIVE_UNIT"', early)
 
-    def test_the_image_boot_path_respects_no_image(self):
+    def test_the_image_boot_path_respects_a_left_out_image_lane(self):
         i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then')
         early = self.text[i:self.text.index("exit 0", i)]
         call = early.index('"$REPO_DIR/install-image.sh" --no-smoke')
-        self.assertIn('if [ "$NO_IMAGE" -eq 0 ]', early[:call])
+        self.assertIn('if [ "$WANT_IMAGE" -eq 1 ]', early[:call])
 
     def test_the_text_lane_used_before_images_is_the_one_brought_up_to_date(self):
         """A switch to images disables both text units, so enablement cannot say which one

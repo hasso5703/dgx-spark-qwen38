@@ -91,7 +91,7 @@ disable_rollback_lane(){
 # it is handled here, whole, and exits, instead of threading "unless image" through
 # four hundred lines written for SGLang's text server.
 if [ "$CHOICE" = "image" ]; then
-  [ -f "$IMAGE_UNIT" ] || die "the image lane is not installed on this box (no $IMAGE_UNIT). Install it once: ./install.sh --with-image (38 GB)"
+  [ -f "$IMAGE_UNIT" ] || die "the image lane is not installed on this box (no $IMAGE_UNIT). Install it once: ./install.sh --with-image (40 GB)"
   IMG_WD="$(grep -m1 -E '^WorkingDirectory=' "$IMAGE_UNIT" | cut -d= -f2- || true)"
   IMG_PY="${IMG_WD:-$HOME/.local/share/qwen38-image}/venv/bin/python"
   [ -x "$IMG_PY" ] || die "the image lane's runtime is missing ($IMG_PY): re-run ./install-image.sh, it resumes"

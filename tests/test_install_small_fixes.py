@@ -80,10 +80,10 @@ class TheBindsAreCheckedAgainOnceReadBack(unittest.TestCase):
 
 
 class ABusyProxyPortIsOursOnlyIfOurProxyHoldsIt(unittest.TestCase):
-    START = TEXT.index('if [ "$NO_SERVICE" -eq 0 ] && ss -tlnH 2>/dev/null | awk \'{print $4}\' | grep -q ":$PROXY_PORT\\$"; then')
+    START = TEXT.index('if [ -z "$SECONDARY" ] && [ "$NO_SERVICE" -eq 0 ] && ss -tlnH 2>/dev/null | awk \'{print $4}\' | grep -q ":$PROXY_PORT\\$"; then')
     BLOCK = TEXT[START:TEXT.index("\nfi\n", TEXT.index("keepalive proxy) is already in use", START)) + 4]
 
-    def run_block(self, proxy_port, unit_port):
+    def run_block(self, proxy_port, unit_port, secondary=""):
         d = pathlib.Path(tempfile.mkdtemp(prefix="ka-port-"))
         (d / "ss").write_text(f"#!/bin/sh\necho 'LISTEN 0 128 0.0.0.0:{proxy_port} 0.0.0.0:*'\n")
         (d / "systemctl").write_text("#!/bin/sh\nexit 0\n")          # the proxy is active
@@ -92,7 +92,7 @@ class ABusyProxyPortIsOursOnlyIfOurProxyHoldsIt(unittest.TestCase):
         (d / "ka.service").write_text(f"ExecStart=/usr/bin/python3 /x/keepalive-proxy.py {unit_port}\n")
         block = self.BLOCK.replace("/etc/systemd/system/qwen38-keepalive.service", str(d / "ka.service"))
         script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
-                  f"NO_SERVICE=0; PROXY_PORT={proxy_port}\n" + block + "\necho PASSED\n")
+                  f"NO_SERVICE=0; SECONDARY={secondary}; PROXY_PORT={proxy_port}\n" + block + "\necho PASSED\n")
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
                            env={"PATH": f"{d}:/usr/bin:/bin"})
         return r.stdout
@@ -105,6 +105,12 @@ class ABusyProxyPortIsOursOnlyIfOurProxyHoldsIt(unittest.TestCase):
     def test_another_program_on_the_asked_port_is_refused(self):
         out = self.run_block(8080, 30001)
         self.assertIn("DIE: Port 8080 (keepalive proxy) is already in use by another program", out)
+
+    def test_a_run_for_the_other_text_lane_leaves_the_ports_to_its_parent(self):
+        # it shares them with the lane its parent serves, which holds them by design
+        out = self.run_block(8080, 30001, secondary="flash")
+        self.assertIn("PASSED", out)
+        self.assertNotIn("DIE", out)
 
 
 class ContradictoryImageFlags(unittest.TestCase):
@@ -158,11 +164,38 @@ class TheOpencodeDownloadSaysWhenItCouldNotPlaceTheBinary(unittest.TestCase):
         self.assertTrue((d / "home" / "opencode").exists())
 
 
-class TheImageLaneKeptByNoImageIsNotCalledMissing(unittest.TestCase):
-    def test_the_summary_line(self):
-        i = TEXT.index('elif [ -f /etc/systemd/system/qwen38-image.service ] && [ "${IMAGE_ON:-0}" -eq 0 ]; then')
-        self.assertIn("installed, not updated by this run (--no-image)", TEXT[i:i + 400])
-        self.assertLess(i, TEXT.index('"  Images     : not installed;'))
+class TheSummarySaysWhatBecameOfEachOtherLane(unittest.TestCase):
+    """The closing lines, one per lane the run did not serve. A lane left out and still on
+    the box is "not updated", not "not installed" (it read "not installed" until the review
+    of 2026-09-24), and a lane that did not install says how to try again."""
+    START = TEXT.index("    lane_line(){")
+    FUNC = TEXT[START:TEXT.index("\n    }\n", START) + 7]
+
+    def line(self, state, on_the_box):
+        d = pathlib.Path(tempfile.mkdtemp(prefix="lane-line-"))
+        unit = d / "qwen38-image.service"
+        if on_the_box:
+            unit.write_text("[Unit]\n")
+        script = ("set -euo pipefail\n" + self.FUNC +
+                  f'\nlane_line "Images     " {state} image image "40 GB" "{unit}"\n')
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
+                           env={"PATH": "/usr/bin:/bin"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_left_out_but_still_on_the_box(self):
+        out = self.line("off", True)
+        self.assertIn("left out by --no-image, so not updated", out)
+        self.assertIn("./install.sh --with-image brings it back", out)
+
+    def test_left_out_and_absent(self):
+        out = self.line("off", False)
+        self.assertIn("./install.sh --with-image adds it (40 GB)", out)
+
+    def test_proved_installed_and_failed(self):
+        self.assertIn("installed and proved it serves", self.line("proved", True))
+        self.assertIn("installed and up to date", self.line("installed", True))
+        self.assertIn("a plain ./install.sh tries again", self.line("failed", False))
 
 
 class OneDiskForBoth(unittest.TestCase):

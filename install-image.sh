@@ -6,12 +6,11 @@
 #   ./install-image.sh --no-smoke      skip the generation at the end
 #   ./install-image.sh --uninstall     remove the unit and the venv (weights kept)
 #
-# install.sh runs this when it is given --with-image, which the one-liner passes
-# through:  curl -fsSL .../get.sh | bash -s -- --with-image
-#
-# WHY IT IS OPT-IN. The checkpoint is 31 GB and the runtime another 7, on top of
-# whatever the LLM lane already holds. A box installed for text should not silently
-# grow 38 GB. Once installed, a plain ./install.sh keeps and updates it.
+# install.sh runs this on every plain install since v1.20: a box gets every lane. The
+# checkpoint is 31 GB and the runtime another 9 measured (7 for the venv and checkout,
+# the rest its build); when the disk does not have the room, this refuses before
+# downloading anything, install.sh says so and goes on, and ./install.sh --no-image
+# leaves the lane out for good (a marker file remembers it).
 #
 # WHY IT IS A VENV AND NOT DOCKER. The cookbook is explicit for this model: "This
 # integration currently uses the Python/source command; no published Docker image is

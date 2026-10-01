@@ -6,13 +6,11 @@
 #   ./install-video.sh --no-smoke      skip the generation at the end
 #   ./install-video.sh --uninstall     remove the unit and the venv (weights kept)
 #
-# install.sh runs this when it is given --with-video, which the one-liner passes
-# through:  curl -fsSL .../get.sh | bash -s -- --with-video
-#
-# WHY IT IS OPT-IN. The checkpoint (the fl2va partition plus the shared components,
-# about 145 GB, install-video.sh:108) and the runtime another 11, on top
-# of whatever the other lanes already hold. A box installed for text should not
-# silently grow about 150 GB. Once installed, a plain ./install.sh keeps and updates it.
+# install.sh runs this on every plain install since v1.20: a box gets every lane. The
+# checkpoint (the fl2va partition plus the shared components, 135 GiB, WEIGHTS_GB below)
+# and the runtime (another 11) need about 150 GB of headroom; when the disk does not
+# have it, this refuses before downloading anything, install.sh says so and goes on, and
+# ./install.sh --no-video leaves the lane out for good (a marker file remembers it).
 #
 # WHY IT IS A VENV AND NOT DOCKER. Like the image lane, no published Docker image is
 # verified for this model: the cookbook serves it from Python/source. The release wheel
@@ -105,9 +103,10 @@ esac
 case "$VIDEO_BIND" in
   *[!0-9.]*|""|*..*) [ "$VIDEO_BIND" = localhost ] || die "VIDEO_BIND takes an IPv4 address, got: $VIDEO_BIND" ;;
 esac
-WEIGHTS_GB=145; RUNTIME_GB=11   # the fl2va partition plus the shared components and root
-# metadata, measured 2026-09-25 (144.1 GB cached of 88 files); the venv and checkout (7)
-# and the pip build tree
+WEIGHTS_GB=135; RUNTIME_GB=11   # the fl2va partition plus the shared components and root
+# metadata, measured 2026-09-25: 144.1 GB cached in 88 files, which is 134.2 GiB, and the
+# room check below counts GiB (it said 145, and a box with the whole checkpoint cached was
+# told "10 GB to download", 2026-10-01); the venv and checkout (7) and the pip build tree
 
 if [ "$ACTION" = uninstall ]; then
   step "Removing the video lane"
