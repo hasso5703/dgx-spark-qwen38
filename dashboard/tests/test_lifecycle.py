@@ -569,14 +569,84 @@ class FeedOutcomes(unittest.TestCase):
         self.assertEqual((rows[0]["outcome"], rows[0]["kind"], rows[0]["peer"]), ("ok", "ok", "127.0.0.1:5555"))
         self.assertIn("28,458 tokens counted", rows[0]["detail"])
 
-    def test_an_unfinished_request_is_live_then_unknown(self):
-        start = ("2026-09-10T09:00:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 -> "
-                 "POST /v1/chat/completions body=42b")
-        self.assertEqual(lc.parse_feed(start)[0]["kind"], "live")
-        # 11 minutes of newer traffic later, it is not in flight, it is unaccounted for
-        later = start + ("\n2026-09-10T09:11:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:6666 -> "
-                         "POST /v1/chat/completions body=42b")
-        self.assertEqual(lc.parse_feed(later)[0]["kind"], "unknown")
+    START = ("2026-10-01T12:49:31+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 -> "
+             "POST /v1/chat/completions body=502315b")
+
+    def test_an_unfinished_request_stays_live_however_long_it_waits(self):
+        """A generation has no deadline. On 2026-10-01 eight long prompts went in at once:
+        three answered after 14 minutes, the last after 22, and the 10-minute rule this
+        replaced called the five still queued "no end logged" while the engine ran three
+        and queued two."""
+        self.assertEqual(lc.parse_feed(self.START)[0]["kind"], "live")
+        later = self.START + ("\n2026-10-01T13:03:29+02:00 gx10 python3[1]: [proxy] 127.0.0.1:6666 -> "
+                              "POST /v1/chat/completions body=42b"
+                              "\n2026-10-01T13:11:29+02:00 gx10 python3[1]: [proxy] 127.0.0.1:6666 POST "
+                              "/v1/chat/completions ok in 480.0s")
+        rows = lc.parse_feed(later)
+        self.assertEqual([(r["outcome"], r["kind"]) for r in rows],
+                         [("in flight", "live"), ("ok", "ok")])
+
+    def test_it_has_no_end_once_the_proxy_that_took_it_is_gone(self):
+        """Every way this box's journal says the proxy process is gone, copied from it: the
+        stop (both shapes of systemd's line), a crash, and the next proxy's banner (both
+        shapes, before and since PROXY_BIND)."""
+        for gone in ("systemd[1]: qwen38-keepalive.service: Deactivated successfully.",
+                     "systemd[1]: Stopped qwen38-keepalive.service - Keepalive proxy in front of the serving engine :30000 (agent clients connect to :30001).",
+                     "systemd[1]: Stopped Keepalive proxy in front of the serving engine :30000.",
+                     "systemd[1]: qwen38-keepalive.service: Main process exited, code=killed, status=9/KILL",
+                     "systemd[1]: qwen38-keepalive.service: Failed with result 'signal'.",
+                     "python3[2]: [proxy] v6.27 on 0.0.0.0:30001 -> http://127.0.0.1:30000 (keepalive 15s, max silence 900s)",
+                     "python3[2]: [proxy] v6.14 on :30001 -> http://127.0.0.1:30000"):
+            with self.subTest(gone=gone):
+                rows = lc.parse_feed(self.START + "\n2026-10-01T12:50:00+02:00 gx10 " + gone)
+                self.assertEqual(len(rows), 1)
+                self.assertEqual((rows[0]["outcome"], rows[0]["kind"]), ("no end logged", "unknown"))
+                self.assertEqual(rows[0]["detail"], "the proxy that took it stopped")
+
+    def test_a_proxy_still_stopping_can_still_end_it(self):
+        """systemd writes "Stopping" before it signals the process: an end line can still
+        follow, and it must land."""
+        raw = "\n".join([self.START,
+                         "2026-10-01T12:50:00+02:00 gx10 systemd[1]: Stopping qwen38-keepalive.service - Keepalive proxy...",
+                         "2026-10-01T12:50:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 POST /v1/chat/completions "
+                         "CLIENT GONE on write in 29.0s"])
+        self.assertEqual(lc.parse_feed(raw)[0]["kind"], "gone")
+
+    def test_a_restart_leaves_finished_requests_alone_and_new_ones_live(self):
+        """Only what was still open when the proxy went is orphaned: a delivered answer keeps
+        its outcome, a request the next proxy took is live, and an end line with nothing
+        open on its peer is dropped instead of reviving the orphan."""
+        def line(ts, text):
+            return f"2026-10-01T12:{ts}+02:00 gx10 {text}"
+        raw = "\n".join([
+            line("49:00", "python3[1]: [proxy] 127.0.0.1:1111 -> POST /v1/chat/completions body=10b"),
+            line("49:05", "python3[1]: [proxy] 127.0.0.1:1111 POST /v1/chat/completions ok in 5.0s"),
+            self.START,
+            line("49:40", "python3[1]: [proxy] 127.0.0.1:5555 oversize check: 107156 tokens fit (436830 usable of pool 474816)"),
+            line("50:00", "systemd[1]: qwen38-keepalive.service: Deactivated successfully."),
+            line("50:01", "python3[2]: [proxy] v6.27 on 0.0.0.0:30001 -> http://127.0.0.1:30000"),
+            line("50:02", "python3[2]: [proxy] 127.0.0.1:5555 POST /v1/chat/completions ok in 31.0s"),
+            line("50:03", "python3[2]: [proxy] 127.0.0.1:7777 -> POST /v1/chat/completions body=10b"),
+        ])
+        rows = lc.parse_feed(raw)
+        self.assertEqual([(r["peer"], r["outcome"], r["kind"]) for r in rows],
+                         [("127.0.0.1:1111", "ok", "ok"),
+                          ("127.0.0.1:5555", "no end logged", "unknown"),
+                          ("127.0.0.1:7777", "in flight", "live")])
+        self.assertIsNone(rows[0]["detail"])
+        self.assertEqual(rows[1]["detail"], "107,156 tokens counted, fits (436,830 usable); the proxy that took it stopped")
+        self.assertIsNone(rows[1]["secs"])
+
+    def test_a_client_line_cannot_pass_for_the_proxy_going(self):
+        """Request lines carry a peer and a path, never the banner's place: the banner
+        alternative is anchored on the journal's "]: " so a peer, a label or a path that
+        read like one leaves the record alone."""
+        raw = "\n".join([self.START,
+                         "2026-10-01T12:50:00+02:00 gx10 python3[1]: [proxy] 127.0.0.1:5555 key=v6.27_on_x "
+                         "oversize check: 10 tokens fit (100 usable of pool 200)",
+                         "2026-10-01T12:50:01+02:00 gx10 python3[1]: [proxy] 127.0.0.1:8888 -> GET "
+                         "/v1/Stopped body=0b"])
+        self.assertEqual(lc.parse_feed(raw)[0]["outcome"], "in flight")
 
     def test_two_requests_sharing_a_peer_stay_two_requests(self):
         """A reused keep-alive connection serves turns one after the other under
@@ -960,35 +1030,21 @@ class MoreMutantsThatSurvived(unittest.TestCase):
         h = lc.record_pool(lc.record_pool({}, "u", "t", 1, keep=1), "u", "t", 2, keep=1)
         self.assertEqual(list(h.values())[0], [2])
 
-    # ---- parse_feed's timestamp and its 10-minute orphan window ------------
+    # ---- parse_feed's timestamp, and an orphan without a clock ---------------
     def test_only_an_iso_timestamp_is_read_as_one(self):
-        """Kills the And->Or of parse_feed's timestamp check: both the length and the
-        T position matter, or a line's own text becomes the clock."""
         raw = ("2026-09-10T09:00:00+02:00 h p[1]: [proxy] 1.2.3.4:5 -> "
                "POST /v1/chat/completions body=10b")
         self.assertEqual(lc.parse_feed(raw)[0]["ts"], "2026-09-10T09:00:00")
-        # A line with no timestamp at all must not become the clock: after it, a start
-        # left dangling 20 minutes before the newest dated line still reads as unknown.
-        # The check here read back the first character of a string the test wrote, and
-        # the mutant it claims passed (found in review, 2026-09-24).
-        raw = ("2026-09-10T09:00:00+02:00 h p[1]: [proxy] 1.2.3.4:5 -> POST /v1/chat/completions body=10b\n"
-               "2026-09-10T09:20:00+02:00 h p[1]: [proxy] 1.2.3.4:6 -> POST /v1/chat/completions body=10b\n"
-               "[proxy] 1.2.3.4:7 -> POST /v1/chat/completions body=10b\n")
-        first = lc.parse_feed(raw)[0]
-        self.assertEqual((first["peer"], first["outcome"], first["kind"]),
-                         ("1.2.3.4:5", "no end logged", "unknown"))
 
-    def test_an_orphan_becomes_unknown_only_after_ten_minutes(self):
-        """Kills line 386 Gt->GtE: at exactly 600 s it is still in flight."""
-        def feed(seconds):
-            start = ("2026-09-10T09:00:00+02:00 h p[1]: [proxy] 1.2.3.4:5 -> "
-                     "POST /v1/chat/completions body=10b")
-            mm, ss = divmod(seconds, 60)
-            later = (f"2026-09-10T09:{mm:02d}:{ss:02d}+02:00 h p[1]: [proxy] "
-                     "9.9.9.9:9 -> POST /v1/chat/completions body=10b")
-            return lc.parse_feed(start + "\n" + later)[0]
-        self.assertEqual(feed(600)["kind"], "live")
-        self.assertEqual(feed(601)["kind"], "unknown")
+    def test_neither_a_line_without_a_date_nor_hours_of_traffic_orphan_a_start(self):
+        """The clock this replaced read the newest dated line and turned every start 600 s
+        older into "no end logged". Nothing reads a clock now: an undated line, and twenty
+        hours of newer traffic, leave a start in flight; the proxy going is what ends it."""
+        raw = ("2026-09-10T09:00:00+02:00 h p[1]: [proxy] 1.2.3.4:5 -> POST /v1/chat/completions body=10b\n"
+               "2026-09-11T05:00:00+02:00 h p[1]: [proxy] 1.2.3.4:6 -> POST /v1/chat/completions body=10b\n"
+               "[proxy] 1.2.3.4:7 -> POST /v1/chat/completions body=10b\n")
+        self.assertEqual([(r["peer"], r["outcome"]) for r in lc.parse_feed(raw)],
+                         [("1.2.3.4:5", "in flight"), ("1.2.3.4:6", "in flight"), ("1.2.3.4:7", "in flight")])
 
 
 class TheLastTenLines(unittest.TestCase):
@@ -1418,12 +1474,16 @@ class ParseFeed(unittest.TestCase):
 class ParseFeedDangling(unittest.TestCase):
     L = "2026-08-30T0{h}:00:00+0200 host python3[1]: [proxy] {rest}"
 
-    def test_old_dangling_start_is_not_in_flight(self):
+    def test_old_dangling_start_is_in_flight_until_the_proxy_restarts(self):
         raw = "\n".join([
             self.L.format(h=1, rest="127.0.0.1:1111 -> POST /v1/chat/completions body=100b"),
             self.L.format(h=2, rest="127.0.0.1:2222 -> POST /v1/chat/completions body=200b"),
             self.L.format(h=2, rest="127.0.0.1:2222 POST /v1/chat/completions ok in 3.0s"),
         ])
+        by = {r["peer"]: r for r in lc.parse_feed(raw)}
+        self.assertEqual(by["127.0.0.1:1111"]["outcome"], "in flight")
+        self.assertEqual(by["127.0.0.1:2222"]["outcome"], "ok")
+        raw += "\n" + self.L.format(h=3, rest="v6.27 on 0.0.0.0:30001 -> http://127.0.0.1:30000")
         by = {r["peer"]: r for r in lc.parse_feed(raw)}
         self.assertEqual(by["127.0.0.1:1111"]["outcome"], "no end logged")
         self.assertEqual(by["127.0.0.1:2222"]["outcome"], "ok")

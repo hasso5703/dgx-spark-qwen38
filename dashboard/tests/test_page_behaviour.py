@@ -760,5 +760,46 @@ class TheServingLanesPoolIsTheLiveOne(unittest.TestCase):
         """)
         self.assertEqual(out, 400384)
 
+
+class RunningIsWhatTheEngineRuns(unittest.TestCase):
+    """The engine's load counts a queued request in num_reqs too (the /get_load shape the
+    cockpit projects: running plus waiting, the waiting ones again in num_waiting_reqs). The
+    page wrote num_reqs under "Running" beside "Waiting": eight long prompts on a lane that
+    ran two and queued three read "5 Running, 3 Waiting" (found live, 2026-10-01)."""
+
+    BODY = r"""
+    feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-sglang.service': eng('ready')}),
+          engine_fast: {load: [{num_reqs: %d, num_waiting_reqs: %d, num_tokens: 1000, num_used_tokens: 1000}]}});
+    report({run: txt('tr-run'), wait: txt('tr-wait'), cap: txt('tr-cap'), lede: txt('now-lede'),
+            sub: txt('serving-sub'), act: txt('act-v'), actk: txt('act-k'), series: SERIES.req.slice(-1)[0]});
+    """
+
+    def test_running_and_waiting_add_up_to_what_the_engine_holds(self):
+        r = run(self, self.BODY % (5, 3))
+        self.assertEqual((r["run"], r["wait"]), ("2", "3"), r)
+        self.assertEqual(r["cap"], "2 running, 3 waiting", r)
+        self.assertIn("2 requests are running, 3 waiting", r["lede"])
+        self.assertTrue(r["sub"].startswith("2 running, 3 waiting"), r)
+        self.assertEqual((r["act"], r["actk"]), ("2", "running, 3 waiting"), r)
+        self.assertEqual(r["series"], 2, r)
+
+    def test_a_queue_with_nothing_running_says_so(self):
+        """Every request queued, none admitted yet: the page said "3 running"."""
+        r = run(self, self.BODY % (3, 3))
+        self.assertEqual((r["run"], r["wait"]), ("0", "3"), r)
+        self.assertEqual(r["cap"], "3 waiting", r)
+        self.assertIn("No request is running, 3 waiting", r["lede"])
+        self.assertEqual((r["act"], r["actk"]), ("0", "nothing running, 3 waiting"), r)
+
+    def test_one_running_reads_singular_and_idle_reads_idle(self):
+        r = run(self, self.BODY % (1, 0))
+        self.assertEqual((r["run"], r["cap"]), ("1", "1 running"), r)
+        self.assertIn("1 request is running.", r["lede"])
+        r = run(self, self.BODY % (0, 0))
+        self.assertEqual((r["run"], r["wait"], r["cap"]), ("0", "0", "idle"), r)
+        self.assertIn("No request is running.", r["lede"])
+        self.assertEqual((r["act"], r["actk"]), ("0", "nothing running"), r)
+
+
 if __name__ == "__main__":
     unittest.main()

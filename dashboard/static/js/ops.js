@@ -4,17 +4,17 @@
 // ── Traffic ───────────────────────────────────────────────────────────────────
 on('engine_fast', d => {
   const none = !d.load, l = (d.load || [])[0] || {};
-  setText('tr-run', none ? '…' : String(l.num_reqs ?? 0));
-  setText('tr-wait', none ? '…' : String(l.num_waiting_reqs ?? 0));
+  setText('tr-run', none ? '…' : String(runningReqs(l)));
+  setText('tr-wait', none ? '…' : String(waitingReqs(l)));
   setText('tr-tok', none ? '…' : fmtN(physTokens(l)));
-  if (none){ SERIES.req = []; } else push('req', l.num_reqs || 0);
+  if (none){ SERIES.req = []; } else push('req', runningReqs(l));
   drawSpark($('tr-spark'), 'req', cssVar('--gold'), Math.max(4, F.maxRun || 4), {empty: none ? 'no text engine' : 'quiet so far'});
 });
 // said after the whole payload: which lane serves is the lifecycle's, read after this one
 afterApply(() => {
-  const none = F.noEngine || !textReady(), l = F.load || {}, n = l.num_reqs || 0;
+  const none = F.noEngine || !textReady(), n = loadWords(F.load || {});
   cap('tr-cap', none ? (imageServing() ? 'no text engine: the image lane serves' : videoServing() ? 'no text engine: the video lane serves' : 'no text engine')
-      : n ? `${n} running` : 'idle', none ? '' : n ? 'ok' : '', n && !none ? 'live' : true);
+      : n || 'idle', none ? '' : n ? 'ok' : '', n && !none ? 'live' : true);
 });
 on('decode', d => {
   const t = d.decode, u = d.usage || {};

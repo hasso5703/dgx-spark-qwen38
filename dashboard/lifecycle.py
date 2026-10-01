@@ -524,6 +524,12 @@ FEED_START = re.compile(r"\[proxy\] (\S+)" + _KEY + r" -> (POST|GET) (\S+) body=
 FEED_END = re.compile(r"\[proxy\] (\S+)" + _KEY + r" (POST|GET) (\S+) (.+?) in ([\d.]+)s")
 FEED_REFUSED = re.compile(r"\[proxy\] (\S+)" + _KEY + r" REFUSED oversize \(\d+b, (.+?), limit (\d+)\)")
 FEED_FIT = re.compile(r"\[proxy\] (\S+)" + _KEY + r" oversize check: (\d+) tokens fit \((\d+) usable")
+# The proxy writes one end line per request (since 30/08), so a start loses its end only
+# when the process that took it is gone, and that is logged as well: systemd says it has
+# stopped or lost the process ("Stopped" names the unit only since systemd 252, its
+# description before), and the next proxy introduces itself with its banner.
+FEED_PROXY_GONE = re.compile(r"\]: \[proxy\] v[\d.]+ on |systemd\[\d+\]: (?:Stopped |\S+: (?:Deactivated "
+                             r"successfully|Main process exited|Failed with result))")
 
 
 # How an outcome reads, so the UI never has to match strings itself (it did, and it
@@ -589,11 +595,19 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
     (tokens counted vs the lane's limit) so a 400 explains itself."""
     reqs: dict[str, list[dict]] = {}
     order: list[tuple[str, int]] = []
-    latest_ts = None
     for ln in raw.splitlines():
         ts = ln[:19]
-        if len(ts) == 19 and ts[10] == "T":
-            latest_ts = ts
+        # A start with no end stays "in flight" for as long as the proxy that took it runs:
+        # a generation has no deadline, and one queued behind seven others answered after 22
+        # minutes. The clock this replaced (10 minutes of newer traffic) called five live
+        # requests "no end logged" while the engine ran three and queued two (01/10).
+        if FEED_PROXY_GONE.search(ln):
+            for records in reqs.values():
+                for r in records:
+                    if r["outcome"] == "in flight":
+                        r["outcome"], r["kind"] = "no end logged", "unknown"
+                        r["detail"] = "; ".join(filter(None, (r["detail"], "the proxy that took it stopped")))
+            continue
         m = FEED_START.search(ln)
         if m:
             peer = m.group(1)
@@ -621,27 +635,6 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
             r["outcome"] = m.group(4)[:40]
             r["kind"] = outcome_kind(r["outcome"])
             r["secs"] = float(m.group(5))
-    # A start with no end cannot stay "in flight" forever: the proxy guarantees an
-    # end line per request since 30/08, but a proxy restart mid-request (or an older
-    # journal) can still orphan one. After 10 minutes of newer traffic it becomes an
-    # explicit unknown so the live count stays honest.
-    if latest_ts:
-        try:
-            latest = datetime.fromisoformat(latest_ts)
-        except ValueError:
-            latest = None
-        if latest:
-            for records in reqs.values():
-                for r in records:
-                    if r["outcome"] != "in flight":
-                        continue
-                    try:
-                        age = (latest - datetime.fromisoformat(r["ts"])).total_seconds()
-                    except ValueError:
-                        continue
-                    if age > 600:
-                        r["outcome"] = "no end logged"
-                        r["kind"] = "unknown"
     return [reqs[p][i] for p, i in order[-last:]]
 
 

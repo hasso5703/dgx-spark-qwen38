@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.20.4 (2026-10-01): the cockpit counts a queued request once, and keeps it in flight while it waits
+
+Eight long prompts sent at once on the reference box (856,000 tokens for a 474,816-token
+pool, the queue chosen in v1.20.3) were all answered with the right content, the last after
+22 minutes, with no retraction, and the cockpit misread the wait twice. Its Traffic view read
+"5 Running, 3 Waiting" while the engine ran two and queued three: the engine's load counts a
+queued request in `num_reqs` too (running plus waiting, the `/get_load` shape the cockpit
+projects from `/v1/loads`), and the page wrote that sum under "Running"; the Now view's
+sentence, the serving lane's line and the Requests card said the same. They now show what
+runs (`num_reqs` minus `num_waiting_reqs`) and name the queue beside it ("2 running, 3
+waiting"). A request in its chunked prefill is in neither of the engine's two counters, so
+they can add up to one less than the proxy's in-flight count. And the Requests table turned
+the five still waiting into "no end logged" once ten minutes of newer traffic had passed
+since they started: that rule dates from before the proxy wrote one end line per request
+(30/08), and a generation has no deadline. A request now stays "in flight" until its end line
+or until the journal says the proxy that took it is gone (systemd's stop or crash line, or the
+next proxy's banner), and only then reads "no end logged", with that reason under it. Tests
+hold both, and fail on v1.20.3.
+
 ## v1.20.3 (2026-10-01): the flash lane's opencode window is 205,000 tokens at eight requests too
 
 On its default tier, eight requests at once, the flash lane gave opencode 100,000 tokens of

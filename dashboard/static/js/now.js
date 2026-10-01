@@ -164,7 +164,7 @@ function renderServing(){
   const l = F.load || {};
   if ((st === 'ready' || st === 'degraded') && unit === VIDEO_UNIT) sub = VID_NOW.label || 'idle, one video at a time';
   else if ((st === 'ready' || st === 'degraded') && unit === IMAGE_UNIT) sub = IMG_NOW.label || 'idle, one image at a time';
-  else if (st === 'ready' || st === 'degraded') sub = ((l.num_reqs || 0) ? `${l.num_reqs} running` : 'idle') + (F.pool ? `, KV pool ${Math.round(100 * physTokens(l) / F.pool)} %` : '') + (e.elapsed ? `, up ${fmtDur(e.elapsed)}` : '');
+  else if (st === 'ready' || st === 'degraded') sub = (loadWords(l) || 'idle') + (F.pool ? `, KV pool ${Math.round(100 * physTokens(l) / F.pool)} %` : '') + (e.elapsed ? `, up ${fmtDur(e.elapsed)}` : '');
   else if (TRANSITIONAL.has(st)){ const eta = e.eta || READY_DEFAULT[unit]; sub = `${fmtDur(e.elapsed)} elapsed` + (eta && e.elapsed ? `, about ${fmtDur(Math.max(0, eta - e.elapsed))} left` : ''); }
   else if (st === 'stopping') sub = `${e.state_elapsed != null ? fmtDur(e.state_elapsed) : ''} elapsed`;
   setText('serving-sub', sub);
@@ -173,7 +173,8 @@ function renderServing(){
   let lede;
   if (st === 'ready' || st === 'degraded') lede = `${laneLabel(unit)} holds the box` + (e.elapsed ? ` and has served for ${fmtDur(e.elapsed)}` : '') + '. ' +
     (unit === VIDEO_UNIT ? (VID_NOW.label ? `It is ${VID_NOW.label}.` : 'It is idle.') : unit === IMAGE_UNIT ? (IMG_NOW.label ? `It is ${IMG_NOW.label}.` : 'It is idle.')
-      : (l.num_reqs || 0) ? `${l.num_reqs} request${l.num_reqs > 1 ? 's are' : ' is'} running.` : 'No request is running.');
+      : (runningReqs(l) ? `${runningReqs(l)} request${runningReqs(l) > 1 ? 's are' : ' is'} running` : 'No request is running')
+        + (waitingReqs(l) ? `, ${waitingReqs(l)} waiting.` : '.'));
   else if (TRANSITIONAL.has(st)) lede = `${laneLabel(unit)} is booting: ${STATE_LABEL[st]}.`;
   else if (st === 'stopping') lede = `${laneLabel(unit)} is stopping.`;
   else lede = `${laneLabel(unit)} is ${STATE_LABEL[st] || st}.`;
@@ -217,8 +218,8 @@ function renderActivity(){
     return;
   }
   // a text lane
-  const n = l.num_reqs || 0;
-  setText('act-title', 'Requests'); setText('act-v', String(n)); setText('act-k', n ? `running, ${l.num_waiting_reqs || 0} waiting` : 'nothing running');
+  const n = runningReqs(l), w = waitingReqs(l);
+  setText('act-title', 'Requests'); setText('act-v', String(n)); setText('act-k', (n ? 'running' : 'nothing running') + (n || w ? `, ${w} waiting` : ''));
   push('act', n, 180); drawSpark($('act-spark'), 'act', cssVar('--gold'), Math.max(4, F.maxRun || 4), {empty: 'quiet so far'});
   const held = physTokens(l);
   facts(fx, [['KV pool held', F.pool ? `${fmtN(held)} of ${fmtN(F.pool)} tokens` : 'waiting for the engine'],

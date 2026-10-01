@@ -714,6 +714,11 @@ const singleLimit = () => F.pool ? (F.ceiling > 0 ? Math.min(Math.round(F.pool *
 // physical pool occupancy: the engine dedupes shared prefixes, so the requests' summed
 // lengths ("logical") can read past the pool while the pool never overflows
 const physTokens = l => (l.num_used_tokens != null ? l.num_used_tokens : l.num_tokens) || 0;
+// the load counts a queued request in num_reqs too (running plus waiting, the /get_load shape):
+// what runs is the difference (01/10: "5 Running, 3 Waiting" for two running and three queued)
+const runningReqs = l => Math.max(0, (l.num_reqs || 0) - (l.num_waiting_reqs || 0));
+const waitingReqs = l => l.num_waiting_reqs || 0;
+const loadWords = l => [runningReqs(l) ? `${runningReqs(l)} running` : '', waitingReqs(l) ? `${waitingReqs(l)} waiting` : ''].filter(Boolean).join(', ');
 
 // ── wiring the shell ──────────────────────────────────────────────────────────
 function wireShell(){
