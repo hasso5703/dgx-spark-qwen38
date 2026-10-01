@@ -41,6 +41,7 @@ The README is the entry point. Everything longer lives next to it, one subject p
 | Day-to-day commands, the opt-in extras, upgrading from an earlier version | [docs/operations.md](docs/operations.md) |
 | When an engine stops: the timeline of a crash, the start guard, requests held through a restart | [docs/engine-restarts.md](docs/engine-restarts.md) |
 | What the installer writes for opencode, and how to opt out | [docs/opencode.md](docs/opencode.md) |
+| pi and omp: the same configs in their own formats, generated from the same artifact | [docs/pi.md](docs/pi.md) |
 | Clients: Claude Code, VS Code Copilot, Open WebUI, Cursor, TLS, per-client identity | [docs/clients.md](docs/clients.md) |
 | Why `--mem-fraction-static` decides whether this box stays alive | [docs/gb10-memory.md](docs/gb10-memory.md) |
 | Where each lane stands against upstream SGLang, re-checked in the images | [docs/upstream.md](docs/upstream.md) |
@@ -362,6 +363,8 @@ The installer writes a ready-to-use provider config, an `oc` launcher that lifts
 agentic clients. `./install.sh --no-opencode` installs the API and nothing else, and the choice
 sticks. What each piece is for, and why the config points at the proxy port rather than the
 engine: **[docs/opencode.md](docs/opencode.md)**.
+
+The same generated config is also the single source for **[pi](https://pi.dev)** and **[omp](https://omp.sh) (oh-my-pi)**: `./pi-gen.py` derives their ready configs (`~/.config/qwen38/pi/` JSON, `~/.config/qwen38/omp/` YAML converted from it, one build) and `./switch-model.sh` regenerates them on every switch; copying them into the agent's directory stays yours. **[docs/pi.md](docs/pi.md)**.
 
 ## The seven targets, and switching between them
 
