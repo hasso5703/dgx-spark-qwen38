@@ -179,11 +179,15 @@ case "$CHOICE" in
     # 2026-09-24). oc-fit-limits.py applies the same rule after each boot.
     case "$TIER" in
       context)     CTX=205000; OUT=32000 ;;   # threshold + one worst step + the answer fits the 262,144 window, and stays under the 250,000 ceiling (see above)
-      concurrency) CTX=100000; OUT=16000 ;;   # 116,000 worst case. Measured 2026-09-12
-      # with replayssm-spec the 8-request pool came out at 468,480 (not 129,792),
-      # so these limits are conservative on this box; they stay until concurrent-
-      # load memory is measured (single-stream floor 13.5 GiB proves nothing
-      # about eight heavy streams at once).
+      concurrency) CTX=205000; OUT=32000 ;;   # the context tier's pair since v1.20.3: one
+      # request fits as it does there (the same threshold, worst step and answer under the
+      # same ceiling and window), and eight at once share the pool. When they outgrow it,
+      # the engine queues the newcomers and retracts as it must, which costs time and fails
+      # nothing. 100,000/16,000 until then kept eight at once inside the pool, and cut every
+      # agent's session at 84,000 tokens: measured live on 2026-10-01, eight opencode
+      # subagents held 60 to 68 % of the 474,816-token pool at that window, and a
+      # documentation agent compacted at 88,520. The operator's call: a queue rather than a
+      # 100K window.
       throughput)  CTX=110000; OUT=32000 ;;   # a big pool, but 24 requests share it
       *) printf 'oc-limits: unknown flash tier "%s"\n' "$TIER" >&2; exit 2 ;;
     esac

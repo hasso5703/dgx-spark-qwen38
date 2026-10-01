@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.20.3 (2026-10-01): the flash lane's opencode window is 205,000 tokens at eight requests too
+
+On its default tier, eight requests at once, the flash lane gave opencode 100,000 tokens of
+context and 16,000 of output, so that eight sessions at their largest would always fit the KV
+pool together. Measured live on the reference box with eight opencode subagents: they held 60
+to 68 % of the 474,816-token pool at that window, nothing waited, and a documentation agent
+compacted at 88,520 tokens (opencode compacts at `limit.input` minus the smaller of 20,000
+and `limit.output`: 84,000 there). The concurrency tier now gives opencode the context
+tier's pair, 205,000 and 32,000: one request fits exactly as it does on `context` (the same
+threshold, worst step and answer under the same 250,000 ceiling and 262,144 window), and when
+eight sessions outgrow the pool together the engine queues the newcomers and retracts as it
+must, which costs time and fails nothing. The reference box's operator chose that: a queue
+rather than a 100K window. An update writes the new pair into opencode's config and restarts
+opencode-web once so it reads them. The installer's line on when compaction fires now uses
+that same rule; it said 80,000 where opencode compacted at 84,000.
+
 ## v1.20.2 (2026-10-01): a box updated by the one-liner knows which release it runs
 
 The cockpit told a box it was behind for the release it ran: "Version v1.20.1 is out; this

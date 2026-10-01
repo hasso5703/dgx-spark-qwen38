@@ -752,7 +752,7 @@ jobs:
           # before (the old gate fell through to the throughput arm).
           for t in flash flash-uncensored flash-nvda; do
             [ "$(l "$t" context)" = "205000 32000 local" ] || { echo "$t/context drifted"; exit 1; }
-            [ "$(l "$t" concurrency)" = "100000 16000 local" ] || { echo "$t/concurrency drifted"; exit 1; }
+            [ "$(l "$t" concurrency)" = "205000 32000 local" ] || { echo "$t/concurrency drifted"; exit 1; }
             [ "$(l "$t" throughput)" = "110000 32000 local" ] || { echo "$t/throughput drifted"; exit 1; }
           done
           # Nonsense is refused rather than defaulted, or a typo silently serves
@@ -767,7 +767,7 @@ jobs:
           printf '  --max-running-requests 24 \\\n  python3 -m sglang.launch_server \\\n' > "$tmp/l24.sh"
           printf '  --context-length 1010000 \\\n  python3 -m sglang.launch_server \\\n' > "$tmp/u1m.service"
           printf '  --context-length 262144 \\\n  python3 -m sglang.launch_server \\\n' > "$tmp/unat.service"
-          [ "$(l flash --from "$tmp/l8.sh")" = "100000 16000 local" ] || { echo "derived tier (8) wrong"; exit 1; }
+          [ "$(l flash --from "$tmp/l8.sh")" = "205000 32000 local" ] || { echo "derived tier (8) wrong"; exit 1; }
           [ "$(l flash --from "$tmp/l24.sh")" = "110000 32000 local" ] || { echo "derived tier (24) wrong"; exit 1; }
           [ "$(l stock --from "$tmp/u1m.service")" = "700000 200000 local, 1M" ] || { echo "derived 1m wrong"; exit 1; }
           [ "$(l stock --from "$tmp/unat.service")" = "173000 64000 local" ] || { echo "derived native wrong"; exit 1; }

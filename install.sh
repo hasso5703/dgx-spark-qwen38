@@ -1869,7 +1869,8 @@ print(f"{'kept' if same else 'wrote'} {cfg_dir}/opencode.json (default {default}
       f"providers: {', '.join(providers) or 'none'})")
 PYEOF
 echo "opencode limits: context $OC_CTX, output $OC_OUT, port $OC_PORT"
-echo "  compaction fires at $((OC_CTX - 20000)) tokens and keeps $OC_KEEP verbatim"
+# opencode's threshold is limit.input - min(20,000, limit.output) (see oc-limits.sh)
+echo "  compaction fires at $((OC_CTX - (OC_OUT < 20000 ? OC_OUT : 20000))) tokens and keeps $OC_KEEP verbatim"
 OC_USER_CFG="$HOME/.config/opencode/opencode.json"
 # A box with no opencode config of its own gets this one. There is nothing to merge
 # into and nothing of the user's to keep, and nothing else points opencode at the file
