@@ -72,6 +72,18 @@ def _release() -> str:
 
 
 VERSION = _release()
+
+
+def installed_release():
+    """The release this checkout is, for the release check: CHANGELOG.md's first heading,
+    read now. The tags were the witness until v1.20.2, and get.sh fetched main and no tag,
+    so a box updated by the one-liner kept naming the release it was first cloned at and
+    was told an update was out for the release it ran (v1.19.0 on the reference box
+    running v1.20.1, 2026-10-01). The tags answer only when the file names no release."""
+    rel = _release()
+    if rel != "unknown":
+        return "v" + rel
+    return run(["git", "-C", str(REPO_DIR), "describe", "--tags", "--abbrev=0"]).strip() or None
 # Dry run: every mutating action and every automatic belt is logged, audited and
 # shown exactly as usual, but nothing is executed. This is how the click-storm test
 # (tests/monkey-check.mjs) exercises the whole UI against a second cockpit instance.
@@ -1064,8 +1076,7 @@ def _semver(tag):
 def collect_update():
     """{installed, latest, behind, stale_code}. Every field is optional: a box with no
     network, or one that opted out, reports what it knows and claims nothing else."""
-    out = {"installed": run(["git", "-C", str(REPO_DIR), "describe", "--tags",
-                             "--abbrev=0"]).strip() or None}
+    out = {"installed": installed_release()}
     stale = code_is_stale()
     if stale:
         out["stale_code"] = stale
@@ -3327,8 +3338,7 @@ def upstream_snapshot(max_age: float = 3600.0) -> dict:
                 row["status"] = "offline"
                 row["detail"] = str(e)[:80]
             rows.append(row)
-        rel = {"local": run(["git", "-C", str(REPO_DIR), "describe",
-                             "--tags", "--abbrev=0"]).strip()}
+        rel = {"local": installed_release() or ""}
         try:
             j = _get_json("https://api.github.com/repos/hasso5703/"
                           "dgx-spark-qwen38/releases/latest")

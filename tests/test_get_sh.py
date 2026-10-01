@@ -97,6 +97,30 @@ def main() -> None:
         r = run_get(work, env_extra={"FORCE_UPDATE": "1"})
         assert r.returncode == 0, f"FORCE_UPDATE did not switch back to main: {r.stderr}"
 
+        # 8. A release tagged after the clone reaches it: the cockpit's release check and
+        #    `git describe` read the tags, and a fetch of main alone brought none, so a box
+        #    updated by the one-liner kept naming the release it was cloned at (2026-10-01).
+        git("checkout", "-q", "main", cwd=work)
+        git("tag", "-a", "v9.9.9", "-m", "a release", cwd=work)
+        git("push", "-q", "origin", "v9.9.9", cwd=work)
+        git("tag", "-d", "v9.9.9", cwd=work)
+        r = run_get(work)
+        assert r.returncode == 0, f"the update failed: {r.stderr}"
+        assert git("tag", "-l", "v9.9.9", cwd=work).stdout.strip() == "v9.9.9", "the release tag did not come"
+        assert git("describe", "--tags", "--abbrev=0", cwd=work).stdout.strip() == "v9.9.9"
+
+        # 9. A tag of the same name made here, on another commit, is kept, and the update
+        #    goes on rather than failing on it.
+        git("tag", "-a", "v9.9.8", "-m", "upstream", cwd=work)
+        git("push", "-q", "origin", "v9.9.8", cwd=work)
+        git("tag", "-d", "v9.9.8", cwd=work)
+        git("commit", "-q", "--allow-empty", "-m", "local", cwd=work)
+        git("tag", "v9.9.8", cwd=work)
+        git("reset", "-q", "--hard", "HEAD~1", cwd=work)
+        r = run_get(work)
+        assert r.returncode == 0, f"a local tag of the same name failed the update: {r.stderr}"
+        assert "INSTALL_RAN" in r.stdout, r.stdout
+
         print("test_get_sh: OK")
     finally:
         shutil.rmtree(base, ignore_errors=True)

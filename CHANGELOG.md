@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.20.2 (2026-10-01): a box updated by the one-liner knows which release it runs
+
+The cockpit told a box it was behind for the release it ran: "Version v1.20.1 is out; this
+box runs v1.19.0", on the reference box running v1.20.1. Its release check named the
+installed release from the checkout's git tags (`git describe`), and the one-liner fetched
+main and no tag, so every box it updated kept describing itself as the release it was first
+cloned at; the Library view's release line said the same. The check now reads the release
+the checkout's own CHANGELOG.md names, the one the cockpit's badge already showed, and
+`get.sh` fetches the release tags too, so `git describe` agrees with it (a tag of the same
+name made on the box is kept, and the update goes on). Tests hold both: the check against a
+checkout whose tags lag its files, and `get.sh` against a release tagged after the clone and
+a local tag of the same name; they fail on v1.20.1.
+
 ## v1.20.1 (2026-10-01): the cockpit names the release it runs, after an update too
 
 The cockpit reads the release it names, the first heading of CHANGELOG.md, when it starts,

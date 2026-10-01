@@ -187,7 +187,10 @@ Two details decide whether this is useful or irritating. It compares version **n
 not strings, so `v1.15.0` is correctly newer than `v1.9.0`, and it only speaks when the
 published version is **strictly newer** than the installed one, because a box that
 develops this repo is regularly ahead of the newest tag and would otherwise be nagged
-forever. A box with no network says "latest release unknown" rather than raising an
+forever. The installed release is the one the checkout's own CHANGELOG.md names, not
+what its git tags say: the one-liner fetched main and no tag until v1.20.2, so a box it
+updated described itself as the release it was first cloned at and was told the release it
+ran was out. A box with no network says "latest release unknown" rather than raising an
 alarm, and stops asking for a while instead of spending a request every collection.
 
 The same strip carries the other staleness a running cockpit can have: a `git pull`

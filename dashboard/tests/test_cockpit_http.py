@@ -919,14 +919,30 @@ class UpdateCheck(Base):
         for bad in ("main", "", None, "v1.15.2-rc1", "latest"):
             self.assertIsNone(self.cp._semver(bad), bad)
 
-    def _with_latest(self, tag, installed="v1.15.0"):
+    def _with_latest(self, tag, installed="v1.15.0", described="v1.0.0"):
+        """`installed` is the release the checkout's CHANGELOG names; `described` is what
+        its tags say, which since v1.20.2 the check reads only when the file names none."""
         self.cp._get_json = lambda url, timeout=5.0: {"tag_name": tag}
-        real_run = self.cp.run
-        self.cp.run = lambda argv, **k: installed if "describe" in argv else real_run(argv, **k)
+        real_run, real_release = self.cp.run, self.cp._release
+        self.cp.run = lambda argv, **k: described if "describe" in argv else real_run(argv, **k)
+        self.cp._release = lambda: installed.lstrip("v") if installed else "unknown"
         try:
             return self.cp.collect_update()
         finally:
-            self.cp.run = real_run
+            self.cp.run, self.cp._release = real_run, real_release
+
+    def test_the_release_a_box_runs_is_the_one_its_files_name_not_its_tags(self):
+        """get.sh fetched main and no tag, so a box updated by the one-liner described
+        itself as the release it was first cloned at, and the cockpit announced the release
+        it ran as an update (v1.19.0 on the reference box running v1.20.1, 2026-10-01)."""
+        out = self._with_latest("v1.20.1", installed="v1.20.1", described="v1.19.0")
+        self.assertEqual(out["installed"], "v1.20.1")
+        self.assertFalse(out["behind"])
+
+    def test_a_checkout_that_names_no_release_falls_back_on_its_tags(self):
+        out = self._with_latest("v1.20.1", installed="", described="v1.19.0")
+        self.assertEqual(out["installed"], "v1.19.0")
+        self.assertTrue(out["behind"])
 
     def test_a_newer_published_release_is_reported_as_behind(self):
         out = self._with_latest("v1.15.2")
