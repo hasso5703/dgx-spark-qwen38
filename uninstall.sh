@@ -121,6 +121,9 @@ if [ -d "$CONFIG_DIR" ]; then
   [ -f "$CONFIG_DIR/claude-code.env" ] && echo "  legacy    $CONFIG_DIR/claude-code.env (pre-v1.3 client config, unmaintained)"
   [ -f "$CONFIG_DIR/opencode.off" ] && echo "  marker    $CONFIG_DIR/opencode.off (opencode integration disabled with --no-opencode)"
   [ -f "$CONFIG_DIR/cockpit.off" ] && echo "  marker    $CONFIG_DIR/cockpit.off (cockpit disabled with --no-cockpit)"
+  for _lane in image video flash 27b; do
+    [ -f "$CONFIG_DIR/$_lane.off" ] && echo "  marker    $CONFIG_DIR/$_lane.off ($_lane lane left out with --no-$_lane)"
+  done
 fi
 if grep -q 'dgx-spark-qwen38' "$HOME/.local/bin/oc" 2>/dev/null; then
   echo "  launcher  $HOME/.local/bin/oc (this repo's opencode launcher)"
