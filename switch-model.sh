@@ -727,9 +727,13 @@ fi
 #     regenerates them from the opencode.json this switch just rewrote, as
 #     artifacts under ~/.config/qwen38 (pi/ JSON, omp/ YAML converted from it).
 #     No agent directory is ever written: the agents' own files are the user's
-#     copies, so re-copy them after a switch to pick up the new lane.
-python3 "$REPO_DIR/pi-gen.py" \
-  || echo "NOTE: could not regenerate the pi/omp artifacts; run ./pi-gen.py by hand"
+#     copies, so re-copy them after a switch to pick up the new lane. Only on a
+#     box that asked for them once (./pi-gen.py made the directories): a switch
+#     writes no file for an agent nobody uses.
+if [ -d "$CONFIG_DIR/pi" ] || [ -d "$CONFIG_DIR/omp" ]; then
+  python3 "$REPO_DIR/pi-gen.py" --config "$CONFIG_DIR/opencode.json" --out "$CONFIG_DIR" \
+    || echo "NOTE: could not regenerate the pi/omp artifacts; run ./pi-gen.py by hand"
+fi
 
 RUNNING=""
 systemctl is-active --quiet "$OTHER_UNIT_NAME" 2>/dev/null && RUNNING="$OTHER_UNIT_NAME"
