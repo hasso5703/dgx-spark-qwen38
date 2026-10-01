@@ -1,13 +1,15 @@
 # The image lane: Qwen-Image 2.1 on one Spark
 
 Text to image, image editing and native RGBA, served by SGLang Diffusion in its own
-venv, on its own port, driven from the cockpit's **Image** view. Opt-in, because it costs
-38 GB and about 25 minutes:
+venv, on its own port, driven from the cockpit's **Image** view. Every plain install
+includes it since v1.20 (40 GB: 31 checkpoint, 9 runtime), and proves it with one image the
+first time. `--no-image` leaves it out, and later runs remember that; `--with-image` brings
+it back:
 
 ```bash
 ./install.sh --with-image
-# or, from nothing at all:
-curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --with-image
+# or, from nothing at all, with every other lane:
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
 ```
 
 Once installed, a plain `./install.sh` keeps it and updates it. `./install-image.sh`

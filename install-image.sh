@@ -312,7 +312,7 @@ fi
 # lane becomes the boot lane the same way the other two do, by a switch, which is also
 # what makes it come back after a reboot.
 echo "installed as a lane of its own. Switch to it like any lane:"
-echo "  the cockpit: choose Qwen-Image 2.1 and press Load (one action: it switches, stops the serving lane, starts this one)"
+echo "  the cockpit: Load on Qwen-Image 2.1 in the Lanes view (it switches, stops the serving lane, starts this one)"
 echo "  a terminal : ./switch-model.sh image, then the two commands it prints"
 
 if [ "$SMOKE" -eq 0 ]; then step "Done (smoke test skipped)"; exit 0; fi

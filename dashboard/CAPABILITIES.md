@@ -9,7 +9,7 @@ Nothing shells out free-form; every action is a fixed argv template.
 | capability | shell today | UI |
 |---|---|---|
 | First install / upgrade (converging) | `get.sh` one-liner / `install.sh` | Settings view prints the exact terminal command: the installer needs an interactive sudo that a service cannot give, and a half-applied install is the one failure the cockpit must never cause |
-| Choose target model | `MODEL_CHOICE=stock/uncensored/fp8/uncensored-fp8/flash/flash-uncensored/flash-nvda`, and the image lane with `--with-image` | Each lane's checkpoint selector and Load in the Lanes view, and the rack in Now: the seven text targets, Qwen-Image 2.1 and MiniMax-H3, Load running the switch (`switch-model.sh <target>`), the stop and the start as one journey, a job per step |
+| Choose target model | `MODEL_CHOICE=stock/uncensored/fp8/uncensored-fp8/flash/flash-uncensored/flash-nvda` names the lane that serves; every lane is installed by default since v1.20, `--no-<lane>` leaves one out | Each lane's checkpoint selector and Load in the Lanes view, and the rack in Now: the seven text targets, Qwen-Image 2.1 and MiniMax-H3, Load running the switch (`switch-model.sh <target>`), the stop and the start as one journey, a job per step |
 | 1M context mode (27B) | `CONTEXT_MODE=1m` (the default since v1.12.1) or `native` | None: an install choice. The lane card shows the window the engine serves |
 | Custom port / HF cache / PLE dir | `PORT= HF_CACHE= PLE_DIR=` | None: install-time choices, kept by every re-run |
 | No-service foreground run | `install.sh --no-service && run.sh` | Documented only (interactive terminal concept), not a UI job |

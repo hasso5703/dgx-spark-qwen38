@@ -2,12 +2,14 @@
 
 Text to video with joint video-and-audio, plus first/last-frame conditioning, served by
 SGLang Diffusion in its own venv, on its own port, driven from the cockpit's **Video**
-view. Opt-in, because it costs about 150 GB of headroom and an hour or more:
+view. Every plain install includes it since v1.20 (about 150 GB of headroom: 135 GiB of
+checkpoint, 11 of runtime), and proves it with one 4 s video the first time. `--no-video`
+leaves it out, and later runs remember that; `--with-video` brings it back:
 
 ```bash
 ./install.sh --with-video
-# or, from nothing at all:
-curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash -s -- --with-video
+# or, from nothing at all, with every other lane:
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
 ```
 
 Once installed, a plain `./install.sh` keeps it and updates it. `./install-video.sh`

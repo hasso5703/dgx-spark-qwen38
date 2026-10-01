@@ -109,6 +109,13 @@ extras/chromium-sandbox/setup.sh --uninstall  # back to Ubuntu's stock restricti
 cd dgx-spark-qwen38 && git pull && ./install.sh
 ```
 
+**v1.19 -> v1.20 installs the lanes a box does not have yet**: since v1.20 a plain run installs
+every lane, so the first update of a box with one text lane brings the other one (the flash lane
+is 203 GB, the 27B 54), the image lane (40) and the video lane (about 150 of headroom), each
+proved once, the served lane stopped meanwhile and proved again after. To keep a box as it is,
+say so on that run and later runs remember it: `./install.sh --no-flash --no-image --no-video`
+(or `--no-27b` on a flash box). A lane already installed is updated and not proved again.
+
 Your choices survive the upgrade: the API key, the patched template, your own systemd drop-ins
 under `/etc/systemd/system/qwen38-sglang.service.d/`, the opencode on/off choice (v1.5.9), and (since v1.3) the installed target
 model, port and HF cache location, which are read from the installed unit (v1.4: units; a box

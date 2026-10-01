@@ -5,7 +5,13 @@ so that "on the roadmap" means a checkbox with a definition of done, not a
 mood. Statuses: shipped, in progress, planned, considered (considered items
 have a reason they are not yet planned, stated here or in an issue).
 
-## Shipped, current: v1.19
+## Shipped, current: v1.20
+
+- **Every lane by default** (v1.20.0): the one-liner installs both text lanes (the 27B
+  serves, Flash-Next 176B beside it), the image lane and the video lane, each proved
+  the first time; `--no-<lane>` leaves one out, remembered like `--no-cockpit`.
+
+## Shipped, v1.19
 
 - **A first install works again** (v1.19.0): v1.18.7 ended every install on a box that
   never had this repo at step 7. Found by installing the reference box from nothing, its

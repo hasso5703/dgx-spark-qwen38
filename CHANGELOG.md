@@ -1,5 +1,74 @@
 # Changelog
 
+## v1.20.0 (2026-10-01): every lane on every box, by default
+
+**The one-liner installs everything.** A plain install, first install or update, puts every
+lane on the box: both text lanes (the one `MODEL_CHOICE` names serves, the 27B by default,
+and the other one is installed beside it, ready to load from the cockpit), the image lane and
+the video lane, with the typed-decision endpoint the proxy already carried. Each lane a run
+installs for the first time proves it serves before the run ends. All of it is about 440 GB
+of disk and a little over an hour of work on a new box, plus the downloads (about 75
+minutes at 100 MB/s). A lane that does not fit
+on the disk is left out and named at the end, with the command that adds it later, and the
+rest installs.
+
+**Updating a box from before v1.20 installs what it does not have yet**: up to about 390 GB
+of downloads for a box that had the 27B lane alone. To keep a box as it is, pass the flags
+below once; later runs remember them.
+
+### How a run lays it out
+
+**The other text lane is this same installer, started again for that lane**
+(`QWEN38_SECONDARY`). That run converges on its own lane's unit, so the target, the revision,
+the context mode or the tier that lane was installed with are kept across updates (the
+abliterated 27B beside a serving flash stays abliterated, at 1M); it installs its unit without
+enabling it at boot and starts nothing, and it leaves the proxy, the boot lane, opencode, the
+cockpit and the side lanes to the run that started it. The parent passes it what both lanes
+share (the port, the HF cache, the binds) and nothing of its own lane's: a `MODEL_CHOICE` or a
+`MODEL_REV` given for the served lane must not pick the other one's. It runs before step 7,
+so opencode lists both lanes from the first run on.
+
+**The image and the video lanes are prepared while the served lane keeps serving**, then
+**the proofs come last, and together**, because each needs the GPU to itself: the served lane
+stops once, each new lane boots, answers and stops (the other text lane with the wait and the
+real generation of step 9, now `prove_text_lane`; the image lane with one image; the video
+lane with one 4 s video), and the served lane comes back and proves itself again before the
+proxy and opencode's 1M limits follow its new pool. A proof that fails is said, and the
+served lane still comes back; one that cannot come back ends the run with the command that
+starts it.
+
+**A routine update proves nothing twice**: it updates the lanes it finds and keeps the served
+lane serving. `--with-<lane>` proves a lane already there.
+
+**Leaving a lane out**: `--no-flash` (on a 27B box), `--no-27b` (on a flash box),
+`--no-image`, `--no-video`, remembered in a marker file the way `--no-cockpit` is, and undone
+by `--with-<lane>`. A lane left out stays where it is if it was already installed, and is no
+longer updated. Until v1.20 `--no-image` and `--no-video` skipped their lane for one run only.
+
+**The cockpit**: a lane that is not on the box says `./install.sh --with-<lane>`, which
+installs it beside the serving lane, and offers no checkpoint to pick (it comes with its
+default one; the others download when they are loaded). The image installer's closing line
+names the Load button the way the video installer's does.
+
+**`install-video.sh` counted its checkpoint as 145 GiB** against the 134.2 the lane takes
+(144.1 GB): a box with all of it cached was told "10 GB to download", and a box with 150 GiB
+free was refused for 6 it did not need.
+
+Measured on the reference box on 2026-10-01, with its own install moved aside and put back
+after, and every checkpoint, image and pip wheel already in its caches, so downloads are left
+out: from nothing, the one-liner had the 27B lane up and verified, with the cockpit and the
+Agent view, in 7 min 51 s; prepared the three other lanes in 4 min 24 s; and proved them in
+44 min 23 s: the flash lane answered after 11 min 4 s of boot, the image lane after 80 s, the
+video lane after 12 min 10 s and then made its 4 s video, and the 27B came back in 6 min 56 s.
+56 min 38 s in all. The run after it took 45 s, proved nothing, changed no file and restarted
+no service, and the phone check passed 236 of 236.
+
+Tests: `tests/test_install_every_lane.py` runs each piece as written, against stubs and a
+copy of the script that ends before step 1: the markers, the flags, the other lane's run
+converging on the reference box's own layout, the parent's hand-off, the order of the proofs
+and what each failure costs, and the proof of a text lane. 19 deliberate mutations of the new
+code, 19 caught. The 15 tests that pinned the opt-in lanes now pin the defaults.
+
 ## v1.19.0 (2026-10-01): a first install works again, MiniMax-H3 as a fourth lane, and a cockpit rebuilt and checked under a finger
 
 **A first install works again.** v1.18.7 stopped every install on a box that had never had

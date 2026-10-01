@@ -467,8 +467,9 @@ serves, the 27B by default, and the other is installed beside it, ready to
 load), the image lane, the video lane, the keepalive proxy with its typed
 decision endpoint, the opencode wiring, the cockpit and its Agent view. Each
 lane a run installs for the first time proves it serves before the run ends.
-All of it takes about 440 GB of disk (27B 54, flash 203, image 40, video 144)
-and, on a new box, two to three hours, most of it downloads. A lane that does
+All of it takes about 440 GB of disk (27B 54, flash 203, image 40, video 144):
+a little over an hour of work on the box, plus the downloads (about 75 minutes
+at 100 MB/s). A lane that does
 not fit on the disk is left out and named at the end, with the command that
 adds it later. When it finishes it prints the cockpit URL, and from there you
 start, stop, switch, watch and benchmark without a terminal.
