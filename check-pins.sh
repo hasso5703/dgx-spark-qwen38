@@ -20,7 +20,24 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILTER="${1:-}"
 FAIL=0
+FAILED=0
+UNASKED=0
 CHECKED=0
+
+# A failure is one of two kinds. A pin asked about and answered "gone" (a 404, a digest that
+# changed) is dead. A pin that could not be asked about (no answer, a 5xx, a rate limit, no
+# registry token) is not resolved either, and says nothing about the pin: the scheduled run of
+# 2026-10-01 filed issue #33 on three 504s of the GitHub API, and every pin resolved after.
+failed() { FAIL=1; FAILED=$((FAILED + 1)); }
+unasked() { failed; UNASKED=$((UNASKED + 1)); }
+no_answer() {  # $1 http code ("000": none), [$2 x-ratelimit-remaining]: 0 when it is no answer
+  case "$1" in
+    000|""|429|5[0-9][0-9]) return 0 ;;
+    403) [ "${2:-}" = 0 ] && return 0 ;;          # GitHub's rate limit, a 403 that says so
+  esac
+  return 1
+}
+said() { [ "${1:-000}" = 000 ] && echo "no answer" || echo "HTTP $1"; }
 
 pins="$(grep -E '^(STOCK|UNC|FP8|UNCFP8|FLASH|FLASH_NVDA|FLASH_UNC|DRAFT|DRAFT2)_(REPO|REV)=' "$REPO_DIR/install.sh")"
 eval "$pins"
@@ -61,9 +78,13 @@ check_model() {  # $1 label, $2 repo, $3 revision, [$4 a file at its root, defau
       else
         printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (gated: a fresh install needs an HF_TOKEN that accepted its terms)\n' "$1" "$2" "${3:0:12}"
       fi
-      FAIL=1 ;;
-    40[13]:*) printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s: the repo is gone or private)\n' "$1" "$2" "${3:0:12}" "$code"; FAIL=1 ;;
-    *) printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s)\n' "$1" "$2" "${3:0:12}" "${code:-none}"; FAIL=1 ;;
+      failed ;;
+    40[13]:*) printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s: the repo is gone or private)\n' "$1" "$2" "${3:0:12}" "$code"; failed ;;
+    *) if no_answer "$code"; then
+         printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (%s from Hugging Face, so not checked)\n' "$1" "$2" "${3:0:12}" "$(said "$code")"; unasked
+       else
+         printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s)\n' "$1" "$2" "${3:0:12}" "$code"; failed
+       fi ;;
   esac
 }
 
@@ -78,7 +99,7 @@ check_image() {  # $1 label, $2 image reference (name@sha256:... or name:tag)
   if [ -z "$token" ]; then
     # not asked is not resolved: an offline run must not end in "all resolve"
     printf '  \033[0;31mFAIL\033[0m  %-14s %s (no registry token, so not checked: offline?)\n' "$1" "$2"
-    FAIL=1
+    unasked
     return 0
   fi
   code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' -H "Authorization: Bearer $token" \
@@ -89,18 +110,27 @@ check_image() {  # $1 label, $2 image reference (name@sha256:... or name:tag)
     "https://registry-1.docker.io/v2/${repo}/manifests/${ref}")"
   case "$code" in
     200) printf '  \033[0;32mok\033[0m    %-14s %s\n' "$1" "$2" ;;
-    *) printf '  \033[0;31mFAIL\033[0m  %-14s %s (HTTP %s)\n' "$1" "$2" "$code"; FAIL=1 ;;
+    *) if no_answer "$code"; then
+         printf '  \033[0;31mFAIL\033[0m  %-14s %s (%s from the registry, so not checked)\n' "$1" "$2" "$(said "$code")"; unasked
+       else
+         printf '  \033[0;31mFAIL\033[0m  %-14s %s (HTTP %s)\n' "$1" "$2" "$code"; failed
+       fi ;;
   esac
 }
 
 check_commit() {  # $1 label, $2 owner/repo on GitHub, $3 commit: install-image.sh fetches it by id
   case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
   CHECKED=$((CHECKED + 1))
-  local code
-  code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "https://api.github.com/repos/$2/commits/$3")"
+  local code left
+  read -r code left <<<"$(curl -s -o /dev/null -m 25 -w '%{http_code} %header{x-ratelimit-remaining}' \
+    "https://api.github.com/repos/$2/commits/$3")"
   case "$code" in
     200) printf '  \033[0;32mok\033[0m    %-14s %s @ %s\n' "$1" "$2" "${3:0:12}" ;;
-    *) printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s from the GitHub API)\n' "$1" "$2" "${3:0:12}" "${code:-none}"; FAIL=1 ;;
+    *) if no_answer "$code" "$left"; then
+         printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (%s from the GitHub API, so not checked)\n' "$1" "$2" "${3:0:12}" "$(said "$code")"; unasked
+       else
+         printf '  \033[0;31mFAIL\033[0m  %-14s %s @ %s (HTTP %s from the GitHub API: no such commit)\n' "$1" "$2" "${3:0:12}" "$code"; failed
+       fi ;;
   esac
 }
 
@@ -113,7 +143,7 @@ import json, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
-    print("no answer from PyPI"); sys.exit()
+    print("no answer from PyPI, so not checked"); sys.exit()
 if (d.get("info") or {}).get("version") != sys.argv[1]:
     print("not on PyPI")
 elif not [u for u in d.get("urls") or [] if not u.get("yanked")]:
@@ -122,27 +152,39 @@ elif not [u for u in d.get("urls") or [] if not u.get("yanked")]:
   if [ -z "$why" ]; then
     printf '  \033[0;32mok\033[0m    %-14s %s==%s\n' "$1" "$2" "$3"
   else
-    printf '  \033[0;31mFAIL\033[0m  %-14s %s==%s (%s)\n' "$1" "$2" "$3" "$why"; FAIL=1
+    printf '  \033[0;31mFAIL\033[0m  %-14s %s==%s (%s)\n' "$1" "$2" "$3" "$why"
+    case "$why" in *"so not checked"*) unasked ;; *) failed ;; esac
   fi
 }
 
 check_asset() {  # $1 label, $2 owner/repo, $3 release tag, $4 asset, $5 its sha256: GitHub's digest must match
   case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
   CHECKED=$((CHECKED + 1))
-  local digest
-  digest="$(curl -s -m 25 "https://api.github.com/repos/$2/releases/tags/$3" | python3 -c '
+  local answer status code left digest
+  # The body alone said "no such release", "no such asset" and "no answer" the same way, and
+  # issue #33 read a 504 as a release gone: the code and the rate-limit header come after it.
+  answer="$(curl -s -m 25 -w '\n%{http_code} %header{x-ratelimit-remaining}' "https://api.github.com/repos/$2/releases/tags/$3")"
+  status="${answer##*$'\n'}"
+  read -r code left <<<"$status"
+  digest="$(printf '%s' "${answer%$'\n'*}" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
-    sys.exit()
-print(next((a.get("digest") or "none" for a in d.get("assets") or [] if a.get("name") == sys.argv[1]), ""))
+    print("not json"); sys.exit()
+print(next((a.get("digest") or "none" for a in d.get("assets") or [] if a.get("name") == sys.argv[1]), "absent"))
 ' "$4")"
-  case "$digest" in
-    "sha256:$5") printf '  \033[0;32mok\033[0m    %-14s %s %s %s\n' "$1" "$2" "$3" "$4" ;;
-    "") printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (no such release or asset, or no answer)\n' "$1" "$2" "$3" "$4"; FAIL=1 ;;
-    none) printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (GitHub publishes no digest for it: not checked)\n' "$1" "$2" "$3" "$4"; FAIL=1 ;;
-    *) printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (its digest is now %s: installs refuse it)\n' "$1" "$2" "$3" "$4" "$digest"; FAIL=1 ;;
+  if [ "$code" != 200 ] && no_answer "$code" "$left"; then
+    printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (%s from the GitHub API, so not checked)\n' "$1" "$2" "$3" "$4" "$(said "$code")"; unasked
+    return 0
+  fi
+  case "$code:$digest" in
+    "200:sha256:$5") printf '  \033[0;32mok\033[0m    %-14s %s %s %s\n' "$1" "$2" "$3" "$4" ;;
+    200:absent) printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (the release has no such asset)\n' "$1" "$2" "$3" "$4"; failed ;;
+    200:none) printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (GitHub publishes no digest for it: not checked)\n' "$1" "$2" "$3" "$4"; failed ;;
+    "200:not json") printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (the GitHub API answered something that is not JSON, so not checked)\n' "$1" "$2" "$3" "$4"; unasked ;;
+    200:*) printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (its digest is now %s: installs refuse it)\n' "$1" "$2" "$3" "$4" "$digest"; failed ;;
+    *) printf '  \033[0;31mFAIL\033[0m  %-14s %s %s %s (HTTP %s from the GitHub API: no such release)\n' "$1" "$2" "$3" "$4" "$code"; failed ;;
   esac
 }
 
@@ -176,6 +218,9 @@ check_image flash-base     "$FLASH_IMAGE"
 echo
 if [ "$FAIL" -eq 0 ]; then
   printf '\033[0;32m%s pins checked, all resolve.\033[0m\n' "$CHECKED"
+elif [ "$UNASKED" -eq "$FAILED" ]; then
+  printf '\033[0;31m%s of %s pins could not be asked about.\033[0m That says nothing about the pins\n' "$UNASKED" "$CHECKED"
+  printf '(no answer, or an error on the other side): run it again before re-pinning anything.\n'
 else
   printf '\033[0;31mSome pins do not resolve.\033[0m A removed upstream revision is not fixable\n'
   printf 'from here: open an issue, and in the meantime MODEL_REV=main ./install.sh serves\n'

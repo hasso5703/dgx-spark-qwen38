@@ -24,11 +24,12 @@ SCRIPT = REPO / "check-pins.sh"
 OC_SHA = re.search(r'^OPENCODE_SHA256="\$\{OPENCODE_SHA256:-([0-9a-f]{64})\}"', (REPO / "install.sh").read_text(), re.M).group(1)
 
 # Answers the way huggingface.co, Docker Hub, GitHub and PyPI do. The scenario (JSON in
-# FAKE_PINS) maps a URL substring to [http code, x-error-code] for the requests that read a
-# code, "no-registry-token" empties the token endpoint's answer, and "bodies" maps a URL
-# substring to the body a JSON request gets (by default: the PyPI release asked for, not
-# yanked; the opencode release with the digest in FAKE_OC_SHA). Every call is logged with
-# its argv and whatever came in on stdin for -K -.
+# FAKE_PINS) maps a URL substring to [http code, x-error-code, x-ratelimit-remaining] (the
+# last one optional; "000" is curl's code for no answer), "no-registry-token" empties the
+# token endpoint's answer, and "bodies" maps a URL substring to the body the request gets (by
+# default: the PyPI release asked for, not yanked; the opencode release with the digest in
+# FAKE_OC_SHA). Like curl, it writes the body unless -o sends it elsewhere, then what -w asks
+# for. Every call is logged with its argv and whatever came in on stdin for -K -.
 FAKE_CURL = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -44,22 +45,23 @@ if url.startswith("https://auth.docker.io/"):
     if not scen.get("no-registry-token"):
         sys.stdout.write('{"token":"regtoken","expires_in":300}')
     sys.exit(0)
-code, err = 200, ""
+code, err, left = 200, "", "59"
 for part, answer in scen.items():
     if part not in ("no-registry-token", "bodies") and part in url:
-        code, err = answer
-if fmt is not None:
-    sys.stdout.write(fmt.replace("%{http_code}", str(code)).replace("%header{x-error-code}", err))
-    sys.exit(0)
-for part, body in (scen.get("bodies") or {}).items():
-    if part in url:
-        sys.stdout.write(body); sys.exit(0)
-if url.startswith("https://pypi.org/pypi/"):
+        code, err = answer[0], answer[1]
+        left = answer[2] if len(answer) > 2 else left
+body = next((b for part, b in (scen.get("bodies") or {}).items() if part in url), None)
+if body is None and url.startswith("https://pypi.org/pypi/"):
     version = url.rstrip("/").split("/")[-2]
-    sys.stdout.write(json.dumps({"info": {"version": version}, "urls": [{"yanked": False}]}))
-elif "/releases/tags/" in url:
-    sys.stdout.write(json.dumps({"assets": [{"name": "opencode-linux-arm64.tar.gz",
-                                              "digest": "sha256:" + os.environ.get("FAKE_OC_SHA", "")}]}))
+    body = json.dumps({"info": {"version": version}, "urls": [{"yanked": False}]})
+elif body is None and "/releases/tags/" in url:
+    body = json.dumps({"assets": [{"name": "opencode-linux-arm64.tar.gz",
+                                   "digest": "sha256:" + os.environ.get("FAKE_OC_SHA", "")}]})
+if "-o" not in args:
+    sys.stdout.write(body or "")
+if fmt is not None:
+    sys.stdout.write(fmt.replace("\\n", "\n").replace("%{http_code}", str(code)).replace("%header{x-error-code}", err)
+                     .replace("%header{x-ratelimit-remaining}", str(left)))
 '''
 
 
@@ -178,8 +180,118 @@ class ThePinsOutsideThePinBlock(PinsBase):
         self.assertIn("installs refuse it", self.line(out, "opencode"))
 
     def test_an_opencode_release_that_is_gone_fails(self):
-        rc, out = self.run_pins({"bodies": {"/releases/tags/": '{"message": "Not Found"}'}})
-        self.assertIn("no such release or asset", self.line(out, "opencode"), out)
+        rc, out = self.run_pins({"/releases/tags/": [404, ""], "bodies": {"/releases/tags/": '{"message": "Not Found"}'}})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("HTTP 404 from the GitHub API: no such release", self.line(out, "opencode"), out)
+        self.assertIn("A removed upstream revision", out)
+
+    def test_an_opencode_release_without_its_asset_fails(self):
+        rc, out = self.run_pins({"bodies": {"/releases/tags/": '{"assets": [{"name": "opencode-darwin-arm64.zip"}]}'}})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the release has no such asset", self.line(out, "opencode"), out)
+
+
+class TheEndpointsThatDoNotAnswer(PinsBase):
+    """Issue #33: the scheduled run of 2026-10-01 13:08 got 504s from the GitHub API for the
+    two source commits and the opencode release, said the release was "no such release or
+    asset, or no answer", and filed an issue; every pin resolved on the next run. A pin that
+    could not be asked about is still not resolved (exit 1), and is said to be that."""
+
+    def line(self, out, label):
+        return next(ln for ln in out.splitlines() if f" {label} " in ln)
+
+    GITHUB = ("sglang-source", "sglang-source-video", "opencode")
+
+    def test_a_github_api_that_answers_504_is_not_a_dead_pin(self):
+        rc, out = self.run_pins({"api.github.com": [504, ""], "bodies": {"api.github.com": "<html>504 Gateway Time-out</html>"}})
+        self.assertEqual(rc, 1, out)
+        for label in self.GITHUB:
+            self.assertIn("HTTP 504 from the GitHub API, so not checked", self.line(out, label), out)
+            self.assertNotIn("no such", self.line(out, label), out)
+        self.assertIn("3 of 18 pins could not be asked about", out)
+        self.assertIn("run it again before re-pinning anything", out)
+        self.assertNotIn("A removed upstream revision", out)
+
+    def test_no_answer_at_all_is_said_so(self):
+        rc, out = self.run_pins({"api.github.com": ["000", ""]})
+        self.assertEqual(rc, 1, out)
+        for label in self.GITHUB:
+            self.assertIn("no answer from the GitHub API, so not checked", self.line(out, label), out)
+
+    def test_a_rate_limit_is_no_answer_and_a_plain_403_is_one(self):
+        rc, out = self.run_pins({"api.github.com/repos/sgl-project": [403, "", "0"]})
+        self.assertIn("HTTP 403 from the GitHub API, so not checked", self.line(out, "sglang-source"), out)
+        rc, out = self.run_pins({"api.github.com/repos/sgl-project": [403, "", "41"]})
+        self.assertIn("HTTP 403 from the GitHub API: no such commit", self.line(out, "sglang-source"), out)
+        self.assertIn("A removed upstream revision", out)
+
+    def test_hugging_face_pypi_and_the_registry_out_of_reach_are_not_asked_either(self):
+        for scen, label, said in (({"huggingface.co/RadixArk/Qwen3.8-27B-NVFP4/": [503, ""]}, "stock", "HTTP 503 from Hugging Face, so not checked"),
+                                  ({"huggingface.co/RadixArk/Qwen3.8-27B-NVFP4/": ["000", ""]}, "stock", "no answer from Hugging Face, so not checked"),
+                                  ({"bodies": {"pypi.org": "upstream connect error"}}, "sglang-wheel", "no answer from PyPI, so not checked"),
+                                  ({"registry-1.docker.io/v2/lmsysorg/sglang/manifests/sha256:d6e7": [502, ""]}, "27b-base", "HTTP 502 from the registry, so not checked")):
+            with self.subTest(label=label, said=said):
+                rc, out = self.run_pins(scen)
+                self.assertEqual(rc, 1, out)
+                self.assertIn(said, self.line(out, label), out)
+                self.assertIn("could not be asked about", out)
+
+    def test_one_dead_pin_among_unanswered_ones_is_still_called_dead(self):
+        rc, out = self.run_pins({"api.github.com": [504, ""], "RadixArk/Qwen3.8-27B-NVFP4/": [404, "EntryNotFound"]})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Some pins do not resolve.", out)
+        self.assertNotIn("could not be asked about", out)
+
+
+class ThePinWatch(unittest.TestCase):
+    """.github/workflows/pin-watch.yml asks a second time, ten minutes later, before it files
+    an issue: issue #33 was filed on one answer of an API having a bad minute. Its step runs
+    here as written, with a check-pins.sh that fails the first N times and a sleep that only
+    records what it was asked."""
+
+    def step(self, fails):
+        import textwrap
+        wf = (REPO / ".github/workflows/pin-watch.yml").read_text()
+        block = wf.split("- id: pins", 1)[1].split("run: |", 1)[1]
+        lines = []
+        for ln in block.splitlines()[1:]:
+            if ln.strip() and not ln.startswith(" " * 10):
+                break
+            lines.append(ln)
+        script = textwrap.dedent("\n".join(lines))
+        t = pathlib.Path(tempfile.mkdtemp(prefix="pin-watch-"))
+        self.addCleanup(shutil.rmtree, t, ignore_errors=True)
+        (t / "bin").mkdir()
+        (t / "bin/sleep").write_text('#!/bin/sh\necho "$1" >> "$SLEPT"\n')
+        (t / "bin/sleep").chmod(0o755)
+        (t / "check-pins.sh").write_text(
+            "#!/bin/bash\nn=$(cat count 2>/dev/null || echo 0); echo $((n + 1)) > count\n"
+            f'if [ "$n" -lt {fails} ]; then echo "  FAIL  opencode (HTTP 504 from the GitHub API, so not checked)"; exit 1; fi\n'
+            'echo "18 pins checked, all resolve."\n')
+        (t / "check-pins.sh").chmod(0o755)
+        env = dict(os.environ, PATH=f"{t / 'bin'}:{os.environ['PATH']}", GITHUB_OUTPUT=str(t / "out"),
+                   SLEPT=str(t / "slept"))
+        r = subprocess.run(["bash", "-e", "-c", script], cwd=t, env=env, capture_output=True, text=True, timeout=60)
+        out = (t / "out").read_text() if (t / "out").exists() else ""
+        slept = (t / "slept").read_text().split() if (t / "slept").exists() else []
+        return r, out, slept, (t / "count").read_text().strip()
+
+    def test_a_pin_that_passes_on_the_second_ask_files_nothing(self):
+        r, out, slept, asked = self.step(fails=1)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(out.strip(), "rc=0")
+        self.assertEqual((slept, asked), (["600"], "2"))
+
+    def test_a_pin_that_fails_twice_is_reported(self):
+        r, out, slept, asked = self.step(fails=2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(out.strip(), "rc=1")
+        self.assertEqual((slept, asked), (["600"], "2"))
+
+    def test_a_run_that_passes_asks_once(self):
+        r, out, slept, asked = self.step(fails=0)
+        self.assertEqual(out.strip(), "rc=0")
+        self.assertEqual((slept, asked), ([], "1"))
 
 
 if __name__ == "__main__":

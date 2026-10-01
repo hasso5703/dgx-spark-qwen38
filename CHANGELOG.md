@@ -82,6 +82,16 @@ chain, which is the version boundary we see, not a proof. Update a driver throug
 Dashboard's OTA: an `apt upgrade` alone has left GPUs unusable (driver and GSP firmware not
 paired).
 
+**The daily pin watch no longer files an issue on an endpoint having a bad minute**
+([issue #33](https://github.com/hasso5703/dgx-spark-qwen38/issues/33)). Its run of
+2026-10-01 13:08 got 504s from the GitHub API for the two SGLang source commits and the
+opencode release, and called the release "no such release or asset, or no answer"; every pin
+resolved when checked again, the opencode asset with its pinned digest. `check-pins.sh` now
+tells a dead pin (an answer that says gone: a 404, a digest that changed) from one it could not
+ask about (no answer, a 5xx, GitHub's rate limit, no registry token), says which on each line,
+and when that is all it saw, ends with "N of M pins could not be asked about ... run it again";
+both still exit 1. The watch asks a second time, ten minutes later, before it files an issue.
+
 An update restarts the proxy once (v6.28) and the serving engine once, its unit having
 changed; from then on every engine start goes through the guard.
 

@@ -20,7 +20,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +31,16 @@ jobs:
           rc=0
           ./check-pins.sh | sed -r 's/\x1b\[[0-9;]*m//g' > /tmp/pins.txt || rc=$?
           cat /tmp/pins.txt
+          if [ "$rc" != 0 ]; then
+            # An endpoint having a bad minute is no dead pin: the run of 2026-10-01 13:08 got
+            # three 504s from the GitHub API and filed issue #33 for pins that all resolved
+            # after. A pin that still fails ten minutes later is the one worth an issue.
+            echo "a pin did not resolve; asking again in 10 minutes"
+            sleep 600
+            rc=0
+            ./check-pins.sh | sed -r 's/\x1b\[[0-9;]*m//g' > /tmp/pins.txt || rc=$?
+            cat /tmp/pins.txt
+          fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
 
       - if: steps.pins.outputs.rc != '0'
@@ -49,9 +59,10 @@ jobs:
           {
             echo '### A pin no longer resolves upstream'
             echo
-            echo './check-pins.sh failed on the scheduled run. A dead pin is'
-            echo 'a time bomb: machines that already hold the bytes keep'
-            echo 'serving, fresh installs fail. Full output below.'
+            echo './check-pins.sh failed on the scheduled run, twice, ten'
+            echo 'minutes apart. A dead pin is a time bomb: machines that'
+            echo 'already hold the bytes keep serving, fresh installs fail.'
+            echo 'The second output below.'
             echo
             echo '```'
             cat /tmp/pins.txt
