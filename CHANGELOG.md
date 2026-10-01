@@ -61,7 +61,10 @@ Agent view, in 7 min 51 s; prepared the three other lanes in 4 min 24 s; and pro
 44 min 23 s: the flash lane answered after 11 min 4 s of boot, the image lane after 80 s, the
 video lane after 12 min 10 s and then made its 4 s video, and the 27B came back in 6 min 56 s.
 56 min 38 s in all. The run after it took 45 s, proved nothing, changed no file and restarted
-no service, and the phone check passed 236 of 236.
+no service, and the phone check passed 236 of 236. A v1.19.0 box with the 27B lane alone,
+updated with the one-liner, kept the 27B serving while it brought the three other lanes in,
+proved them (11 min 4 s, 80 s, 11 min 30 s and a video), and had the 27B back in 7 min 4 s:
+49 min 17 s in all, and the same 44-second run after it that changed nothing.
 
 Tests: `tests/test_install_every_lane.py` runs each piece as written, against stubs and a
 copy of the script that ends before step 1: the markers, the flags, the other lane's run
