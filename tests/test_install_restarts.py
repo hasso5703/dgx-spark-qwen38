@@ -88,6 +88,46 @@ class EachRestartHasAReason(unittest.TestCase):
             self.assertIn("stale_since", guard, name)
 
 
+class TheCockpitFollowsTheReleaseItNames(unittest.TestCase):
+    """The cockpit reads the release it names (CHANGELOG.md's first heading) at start, and
+    install-dashboard.sh restarted it only for its python or its unit: a box updated to
+    v1.20.0, whose update touched only the page's static files and the CHANGELOG, kept
+    naming v1.19.0 (2026-10-01). The guard, run as written against a fake systemctl."""
+    TEXT = SCRIPTS["dashboard/install-dashboard.sh"]
+    FUNC = TEXT[TEXT.index("stale_since(){"):TEXT.index("\n}\n", TEXT.index("stale_since(){")) + 3]
+    GUARD = TEXT[TEXT.index('if [ "$DASH_CHANGED" -eq 1 ] || stale_since'):]
+    GUARD = GUARD[:GUARD.index("\nfi\n") + 4]
+
+    def restarted(self, changelog_after_start):
+        t = pathlib.Path(tempfile.mkdtemp(prefix="dash-release-"))
+        here, repo, bin_ = t / "dashboard", t, t / "bin"
+        here.mkdir(); bin_.mkdir()
+        start = 1_800_000_000
+        for f in (here / "cockpit.py", repo / "oc-fit-limits.py", repo / "CHANGELOG.md"):
+            f.write_text("x\n")
+            os.utime(f, (start - 100, start - 100))
+        if changelog_after_start:
+            os.utime(repo / "CHANGELOG.md", (start + 100, start + 100))
+        log = t / "calls"
+        (bin_ / "systemctl").write_text(
+            f'#!/bin/sh\ncase "$*" in *ActiveState*) echo active ;; *ExecMainStartTimestamp*) echo @{start} ;; esac\n')
+        (bin_ / "sudo").write_text(f'#!/bin/sh\necho "$*" >> "{log}"\n')
+        for f in ("systemctl", "sudo"):
+            (bin_ / f).chmod(0o755)
+        script = (f'set -euo pipefail\nUNIT=qwen38-dashboard.service; DASH_CHANGED=0\n'
+                  f'HERE="{here}"; REPO_DIR="{repo}"\n' + self.FUNC + "\n" + self.GUARD)
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
+                           env={"PATH": f"{bin_}:/usr/bin:/bin"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return log.exists() and "try-restart qwen38-dashboard.service" in log.read_text()
+
+    def test_a_new_release_restarts_it(self):
+        self.assertTrue(self.restarted(changelog_after_start=True))
+
+    def test_the_same_release_does_not(self):
+        self.assertFalse(self.restarted(changelog_after_start=False))
+
+
 class TheGeneratedConfigKeepsItsFit(unittest.TestCase):
     """The generator of ~/.config/qwen38/opencode.json, run twice in one config dir with the
     environment install.sh gives it: once as a fresh install, then again after the

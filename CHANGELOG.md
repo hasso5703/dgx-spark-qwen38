@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.20.1 (2026-10-01): the cockpit names the release it runs, after an update too
+
+The cockpit reads the release it names, the first heading of CHANGELOG.md, when it starts,
+and an update restarted it only when its Python or its unit changed. v1.20.0 changed
+neither (the page's scripts and the notes), so a box updated to v1.20.0 kept a cockpit that
+said v1.19.0, in its badge, its Server header and the User-Agent of its release check, until
+something else restarted it (seen on the reference box, 2026-10-01). `install-dashboard.sh`
+now counts CHANGELOG.md among what the cockpit read at start: an update that brings a new
+release restarts it once, and a run that brings nothing still restarts nothing. The page's
+own files were never the problem: they are served with `no-cache`, so an open page takes
+them at its next load. A test runs the guard as written; it fails on v1.20.0.
+
 ## v1.20.0 (2026-10-01): every lane on every box, by default
 
 **The one-liner installs everything.** A plain install, first install or update, puts every

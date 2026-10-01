@@ -104,7 +104,10 @@ sudo systemctl enable --now "$UNIT"
 # otherwise: a restart drops every open page and the Agent tab's connection, and
 # a run that changed nothing did it twice, install.sh then install-agent.sh (36
 # cockpit starts on the reference box on 2026-09-23; found in review, 2026-09-24).
-if [ "$DASH_CHANGED" -eq 1 ] || stale_since "$UNIT" "$HERE"/*.py "$REPO_DIR/oc-fit-limits.py"; then
+# CHANGELOG.md is read at start too: the release the page names is its first heading,
+# and an update that changed only the page's static files and that file left the
+# cockpit naming the release before (v1.19.0 on a box updated to v1.20.0, 2026-10-01).
+if [ "$DASH_CHANGED" -eq 1 ] || stale_since "$UNIT" "$HERE"/*.py "$REPO_DIR/oc-fit-limits.py" "$REPO_DIR/CHANGELOG.md"; then
   sudo systemctl try-restart "$UNIT"
 fi
 for _ in $(seq 1 15); do
