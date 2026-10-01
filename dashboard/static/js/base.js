@@ -114,13 +114,12 @@ const TARGET_NOTE = {
   'flash-nvda': 'NVIDIA’s own mixed-precision export of the same model, served with a pinned MoE runner. The first switch downloads about 124 GB.',
   image: 'Text to image, editing with up to ten references, native RGBA. 31 GB of weights that do not fit beside a text lane.',
   video: 'Text to video with joint audio, plus first and last frame conditioning. The checkpoint does not fit beside a text lane.'};
-// What installs a lane this box does not have. A text lane is named by its target: a bare
-// ./install.sh re-runs the lane the box already serves, so on a flash-only box it never
-// brought the 27B one.
-const LANE_INSTALL = {[U27]: 'MODEL_CHOICE=stock ./install.sh', [UFLASH]: 'MODEL_CHOICE=flash ./install.sh', [IMAGE_UNIT]: './install.sh --with-image',
+// What installs a lane this box does not have. Since v1.20 a plain ./install.sh installs
+// every lane, so one missing here was left out (--no-<lane>) or did not fit: --with-<lane>
+// brings it back beside the lane that serves, which keeps serving. A text lane comes with
+// its default target; the others download when they are loaded.
+const LANE_INSTALL = {[U27]: './install.sh --with-27b', [UFLASH]: './install.sh --with-flash', [IMAGE_UNIT]: './install.sh --with-image',
                       [VIDEO_UNIT]: './install.sh --with-video'};
-const installFor = (unit, target) => LANE_TARGETS[unit].length > 1 && LANE_TARGETS[unit].includes(target)
-  ? `MODEL_CHOICE=${target} ./install.sh` : LANE_INSTALL[unit];
 
 // ── the facts every view shares (each guarded against missing data) ──────────
 const F = {life: null, units: {}, config: {}, job: null, load: {}, pool: null, window: 262144, ceiling: 0, usable: 0.92,

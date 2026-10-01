@@ -74,6 +74,8 @@ function renderLanes(){
     if (c.touched && served && served === c.tsel.value && (engines()[unit] || {}).state === 'ready') c.touched = false;
     if (!c.touched && served && c.tsel.value !== served) c.tsel.value = served;
     const target = c.tsel.value || LANE_TARGETS[unit][0];
+    // a lane that is not here has no checkpoint to pick: it installs with its default one
+    c.tsel.hidden = !has;
     const on = !!e && (!UNIT_DOWN.has(st) || !!e.restarting);
     const sameTarget = !laneTarget(unit) || laneTarget(unit) === target;
     // the verbs that make sense now
@@ -113,7 +115,7 @@ function renderLanes(){
       ['At boot', has ? (en === 'enabled' ? 'starts' : 'manual start') : null],
       ['Boot takes', has ? readyIn(unit) : null],
       ['Up for', seated && e && e.elapsed && (st === 'ready' || st === 'degraded') ? fmtDur(e.elapsed) : null],
-      ['Install', !has ? installFor(unit, target) : null, 'code']]);
+      ['Install', !has ? LANE_INSTALL[unit] : null, 'code']]);
     c.root.classList.toggle('seated-card', seated);
     c.root.style.borderColor = seated && (st === 'ready' || st === 'degraded') ? 'color-mix(in srgb, var(--gold) 45%, transparent)' : '';
     if (e) bootChart(c.hist, e, unit); else clear(c.hist);

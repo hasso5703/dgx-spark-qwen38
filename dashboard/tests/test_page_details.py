@@ -216,28 +216,28 @@ class ANewLaneIsNotNamedAfterTheOldCheckpoint(unittest.TestCase):
 
 class ALaneThatIsNotHereSaysWhatInstallsIt(unittest.TestCase):
     """The 27B card of a flash-only box said "./install.sh", which re-runs the lane the box
-    serves and never brings the 27B one; and the flash card of a 27B box offered its three
-    targets, whose choice changed nothing in the command beside it (a box installed from
-    nothing, 2026-09-30)."""
+    serves and never brings the 27B one, and a missing lane's card offered targets whose
+    choice changed nothing (a box installed from nothing, 2026-09-30). Since v1.20 a plain
+    install installs every lane, so a missing one was left out or did not fit, and
+    --with-<lane> brings it back beside the lane that serves."""
 
-    def test_the_command_names_the_target_picked(self):
+    def test_the_command_brings_the_lane_back_beside_the_served_one(self):
         r = run(self, r"""
         const units = {units: Object.assign({}, UNITS.units, {
           'qwen38-sglang.service': {active: 'inactive', enabled: ''},
           'qwen38-flash.service': {active: 'active', enabled: 'enabled'}})};
         feed(Object.assign({}, units, {lifecycle: life({'qwen38-flash.service': eng('ready', {target: 'flash'})})}));
         const c27 = LCARDS.get('qwen38-sglang.service');
-        const first = c27.right.textContent;
-        c27.tsel.value = 'uncensored-fp8'; c27.tsel.dispatchEvent({type: 'change'});
-        const picked = c27.right.textContent;
-        const cimg = LCARDS.get('qwen38-image.service').right.textContent;
-        report({first, picked, cimg, served: LCARDS.get('qwen38-flash.service').right.textContent});
+        report({c27: c27.right.textContent, picker: c27.tsel.hidden,
+                cimg: LCARDS.get('qwen38-image.service').right.textContent,
+                served: LCARDS.get('qwen38-flash.service').right.textContent,
+                servedPicker: LCARDS.get('qwen38-flash.service').tsel.hidden});
         """)
-        self.assertIn("MODEL_CHOICE=stock ./install.sh", r["first"])
-        self.assertNotIn("Install./install.sh", r["first"].replace(" ", ""))
-        self.assertIn("MODEL_CHOICE=uncensored-fp8 ./install.sh", r["picked"])
+        self.assertIn("./install.sh --with-27b", r["c27"])
+        self.assertTrue(r["picker"], "no checkpoint to pick on a lane that is not here")
         self.assertIn("./install.sh --with-image", r["cimg"])
         self.assertNotIn("./install.sh", r["served"], "an installed lane shows no install command")
+        self.assertFalse(r["servedPicker"])
 
 
 class DurationsNeverReadSixtySeconds(unittest.TestCase):
