@@ -277,6 +277,20 @@ try {
   const rb = await aim('#railbtn');
   if (rb) { await clickXY(rb.x, rb.y); await sleep(250); }
   ok(`${DESKTOP.name}: the collapse button collapses the rail`, await evalJs("document.body.classList.contains('railmin')"));
+  // Collapsed, the footer is a box the width of an icon: its button showed the word "Expand"
+  // spilling past the box and the rail's edge, off centre (seen on the reference box,
+  // 2026-10-01). Everything visible in it stays inside, and the button's content is centred.
+  const foot = await evalJs(`(() => { const f = document.querySelector('.rail .foot').getBoundingClientRect();
+    const shown = [...document.querySelectorAll('.rail .foot *')].map(e => ({e, r: e.getBoundingClientRect(), cs: getComputedStyle(e)}))
+      .filter(({r, cs}) => r.width > 1 && r.height > 1 && cs.visibility !== 'hidden' && cs.display !== 'none');
+    const out = shown.filter(({r}) => r.left < f.left - 0.5 || r.right > f.right + 0.5).map(({e}) => e.tagName + (e.textContent ? ':' + e.textContent.trim() : ''));
+    const inner = shown.filter(({e}) => e.parentElement && e.parentElement.id === 'railbtn').map(({r}) => r);
+    const l = Math.min(...inner.map(r => r.left)), r = Math.max(...inner.map(r => r.right));
+    return JSON.stringify({ out, off: Math.round(Math.abs((l + r) / 2 - (f.left + f.right) / 2) * 10) / 10, footW: Math.round(f.width),
+      title: document.getElementById('railbtn').title }); })()`).then(JSON.parse);
+  ok(`${DESKTOP.name}: collapsed, nothing in the footer spills out of its box`, foot.out.length === 0, JSON.stringify(foot));
+  ok(`${DESKTOP.name}: collapsed, the expand button is centred in its box`, foot.off <= 1.5, JSON.stringify(foot));
+  ok(`${DESKTOP.name}: collapsed, the expand button still says what it does`, foot.title === 'Expand', JSON.stringify(foot));
   if (rb) { const r2 = await aim('#railbtn'); if (r2) await clickXY(r2.x, r2.y); await sleep(200); }
   await evalJs("(setRailMin(false), 1)");
 

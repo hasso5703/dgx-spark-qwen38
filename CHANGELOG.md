@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.20.5 (2026-10-01): the collapsed rail's button stays in its box
+
+With the rail collapsed, its footer is a box one icon wide, and the button in it still wrote
+the word "Expand", which ran past the box and the rail's edge, off centre (seen on the
+reference box). Collapsed, the button now shows its chevron alone, centred in the box; the
+word stays for screen readers, and the button's title says it to a mouse. The touch check
+measures it in a real Chromium: everything visible in the footer stays inside its box, the
+button's content is centred, and it has its title; those three checks fail on v1.20.4.
+
 ## v1.20.4 (2026-10-01): the cockpit counts a queued request once, and keeps it in flight while it waits
 
 Eight long prompts sent at once on the reference box (856,000 tokens for a 474,816-token

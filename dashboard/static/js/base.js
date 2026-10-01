@@ -304,7 +304,9 @@ function setRailOpen(open){
 }
 function setRailMin(min){
   document.body.classList.toggle('railmin', min);
-  const b = $('railbtn'); if (b){ b.setAttribute('aria-expanded', String(!min)); setText(b.querySelector('span'), min ? 'Expand' : 'Collapse'); }
+  const b = $('railbtn');
+  if (b){ b.setAttribute('aria-expanded', String(!min)); setText(b.querySelector('span'), min ? 'Expand' : 'Collapse');
+    if (min) b.title = 'Expand'; else b.removeAttribute('title'); }
   try { localStorage.setItem('cockpit.rail', min ? 'min' : 'open'); } catch { /* storage may be unavailable */ }
 }
 function badge(view, txt, kind){ const b = $('bdg-' + view); if (b){ setText(b, txt || ''); b.className = 'bdg' + (kind ? ' ' + kind : ''); } }

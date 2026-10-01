@@ -185,6 +185,11 @@ img,svg,video,canvas{display:block; max-width:100%}
   body.railmin .nav{justify-content:center; padding:10px 0}
   body.railmin .nav .bdg{position:absolute; top:2px; right:4px; min-width:0; padding:0 5px; font-size:10.5px}
   body.railmin .rail .collapse svg{transform:rotate(180deg)}
+  /* collapsed, the footer is an icon wide: the word went past it, so only the chevron shows,
+     centred, and the word stays for screen readers (the button's title says it to a mouse) */
+  body.railmin .rail .foot{align-items:center; padding:var(--s-2)}
+  body.railmin .rail .collapse{justify-content:center; align-self:stretch; position:relative}
+  body.railmin .rail .collapse span{position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap}
   body.railmin .shell{grid-template-columns:var(--rail-min) minmax(0,1fr)}
 }
 .stage{min-width:0; max-width:1560px; width:100%;
