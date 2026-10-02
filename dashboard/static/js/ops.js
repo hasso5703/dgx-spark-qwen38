@@ -2,11 +2,14 @@
 /* Traffic, Machine, Library, Logs and Settings: the views you open to look closer. */
 
 // ── Traffic ───────────────────────────────────────────────────────────────────
+// With no text engine the counters say so: they read '…', a value on its way, for as long as
+// the box served nothing (found by the monkey check, 2026-10-02; the page before the
+// redesign of 2026-09-30 said "no engine")
 on('engine_fast', d => {
   const none = !d.load, l = (d.load || [])[0] || {};
-  setText('tr-run', none ? '…' : String(runningReqs(l)));
-  setText('tr-wait', none ? '…' : String(waitingReqs(l)));
-  setText('tr-tok', none ? '…' : fmtN(physTokens(l)));
+  setText('tr-run', none ? 'none' : String(runningReqs(l)));
+  setText('tr-wait', none ? 'none' : String(waitingReqs(l)));
+  setText('tr-tok', none ? 'none' : fmtN(physTokens(l)));
   if (none){ SERIES.req = []; } else push('req', runningReqs(l));
   drawSpark($('tr-spark'), 'req', cssVar('--gold'), Math.max(4, F.maxRun || 4), {empty: none ? 'no text engine' : 'quiet so far'});
 });
@@ -18,7 +21,7 @@ afterApply(() => {
 });
 on('decode', d => {
   const t = d.decode, u = d.usage || {};
-  if (!d.lane){ setText('tr-acc', '…'); setText('tr-kv', '…'); return; }
+  if (!d.lane){ setText('tr-acc', 'none'); setText('tr-kv', 'none'); return; }
   setText('tr-acc', t ? t.accept_len.toFixed(2) : 'idle');
   setText('tr-kv', t ? (100 * t.token_usage).toFixed(1) + ' %' : u.tokens ? (100 * u.tokens).toFixed(0) + ' %' : 'idle');
 });
@@ -103,17 +106,23 @@ on('lifecycle', d => {
   setText('mm-guard', !g.enabled ? 'off (COCKPIT_POOL_GUARD=0)' : g.fails ? `cannot flush since ${clockTime(g.last_fail)}: ${g.last_err}`
     : g.flushes ? `${g.flushes} flush${g.flushes > 1 ? 'es' : ''}, last ${clockTime(g.last)}, above ${Math.round(g.threshold * 100)} % held` : `armed at ${Math.round(g.threshold * 100)} % held, never fired`);
 });
+// nvidia-smi silent: no reading, said as such. It read a green "…", a power line falling to
+// 0 W and "No process on the GPU" (found by the monkey check, 2026-10-02)
 on('gpu', d => {
+  const t = d.temp_c;
   setText('gpu-pow', d.power_w != null ? d.power_w.toFixed(1) + ' W' : 'n/a');
-  setText('gpu-temp', d.temp_c != null ? d.temp_c.toFixed(0) + ' °C' : 'n/a');
-  cap('gpu-cap', d.temp_c != null ? d.temp_c.toFixed(0) + ' °C' : '…', d.temp_c > 85 ? 'err' : d.temp_c > 75 ? 'warn' : 'ok');
-  push('pow', d.power_w || 0); drawSpark($('gpu-spark'), 'pow', cssVar('--ember'));
+  setText('gpu-temp', t != null ? t.toFixed(0) + ' °C' : 'n/a');
+  cap('gpu-cap', t != null ? t.toFixed(0) + ' °C' : 'n/a', t == null ? '' : t > 85 ? 'err' : t > 75 ? 'warn' : 'ok');
+  if (d.power_w != null) push('pow', d.power_w);
+  drawSpark($('gpu-spark'), 'pow', cssVar('--ember'), undefined, {empty: d.power_w == null ? 'no reading' : 'collecting…'});
   const tb = $('gpu-procs').tBodies[0]; clear(tb);
   (d.procs || []).slice(0, 6).forEach(p => { const tr = tb.insertRow(); tr.insertCell().textContent = p.name || '?';
     const a = tr.insertCell(); a.className = 'r num'; a.textContent = p.pid; const b = tr.insertCell(); b.className = 'r num'; b.textContent = p.mem; });
-  if (!tb.rows.length){ const tr = tb.insertRow(); tr.className = 'empty'; const c = tr.insertCell(); c.colSpan = 3; c.textContent = 'No process on the GPU.'; }
+  if (!tb.rows.length){ const tr = tb.insertRow(); tr.className = 'empty'; const c = tr.insertCell(); c.colSpan = 3;
+    c.textContent = Array.isArray(d.procs) ? 'No process on the GPU.' : 'No reading: nvidia-smi did not answer.'; }
 });
-on('kernel', d => { setText('dk-nvrm', d.nvrm_oom_1h ? `${d.nvrm_oom_1h}, the last at ${(d.nvrm_last || '').slice(11, 19)}` : 'none'); });
+on('kernel', d => { const n = d.nvrm_oom_1h;
+  setText('dk-nvrm', n == null ? 'n/a (the kernel log did not answer)' : n ? `${n}, the last at ${(d.nvrm_last || '').slice(11, 19)}` : 'none'); });
 
 // ── Library (on demand: each scan says what happened) ─────────────────────────
 function tag(t, kind){ return el('span', 'tag' + (kind ? ' ' + kind : ''), t); }

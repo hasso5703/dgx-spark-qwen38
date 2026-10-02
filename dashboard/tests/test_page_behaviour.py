@@ -865,5 +865,111 @@ class TheStartGuardAndALostSchedulerAreSaidAsTheyAre(unittest.TestCase):
         self.assertNotIn("scheduler", r["banner"])
 
 
+class AnEmptyStateIsSaidNotPending(unittest.TestCase):
+    """'…' is a value on its way. With no text engine serving, the Traffic counters read it
+    for good; with nvidia-smi silent, so did the GPU vitals, beside a temperature called
+    "cool", "0 processes" nobody had counted and "No process on the GPU" (found by the
+    monkey check, 2026-10-02)."""
+
+    def test_the_traffic_counters_say_there_is_no_engine(self):
+        r = run(self, r"""
+        feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-sglang.service': eng('stopped')}),
+              engine_fast: {load: null}, decode: {lane: null}});
+        report(['tr-run', 'tr-wait', 'tr-tok', 'tr-acc', 'tr-kv', 'tr-cap'].map(txt));
+        """)
+        self.assertEqual(r[:5], ["none"] * 5, r)
+        self.assertEqual(r[5], "no text engine", r)
+
+    def test_a_lane_whose_launch_file_names_no_checkpoint_says_unknown(self):
+        r = run(self, r"""
+        const cps = () => [...document.querySelectorAll('#view-lanes dt')].filter(d => d.textContent === 'Checkpoint')
+                                                                    .map(d => d.nextSibling.textContent);
+        feed({config: CONFIG, units: UNITS});
+        showView('lanes');
+        const before = cps();
+        feed({lifecycle: life({'qwen38-sglang.service': eng('stopped', {target: 'uncensored'}),
+                               'qwen38-flash.service': eng('ready', {target: 'flash', model: '/models/x/Qwen3.8-Flash-NVFP4'})})});
+        report({before, after: cps()});
+        """)
+        self.assertTrue(r["before"] and all(c == "…" for c in r["before"]), r)
+        self.assertIn("unknown", r["after"], r)
+        self.assertIn("Qwen3.8-Flash-NVFP4", r["after"], r)
+
+    def test_a_gpu_that_did_not_answer_reads_no_reading_and_nothing_made_up(self):
+        r = run(self, r"""
+        const v = id => [$(id).children[1].textContent, $(id).children[2].textContent];
+        const procs = () => $('gpu-procs').tBodies[0].textContent;
+        feed({config: CONFIG, units: UNITS, lifecycle: life({})});
+        const before = v('vt-gpu');
+        feed({gpu: {node_id: 'local', power_w: null, temp_c: null, procs: null},
+              kernel: {node_id: 'local', nvrm_oom_1h: null, nvrm_last: null}});
+        const silent = {gpu: v('vt-gpu'), temp: v('vt-temp'), nvrm: v('vt-nvrm'), procs: procs(),
+                        cap: txt('gpu-cap'), lamp: $('gpu-cap').className, dk: txt('dk-nvrm')};
+        feed({gpu: {node_id: 'local', power_w: 31.4, temp_c: 52, procs: []},
+              kernel: {node_id: 'local', nvrm_oom_1h: 0, nvrm_last: null}});
+        const read = {gpu: v('vt-gpu'), temp: v('vt-temp'), nvrm: v('vt-nvrm'), procs: procs(), cap: txt('gpu-cap')};
+        report({before, silent, read});
+        """)
+        self.assertEqual(r["before"][0], "…", "before the first answer the value is on its way")
+        self.assertEqual(r["silent"]["gpu"], ["n/a", ""], r)
+        self.assertEqual(r["silent"]["temp"], ["n/a", ""], r)
+        self.assertEqual(r["silent"]["nvrm"], ["n/a", ""], r)
+        self.assertEqual(r["silent"]["procs"], "No reading: nvidia-smi did not answer.", r)
+        self.assertEqual((r["silent"]["cap"], r["silent"]["lamp"]), ("n/a", "cap"), r)
+        self.assertTrue(r["silent"]["dk"].startswith("n/a"), r)
+        self.assertEqual(r["read"]["gpu"], ["31 W", "0 processes"], r)
+        self.assertEqual(r["read"]["temp"], ["52 °C", "cool"], r)
+        self.assertEqual(r["read"]["nvrm"], ["0", "none"], r)
+        self.assertEqual((r["read"]["procs"], r["read"]["cap"]), ("No process on the GPU.", "52 °C"), r)
+
+
+class TheBootLaneIsSaidOnlyWhenOneIs(unittest.TestCase):
+    """With no lane enabled at boot, the spine said "27B starts at boot" (the page's default
+    for which logs to open, said as a fact), and Load left out the step that makes the lane
+    the boot one (found 2026-10-02)."""
+
+    BODY = r"""
+    const units = JSON.parse(JSON.stringify(UNITS));
+    for (const u of ['qwen38-sglang.service', 'qwen38-flash.service', 'qwen38-image.service', 'qwen38-video.service'])
+      if (%s !== null) units.units[u].enabled = %s;
+    feed({config: CONFIG, units, lifecycle: life({'qwen38-sglang.service': eng('stopped', {target: 'uncensored'}),
+                                                 'qwen38-flash.service': eng('stopped', {target: 'flash'})})});
+    askJourney('uncensored');
+    const steps = [...$('sh-journey').children].map(li => li.textContent);
+    closeSheet();
+    showView('lanes');
+    const atBoot = [...document.querySelectorAll('#view-lanes dt')].filter(d => d.textContent === 'At boot').map(d => d.nextSibling.textContent);
+    const notes = [...BAYS.values()].map(b => b.note.textContent);
+    report({sub: txt('serving-sub'), facts: txt('act-facts'), steps, atBoot, notes});
+    """
+
+    def page(self, enabled):
+        return run(self, self.BODY % (enabled, enabled))
+
+    def test_no_lane_enabled_says_so_and_load_makes_the_lane_the_boot_one(self):
+        r = self.page("'disabled'")
+        self.assertEqual(r["sub"], "no lane starts at boot; load one from Lanes", r)
+        self.assertTrue(r["atBoot"] and all(a == "manual start" for a in r["atBoot"]), r["atBoot"])
+        self.assertEqual(r["notes"], ["manual start"] * 4, r["notes"])
+        self.assertIn("Boot lanenone", r["facts"])
+        self.assertEqual(len(r["steps"]), 2, r["steps"])
+        self.assertIn("switch-model.sh uncensored", r["steps"][0])
+        self.assertIn("systemctl start qwen38-sglang.service", r["steps"][1])
+
+    def test_a_systemctl_that_did_not_answer_claims_nothing(self):
+        r = self.page("'?'")
+        self.assertEqual(r["sub"], "load a lane from Lanes", r)
+        self.assertIn("Boot laneunknown", r["facts"])
+        self.assertTrue(r["atBoot"] and all(a == "unknown" for a in r["atBoot"]), r["atBoot"])
+        self.assertEqual(r["notes"], [""] * 4, r["notes"])
+
+    def test_the_lane_enabled_at_boot_is_named_and_not_switched_to_again(self):
+        r = self.page("null")
+        self.assertEqual(r["sub"], "27B starts at boot; load a lane from Lanes", r)
+        self.assertIn("Boot lane27B", r["facts"])
+        self.assertEqual(len(r["steps"]), 1, r["steps"])
+        self.assertIn("systemctl start qwen38-sglang.service", r["steps"][0])
+
+
 if __name__ == "__main__":
     unittest.main()

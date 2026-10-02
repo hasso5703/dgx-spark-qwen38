@@ -162,6 +162,17 @@ class Parse(Base):
         self.assertIsNone(out["temp_c"])
         self.assertEqual(out["procs"], [])
 
+    def test_gpu_that_did_not_answer_has_no_process_list(self):
+        """An empty list is a GPU with nothing on it: a query that timed out is no list, or
+        the page says "No process on the GPU" of a box it could not read (2026-10-02)."""
+        def silent(argv, timeout=5.0, merge_err=False):
+            r = self.cp.Ran("")
+            r.ok = False
+            return r
+        self.cp.run = silent
+        out = self.cp.collect_gpu()
+        self.assertEqual((out["power_w"], out["temp_c"], out["procs"]), (None, None, None), out)
+
     def test_feed_reads_the_keepalive_journal(self):
         self.box({"journalctl -u qwen38-keepalive.service": fixture("keepalive-journal.txt")})
         out = self.cp.collect_feed()

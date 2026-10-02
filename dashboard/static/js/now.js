@@ -139,7 +139,7 @@ function renderRack(){
     if (unit === VIDEO_UNIT) fact('4 s clip', 'about 11 min');
     if (unit === IMAGE_UNIT) fact('1024 image', 'about 38 s');
     const en = (F.units[unit] || {}).enabled;
-    setText(b.note, !has ? LANE_INSTALL[unit] : en === 'enabled' ? 'starts at boot' : 'manual start');
+    setText(b.note, !has ? LANE_INSTALL[unit] : en === 'enabled' ? 'starts at boot' : en === '?' ? '' : 'manual start');
     setText(b.act, !has ? 'Not installed' : seated ? (st === 'ready' || st === 'degraded' ? `Open ${LANE_META[unit].view === 'agent' ? 'the agent' : LANE_META[unit].view}` : 'Details') : 'Load this lane');
     b.root.setAttribute('aria-label', `${LANE_META[unit].title}: ${!has ? 'not installed' : stateLabel(e)}. ${b.act.textContent}.`);
   });
@@ -151,8 +151,9 @@ function renderServing(){
   if (!s){
     $('serving-lamp').className = 'lamp';
     setText('serving-name', 'Nothing is serving');
-    const u = enabledUnit();
-    setText('serving-sub', F.units && Object.keys(F.units).length ? `${LANE_NAME[u]} starts at boot; load a lane from Lanes` : '');
+    const u = bootUnit();
+    setText('serving-sub', !F.units || !Object.keys(F.units).length ? '' : u ? `${LANE_NAME[u]} starts at boot; load a lane from Lanes`
+      : bootKnown() ? 'no lane starts at boot; load one from Lanes' : 'load a lane from Lanes');
     setText('now-lede', 'No lane holds the box right now. Pick one in the rack to load it.');
     sayOnce('lane', 'nothing serving');
     return;
@@ -189,7 +190,8 @@ function renderActivity(){
   const l = F.load || {};
   if (!s){
     setText('act-title', 'Activity'); setText('act-v', 'Idle'); setText('act-k', 'no lane is loaded');
-    facts(fx, [['Boot lane', LANE_NAME[enabledUnit()]], ['Loads in', readyIn(enabledUnit())]]); return;
+    const u = bootUnit();
+    facts(fx, u ? [['Boot lane', LANE_NAME[u]], ['Loads in', readyIn(u)]] : [['Boot lane', bootKnown() ? 'none' : 'unknown']]); return;
   }
   const [unit, e] = s;
   if (TRANSITIONAL.has(e.state)){
@@ -279,18 +281,25 @@ function renderEvents(box, n){
 
 // ── vitals ────────────────────────────────────────────────────────────────────
 function vital(id, v, s, kind){ const e = $(id); if (!e) return; setText(e.children[1], v); setText(e.children[2], s || ''); e.className = 'vital' + (kind ? ' ' + kind : ''); }
+// '…' until the collector first answers; after that, a reading it could not take is 'n/a' (the
+// Machine view's word), and the line under it says nothing that was not read: with
+// nvidia-smi silent, the GPU vitals read '…' for good, the temperature "cool" and the
+// processes "0" (found by the monkey check, 2026-10-02)
+const unread = src => src ? 'n/a' : '…';
 function renderVitals(){
   const m = F.machine || {}, g = F.gpu || {};
   const cpu = (m.cpu_pct || {}).cpu;
-  vital('vt-cpu', cpu != null ? cpu.toFixed(0) + ' %' : '…', (m.load || []).length ? `load ${m.load[0].toFixed(2)}` : '', cpu > 85 ? 'warn' : '');
-  vital('vt-gpu', g.power_w != null ? g.power_w.toFixed(0) + ' W' : '…', `${(g.procs || []).length} process${(g.procs || []).length === 1 ? '' : 'es'}`);
-  vital('vt-temp', g.temp_c != null ? g.temp_c.toFixed(0) + ' °C' : '…', g.temp_c > 85 ? 'hot: give it air' : g.temp_c > 75 ? 'warm' : 'cool', g.temp_c > 85 ? 'err' : g.temp_c > 75 ? 'warn' : '');
+  vital('vt-cpu', cpu != null ? cpu.toFixed(0) + ' %' : unread(F.machine), (m.load || []).length ? `load ${m.load[0].toFixed(2)}` : '', cpu > 85 ? 'warn' : '');
+  const procs = Array.isArray(g.procs) ? g.procs : null;
+  vital('vt-gpu', g.power_w != null ? g.power_w.toFixed(0) + ' W' : unread(F.gpu), procs ? `${procs.length} process${procs.length === 1 ? '' : 'es'}` : '');
+  const t = g.temp_c;
+  vital('vt-temp', t != null ? t.toFixed(0) + ' °C' : unread(F.gpu), t == null ? '' : t > 85 ? 'hot: give it air' : t > 75 ? 'warm' : 'cool', t > 85 ? 'err' : t > 75 ? 'warn' : '');
   const dk = (m.disks || {}).home;
-  vital('vt-disk', dk ? fmtGiB(dk.free, 0) : '…', dk ? `of ${fmtGiB(dk.total, 0)}` : '', dk && dk.free < 60 * GIB ? 'warn' : '');
+  vital('vt-disk', dk ? fmtGiB(dk.free, 0) : unread(F.machine), dk ? `of ${fmtGiB(dk.total, 0)}` : '', dk && dk.free < 60 * GIB ? 'warn' : '');
   const mem = m.mem || {}; const sw = (mem.SwapTotal || 0) - (mem.SwapFree || 0);
-  vital('vt-swap', mem.SwapTotal != null ? fmtGiB(sw) : '…', mem.SwapTotal ? `of ${fmtGiB(mem.SwapTotal, 0)}` : '', sw > 8 * GIB ? 'warn' : '');
-  const k = F.kernel || {};
-  vital('vt-nvrm', k.nvrm_oom_1h != null ? String(k.nvrm_oom_1h) : '…', k.nvrm_last ? `last ${String(k.nvrm_last).slice(11, 16)}` : 'none', k.nvrm_oom_1h > 200 ? 'warn' : '');
+  vital('vt-swap', mem.SwapTotal != null ? fmtGiB(sw) : unread(F.machine), mem.SwapTotal ? `of ${fmtGiB(mem.SwapTotal, 0)}` : '', sw > 8 * GIB ? 'warn' : '');
+  const k = F.kernel || {}, n = k.nvrm_oom_1h;
+  vital('vt-nvrm', n != null ? String(n) : unread(F.kernel), n == null ? '' : k.nvrm_last ? `last ${String(k.nvrm_last).slice(11, 16)}` : 'none', n > 200 ? 'warn' : '');
 }
 on('kernel', d => { F.kernel = d; });
 

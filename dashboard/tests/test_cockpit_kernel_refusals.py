@@ -63,6 +63,27 @@ class TheRefusals(unittest.TestCase):
         self.sample([line("2026-09-24T10:30:00+0200"), line("2026-09-24T11:05:00+0200")])
         self.assertEqual(len(events), 1, "the same lines were reported twice")
 
+    def test_a_read_that_did_not_answer_is_no_reading_and_moves_no_baseline(self):
+        """A journalctl that timed out read as a quiet hour, "0", and became the baseline:
+        the next read reported every refusal of the hour as new (found 2026-10-02)."""
+        events = []
+        self.cp.add_event = lambda kind, text: events.append((kind, text))
+        self.cp.KERNEL_LAST.clear()
+        self.cp.KERNEL_LAST["count"] = None
+        two = [line("2026-09-24T10:00:01+0200"), line("2026-09-24T10:30:00+0200")]
+        self.sample(two)
+
+        def silent(argv, timeout=5.0, merge_err=False):
+            r = self.cp.Ran("")
+            r.ok = False
+            return r
+        self.cp.run = silent
+        out = self.cp.collect_kernel()
+        self.assertEqual((out["nvrm_oom_1h"], out["nvrm_last"]), (None, None), out)
+        out = self.sample(two)
+        self.assertEqual(out["nvrm_oom_1h"], 2)
+        self.assertEqual(events, [], "refusals already seen were said again after a failed read")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

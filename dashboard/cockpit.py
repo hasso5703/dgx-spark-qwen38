@@ -367,9 +367,11 @@ def collect_gpu():
     q = run(["nvidia-smi", "--query-gpu=power.draw,temperature.gpu",
              "--format=csv,noheader,nounits"]).strip()
     power, temp = (q.split(", ") + ["", ""])[:2] if q else ("", "")
-    procs = []
-    for line in run(["nvidia-smi", "--query-compute-apps=pid,used_memory",
-                     "--format=csv,noheader"]).splitlines():
+    # None when nvidia-smi did not answer: an empty list is a GPU with nothing on it, and the
+    # page said "No process on the GPU" of a query that timed out (found 2026-10-02)
+    apps = run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader"])
+    procs = [] if answered(apps) else None
+    for line in apps.splitlines() if procs is not None else []:
         pid, memtxt = [x.strip() for x in line.split(",")][:2]
         name = ""
         try:
@@ -514,6 +516,11 @@ def collect_kernel():
     hour: measured 29/08 to precede the livelock edge (prefill of a 150k+ prompt at
     fraction 0.81). Read-only via the sudoers line for journalctl -k."""
     out = run(["sudo", "-n", "/usr/bin/journalctl", "-k", "--since", "-1h", "--no-pager", "-o", "short-iso"], timeout=8)
+    # A read that did not answer is no reading, not a quiet hour: it read "0", and it became
+    # the baseline the next read is measured against, so every refusal of the hour came back
+    # as new after one journalctl that timed out (found 2026-10-02)
+    if not answered(out):
+        return {"node_id": "local", "nvrm_oom_1h": None, "nvrm_last": None}
     lines = [ln for ln in out.splitlines() if "NV_ERR_NO_MEMORY" in ln]
     last = lines[-1].split()[0] if lines else None
     count = len(lines)

@@ -133,10 +133,16 @@ const F = {life: null, units: {}, config: {}, job: null, load: {}, pool: null, w
            gpu: null, ocfit: null};
 const engines = () => (F.life && F.life.engines) || {};
 function servingEngine(){ return Object.entries(engines()).find(([, e]) => !UNIT_DOWN.has(e.state) || e.restarting) || null; }
-function enabledUnit(){
-  const e = Object.entries(F.units).find(([n, u]) => LANE_UNITS.includes(n) && u.enabled === 'enabled');
-  return e ? e[0] : U27;
+// The lane enabled at boot, or null when none is (or systemctl did not say). enabledUnit()
+// falls back on the 27B, a default to show logs of; said as a fact, it read "27B starts at
+// boot" on a box that boots nothing (found 2026-10-02).
+function bootUnit(){
+  const e = Object.entries(F.units || {}).find(([n, u]) => LANE_UNITS.includes(n) && u.enabled === 'enabled');
+  return e ? e[0] : null;
 }
+function enabledUnit(){ return bootUnit() || U27; }
+// systemctl answered for every lane (a unit not installed answers too, with no file state)
+const bootKnown = () => LANE_UNITS.every(n => F.units && F.units[n] && F.units[n].enabled !== '?' && F.units[n].enabled !== undefined);
 function servingReady(){ const s = servingEngine(); return !!(s && ['ready', 'degraded', 'wedged'].includes(s[1].state)); }
 // A TEXT engine is up: the pool, the context window, flush, abort and smoke all talk to
 // the text engine on :30000, and with a diffusion lane serving that port is closed.
@@ -349,7 +355,8 @@ function noEngineWhy(){
   if (textReady()) return '';
   if (imageServing()) return 'The image lane is serving: this talks to the text engine, which is not running.';
   if (videoServing()) return 'The video lane is serving: this talks to the text engine, which is not running.';
-  return `No text engine is serving. Start one first (it answers in ${readyIn(enabledUnit())}).`;
+  const u = bootUnit();
+  return 'No text engine is serving. Start one first' + (u && u !== IMAGE_UNIT && u !== VIDEO_UNIT ? ` (it answers in ${readyIn(u)}).` : ' from Lanes.');
 }
 function busyWhy(){
   if (offline) return 'The cockpit is unreachable: actions wait until the connection is back.';
@@ -443,7 +450,8 @@ function laneJourneySteps(target){
   const unit = TARGET_UNIT(target);
   const steps = [];
   const serving = servingEngine();
-  const enabled = enabledUnit();
+  // none enabled: the switch step makes this one the boot lane, as it does from any other
+  const enabled = bootUnit();
   const curTarget = (engines()[unit] || {}).target;
   if (enabled !== unit || (curTarget && curTarget !== target) || (!curTarget && LANE_TARGETS[unit].length > 1 && target !== LANE_TARGETS[unit][0]))
     steps.push({name: 'switch', params: {target}, title: `Point the boot at ${TARGET_NAME[target]}`,
