@@ -14,6 +14,7 @@ Then open http://127.0.0.1:30090 and paste the API key from
 from __future__ import annotations
 
 import base64
+import calendar
 import hashlib
 import hmac
 import http.server
@@ -3581,6 +3582,75 @@ def check_token(tok: str, kind: str, max_age: int = 12 * 3600) -> bool:
         return False
 
 
+
+# The Logs view's lines carry the engine's own time: the serving containers run in UTC, and
+# their lines read two hours behind every other time on the page in Luxembourg (16:37 shown
+# at 18:37, 2026-10-02). Each line's instant comes from its transport, docker's
+# --timestamps or the journal's __REALTIME_TIMESTAMP, and a leading [YYYY-MM-DD HH:MM:SS]
+# that is that instant written in UTC is rewritten in this box's local time. A stamp that
+# is not (local already, a lane that runs natively, another time quoted in the line) stays
+# as it was: what is compared is the instant, so no time zone of the container is assumed.
+_DOCKER_TS = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z (.*)$")
+_APP_TS = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\]")
+LOG_STAMP_SLACK_S = 300     # a line's stamp and its transport's instant: well under 1 s apart
+
+
+def docker_log_entries(txt):
+    """[(instant or None, line)] from `docker logs --timestamps`, which puts the instant
+    docker received each line, in UTC, before it. A line with no such prefix (docker's own
+    error) comes back whole, with no instant."""
+    out = []
+    for ln in txt.splitlines():
+        m = _DOCKER_TS.match(ln)
+        out.append((calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")), m.group(2))
+                   if m else (None, ln))
+    return out
+
+
+def journal_log_entries(txt):
+    """[(instant or None, line)] from `journalctl -o json`: every line of an entry's MESSAGE
+    shares the entry's instant. A MESSAGE the journal stored as bytes (not UTF-8) is decoded
+    with replacement; a line that is not an entry comes back whole, with no instant."""
+    out = []
+    for ln in txt.splitlines():
+        try:
+            e = json.loads(ln)
+        except ValueError:
+            e = None
+        if not isinstance(e, dict):
+            out.append((None, ln))
+            continue
+        msg = e.get("MESSAGE")
+        if isinstance(msg, list):
+            try:
+                msg = bytes(msg).decode("utf-8", "replace")
+            except (TypeError, ValueError):
+                msg = None
+        if not isinstance(msg, str):
+            continue
+        try:
+            at = int(e.get("__REALTIME_TIMESTAMP")) / 1e6
+        except (TypeError, ValueError):
+            at = None
+        out.extend((at, part) for part in (msg.splitlines() or [""]))
+    return out
+
+
+def local_log_stamp(line, at):
+    """(line, rewritten): its leading [YYYY-MM-DD HH:MM:SS] in this box's local time, when
+    that stamp is the line's own instant `at` written in UTC; otherwise the line as it was."""
+    m = _APP_TS.match(line) if at is not None else None
+    if not m:
+        return line, False
+    try:
+        stamped = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+    except ValueError:
+        return line, False
+    if abs(stamped - at) > LOG_STAMP_SLACK_S:
+        return line, False
+    local = "[" + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamped)) + "]"
+    return local + line[m.end():], local != m.group(0)
+
 # ── HTTP layer ───────────────────────────────────────────────────────────────
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "SparkCockpit/" + VERSION
@@ -3714,11 +3784,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/logs/"):
             name = path.rsplit("/", 1)[1]
             if name in CONTAINERS:
-                txt = run(["docker", "logs", "--tail", "120", name],
-                          timeout=8, merge_err=True)
+                entries = docker_log_entries(run(["docker", "logs", "--timestamps", "--tail", "120", name],
+                                                 timeout=8, merge_err=True))
             elif name in JOURNAL_UNITS:
-                txt = run(["journalctl", "-u", name, "-n", "120",
-                           "--no-pager", "-o", "cat"], timeout=8)
+                entries = journal_log_entries(run(["journalctl", "-u", name, "-n", "120", "--no-pager",
+                                                   "-o", "json", "--all", "--output-fields=MESSAGE"], timeout=8))
             else:
                 return self.send_json({"error": "unknown source"}, 404)
             # The key's value, masked as the bundle masks it: SGLang prints its ServerArgs at
@@ -3729,12 +3799,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # BEFORE the key is masked: a key printed across two colour runs is split by
             # the escapes, and masking first would let the strip weld the halves back into
             # a whole key (found by the branch's security review the same day).
-            txt = re.sub(r"\x1b\[[0-?;]*[@-~]", "", txt)
+            # The stamp is read once the escapes are gone (a coloured line starts with one),
+            # and the key is masked last, on the whole text, as before.
+            lines, local = [], 0
+            for at, ln in entries:
+                ln, rewritten = local_log_stamp(re.sub(r"\x1b\[[0-?;]*[@-~]", "", ln), at)
+                lines.append(ln)
+                local += rewritten
+            txt = "\n".join(lines)
             key = api_key()
             if key:
                 txt = txt.replace(key, "<masked>")
-            return self.send_json({"name": name,
-                                   "lines": txt.splitlines()[-120:]})
+            return self.send_json({"name": name, "lines": txt.splitlines()[-120:],
+                                   "local_stamps": local, "tz": time.strftime("%Z")})
         if path.startswith("/api/jobs/"):
             job = JOBS.get(path.rsplit("/", 1)[1])
             if not job:

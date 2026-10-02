@@ -992,5 +992,32 @@ class TheBootLaneIsSaidOnlyWhenOneIs(unittest.TestCase):
         self.assertIn("systemctl start qwen38-sglang.service", r["steps"][0])
 
 
+class TheLogsSayTheBoxsTimeAndDimTheBoxsOwnPolling(unittest.TestCase):
+    """The cockpit asks the engine its load every second, and those lines filled the whole
+    engine log while only /health was dimmed; and the engine writes its times in UTC, which
+    the server now rewrites in the box's own time and the page says so (2026-10-02)."""
+
+    BODY = r"""
+    let answer = null;
+    __fetch = async url => url.startsWith('/api/logs/') ? __response(200, answer) : new Promise(() => {});
+    feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-flash.service': eng('ready', {target: 'flash'})})});
+    const read = async a => { answer = a; await tailLog(); await __settle();
+      return {cls: [...$('log-view').children].map(c => c.className || ''), note: txt('log-note'), hidden: $('log-note').hidden}; };
+    const lines = ['[2026-10-02 18:37:16] INFO:     127.0.0.1:1 - "GET /v1/loads?include=core HTTP/1.1" 200 OK',
+                   '[2026-10-02 18:37:17] INFO:     127.0.0.1:2 - "GET /server_info HTTP/1.1" 200 OK',
+                   '[2026-10-02 18:37:18] INFO:     127.0.0.1:3 - "POST /v1/chat/completions HTTP/1.1" 200 OK'];
+    report({converted: await read({name: 'qwen38-flash', tz: 'CEST', local_stamps: 3, lines}),
+            native: await read({name: 'qwen38-flash', tz: 'CEST', local_stamps: 0, lines})});
+    """
+
+    def test_the_polling_is_dimmed_and_a_conversion_is_said(self):
+        r = run(self, self.BODY)
+        self.assertEqual(r["converted"]["cls"], ["l-dim", "l-dim", ""], r)
+        self.assertFalse(r["converted"]["hidden"], r)
+        self.assertIn("local time (CEST)", r["converted"]["note"])
+        self.assertIn("UTC", r["converted"]["note"])
+        self.assertTrue(r["native"]["hidden"], "no line was rewritten: nothing to say")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -240,6 +240,10 @@ onShow('library', () => { if (!LOADED.recipes) loadRecipes(); });
 // ── Logs ──────────────────────────────────────────────────────────────────────
 const LOGS_WANT = {src: null};
 let followTimer = null, logTouched = false, logLines = [];
+// What the box asks its own engine, dimmed so the engine's words stand out: the cockpit's
+// load every second and its engine read every 30 s (current routes and the legacy ones),
+// the health probes, the video poll. The load alone filled the whole view (2026-10-02).
+const POLLED = /GET \/(health|v1\/videos|v1\/loads|server_info|get_load|get_server_info)/;
 function drawLog(){
   const v = $('log-view'), q = $('log-filter').value.trim().toLowerCase();
   clear(v);
@@ -247,7 +251,7 @@ function drawLog(){
   if (!lines.length){ v.textContent = logLines.length ? 'No line matches the filter.' : 'This source has no output yet.'; return; }
   lines.forEach((ln, i) => {
     const cls = /error|exception|traceback|failed|fatal/i.test(ln) ? 'l-err' : /warn/i.test(ln) ? 'l-warn' : /ready to roll|started|ready\b|succeeded/i.test(ln) ? 'l-ok'
-      : /GET \/health|GET \/v1\/videos/.test(ln) ? 'l-dim' : '';
+      : POLLED.test(ln) ? 'l-dim' : '';
     const sp = el('span', cls || null, ln);
     v.append(sp); if (i < lines.length - 1) v.append('\n');
   });
@@ -258,7 +262,11 @@ async function tailLog(){
   try{
     const r = await fetch('/api/logs/' + src); if (r.status === 401) return login(); if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json(); logLines = d.lines || []; drawLog();
-  }catch(e){ logLines = []; setText('log-view', `Could not read ${src}: ${e.message}`); }
+    // the engines write their times in UTC; the server rewrote them in the box's own time
+    const n = d.local_stamps || 0;
+    show('log-note', n > 0);
+    setText('log-note', n ? `Times shown in this box's local time${d.tz ? ' (' + d.tz + ')' : ''}: the engine writes them in UTC.` : '');
+  }catch(e){ logLines = []; show('log-note', false); setText('log-view', `Could not read ${src}: ${e.message}`); }
 }
 function wireLogs(){
   $('log-btn').addEventListener('click', () => { setText('log-view', 'Reading…'); tailLog(); });
