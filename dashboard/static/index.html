@@ -589,8 +589,11 @@
           <p class="muted">The installer needs an interactive sudo, so it is not a button: a half-applied install is the one thing this cockpit must never cause. Run it on the box; your choices are remembered.</p>
           <pre class="cmd" id="st-update" style="margin-top:var(--s-3)">…</pre>
         </section>
-        <section class="panel" data-src="config">
-          <header><h2>Cockpit</h2><span class="aside age"></span></header>
+        <!-- no data-src: these facts are the process's own, set once at its start, and the
+             freshness rule read their age as the cockpit's uptime: "stale, 2 h 18 old" in
+             ember on every box after 18 s (found 2026-10-02, there since the redesign) -->
+        <section class="panel">
+          <header><h2>Cockpit</h2></header>
           <dl class="facts">
             <dt>Version</dt><dd class="num" id="ck-ver">…</dd>
             <dt>Mode</dt><dd id="ck-mode">…</dd>

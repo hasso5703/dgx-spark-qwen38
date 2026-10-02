@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.22.2 (2026-10-02): the Cockpit panel of Settings no longer reads stale
+
+Since the redesign of 2026-09-30, the Cockpit panel of Settings (the cockpit's version, its
+mode, the usable pool share, the refresh periods) read "stale" under a dashed border 18 s
+after every start, on every box, with the cockpit's uptime for an age ("stale, 2 h 18 old"
+on the reference box in the hour before v1.22.1 went on it, "stale, 78 s old" right after).
+The panel was watched as a live source, and its facts are the process's own, set once at its
+start: nothing samples them, so nothing could keep them fresh. The panel shows its facts
+without an age now, and a test holds every panel to a source the server samples: both of its
+tests fail on v1.22.1.
+
+An update restarts the cockpit; the engines and the proxy keep running.
+
 ## v1.22.1 (2026-10-02): omp's own dialect passes the proxy, the pin watch asks GitHub with a token, and the cockpit says what it could not read
 
 What a campaign of tests on the reference box found on v1.22.0, every request kind through

@@ -74,5 +74,37 @@ class TheOldProxyWarningIsNotAFloatComparison(unittest.TestCase):
         self.assertNotRegex(body, r"parseFloat\(")
 
 
+class EveryPanelWatchesASampledSource(unittest.TestCase):
+    """A panel's data-src names the collectors its age is read from, and the server samples
+    those on a period. The Cockpit panel of Settings watched "config", which the server sets
+    once, at its start: it read "stale" in ember 18 s after every start, the cockpit's uptime
+    for an age, on every box since the redesign of 2026-09-30 (found 2026-10-02)."""
+
+    def test_every_source_a_panel_names_is_one_the_server_samples(self):
+        page = (DASH / "static" / "index.html").read_text()
+        named = re.findall(r'data-src="([^"]*)"', page)
+        named += re.findall(r"dataset\.src\s*=\s*'([^']*)'", "\n".join(JS.values()))
+        srcs = {x for v in named for x in v.split(",")}
+        cockpit = (DASH / "cockpit.py").read_text()
+        tiers = cockpit[cockpit.index("TIERS = ["):cockpit.index("PERIODS = ")]
+        sampled = set(re.findall(r'"([a-z_]+)":\s*collect_', tiers))
+        self.assertGreater(len(sampled), 10, "the TIERS pattern read nothing: this test is stale")
+        self.assertGreater(len(srcs), 10, "the data-src pattern read nothing: this test is stale")
+        self.assertEqual(srcs - sampled, set(), "a panel watches a source no sampler refreshes")
+
+    def test_the_cockpit_panel_is_not_stale_after_an_hour_up(self):
+        r = run(self, r"""
+        const now = Date.now() / 1000, at = (data, ts) => ({data, ts});
+        apply({config: at(CONFIG, now - 3600), units: at(UNITS, now),
+               lifecycle: at(life({'qwen38-sglang.service': eng('ready')}), now)});
+        const panel = $('ck-ver').closest('section');
+        report({stale: panel.classList.contains('stale'), age: (panel.querySelector('header .age') || {textContent: null}).textContent,
+                ver: txt('ck-ver')});
+        """)
+        self.assertFalse(r["stale"], r)
+        self.assertIsNone(r["age"], r)
+        self.assertEqual(r["ver"], "1.1.2", r)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
