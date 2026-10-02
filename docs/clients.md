@@ -124,6 +124,17 @@ byte of it is read.
   default output (worst case 709,000), or `529000` with
   `CLAUDE_CODE_EXTRA_BODY='{"max_tokens":250000}'` (worst case 756,000).
 
+  Neither pair fits the flash lane, whose window is 262,144 tokens. With
+  `max_tokens` at 250,000 every request passed it (15,563 prompt tokens plus
+  250,000), the engine refused it inside its stream, and Claude Code (2.1.286)
+  sent it again without a stream, which it gave up on after about 6 minutes:
+  a long answer never came, and the proxy's hold during a restart could not
+  keep such a request alive (measured on the reference box, 2026-10-02);
+  `700000` lets a session grow past the window. On the flash lane: `205000`
+  with `CLAUDE_CODE_EXTRA_BODY='{"max_tokens":32000}'`, the limits opencode uses
+  there; a launcher can pick the pair by the lane that serves
+  (`systemctl is-active --quiet qwen38-flash.service`).
+
   The idle-timeout variables are the difference between "hangs" and "slow";
   they are named in issue #2 and in the failure family diagnosed in
   issue #1 (clients cap total turn duration, not idle time). Quality and

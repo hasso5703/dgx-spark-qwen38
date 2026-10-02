@@ -136,6 +136,14 @@ in this release:
   after 1,066 and 1,068 s. opencode wrote its whole answer (2,410 words); Claude Code's came
   whole too, and then stopped on the 4,000-token output cap of the test's own settings (the
   same request with no crash stops on it as well; `claude-qwen` sets 128,000).
+- **The installed release** (v1.21.0, by the one-liner), the same crash: the cockpit named
+  the zombie 96 s after the SIGQUIT (its 60 s of diagnostics included) and restarted the
+  lane 120 s later, the guard let it start ("116.0 GiB available"), no wait ended, and
+  opencode's answer came whole after 801 s held. Claude Code's never came: run with this
+  box's Claude Code settings, its `max_tokens` (250,000, sized for the 27B in 1M mode) passed the
+  flash lane's window, so each of its streamed requests was refused inside its stream, it
+  sent them again without a stream, and it gave up on each of those after about 6 minutes
+  (the pair for the flash lane is in docs/clients.md).
 
 Against a fake engine that cuts a stream the way the real one did (`IncompleteRead`) and
 then stays away 900 s, both clients sent their request again once, as a stream, waited the

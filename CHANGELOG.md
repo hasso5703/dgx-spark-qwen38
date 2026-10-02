@@ -11,6 +11,8 @@ Checked with the real agents before it was merged, through the proxy to the flas
 
 With both, pi and omp answered at every thinking level and made a tool call (`read`) each. Two smaller changes: the `!cat <path>` that reads the key is quoted for the shell both agents run it in, and the files are regenerated only on a box that asked for them once (`./pi-gen.py` made their directory), by a switch as before and now by a fit too (`oc-fit-limits.py`, the cockpit's button), whose limits they carry.
 
+**Claude Code's pair on the flash lane** ([docs/clients.md](docs/clients.md)). The pair it documented, `529000` with `max_tokens` at 250,000, is sized for the 27B in 1M mode, and on the flash lane's window of 262,144 tokens every streamed request passed it: the engine refused each inside its stream, and Claude Code sent it again without a stream, which it gave up on after about 6 minutes, so a long answer never came and the hold of v1.21.0 could not keep it alive (found by its end-to-end test on the installed release). On the flash lane the pair is `205000` with `max_tokens` at 32,000, opencode's limits there; with it, Claude Code's request streams again.
+
 ## v1.21.1 (2026-10-02): a request whose body never arrived whole is not sent on
 
 The proxy's fuzz suite failed about one run in ten on its relay simulation, on v1.20.5
