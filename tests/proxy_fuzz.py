@@ -300,6 +300,9 @@ class Engine:
         self.finished = []
         self.dropped = []       # a stream closed under the engine without an abort first
         self.outcome = {}       # prompt of a non-streamed request -> "noticed" or "whole"
+        self.received = set()   # prompts of the requests that reached the engine whole
+        self.cut = 0            # requests whose body the proxy stopped sending: its caller left
+        self.bodiless = []      # requests sent on with no body at all, which is no request
         self.lock = threading.Lock()
 
 
@@ -336,8 +339,21 @@ class RelaySimulation(RuleBasedStateMachine):
                 pass
 
             def do_POST(self):
-                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                want = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(want)
                 path = self.path.split("?")[0]
+                if len(body) < want:
+                    # The body stopped short of its length: the proxy closed its side as
+                    # the request went out, its caller having left (or, before v6.29, the
+                    # caller's own body never arrived whole and the proxy sent on what had
+                    # come; tests/test_proxy_short_body.py pins that one). Either way the
+                    # engine never had a request, which is right. This engine fell over the
+                    # empty read instead and recorded nothing, about one run in ten, which
+                    # failed the suite (found 2026-10-02).
+                    with eng.lock:
+                        eng.cut += 1
+                    self.close_connection = True
+                    return
                 if path == "/abort_request":
                     rid = json.loads(body or b"{}").get("rid")
                     with eng.lock:
@@ -353,11 +369,22 @@ class RelaySimulation(RuleBasedStateMachine):
                 with eng.lock:
                     eng.live[rid] = True
                     eng.seen.add(rid)
-                req = json.loads(body or b"{}")
+                try:
+                    req = json.loads(body)
+                    prompt = req["messages"][0]["content"]
+                except (ValueError, KeyError, IndexError, TypeError):
+                    # A body whole by its length that is no request (empty, or not one):
+                    # no engine can serve it, and no proxy should send it on
+                    with eng.lock:
+                        eng.bodiless.append((path, len(body)))
+                        eng.live.pop(rid, None)
+                    self.close_connection = True
+                    return
+                with eng.lock:
+                    eng.received.add(prompt)
                 if req.get("stream") is not True:
                     # Written once it is whole; meanwhile SGLang drops the request if its
                     # HTTP client goes (TokenizerManager._wait_one_response, types 1, 3)
-                    prompt = req["messages"][0]["content"]
                     try:
                         end = time.time() + WHOLE_S
                         while time.time() < end:
@@ -502,7 +529,15 @@ class RelaySimulation(RuleBasedStateMachine):
         prompt = f"whole-{time.time_ns()}"
         self._send(path, prompt, 0, hard, stream=False, linger=linger)
         got = self._outcome(prompt)
-        assert got == "noticed", f"the engine generated a whole answer for a caller that was gone ({got})"
+        with self.engine.lock:
+            reached = prompt in self.engine.received
+        # A caller that closes at once can be gone before its request reaches the engine
+        # whole, and then there is nothing to notice: that is the right end too. What
+        # must never be is a whole answer for a caller who left.
+        if reached:
+            assert got == "noticed", f"the engine generated a whole answer for a caller that was gone ({got})"
+        else:
+            assert got is None, f"an outcome for a request the engine never had whole ({got})"
 
     @rule(path=st.sampled_from(["/v1/chat/completions", "/v1/messages"]))
     def client_waits_for_its_whole_answer(self, path):
@@ -525,6 +560,12 @@ class RelaySimulation(RuleBasedStateMachine):
         # nothing looked at, so an abort that never reached the engine passed (found in
         # review, 2026-09-24)
         assert dropped == [], f"streams closed under the engine without an abort: {dropped}"
+
+    @invariant()
+    def no_request_reaches_the_engine_without_its_body(self):
+        with self.engine.lock:
+            bodiless = list(self.engine.bodiless)
+        assert bodiless == [], f"requests sent on without their body: {bodiless}"
 
     @invariant()
     def no_request_is_aborted_with_an_id_the_engine_never_had(self):

@@ -442,6 +442,8 @@ class FeedOutcomes(unittest.TestCase):
         "CLIENT GONE during non-sse wait": "gone",
         # v6.28: the caller left while its request waited for the engine to come back
         "CLIENT GONE during hold": "gone",
+        # v6.29: the caller left before its body arrived whole, and the engine was not asked
+        "CLIENT GONE before its body": "gone",
         "no outcome (client vanished mid-request)": "gone",
         "DROPPED upstream silent": "fail",
         "UPSTREAM CUT": "fail",

@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.21.1 (2026-10-02): a request whose body never arrived whole is not sent on
+
+The proxy's fuzz suite failed about one run in ten on its relay simulation, on v1.20.5
+already (2 of 15 runs there, 1 of 15 on v1.21.0), and it failed the check of pull request
+#30 on GitHub. Two things met in it. A caller that closed before the last byte of its body
+left the proxy a short read, and the proxy sent the engine what had come: of 300 requests
+closed with a reset at once after sending, 11 were read short and sent on all the same
+(measured with v1.21.0's proxy against an engine that counts what it gets). No engine can
+serve that, so nothing was ever generated from one, but no request should go out so: the
+proxy (v6.29) now ends it "CLIENT GONE before its body" and asks the engine nothing. And
+the suite's own engine fell over a body cut short, which is also what an engine sees when
+the proxy closes its side as a request goes out, its caller gone, by design: that engine
+now counts it as the request it never had, and the rule that a caller who left must never
+get a whole answer is checked as before. Over 30 runs each the simulation no longer fails,
+on either proxy, and `tests/test_proxy_short_body.py` pins the short read (two of its three
+tests fail on v1.21.0).
+
+An update restarts the proxy once (v6.29); the engines keep running.
+
 ## v1.21.0 (2026-10-01): an engine restart no longer ends a session, and no engine starts on memory still held
 
 [Issue #26](https://github.com/hasso5703/dgx-spark-qwen38/issues/26) reported a 27B engine

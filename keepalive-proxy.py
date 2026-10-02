@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.28). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.29). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -34,6 +34,14 @@ Six roles, nothing else:
    answer and its unit (PROXY_HOLD_UNITS) is on its way back waits for it, at most
    PROXY_HOLD_MAX_S, instead of failing at once. A streamed one hears from the proxy at
    once (200, then the keepalives of role 1); see "Holding a request" below.
+
+v6.29: a body that never arrived whole is not sent on. A caller that closed before the last
+byte of its body (a reset at once after sending, or a client dying mid-send) left the proxy
+a short read, and the proxy sent the engine what had come: of 300 requests closed so, 11
+were read short and sent on all the same. No engine can serve that, so nothing was
+generated, but no request should go out so. It now ends "CLIENT GONE before its body", and
+the engine is not asked. (The engine still sees a body cut short when the proxy closes its
+side as the request goes out, its caller gone: by design, the engine never has it.)
 
 v6.28: a request is held while its engine comes back (issue #26). systemd starts a crashed
 engine again 15 s after it stops, and the boot takes 7 to 11 min; every request of that
@@ -3145,6 +3153,12 @@ class H(BaseHTTPRequestHandler):
             self._done("413 body over cap"); return
         body = self.rfile.read(n) if (with_body and n) else None
         self._body_read = True
+        if body is not None and len(body) < n:
+            # The caller closed before its body arrived whole: what came is no request, and
+            # the engine is not given it (v6.29).
+            log(f"{self._peer} the caller left before its body arrived whole ({len(body)} of {n} bytes)")
+            self.close_connection = True
+            self._done("CLIENT GONE before its body"); return
         over = top_logprobs_over_ceiling(body, self.path)
         if over is not None:
             field, asked = over
@@ -3544,7 +3558,7 @@ if __name__ == "__main__":
     holds = (f"holds requests up to {HOLD_MAX_S:.0f}s while {' or '.join(HOLD_UNITS)} comes back"
              if HOLD_UNITS and HOLD_MAX_S > 0 else "holds nothing")
     # one f-string: the cockpit's tests render this line from the source
-    log(f"v6.28 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
+    log(f"v6.29 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))
