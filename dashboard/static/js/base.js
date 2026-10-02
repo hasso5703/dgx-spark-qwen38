@@ -170,7 +170,10 @@ function laneLabel(unit){
   const s = t && TARGET_SHORT[t] && !base.endsWith(TARGET_SHORT[t]) ? ' ' + TARGET_SHORT[t] : '';
   return base + s;
 }
-const installed = unit => F.units[unit] ? F.units[unit].enabled !== '' : !!engines()[unit];
+// When systemctl did not say ('?'), the lifecycle's list decides: it leaves out a diffusion lane
+// with no unit file. Read as installed, '?' showed the image and video lanes of a box whose
+// systemctl did not answer as installed, their checkpoint "…" for good (a CI runner, 2026-10-02).
+const installed = unit => { const u = F.units[unit]; return u && u.enabled !== '?' ? u.enabled !== '' : !!engines()[unit]; };
 const blockedFor = key => ((F.life || {}).blocked || {})[key] || null;
 
 // ── the bus: renderers per collector, isolated ────────────────────────────────

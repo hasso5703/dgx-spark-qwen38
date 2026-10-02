@@ -111,9 +111,10 @@ function renderLanes(){
     // the right column: the facts
     const en = (F.units[unit] || {}).enabled;
     facts(c.right, [
-      // '…' is a value on its way: once the lane's state is in and names no checkpoint (its
-      // launch file unreadable), it read '…' for good (found by the monkey check, 2026-10-02)
-      ['Checkpoint', e && e.model ? e.model.split('/').pop() : !has ? 'not installed' : e ? 'unknown' : '…'],
+      // '…' is a value on its way: once the lifecycle is in and names no checkpoint (a launch
+      // file unreadable, a lane it does not list), it read '…' for good (found by the monkey
+      // check, 2026-10-02)
+      ['Checkpoint', e && e.model ? e.model.split('/').pop() : !has ? 'not installed' : e || F.life ? 'unknown' : '…'],
       ['Target', laneTarget(unit) ? TARGET_NAME[laneTarget(unit)] : null],
       ['At boot', has ? (en === 'enabled' ? 'starts' : en === '?' ? 'unknown' : 'manual start') : null],
       ['Boot takes', has ? readyIn(unit) : null],

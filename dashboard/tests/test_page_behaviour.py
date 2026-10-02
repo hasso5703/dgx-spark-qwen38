@@ -895,6 +895,24 @@ class AnEmptyStateIsSaidNotPending(unittest.TestCase):
         self.assertIn("unknown", r["after"], r)
         self.assertIn("Qwen3.8-Flash-NVFP4", r["after"], r)
 
+    def test_a_box_whose_systemctl_did_not_answer_lists_what_the_lifecycle_lists(self):
+        """A CI runner: systemctl answers nothing and no diffusion unit file exists, so the
+        lifecycle lists the two text lanes alone. Read as installed, systemd's '?' showed the
+        image and video lanes too, their checkpoint "…" for good (GitHub Actions, 2026-10-02)."""
+        r = run(self, r"""
+        const silent = {units: Object.fromEntries(Object.keys(UNITS.units).map(u => [u, {active: '?', enabled: '?'}]))};
+        feed({config: CONFIG, units: silent, lifecycle: life({'qwen38-sglang.service': eng('stopped'),
+                                                             'qwen38-flash.service': eng('stopped', {target: 'flash'})})});
+        showView('lanes');
+        const cps = [...document.querySelectorAll('#view-lanes dt')].filter(d => d.textContent === 'Checkpoint')
+                                                                  .map(d => d.nextSibling.textContent);
+        report({cps, image: installed('qwen38-image.service'), video: installed('qwen38-video.service'),
+                u27: installed('qwen38-sglang.service'), flash: installed('qwen38-flash.service')});
+        """)
+        self.assertNotIn("…", r["cps"], r)
+        self.assertEqual(sorted(r["cps"]), ["not installed", "not installed", "unknown", "unknown"], r)
+        self.assertEqual((r["image"], r["video"], r["u27"], r["flash"]), (False, False, True, True), r)
+
     def test_a_gpu_that_did_not_answer_reads_no_reading_and_nothing_made_up(self):
         r = run(self, r"""
         const v = id => [$(id).children[1].textContent, $(id).children[2].textContent];
@@ -961,7 +979,10 @@ class TheBootLaneIsSaidOnlyWhenOneIs(unittest.TestCase):
         self.assertEqual(r["sub"], "load a lane from Lanes", r)
         self.assertIn("Boot laneunknown", r["facts"])
         self.assertTrue(r["atBoot"] and all(a == "unknown" for a in r["atBoot"]), r["atBoot"])
-        self.assertEqual(r["notes"], [""] * 4, r["notes"])
+        # the text lanes say nothing of the boot; the diffusion lanes, which this lifecycle
+        # does not list, say how to install them
+        self.assertEqual(r["notes"][:2], ["", ""], r["notes"])
+        self.assertNotIn("manual start", r["notes"], r["notes"])
 
     def test_the_lane_enabled_at_boot_is_named_and_not_switched_to_again(self):
         r = self.page("null")

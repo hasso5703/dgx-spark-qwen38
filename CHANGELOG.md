@@ -51,7 +51,9 @@ way; several kept it for good, or said something that was never read:
   step that makes the lane it loads the boot one. It says "no lane starts at boot" (nothing,
   when systemd did not answer), and Load points the boot at the lane as it does from any
   other.
-- A lane whose launch file names no checkpoint read "Checkpoint …" in Lanes; "unknown".
+- A lane whose launch file names no checkpoint read "Checkpoint …" in Lanes; "unknown". And
+  when systemd did not answer, a lane the lifecycle does not list (a diffusion lane with no
+  unit file) showed as installed, its checkpoint "…": the lifecycle's list decides then.
 
 **Two browser checks run in CI.** `dashboard/tests/update-banner-check.mjs` called functions
 the redesign of 2026-09-30 renamed and failed 7 of its 9 checks on every cockpit since,
