@@ -218,23 +218,40 @@ class TheProxyRelay(unittest.TestCase):
         return self.kp.route_reasoning_effort(body, path)
 
     def test_a_level_sglang_refuses_is_moved_into_chat_template_kwargs(self):
-        out, moved = self.route(b'{"reasoning_effort":"lean"}')
-        self.assertEqual(moved, "lean")
+        out, moved, dropped = self.route(b'{"reasoning_effort":"lean"}')
+        self.assertEqual((moved, dropped), ("lean", None))
         self.assertEqual(json.loads(out),
                          {"chat_template_kwargs": {"reasoning_effort": "lean"}})
 
     def test_every_level_sglang_accepts_is_left_exactly_where_it_was(self):
         for lvl in self.kp.SGLANG_EFFORTS:
             body = json.dumps({"reasoning_effort": lvl}).encode()
-            out, moved = self.route(body)
-            self.assertIsNone(moved, lvl)
+            out, moved, dropped = self.route(body)
+            self.assertEqual((moved, dropped), (None, None), lvl)
             self.assertEqual(out, body, lvl)
 
-    def test_a_client_that_already_used_the_open_door_is_not_second_guessed(self):
-        body = b'{"reasoning_effort":"lean","chat_template_kwargs":{"reasoning_effort":"low"}}'
-        out, moved = self.route(body)
-        self.assertIsNone(moved)
-        self.assertEqual(out, body)
+    def test_a_refused_level_beside_the_open_door_is_dropped_and_the_open_door_kept(self):
+        """omp's default dialect sends the level twice, and SGLang refused the top-level copy
+        with a 400 (omp 18.4.9, 2026-10-01). SGLang takes the chat_template_kwargs copy first,
+        so dropping the other changes no level, only the answer (v6.30)."""
+        body = b'{"model":"m","reasoning_effort":"lean","chat_template_kwargs":{"reasoning_effort":"low","x":1}}'
+        out, moved, dropped = self.route(body)
+        self.assertEqual((moved, dropped), (None, "lean"))
+        self.assertEqual(json.loads(out), {"model": "m", "chat_template_kwargs": {"reasoning_effort": "low", "x": 1}})
+
+    def test_a_null_in_the_open_door_is_filled_not_taken_for_a_level(self):
+        """SGLang skips a null chat_template_kwargs level and keeps the top-level one
+        (serving_chat.py pops it and sets it only when it is not None): dropping the top-level
+        copy there would lose the only level the client named."""
+        out, moved, dropped = self.route(b'{"reasoning_effort":"lean","chat_template_kwargs":{"reasoning_effort":null,"x":1}}')
+        self.assertEqual((moved, dropped), ("lean", None))
+        self.assertEqual(json.loads(out), {"chat_template_kwargs": {"reasoning_effort": "lean", "x": 1}})
+
+    def test_a_level_sglang_accepts_beside_the_open_door_is_left_alone(self):
+        for lvl in self.kp.SGLANG_EFFORTS:
+            body = json.dumps({"reasoning_effort": lvl, "chat_template_kwargs": {"reasoning_effort": "lean"}}).encode()
+            out, moved, dropped = self.route(body)
+            self.assertEqual((out, moved, dropped), (body, None, None), lvl)
 
     def test_other_routes_and_malformed_bodies_pass_through(self):
         for body, path in ((b'{"reasoning_effort":"lean"}', "/v1/messages"),
@@ -242,12 +259,12 @@ class TheProxyRelay(unittest.TestCase):
                            (b'{"reasoning_effort":123}', "/v1/chat/completions"),
                            (b'[]', "/v1/chat/completions"),
                            (b'', "/v1/chat/completions")):
-            out, moved = self.route(body, path)
-            self.assertIsNone(moved, (body, path))
+            out, moved, dropped = self.route(body, path)
+            self.assertEqual((moved, dropped), (None, None), (body, path))
             self.assertEqual(out, body, (body, path))
 
     def test_other_keys_in_the_body_survive_the_move(self):
-        out, _ = self.route(b'{"model":"m","reasoning_effort":"lean","max_tokens":7}')
+        out, _, _ = self.route(b'{"model":"m","reasoning_effort":"lean","max_tokens":7}')
         d = json.loads(out)
         self.assertEqual(d["model"], "m")
         self.assertEqual(d["max_tokens"], 7)

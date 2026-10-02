@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.29). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.30). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -34,6 +34,13 @@ Six roles, nothing else:
    answer and its unit (PROXY_HOLD_UNITS) is on its way back waits for it, at most
    PROXY_HOLD_MAX_S, instead of failing at once. A streamed one hears from the proxy at
    once (200, then the keepalives of role 1); see "Holding a request" below.
+
+v6.30: a level SGLang refuses at the top of a request that also names one in
+chat_template_kwargs is dropped. SGLang takes the chat_template_kwargs copy over the top-level
+one, so the top-level copy changed nothing but the answer, a 400 from its validation: omp's
+default dialect sends both (omp 18.4.9, 2026-10-01). The level the client put in
+chat_template_kwargs is kept, a null there is filled as an absent one is, and a top-level
+level SGLang accepts is still left alone.
 
 v6.29: a body that never arrived whole is not sent on. A caller that closed before the last
 byte of its body (a reset at once after sending, or a client dying mid-send) left the proxy
@@ -626,34 +633,43 @@ SGLANG_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def route_reasoning_effort(body, path):
-    """The body to forward, and the level moved (or None). Untouched on any doubt."""
+    """(the body to forward, the level moved or None, the level dropped or None). Untouched
+    on any doubt."""
     if not body or not path.startswith("/v1/chat/completions"):
-        return body, None
+        return body, None, None
     if b'"reasoning_effort"' not in body:
-        return body, None               # hot path: one substring scan, no parse
+        return body, None, None         # hot path: one substring scan, no parse
     try:
         j = json.loads(body)
     except Exception:
-        return body, None               # not JSON we can fix: let the engine decide
+        return body, None, None         # not JSON we can fix: let the engine decide
     if not isinstance(j, dict):
-        return body, None
+        return body, None, None
     eff = j.get("reasoning_effort")
     if not isinstance(eff, str) or eff in SGLANG_EFFORTS:
-        return body, None
+        return body, None, None
     kw = j.get("chat_template_kwargs")
     if kw is None:
         kw = {}
     elif not isinstance(kw, dict):
-        return body, None               # the client means something else by that key
-    if "reasoning_effort" in kw:
-        return body, None               # the client already chose the open door
+        return body, None, None         # the client means something else by that key
+    if kw.get("reasoning_effort") is not None:
+        # The client named a level in both doors, the one SGLang refuses at the top. SGLang
+        # takes the chat_template_kwargs copy over the top-level one (a null there it skips,
+        # and the move below fills it), so the top-level copy changes nothing but the answer,
+        # a 400 (v6.30): it goes, the open door's level stays.
+        del j["reasoning_effort"]
+        try:
+            return json.dumps(j).encode(), None, eff
+        except Exception:
+            return body, None, None
     kw["reasoning_effort"] = eff
     j["chat_template_kwargs"] = kw
     del j["reasoning_effort"]
     try:
-        return json.dumps(j).encode(), eff
+        return json.dumps(j).encode(), eff, None
     except Exception:
-        return body, None
+        return body, None, None
 
 
 # OpenAI documents top_logprobs as "an integer between 0 and 20". SGLang declares it
@@ -3190,11 +3206,15 @@ class H(BaseHTTPRequestHandler):
                                                       "message": refusal}}).encode())
                     self._done("400 sampling field out of range"); return
         body, dropped = sanitize_tool_schemas(body, self.path)
-        body, moved_effort = route_reasoning_effort(body, self.path)
+        body, moved_effort, dropped_effort = route_reasoning_effort(body, self.path)
         if moved_effort and _effort_move_logged.first(moved_effort):   # once per level, not per request
             shown = repr(moved_effort[:40]) + ("..." if len(moved_effort) > 40 else "")
             log(f"{self._peer} reasoning_effort={shown} is not in SGLang's enum; "
                 f"relayed inside chat_template_kwargs so the chat template can read it")
+        if dropped_effort and _effort_move_logged.first("top-level copy " + dropped_effort):
+            shown = repr(dropped_effort[:40]) + ("..." if len(dropped_effort) > 40 else "")
+            log(f"{self._peer} reasoning_effort={shown} is not in SGLang's enum and chat_template_kwargs "
+                f"names a level too, which SGLang takes first: the top-level copy is dropped")
         for pat in dropped:                 # once per distinct pattern, not per request
             if _pattern_drop_logged.first(pat):
                 log(f"{self._peer} tool schema: dropped a 'pattern' Python's re cannot "
@@ -3558,7 +3578,7 @@ if __name__ == "__main__":
     holds = (f"holds requests up to {HOLD_MAX_S:.0f}s while {' or '.join(HOLD_UNITS)} comes back"
              if HOLD_UNITS and HOLD_MAX_S > 0 else "holds nothing")
     # one f-string: the cockpit's tests render this line from the source
-    log(f"v6.29 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
+    log(f"v6.30 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))
