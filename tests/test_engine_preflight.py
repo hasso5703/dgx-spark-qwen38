@@ -242,8 +242,12 @@ class TheCockpitReadsWhatItWrites(unittest.TestCase):
         spec.loader.exec_module(self.lc)
 
     def test_its_lines_are_the_words_the_cockpit_reads(self):
+        # 3 s, not 1: the guard counts whole seconds ($SECONDS), so with 1 s a first look
+        # that ended past the shell's first second refused at once, with no line saying it
+        # waited, and this failed once in a full local CI run (2026-10-02; reproduced with an
+        # nvidia-smi that answers in 1.2 s). The service's own wait is 60 s.
         self.box.smi('echo "101, sglang::scheduler, 60000"')
-        rc, out, _ = self.box.run(wait_s=1)
+        rc, out, _ = self.box.run(wait_s=3)
         self.assertEqual(rc, 1, out)
         held = "what is left of an engine still holds 58 GiB of GPU memory: 101 sglang::schedul 60000 MiB"
         lines = out.splitlines()

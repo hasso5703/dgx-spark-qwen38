@@ -18,7 +18,11 @@ The monkey check counted jobs to see that a confirm storm starts one: the server
 last five, so a count stood still on a cockpit with five behind it, and the check read the
 state, sampled once a second, a single time 1.5 s after the clicks, which missed a job that
 had started (one run in four on a cockpit reading the reference box). It tells jobs apart by
-their id now, and waits for the one it expects.
+their id now, and waits for the one it expects. And the test of the start guard's lines
+failed once in a full local CI run: it gave the guard 1 s, which the guard counts in whole
+seconds, so a first look that ended past the shell's first second refused at once, with no
+line saying it waited (reproduced with an `nvidia-smi` that answers in 1.2 s). It gives the
+guard 3 s; the service's own wait is 60 s.
 
 An update restarts the cockpit; the engines and the proxy keep running.
 
