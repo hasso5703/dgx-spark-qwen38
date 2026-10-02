@@ -258,6 +258,36 @@ class AStalledReaderDoesNotHoldTheState(Base):
         self.assertTrue(got, "a reader that stalls holds the lock every sampler publishes under")
 
 
+class ARefusalBeforeTheBodyReachesTheClient(Base):
+    """A refusal the cockpit sends before it reads a body (a body past its route's cap, a
+    POST with no session) went out and the socket closed at once: the rest of the upload met
+    a reset, and a client that stops at its failed write, as Python's http.client does, saw a
+    broken pipe instead of the answer (found 2026-10-02). The proxy drains such a body since
+    2026-09-24 (tests/test_proxy_refusal_reaches_client.py)."""
+
+    def big_post(self, path, size):
+        got = []
+        for _ in range(5):
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
+            try:
+                c.request("POST", path, b"x" * size, {"Content-Type": "application/json"})
+                r = c.getresponse()
+                got.append((r.status, r.read()[:60]))
+            except OSError as e:
+                got.append((type(e).__name__, b""))
+            finally:
+                c.close()
+        return got
+
+    def test_a_login_body_past_its_cap_gets_its_413(self):
+        got = self.big_post("/api/login", 12 * 1024 * 1024)
+        self.assertEqual([g[0] for g in got], [413] * 5, got)
+
+    def test_a_big_post_with_no_session_gets_its_401(self):
+        got = self.big_post("/api/image/generate", 20 * 1024 * 1024)
+        self.assertEqual([g[0] for g in got], [401] * 5, got)
+
+
 class Login(Base):
     def test_a_wrong_key_is_refused(self):
         st, hdrs, _ = self.req("POST", "/api/login", {"key": "wrong"})

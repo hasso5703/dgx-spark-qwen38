@@ -24,6 +24,7 @@ import re
 import secrets
 import shutil
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -3607,6 +3608,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def send_json(self, obj, code=200):
         return self.send_json_text(json.dumps(obj), code)
 
+    def _linger(self, idle_s=2.0, total_s=10.0):
+        """After an answer sent before the request's body was read: end our side, then read
+        and drop what the client is still sending, for a while. Closed at once, the socket
+        answered that data with a reset, which a client that stops at its failed write met
+        before the answer: a broken pipe five times in five instead of the 413 or the 401
+        (found 2026-10-02; the proxy does the same since 2026-09-24)."""
+        try:
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)
+            self.connection.settimeout(idle_s)
+            end = time.time() + total_s
+            while time.time() < end and self.connection.recv(65536):
+                pass
+        except OSError:
+            pass
+
     def send_bytes(self, body: bytes, ctype: str, code=200):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -3744,7 +3761,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         declared = (self.headers.get("Content-Length") or "0").strip()
         if not (declared.isascii() and declared.isdigit()):
             self.close_connection = True
-            return self.send_json({"error": "bad Content-Length"}, 400)
+            self.send_json({"error": "bad Content-Length"}, 400)
+            return self._linger()
         length = int(declared)
         # Ten reference images do not fit in 64 KiB and never will; two keyframes of
         # a prompt fit in 10 MiB, which is what the video route's cap is for (found
@@ -3756,13 +3774,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cap = IMAGE_MAX_POST if raised else VIDEO_MAX_POST if video else 4096 if path == "/api/login" else 65536
         if length > cap:
             self.close_connection = True
-            return self.send_json({"error": "body too large"}, 413)
+            self.send_json({"error": "body too large"}, 413)
+            return self._linger()
         # Authenticate BEFORE reading the body, on every route but the login: a body is
         # read only for someone who may send one. Checked on the raised-cap routes alone,
         # the others read up to 64 KiB for anyone first (found in review, 2026-09-24).
         if path != "/api/login" and not self.authed():
             self.close_connection = True
-            return self.send_json({"error": "auth"}, 401)
+            self.send_json({"error": "auth"}, 401)
+            return self._linger()
         raw = self.rfile.read(length) if length else b""
         if path == "/api/login":
             # Rate limit: after 5 failures from one address, lock 60 s. The attempt is counted
