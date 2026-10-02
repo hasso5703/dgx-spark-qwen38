@@ -192,9 +192,18 @@ ok('no visible field stuck on "…" after load', stuck.length === 0, stuck.join(
 const renderErrs = await evalJs(`[...document.querySelectorAll('[data-src] .age')].map(e => e.textContent).filter(t => /render error/.test(t))`);
 ok('no panel reports a render error', renderErrs.length === 0, renderErrs.join(' | '));
 
+// Jobs are told apart by id. The server's history keeps the last 5, so a count stood still
+// on a cockpit with five behind it, and /api/state is sampled once a second: read once,
+// 1.5 s after a click, it missed a job that had started (seen on a cockpit reading the box,
+// 2026-10-02). A job is looked for until it shows, and "nothing started" is read a sampler
+// period after the clicks.
+const jobIds = async () => { const j = ((await (await api('/api/state')).json()).job || {}).data || {};
+  return new Set([...(j.current ? [j.current.id] : []), ...(j.recent || []).map(r => r.id)]); };
+const newJobs = (before, now) => [...now].filter(id => !before.has(id));
+const waitIdle = async () => { for (let i = 0; i < 60; i++) { const st = await (await api('/api/state')).json(); if (!((st.job || {}).data || {}).current) break; await sleep(500); } };
+
 // ── 4. the sheet: opens, shows the command, Escape closes, no action runs ─────
-const jobsBefore = ((await (await api('/api/state')).json()).job || {}).data || {};
-const nBefore = (jobsBefore.recent || []).length;
+const jobsBefore = await jobIds();
 await openAction('diag_bundle');
 await sleep(200);
 ok('an action opens the sheet', await evalJs("!document.getElementById('scrim').hidden"));
@@ -203,8 +212,9 @@ ok('the sheet explains what happens', (await evalJs("document.getElementById('sh
 ok('the sheet names its verb', /bundle/i.test(await evalJs("document.getElementById('sh-go').textContent")), await evalJs("document.getElementById('sh-go').textContent"));
 await ESC(); await sleep(200);
 ok('Escape closes the sheet', await evalJs("document.getElementById('scrim').hidden"));
-const afterEsc = ((await (await api('/api/state')).json()).job || {}).data || {};
-ok('cancelling started nothing', ((afterEsc.recent || []).length) === nBefore, `${(afterEsc.recent || []).length} vs ${nBefore}`);
+await sleep(1500);
+const startedByCancel = newJobs(jobsBefore, await jobIds());
+ok('cancelling started nothing', startedByCancel.length === 0, `${startedByCancel.length} new job(s)`);
 
 // ── 5. a second action while one runs is refused, and the page says so ───────
 await openAction('diag_bundle'); await sleep(200);
@@ -225,22 +235,20 @@ ok('the job finishes and the dock reports it', await waitFor("!/warn/.test(docum
    await evalJs("document.getElementById('dock-lamp').className"));
 
 // ── 6. double click and click storm: never two jobs, never an exception ──────
-for (let i = 0; i < 60; i++) { const st = await (await api('/api/state')).json(); if (!((st.job || {}).data || {}).current) break; await sleep(500); }
-await sleep(600);
-const before = ((await (await api('/api/state')).json()).job || {}).data || {};
-const nJobs0 = (before.recent || []).length;
+await waitIdle();
+await sleep(1500);
+const before = await jobIds();
 events = [];
 await click('#actbtn'); await sleep(120);
 await evalJs(`(()=>{const b=document.querySelector('#menu-list [data-act="diag_bundle"]'); b.click(); b.click(); b.click(); return 1;})()`);
 await sleep(300);
 ok('three fast clicks open exactly one sheet', (await evalJs("[...document.querySelectorAll('.scrim')].filter(s => !s.hidden).length")) === 1);
 await click('#sh-go'); await click('#sh-go'); await click('#sh-go');
+for (let i = 0; i < 60 && !newJobs(before, await jobIds()).length; i++) await sleep(250);
+await waitIdle();
 await sleep(1500);
-const during = ((await (await api('/api/state')).json()).job || {}).data || {};
-ok('a confirm storm starts one job, not three', !!during.current || (during.recent || []).length === nJobs0 + 1,
-   `current=${during.current ? during.current.action : 'none'} recent=${(during.recent || []).length}`);
-for (let i = 0; i < 60; i++) { const st = await (await api('/api/state')).json(); if (!((st.job || {}).data || {}).current) break; await sleep(500); }
-await sleep(900);
+const stormJobs = newJobs(before, await jobIds());
+ok('a confirm storm starts one job, not three', stormJobs.length === 1, `${stormJobs.length} new job(s)`);
 
 // ── the engine gate: what needs a text engine follows it, in both directions ──
 const life = ((await (await api('/api/state')).json()).lifecycle || {}).data || {};
@@ -259,6 +267,7 @@ if (textUp) {
 }
 
 // ── 7. a click storm everywhere, the lane rack and the studios included ───────
+const beforeStorm = await jobIds();
 events = [];
 const storm = await evalJs(`(()=>{
   const sels = ['.rail .nav', '#railbtn', '.bay', '#rcp-btn', '#reg-btn', '#up-btn', '#inv-btn', '#log-btn', '#actbtn', '#menu-list [data-act]',
@@ -279,8 +288,9 @@ await sleep(1200);
 await ESC(); await sleep(300); await ESC(); await sleep(300);
 ok(`click storm (${storm} clicks) raises no exception`, jsErrors().length === 0, jsErrors().join(' | '));
 ok('the app still shows live data after the storm', await waitFor(BOOTED, 6000));
-const afterStorm = ((await (await api('/api/state')).json()).job || {}).data || {};
-ok('the click storm started no job (nothing was confirmed)', !afterStorm.current, JSON.stringify({ current: afterStorm.current && afterStorm.current.action }));
+await sleep(1500);
+const stormStarted = newJobs(beforeStorm, await jobIds());
+ok('the click storm started no job (nothing was confirmed)', stormStarted.length === 0, `${stormStarted.length} new job(s)`);
 
 // ── 8. the rail collapses, remembers, and its buttons keep their names ────────
 await goto('/'); await waitFor(BOOTED);
