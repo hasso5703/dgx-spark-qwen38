@@ -44,13 +44,22 @@ jobs:
       - name: The cockpit page survives losing its server (headless browser, a cockpit of its own)
         run: |
           # The browser checks in dashboard/tests/*.mjs ran nowhere (found in review,
-          # 2026-09-24). This one and the touch check below own what they drive: a dry-run
+          # 2026-09-24). This one and the three below own what they drive: a dry-run
           # cockpit on loopback with a key of its own, a PATH whose box commands answer
-          # nothing and no network, and a browser that resolves no name. The other five
-          # drive the live cockpit of a box and stay manual; they are parsed here so they
-          # do not rot.
+          # nothing and no network, and a browser that resolves no name. The other three
+          # drive the live cockpit of a box and stay manual; they are parsed here. Parsing
+          # is not running: the update banner check called functions the redesign of
+          # 2026-09-30 renamed and failed 7 of 9 since, parsed green, and the monkey check
+          # found a page that read '…' for good with no text engine (both 2026-10-02):
+          # they own their cockpit now and run below.
           for f in dashboard/tests/*.mjs; do node --check "$f"; done
           node dashboard/tests/resilience-check.mjs
+
+      - name: The cockpit says when a newer version exists (headless browser, a cockpit of its own)
+        run: node dashboard/tests/update-banner-check.mjs
+
+      - name: The cockpit survives a click storm on every view (headless browser, a cockpit of its own)
+        run: node dashboard/tests/monkey-check.mjs
 
       - name: The cockpit page works under a finger (headless browser, real taps, a cockpit of its own)
         run: |

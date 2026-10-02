@@ -3,22 +3,86 @@
 // server. It refuses to run against a cockpit that is not in dry run, so nothing it
 // clicks can ever touch the real serving stack.
 //
-//   COCKPIT_DRY_RUN=1 COCKPIT_PORT=30091 COCKPIT_CONFIG_DIR=/tmp/x python3 dashboard/cockpit.py &
-//   node dashboard/tests/monkey-check.mjs [http://127.0.0.1:30091]
+//   node dashboard/tests/monkey-check.mjs
 //
+// It OWNS its cockpit, like resilience-check.mjs: a dry-run instance on loopback with a key
+// of its own, its engine, proxy and image lane on a closed port, its update check off and a
+// PATH whose box commands answer nothing, so it runs in CI. To drive a dry-run cockpit you
+// started yourself instead (one that reads the box's units, say), name it and its key:
+//
+//   COCKPIT_KEY_FILE=/tmp/x/api-key node dashboard/tests/monkey-check.mjs http://127.0.0.1:30095
+//
+// (COCKPIT_BASE works for the address too.)
+// The invocation this used to give, COCKPIT_PORT=30091, is the port a box's own cockpit
+// gives its agent relay, and it ran nowhere to be noticed (found 2026-10-02).
 // Exit code 0 = every check passed. Any failure prints the check that failed.
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, chmodSync, existsSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import net from 'node:net';
 
-const BASE = process.argv[2] || process.env.COCKPIT_BASE || 'http://127.0.0.1:30091';
-const KEYFILE = process.env.COCKPIT_KEY_FILE || `${process.env.HOME}/.config/qwen38/api-key`;
-const SHOT = process.env.COCKPIT_SHOT || '/tmp/cockpit-monkey.png';
+const HERE = dirname(fileURLToPath(import.meta.url));
+const CHROME = process.env.CHROME || ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
+  '/snap/bin/chromium'].find(existsSync);
 const checks = [];
 const ok = (name, cond, detail = '') => { checks.push({ name, ok: !!cond, detail: String(detail).slice(0, 200) }); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const root = mkdtempSync(join(tmpdir(), 'cockpit-monkey-'));
+let server = null, chrome = null;
+// process.exit() skips every finally: an early exit (the cockpit never healthy, the login
+// refused, no browser) left the cockpit this spawned running on a port nobody owned. The
+// exit signals what is still alive, the browser with SIGKILL so it writes no profile back.
+process.on('exit', () => {
+  try { if (chrome && chrome.exitCode === null && chrome.signalCode === null) chrome.kill('SIGKILL'); } catch { /* gone */ }
+  try { if (server && server.exitCode === null && server.signalCode === null) process.kill(-server.pid, 'SIGTERM'); } catch { /* gone */ }
+  rmSync(root, { recursive: true, force: true });
+});
+process.on('SIGINT', () => process.exit(130));
+const SHOT = process.env.COCKPIT_SHOT || join(tmpdir(), 'cockpit-monkey.png');
+let BASE = process.argv[2] || process.env.COCKPIT_BASE || '';
+let key;
+if (BASE) {
+  key = readFileSync(process.env.COCKPIT_KEY_FILE || `${process.env.HOME}/.config/qwen38/api-key`, 'utf8').trim();
+} else {
+  const cfgDir = join(root, 'config'), fence = join(root, 'bin');
+  mkdirSync(cfgDir); mkdirSync(fence);
+  key = randomBytes(24).toString('hex');
+  writeFileSync(join(cfgDir, 'api-key'), key + '\n', { mode: 0o600 });
+  for (const cmd of ['docker', 'systemctl', 'journalctl', 'nvidia-smi', 'sudo', 'git', 'curl', 'tailscale', 'opencode']) {
+    writeFileSync(join(fence, cmd), '#!/bin/sh\nexit 1\n'); chmodSync(join(fence, cmd), 0o755);
+  }
+  const port = await new Promise(res => { const srv = net.createServer(); srv.listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => res(p)); }); });
+  BASE = `http://127.0.0.1:${port}`;
+  const CLOSED = 'http://127.0.0.1:1';
+  server = spawn('python3', [join(HERE, '..', 'cockpit.py')], {
+    env: { ...process.env, COCKPIT_DRY_RUN: '1', COCKPIT_PORT: String(port), COCKPIT_CONFIG_DIR: cfgDir,
+           COCKPIT_BIND: '127.0.0.1', COCKPIT_AGENT_PORT: '0', COCKPIT_AUTOHEAL: '0', COCKPIT_AUTOFIT: '0',
+           COCKPIT_UPDATE_CHECK: '0', COCKPIT_ENGINE: CLOSED, COCKPIT_PROXY: CLOSED, COCKPIT_IMAGE: CLOSED,
+           HOME: root, PATH: `${fence}:${process.env.PATH}` },
+    stdio: ['ignore', 'ignore', 'ignore'], detached: true,
+  });
+  const t0 = Date.now();
+  for (;;) {
+    try { const r = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(1500) }); if (r.ok) break; } catch { /* booting */ }
+    if (Date.now() - t0 > 25000) { console.error('the cockpit did not come up'); process.exit(2); }
+    await sleep(400);
+  }
+}
+const stopAll = async () => {
+  const gone = child => (!child || child.exitCode !== null || child.signalCode !== null) ? null
+    : Promise.race([new Promise(r => child.once('exit', r)), sleep(5000)]);
+  const browser = gone(chrome);
+  try { if (chrome) chrome.kill('SIGTERM'); } catch { /* gone */ }
+  await browser;
+  const cockpit = gone(server);
+  if (server) { try { process.kill(-server.pid, 'SIGTERM'); } catch { try { server.kill('SIGTERM'); } catch { /* gone */ } } }
+  await cockpit;
+};
 
 // ── session (server side: nothing is typed into the login form) ───────────────
-const key = readFileSync(KEYFILE, 'utf8').trim();
 const jar = [];
 async function api(path, init = {}) {
   const r = await fetch(BASE + path, { ...init, headers: { ...(init.headers || {}), cookie: jar.join('; ') } });
@@ -26,7 +90,7 @@ async function api(path, init = {}) {
   return r;
 }
 const login = await api('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
-if (!login.ok) { console.error(`login failed: HTTP ${login.status}`); process.exit(2); }
+if (!login.ok) { console.error(`login failed: HTTP ${login.status}`); await stopAll(); process.exit(2); }
 const cookie = jar.join('; ').match(/cockpit=([^;]+)/)?.[1];
 
 const state0 = await (await api('/api/state')).json();
@@ -34,20 +98,28 @@ const cfg = (state0.config || {}).data || {};
 if (cfg.dry_run !== true) {
   console.error(`REFUSING to run: ${BASE} is not in dry run (config.dry_run=${cfg.dry_run}).`);
   console.error('Start a second cockpit with COCKPIT_DRY_RUN=1 on another port and point this test at it.');
-  process.exit(3);
+  await stopAll(); process.exit(3);
 }
 
-// ── browser ──────────────────────────────────────────────────────────────────
-const chrome = spawn('/snap/bin/chromium', ['--headless=new', '--remote-debugging-port=0', '--no-first-run',
-  '--disable-gpu', '--hide-scrollbars', '--window-size=1500,1000', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
-const wsUrl = await new Promise((res, rej) => {
-  let buf = ''; chrome.stderr.on('data', d => { buf += d; const m = buf.match(/DevTools listening on (ws:\S+)/); if (m) res(m[1]); });
-  setTimeout(() => rej(new Error('no devtools url: ' + buf.slice(-300))), 20000);
-});
-const ws = new WebSocket(wsUrl); await new Promise(r => { ws.onopen = r; });
+// ── browser, over a pipe (no network, no name resolved but the page's own address) ──
+if (!CHROME) { console.error('no browser: set CHROME to a Chromium or Chrome binary'); await stopAll(); process.exit(2); }
+chrome = spawn(CHROME, ['--headless=new', '--remote-debugging-pipe', '--no-first-run', '--disable-gpu',
+  '--no-sandbox', `--user-data-dir=${join(root, 'chrome')}`, '--hide-scrollbars', '--window-size=1500,1000',
+  '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-extensions',
+  '--disable-default-apps', '--no-default-browser-check', '--disable-domain-reliability', '--no-pings',
+  '--disable-client-side-phishing-detection', '--disable-features=OptimizationHints,Translate,MediaRouter',
+  '--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1', 'about:blank'], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
 let id = 0; const pending = new Map(); let events = [];
-ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } else if (m.method) events.push(m); };
-const send = (method, params = {}, sessionId) => new Promise(r => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params, sessionId })); });
+let inbox = '';
+chrome.stdio[4].on('data', d => {
+  inbox += d.toString();
+  let cut;
+  while ((cut = inbox.indexOf('\0')) >= 0) {
+    const m = JSON.parse(inbox.slice(0, cut)); inbox = inbox.slice(cut + 1);
+    if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } else if (m.method) events.push(m);
+  }
+});
+const send = (method, params = {}, sessionId) => new Promise(r => { const i = ++id; pending.set(i, r); chrome.stdio[3].write(JSON.stringify({ id: i, method, params, sessionId }) + '\0'); });
 const { result: { targetId } } = await send('Target.createTarget', { url: 'about:blank' });
 const { result: { sessionId } } = await send('Target.attachToTarget', { targetId, flatten: true });
 await send('Network.enable', {}, sessionId); await send('Runtime.enable', {}, sessionId); await send('Page.enable', {}, sessionId);
@@ -232,6 +304,7 @@ for (const v of VIEWS) { await evalJs(`showView('${v}')`); await sleep(250);
 ok('no horizontal scrolling at 390 px on any view', hs.length === 0, hs.join(', '));
 ok('the menu button opens the rail as a drawer', await evalJs("(document.getElementById('menubtn').click(), document.body.classList.contains('railopen'))"));
 await send('Emulation.clearDeviceMetricsOverride', {}, sessionId);
+await sleep(400);   // the drawer's slide (0.3 s) ends: the screenshot caught the rail mid-way
 ok('no exception at phone width', jsErrors().length === 0, jsErrors().join(' | '));
 
 // ── 10. server side: idle at the end, no collector in error ───────────────────
@@ -244,7 +317,7 @@ ok('no collector is in error at the end',
 
 const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, sessionId);
 writeFileSync(SHOT, Buffer.from(shot.result.data, 'base64'));
-ws.close(); chrome.kill('SIGTERM');
+await stopAll();
 
 const failed = checks.filter(c => !c.ok);
 for (const c of checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}${c.ok || !c.detail ? '' : '  <- ' + c.detail}`);

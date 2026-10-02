@@ -31,7 +31,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const freePort = () => new Promise(res => { const srv = net.createServer(); srv.listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => res(p)); }); });
 
 const root = mkdtempSync(join(tmpdir(), 'cockpit-resilience-'));
-process.on('exit', () => rmSync(root, { recursive: true, force: true }));
+let server = null, chrome = null;
+// process.exit() skips every finally: an early exit (the cockpit never healthy, the login
+// refused, no browser) left the cockpit this spawned running on a port nobody owned. The
+// exit signals what is still alive, the browser with SIGKILL so it writes no profile back.
+process.on('exit', () => {
+  try { if (chrome && chrome.exitCode === null && chrome.signalCode === null) chrome.kill('SIGKILL'); } catch { /* gone */ }
+  try { if (server && server.exitCode === null && server.signalCode === null) process.kill(-server.pid, 'SIGTERM'); } catch { /* gone */ }
+  rmSync(root, { recursive: true, force: true });
+});
 process.on('SIGINT', () => process.exit(130));
 const cfgDir = join(root, 'config');
 const fence = join(root, 'bin');
@@ -45,7 +53,6 @@ const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const CLOSED = 'http://127.0.0.1:1';
 
-let server = null;
 function startServer() {
   server = spawn('python3', [COCKPIT], {
     env: { ...process.env, COCKPIT_DRY_RUN: '1', COCKPIT_PORT: String(PORT), COCKPIT_CONFIG_DIR: cfgDir,
@@ -71,7 +78,6 @@ function stopServer() {
   server = null;
 }
 
-let chrome = null;
 try {
   startServer();
   if (!await waitHealth(true)) { console.error('the spawned cockpit never became healthy'); process.exit(2); }

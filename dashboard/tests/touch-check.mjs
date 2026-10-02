@@ -53,7 +53,15 @@ const PHONES = [
 const DESKTOP = { name: 'laptop', w: 1366, h: 768, dpr: 1 };
 
 const root = mkdtempSync(join(tmpdir(), 'cockpit-touch-'));
-process.on('exit', () => rmSync(root, { recursive: true, force: true }));
+let server = null, chrome = null;
+// process.exit() skips every finally: an early exit (the cockpit never healthy, the login
+// refused, no browser) left the cockpit this spawned running on a port nobody owned. The
+// exit signals what is still alive, the browser with SIGKILL so it writes no profile back.
+process.on('exit', () => {
+  try { if (chrome && chrome.exitCode === null && chrome.signalCode === null) chrome.kill('SIGKILL'); } catch { /* gone */ }
+  try { if (server && server.exitCode === null && server.signalCode === null) process.kill(-server.pid, 'SIGTERM'); } catch { /* gone */ }
+  rmSync(root, { recursive: true, force: true });
+});
 process.on('SIGINT', () => process.exit(130));
 const cfgDir = join(root, 'config');
 const fence = join(root, 'bin');
@@ -67,7 +75,6 @@ const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const CLOSED = 'http://127.0.0.1:1';
 
-let server = null, chrome = null;
 const gone = child => (!child || child.exitCode !== null || child.signalCode !== null) ? null
   : Promise.race([new Promise(r => child.once('exit', r)), sleep(5000)]);
 try {
