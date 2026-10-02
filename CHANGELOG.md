@@ -1,15 +1,66 @@
 # Changelog
 
-## v1.22.1 (2026-10-02): the pin watch asks GitHub with the workflow's token
+## v1.22.1 (2026-10-02): omp's own dialect passes the proxy, the pin watch asks GitHub with a token, and the cockpit says what it could not read
 
-The scheduled pin watch of 2026-10-02 filed [issue #34](https://github.com/hasso5703/dgx-spark-qwen38/issues/34):
-both of its tries, ten minutes apart, got HTTP 403 from the GitHub API with the rate limit
-spent, and said so ("3 of 18 pins could not be asked about"), as v1.21.0 made it. GitHub
-allows an anonymous caller 60 requests an hour per address, and a runner's address is shared
-with other jobs. The watch now hands `check-pins.sh` the workflow's own token
-(`GITHUB_TOKEN`), which it sends to the GitHub API the way it sends `HF_TOKEN` to Hugging
-Face: on stdin, never on a command line (checked on the reference box: the token on no
-process's command line during a run). Without the variable, as on a box, nothing changes.
+What a campaign of tests on the reference box found on v1.22.0, every request kind through
+the proxy, the real agents, and the cockpit clicked, reloaded and starved of its sources.
+
+**omp's default dialect passes the proxy (v6.30).** omp sends the effort both at the top of
+a request and in `chat_template_kwargs`. SGLang takes the `chat_template_kwargs` copy first,
+but validates the top-level one against its own enum, so the template's `lean`, omp's
+default level here, was a 400 on every request for an omp configured by hand (v1.22.0's
+generated config avoids it with `thinkingFormat: qwen-chat-template`). The proxy now drops
+the top-level copy when SGLang would refuse it and `chat_template_kwargs` names a level: the
+level that applies is the one that would have applied. A top-level level SGLang accepts is
+left alone, and a `null` in `chat_template_kwargs`, which SGLang skips, is filled as an
+absent one is. Checked with omp 18.4.9 in its default dialect against the flash lane: a 400
+through v6.29, an answer through v6.30.
+
+**The pin watch asks GitHub with the workflow's token.** The scheduled pin watch of
+2026-10-02 filed [issue #34](https://github.com/hasso5703/dgx-spark-qwen38/issues/34): both
+of its tries, ten minutes apart, got HTTP 403 from the GitHub API with the rate limit spent,
+and said so ("3 of 18 pins could not be asked about"), as v1.21.0 made it. GitHub allows an
+anonymous caller 60 requests an hour per address, and a runner's address is shared with
+other jobs. The watch now hands `check-pins.sh` the workflow's own token (`GITHUB_TOKEN`),
+which it sends to the GitHub API the way it sends `HF_TOKEN` to Hugging Face: on stdin,
+never on a command line (checked on the reference box: the token on no process's command
+line during a run). Without the variable, as on a box, nothing changes.
+
+**The cockpit answers a refused upload before it closes.** A POST past its cap (4 KiB for the
+login, 40 MiB for an image, 10 MiB for a video, 64 KiB elsewhere), sent without a session or
+with a Content-Length that is not a number got its 413, 401 or 400 written and the connection
+closed with the body unread: a client still sending, like Python's `http.client`, met a reset
+and saw a broken pipe instead of the answer, five times in five. The cockpit now ends its
+side and reads what is left for up to 10 s, as the proxy has done since 2026-09-24, and the
+client reads its answer.
+
+**The cockpit says what it could not read.** A field reads "…" while its value is on its
+way; several kept it for good, or said something that was never read:
+
+- With no text engine serving, the Traffic counters read "…"; they read "none", beside the
+  "no text engine" they already showed (the page before the redesign of 2026-09-30 said so).
+- With `nvidia-smi` silent, the GPU vitals of Now read "…", beside a temperature called
+  "cool" and "0 processes", and the Machine view said "No process on the GPU" under a green
+  lamp, its power line falling to 0 W. They read "n/a" now, and the Machine view says that
+  `nvidia-smi` did not answer.
+- A kernel log read that did not answer (a `journalctl` past its 8 s) counted as a quiet
+  hour, "0", and became the baseline the next read is measured against: every GPU driver
+  refusal of the hour then came back as a new event (reproduced with v1.22.0's collector).
+  It is no reading now ("n/a"), and the baseline stays.
+- With no lane enabled at boot, the spine said "27B starts at boot", and Load left out the
+  step that makes the lane it loads the boot one. It says "no lane starts at boot" (nothing,
+  when systemd did not answer), and Load points the boot at the lane as it does from any
+  other.
+- A lane whose launch file names no checkpoint read "Checkpoint …" in Lanes; "unknown".
+
+**Two browser checks run in CI.** `dashboard/tests/update-banner-check.mjs` called functions
+the redesign of 2026-09-30 renamed and failed 7 of its 9 checks on every cockpit since,
+unseen, since it ran nowhere; `monkey-check.mjs` documented a run on port 30091, a box's
+agent relay. Both now own a dry-run cockpit of their own, like the resilience and touch
+checks, and run in CI: the monkey check is the one that found the fields above. And the
+four checks that own a cockpit no longer leave it running when they end early.
+
+An update restarts the proxy once (v6.30) and the cockpit; the engines keep running.
 
 ## v1.22.0 (2026-10-02): pi and omp configs, generated from the opencode artifact
 
