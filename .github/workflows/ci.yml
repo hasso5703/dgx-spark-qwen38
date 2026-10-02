@@ -10,9 +10,13 @@ permissions:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    # Named, not ubuntu-latest: that label moves to Ubuntu 26 from 2026-10-19 (GitHub's notice on
+    # the run of 2026-10-02), and a new image, its python and its browser, is a change this suite
+    # is asked to pass on purpose, in a commit of its own.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      # v5 runs on Node 24; v4 targets Node 20, which the runners deprecate (same run)
+      - uses: actions/checkout@v5
 
       - name: Shell syntax
         run: |

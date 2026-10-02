@@ -60,7 +60,9 @@ the redesign of 2026-09-30 renamed and failed 7 of its 9 checks on every cockpit
 unseen, since it ran nowhere; `monkey-check.mjs` documented a run on port 30091, a box's
 agent relay. Both now own a dry-run cockpit of their own, like the resilience and touch
 checks, and run in CI: the monkey check is the one that found the fields above. And the
-four checks that own a cockpit no longer leave it running when they end early.
+four checks that own a cockpit no longer leave it running when they end early. The CI and the
+pin watch run on a named image, `ubuntu-24.04`, which `ubuntu-latest` leaves for Ubuntu 26
+from 2026-10-19, and on `actions/checkout@v5`, which runs on Node 24.
 
 An update restarts the proxy once (v6.30) and the cockpit; the engines keep running.
 
