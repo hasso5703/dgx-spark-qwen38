@@ -26,6 +26,12 @@ jobs:
 
       - id: pins
         name: Resolve every pin (network on purpose)
+        env:
+          # GitHub allows an anonymous caller 60 requests an hour per address, and a runner's
+          # address is shared: both tries of 2026-10-02 got 403 with the limit spent and
+          # filed issue #34. The workflow's own token lifts the limit; check-pins.sh sends it
+          # on stdin, never on a command line.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
           rc=0

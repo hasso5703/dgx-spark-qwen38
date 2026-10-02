@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.22.1 (2026-10-02): the pin watch asks GitHub with the workflow's token
+
+The scheduled pin watch of 2026-10-02 filed [issue #34](https://github.com/hasso5703/dgx-spark-qwen38/issues/34):
+both of its tries, ten minutes apart, got HTTP 403 from the GitHub API with the rate limit
+spent, and said so ("3 of 18 pins could not be asked about"), as v1.21.0 made it. GitHub
+allows an anonymous caller 60 requests an hour per address, and a runner's address is shared
+with other jobs. The watch now hands `check-pins.sh` the workflow's own token
+(`GITHUB_TOKEN`), which it sends to the GitHub API the way it sends `HF_TOKEN` to Hugging
+Face: on stdin, never on a command line (checked on the reference box: the token on no
+process's command line during a run). Without the variable, as on a box, nothing changes.
+
 ## v1.22.0 (2026-10-02): pi and omp configs, generated from the opencode artifact
 
 [pi](https://pi.dev) and [omp](https://omp.sh) (oh-my-pi) read no `opencode.json`, so the box's facts (the providers, the default model, the limits, the template's effort tiers) existed for them only if a user typed them again. `./pi-gen.py` derives both agents' configs from the artifact install.sh already fits: `~/.config/qwen38/pi/` (pi's JSON pair, canonical) and `~/.config/qwen38/omp/` (the same values in omp's YAML), built once so they cannot disagree. The repo never writes into `~/.pi` or `~/.omp`: copying stays the user's, and `docs/pi.md` says how without overwriting a config that has other providers. Contributed by [@jimkont](https://github.com/jimkont) in [#30](https://github.com/hasso5703/dgx-spark-qwen38/pull/30).

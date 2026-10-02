@@ -125,6 +125,29 @@ class TheCheckPins(PinsBase):
             self.assertIn("Authorization: Bearer hf_secretvalue123", c["stdin"], c)
             self.assertFalse(any("hf_secretvalue123" in a for a in c["argv"]), c["argv"])
 
+    def test_github_token_is_sent_and_not_on_the_command_line(self):
+        """Issue #34: an anonymous caller gets 60 requests an hour per address, a runner's
+        address is shared, and both tries of 2026-10-02 got 403 with the limit spent."""
+        env_tok = "ghs_secretvalue456"
+        env = {k: v for k, v in os.environ.items() if k not in ("HF_TOKEN", "GITHUB_TOKEN")}
+        env.update(PATH=f"{self.bin}:{env['PATH']}", FAKE_PINS="{}", FAKE_LOG=str(self.log), FAKE_OC_SHA=OC_SHA,
+                   GITHUB_TOKEN=env_tok)
+        r = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        gh = [c for c in self.calls() if c["url"].startswith("https://api.github.com/")]
+        self.assertEqual(len(gh), 3, gh)          # the two source commits and the opencode release
+        for c in gh:
+            self.assertIn(f"Authorization: Bearer {env_tok}", c["stdin"], c)
+            self.assertFalse(any(env_tok in a for a in c["argv"]), c["argv"])
+        others = [c for c in self.calls() if not c["url"].startswith("https://api.github.com/")]
+        self.assertFalse(any(env_tok in c["stdin"] + " ".join(c["argv"]) for c in others),
+                         "the GitHub token went somewhere else than GitHub")
+
+    def test_the_pin_watch_hands_the_check_its_token(self):
+        wf = (REPO / ".github/workflows/pin-watch.yml").read_text()
+        step = wf.split("- id: pins", 1)[1].split("run: |", 1)[0]
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", step)
+
     def test_no_token_sends_no_authorization(self):
         self.run_pins()
         for c in self.calls():

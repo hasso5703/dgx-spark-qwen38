@@ -63,6 +63,17 @@ hf_answer() {  # $1 url: prints "<http code> <x-error-code>"
   printf '%s\n' "$cfg" | curl -s -o /dev/null -m 25 -K - -w '%{http_code} %header{x-error-code}' "$1"
 }
 
+# GitHub answers an anonymous caller 60 requests an hour per address, and a runner's address is
+# shared: the scheduled run of 2026-10-02 got 403 with the limit spent, on both of its tries ten
+# minutes apart, and filed issue #34. GITHUB_TOKEN (the workflow's own token), when set, is sent
+# the way HF_TOKEN is, on stdin rather than on the command line.
+gh_api() {  # $1 url, $2 curl -w format, [$3 "nobody" to drop the body]: body, then the -w output
+  local cfg="" out=()
+  [ -n "${GITHUB_TOKEN:-}" ] && cfg="header = \"Authorization: Bearer $GITHUB_TOKEN\""
+  [ "${3:-}" = nobody ] && out=(-o /dev/null)
+  printf '%s\n' "$cfg" | curl -s ${out[@]+"${out[@]}"} -m 25 -K - -w "$2" "$1"
+}
+
 check_model() {  # $1 label, $2 repo, $3 revision, [$4 a file at its root, default config.json]
   case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
   CHECKED=$((CHECKED + 1))
@@ -122,8 +133,8 @@ check_commit() {  # $1 label, $2 owner/repo on GitHub, $3 commit: install-image.
   case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
   CHECKED=$((CHECKED + 1))
   local code left
-  read -r code left <<<"$(curl -s -o /dev/null -m 25 -w '%{http_code} %header{x-ratelimit-remaining}' \
-    "https://api.github.com/repos/$2/commits/$3")"
+  read -r code left <<<"$(gh_api "https://api.github.com/repos/$2/commits/$3" \
+    '%{http_code} %header{x-ratelimit-remaining}' nobody)"
   case "$code" in
     200) printf '  \033[0;32mok\033[0m    %-14s %s @ %s\n' "$1" "$2" "${3:0:12}" ;;
     *) if no_answer "$code" "$left"; then
@@ -163,7 +174,7 @@ check_asset() {  # $1 label, $2 owner/repo, $3 release tag, $4 asset, $5 its sha
   local answer status code left digest
   # The body alone said "no such release", "no such asset" and "no answer" the same way, and
   # issue #33 read a 504 as a release gone: the code and the rate-limit header come after it.
-  answer="$(curl -s -m 25 -w '\n%{http_code} %header{x-ratelimit-remaining}' "https://api.github.com/repos/$2/releases/tags/$3")"
+  answer="$(gh_api "https://api.github.com/repos/$2/releases/tags/$3" '\n%{http_code} %header{x-ratelimit-remaining}')"
   status="${answer##*$'\n'}"
   read -r code left <<<"$status"
   digest="$(printf '%s' "${answer%$'\n'*}" | python3 -c '
