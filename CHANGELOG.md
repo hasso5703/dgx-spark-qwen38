@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.22.3 (2026-10-02): the Logs view gives the engine's times in the box's own time, and dims the box's own polling
+
+The serving containers run in UTC, and the Logs view showed their lines as they come: in
+Luxembourg, two hours behind every other time on the page (a line stamped 16:37 at 18:37 on
+the reference box). The cockpit now reads each line's instant from its transport, docker's
+`--timestamps` or the journal's own, and rewrites a leading `[YYYY-MM-DD HH:MM:SS]` that is
+that instant written in UTC in the box's local time. A stamp that is not (a lane that runs
+natively, a time a line quotes) stays as it was, and the view says when it rewrote any. The
+engine is not touched: nothing it reads changes, so nothing restarts it.
+
+The cockpit asks the engine its load every second, and those lines filled the whole engine
+log while only `/health` was dimmed. The cockpit's own routes, `/v1/loads` and `/server_info`
+and their older names, are dimmed too now.
+
+The monkey check counted jobs to see that a confirm storm starts one: the server keeps the
+last five, so a count stood still on a cockpit with five behind it, and the check read the
+state, sampled once a second, a single time 1.5 s after the clicks, which missed a job that
+had started (one run in four on a cockpit reading the reference box). It tells jobs apart by
+their id now, and waits for the one it expects.
+
+An update restarts the cockpit; the engines and the proxy keep running.
+
 ## v1.22.2 (2026-10-02): the Cockpit panel of Settings no longer reads stale
 
 Since the redesign of 2026-09-30, the Cockpit panel of Settings (the cockpit's version, its
