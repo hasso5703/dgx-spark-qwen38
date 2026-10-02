@@ -182,6 +182,53 @@ class Parse(Base):
             self.assertIn("kind", r)
             self.assertIn(r["kind"], ("ok", "gone", "fail", "live", "unknown"))
 
+    def test_feed_keeps_a_long_request_after_its_start_left_the_window(self):
+        """The badge and the table count the rows in flight. The first read goes back to the
+        proxy's start; later ones read the 800 newest lines and carry what was in flight, so
+        a generation whose start left the window stays counted and its end lands
+        (2026-10-02: 8 in flight at the proxy and the engine, 2 in the cockpit's rows)."""
+        L = "2026-10-02T23:{m:02d}:{s:02d}+02:00 gx10 python3[1]: [proxy] {rest}"
+        start = L.format(m=16, s=1, rest="127.0.0.1:49398 -> POST /v1/chat/completions body=111922b")
+        short = lambda m: [L.format(m=m, s=i, rest=f"127.0.0.1:{41000 + m * 60 + i} -> POST /v1/chat/completions body=9b")
+                           for i in range(30)] + [L.format(m=m, s=i, rest=f"127.0.0.1:{41000 + m * 60 + i} POST /v1/chat/completions ok in 1.0s")
+                                                   for i in range(30)]
+        end = L.format(m=49, s=49, rest="127.0.0.1:49398 POST /v1/chat/completions ok in 2028.0s")
+        calls, answers = [], {"since": "\n".join([start] + short(20)), "window": "\n".join(short(40))}
+
+        def fake(argv, timeout=5.0, merge_err=False):
+            calls.append(list(argv))
+            if argv[:2] == ["systemctl", "show"]:
+                return "@1790974535\n"
+            return answers["since"] if "--since" in argv else answers["window"]
+        self.cp.run = fake
+        self.cp.FEED_CARRY.clear()
+        self.cp.FEED_BOOTED[0] = False
+        live = lambda out: [r["peer"] for r in out["rows"] if r["outcome"] == "in flight"]
+        out = self.cp.collect_feed()
+        self.assertIn("--since", calls[-1])
+        self.assertEqual(calls[-1][calls[-1].index("--since") + 1], "@1790974535")
+        self.assertEqual(live(out), ["127.0.0.1:49398"])
+        out = self.cp.collect_feed()
+        self.assertNotIn("--since", calls[-1])
+        self.assertEqual(calls[-1][calls[-1].index("-n") + 1], "800")
+        self.assertEqual(live(out), ["127.0.0.1:49398"], "the window no longer holds its start")
+        # its end lands on the carried start (a few newer requests: it is among the 25 newest)
+        answers["window"] = "\n".join(short(41)[:3] + short(41)[30:33] + [end])
+        out = self.cp.collect_feed()
+        self.assertEqual(live(out), [])
+        self.assertIn(("127.0.0.1:49398", "ok", 2028.0), [(r["peer"], r["outcome"], r["secs"]) for r in out["rows"]])
+
+    def test_a_first_feed_read_that_timed_out_is_tried_again(self):
+        def silent(argv, timeout=5.0, merge_err=False):
+            r = self.cp.Ran("" if argv[0] == "journalctl" else "@1790974535\n")
+            r.ok = argv[0] != "journalctl"
+            return r
+        self.cp.run = silent
+        self.cp.FEED_CARRY.clear()
+        self.cp.FEED_BOOTED[0] = False
+        self.cp.collect_feed()
+        self.assertFalse(self.cp.FEED_BOOTED[0], "the read since the proxy's start is still to do")
+
     def test_decode_telemetry_needs_a_running_container_to_say_anything(self):
         self.box({})            # docker ps -q answers nothing: no lane is up
         out = self.cp.collect_decode_telemetry()

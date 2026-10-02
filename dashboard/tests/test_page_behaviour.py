@@ -1019,5 +1019,25 @@ class TheLogsSayTheBoxsTimeAndDimTheBoxsOwnPolling(unittest.TestCase):
         self.assertTrue(r["native"]["hidden"], "no line was rewritten: nothing to say")
 
 
+class TheTrafficBadgeCountsEveryRequestInFlight(unittest.TestCase):
+    """The badge counts the feed's rows in flight, and the server now sends every request
+    still in flight, however old, beside the 25 newest: eight agents read "8 running"
+    beside a badge that fell to 2 (2026-10-02)."""
+
+    def test_an_old_request_in_flight_is_in_the_badge_and_the_table(self):
+        r = run(self, r"""
+        const row = (ts, peer, outcome, kind, secs) => ({ts, peer, method: 'POST', path: '/v1/chat/completions', bytes: 1000,
+                                                        outcome, kind, secs, detail: null});
+        const rows = [row('2026-10-02T23:16:01', '127.0.0.1:49398', 'in flight', 'live', null)];
+        for (let i = 0; i < 25; i++) rows.push(row('2026-10-02T23:40:' + String(i).padStart(2, '0'), '127.0.0.1:' + (41000 + i), 'ok', 'ok', 1.0));
+        rows.push(row('2026-10-02T23:41:00', '127.0.0.1:42000', 'in flight', 'live', null));
+        feed({config: CONFIG, units: UNITS, feed: {rows}});
+        const live = [...$('feed').tBodies[0].children].filter(tr => tr.textContent.includes('in flight')).length;
+        report({badge: txt('bdg-traffic'), live, rows: $('feed').tBodies[0].children.length});
+        """)
+        self.assertEqual(r["badge"], "2", r)
+        self.assertEqual((r["live"], r["rows"]), (2, 27), r)
+
+
 if __name__ == "__main__":
     unittest.main()

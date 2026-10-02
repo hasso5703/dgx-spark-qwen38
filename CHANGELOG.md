@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.22.4 (2026-10-03): the Traffic badge counts every request in flight
+
+The badge beside Traffic in the rail, and the "in flight" rows of the Requests table, count
+the feed's rows, and the feed held the 25 newest requests through the proxy. With eight
+agents at work, a generation that outlasted 25 newer requests left both while the engine
+still ran it: on the reference box, eight agents read "8 running" beside a badge that fell
+to 7, then 5, 4 and 2, while the proxy had 8 requests in flight (measured 2026-10-02; one
+request lasted 34 minutes). The feed now keeps every older request still in flight beside
+the 25 newest, and carries what was in flight at one read into the next, so a long
+generation stays counted after its start has left the 800 journal lines read every 5 s.
+The first read after the cockpit starts goes back to the proxy's own start, so a cockpit
+restarted under a long generation counts it too. The page is unchanged: it counts the rows
+it is sent.
+
+An update restarts the cockpit; the engines and the proxy keep running.
+
 ## v1.22.3 (2026-10-02): the Logs view gives the engine's times in the box's own time, and dims the box's own polling
 
 The serving containers run in UTC, and the Logs view showed their lines as they come: in

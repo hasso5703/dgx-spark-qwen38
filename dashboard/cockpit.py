@@ -717,13 +717,32 @@ def collect_decode_telemetry():
                       "age": round(time.time() - LAST_USAGE["ts"], 1) if LAST_USAGE["ts"] else None}}
 
 
+FEED_CARRY: list[dict] = []        # requests in flight at the last read, for the next one
+FEED_BOOTED = [False]
+
+
 @guard
 def collect_feed():
-    """Last requests seen by the keepalive proxy: client, path, size, outcome, guard detail."""
-    raw = run(["journalctl", "-u", "qwen38-keepalive.service", "-n", "800",
-               "--no-pager", "-o", "short-iso"], timeout=6)
-    return {"node_id": "local",
-            "rows": lc.mark_probes(lc.parse_feed(raw), "/v1/systemone", len(SYSTEMONE_PROBE_BODY))}
+    """Last requests seen by the keepalive proxy: client, path, size, outcome, guard detail,
+    and every older request still in flight. The 800 newest journal lines are read every
+    5 s (4,000 cost 0.7 s on the reference box); what was in flight at the last read is
+    carried into the next, so a long generation stays counted after its start leaves the
+    window. The first read goes back to the proxy's start: a cockpit restarted under a long
+    generation saw it nowhere until it ended."""
+    argv = ["journalctl", "-u", "qwen38-keepalive.service", "-n", "800", "--no-pager", "-o", "short-iso"]
+    timeout = 6
+    if not FEED_BOOTED[0]:
+        since = run(["systemctl", "show", "qwen38-keepalive.service", "-p", "ActiveEnterTimestamp",
+                     "--value", "--timestamp=unix"]).strip()
+        if re.fullmatch(r"@\d+", since):
+            argv = ["journalctl", "-u", "qwen38-keepalive.service", "--since", since, "-n", "20000",
+                    "--no-pager", "-o", "short-iso"]
+            timeout = 15
+    raw = run(argv, timeout=timeout)
+    FEED_BOOTED[0] = FEED_BOOTED[0] or answered(raw)      # a read that timed out is tried again
+    rows = lc.parse_feed(raw, carry=FEED_CARRY)
+    FEED_CARRY[:] = [dict(r) for r in rows if r["outcome"] == "in flight"]
+    return {"node_id": "local", "rows": lc.mark_probes(rows, "/v1/systemone", len(SYSTEMONE_PROBE_BODY))}
 
 
 ZOMBIE_WINDOW = "10m"          # one window per sample: no overlap, no double count

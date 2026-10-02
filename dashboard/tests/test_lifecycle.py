@@ -1513,6 +1513,76 @@ class ParseFeedDangling(unittest.TestCase):
         self.assertEqual(by["127.0.0.1:3333"]["outcome"], "in flight")
 
 
+
+class AFeedKeepsEveryRequestInFlight(unittest.TestCase):
+    """The rail's badge and the table count the rows in flight, and the rows were the 25
+    newest requests: with eight agents, a generation that outlasted 25 newer requests (34
+    minutes on 2026-10-02) left both while the engine still ran it, the badge falling from
+    8 to 2. Older requests still in flight stay in the rows, and what was in flight at one
+    read is carried into the next, whose window no longer holds its start."""
+
+    L = "2026-10-02T23:{m:02d}:{s:02d}+02:00 gx10 python3[1]: [proxy] {rest}"
+
+    def short(self, n, minute):
+        out = []
+        for i in range(n):
+            port = 40000 + minute * 100 + i
+            out.append(self.L.format(m=minute, s=i % 60, rest=f"127.0.0.1:{port} -> POST /v1/chat/completions body=100b"))
+            out.append(self.L.format(m=minute, s=i % 60, rest=f"127.0.0.1:{port} POST /v1/chat/completions ok in 1.0s"))
+        return out
+
+    def long_start(self, port=49398, minute=16):
+        return self.L.format(m=minute, s=1, rest=f"127.0.0.1:{port} -> POST /v1/chat/completions body=111922b")
+
+    def test_an_older_request_in_flight_stays_in_the_rows(self):
+        raw = "\n".join([self.long_start()] + self.short(30, 20))
+        rows = lc.parse_feed(raw)
+        self.assertEqual(len(rows), 26)
+        self.assertEqual((rows[0]["peer"], rows[0]["outcome"]), ("127.0.0.1:49398", "in flight"))
+        self.assertEqual(sum(r["outcome"] == "in flight" for r in rows), 1)
+        self.assertEqual([r["outcome"] for r in rows[1:]], ["ok"] * 25)
+
+    def test_an_older_request_that_ended_leaves_the_rows_as_before(self):
+        end = self.L.format(m=21, s=59, rest="127.0.0.1:49398 POST /v1/chat/completions ok in 358.0s")
+        rows = lc.parse_feed("\n".join([self.long_start()] + self.short(30, 20) + [end]))
+        self.assertEqual(len(rows), 25)
+        self.assertNotIn("127.0.0.1:49398", [r["peer"] for r in rows[:-1]])
+
+    def test_a_request_carried_from_the_last_read_ends_in_this_one(self):
+        first = lc.parse_feed("\n".join([self.long_start()] + self.short(3, 20)))
+        carry = [r for r in first if r["outcome"] == "in flight"]
+        self.assertEqual(len(carry), 1)
+        later = self.short(3, 40) + [self.L.format(m=49, s=49, rest="127.0.0.1:49398 POST /v1/chat/completions ok in 2028.0s")]
+        rows = lc.parse_feed("\n".join(later), carry=carry)
+        by = {r["peer"]: r for r in rows}
+        self.assertEqual((by["127.0.0.1:49398"]["outcome"], by["127.0.0.1:49398"]["secs"]), ("ok", 2028.0))
+        self.assertNotIn("127.0.0.1:49398", {r["peer"] for r in lc.parse_feed("\n".join(later))},
+                         "without the carry, the end has no start to land on")
+
+    def test_a_carried_request_still_in_its_window_is_not_counted_twice(self):
+        raw = "\n".join([self.long_start()] + self.short(3, 20))
+        carry = [r for r in lc.parse_feed(raw) if r["outcome"] == "in flight"]
+        rows = lc.parse_feed(raw, carry=carry)
+        self.assertEqual(sum(r["peer"] == "127.0.0.1:49398" for r in rows), 1)
+
+    def test_a_carried_request_stays_in_flight_until_it_ends_or_the_proxy_goes(self):
+        carry = [r for r in lc.parse_feed(self.long_start()) if r["outcome"] == "in flight"]
+        rows = lc.parse_feed("\n".join(self.short(30, 40)), carry=carry)
+        self.assertEqual(sum(r["outcome"] == "in flight" for r in rows), 1)
+        gone = self.L.format(m=50, s=0, rest="v6.30 on 0.0.0.0:30001 -> http://127.0.0.1:30000")
+        rows = lc.parse_feed("\n".join(self.short(2, 41) + [gone]), carry=carry)
+        by = {r["peer"]: r for r in rows}
+        self.assertEqual(by["127.0.0.1:49398"]["outcome"], "no end logged")
+
+    def test_a_read_that_returned_nothing_keeps_what_was_in_flight(self):
+        carry = [r for r in lc.parse_feed(self.long_start()) if r["outcome"] == "in flight"]
+        self.assertEqual([r["peer"] for r in lc.parse_feed("", carry=carry)], ["127.0.0.1:49398"])
+
+    def test_the_carry_is_not_changed_by_the_read(self):
+        carry = [r for r in lc.parse_feed(self.long_start()) if r["outcome"] == "in flight"]
+        lc.parse_feed(self.L.format(m=49, s=49, rest="127.0.0.1:49398 POST /v1/chat/completions ok in 2028.0s"), carry=carry)
+        self.assertEqual(carry[0]["outcome"], "in flight")
+
 class OpencodeDefault(unittest.TestCase):
     def test_follows(self):
         ok, why = lc.opencode_default_follows("qwen38/qwen3.8-27b", {"qwen38-sglang.service": "ready", "qwen38-flash.service": "stopped"})

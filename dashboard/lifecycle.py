@@ -652,13 +652,27 @@ def _feed_open(records: list[dict], method: str | None = None,
     return open_recs[-1] if open_recs else None
 
 
-def parse_feed(raw: str, last: int = 25) -> list[dict]:
+def parse_feed(raw: str, last: int = 25, carry: list[dict] | None = None) -> list[dict]:
     """journalctl text of the keepalive proxy -> the last requests: client, path,
     size, outcome, seconds, and the guard's detail when it counted the prompt
-    (tokens counted vs the lane's limit) so a 400 explains itself."""
+    (tokens counted vs the lane's limit) so a 400 explains itself.
+
+    The last `last` requests, and every older one still in flight with them. `carry` is
+    what the previous read left in flight: a request whose start is older than this
+    read's first line can still end in it. Both exist for the rail's badge and the table,
+    which count the rows in flight: with eight agents, a generation that outlasted the
+    25 newest requests (34 minutes, 2026-10-02) dropped out of both while the engine
+    still ran it, and the badge fell from 8 to 2."""
     reqs: dict[str, list[dict]] = {}
     order: list[tuple[str, int]] = []
-    for ln in raw.splitlines():
+    lines = raw.splitlines()
+    first_ts = next((ln[:19] for ln in lines if ln[:4].isdigit()), None)
+    for rec in carry or ():
+        # a start still inside this read is read again from its own line
+        if rec.get("outcome") == "in flight" and (first_ts is None or str(rec.get("ts", ""))[:19] < first_ts):
+            reqs.setdefault(rec["peer"], []).append(dict(rec))
+            order.append((rec["peer"], len(reqs[rec["peer"]]) - 1))
+    for ln in lines:
         ts = ln[:19]
         # A start with no end stays "in flight" for as long as the proxy that took it runs:
         # a generation has no deadline, and one queued behind seven others answered after 22
@@ -698,7 +712,8 @@ def parse_feed(raw: str, last: int = 25) -> list[dict]:
             r["outcome"] = m.group(4)[:40]
             r["kind"] = outcome_kind(r["outcome"])
             r["secs"] = float(m.group(5))
-    return [reqs[p][i] for p, i in order[-last:]]
+    older_live = [(p, i) for p, i in (order[:-last] if last > 0 else []) if reqs[p][i]["outcome"] == "in flight"]
+    return [reqs[p][i] for p, i in older_live + order[-last:]]
 
 
 # ── zombie guard: what a client that gave up cost the engine (pure) ─────────
