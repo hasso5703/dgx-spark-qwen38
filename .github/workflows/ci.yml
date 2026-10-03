@@ -250,14 +250,22 @@ jobs:
           export PYTHONPATH="$probe" QWEN38_CONTACT_LOG="$probe/contacts" QWEN38_SERVING_PORTS=30000,30001,30020,30090,30091,4096
           before="$(find "$witness" -type f -exec sha256sum {} + | sort)"
           ports_before="$(ss -Htln 2>/dev/null | awk '{print $4}' | sort || true)"
+          # The suite runs under tests/suite_reaper.py, a child subreaper: every process it
+          # starts stays its descendant, so what still runs once the suite is over is the
+          # suite's own, named with the sockets it listens on, then stopped. Comparing every
+          # listener of the machine instead failed twice on the reference box on 2026-10-03,
+          # for ports VS Code opened while the suite ran.
+          cat > "$probe/suite.sh" <<'SH'
           (cd dashboard && python3 -m unittest \
              $(cd tests && ls test_*.py | sed 's/\.py$//' | sed 's/^/tests./' | tr '\n' ' ') \
              2>&1 | tail -3)
           # a file that fails says how: a red run of 2026-10-03 said only
           # "tests/test_proxy_hold.py failed", and left nothing to read
-          (for f in tests/test_*.py; do
-             out="$(python3 "$f" 2>&1)" || { echo "$f failed, the end of its output:"; printf '%s\n' "$out" | tail -60; exit 1; }
-           done)
+          for f in tests/test_*.py; do
+            out="$(python3 "$f" 2>&1)" || { echo "$f failed, the end of its output:"; printf '%s\n' "$out" | tail -60; exit 1; }
+          done
+          SH
+          python3 tests/suite_reaper.py bash -e "$probe/suite.sh"
           after="$(find "$witness" -type f -exec sha256sum {} + | sort)"
           if [ "$before" != "$after" ]; then
             echo "the offline suite wrote into HOME:"
@@ -265,20 +273,24 @@ jobs:
             exit 1
           fi
           ports_after="$(ss -Htln 2>/dev/null | awk '{print $4}' | sort || true)"
-          [ "$ports_before" = "$ports_after" ] || {
-            echo "the offline suite left a listening socket behind:"
-            diff <(echo "$ports_before") <(echo "$ports_after") || true
-            echo "(on the CI runner this is the suite. Running ci-local.sh ON a serving box,"
-            echo " an engine or cockpit finishing its boot mid-suite shows up here too: check"
-            echo " whether the port that appeared is one of this repo's own before digging.)"
-            exit 1; }
+          if [ "$ports_before" != "$ports_after" ]; then
+            # Not the suite's: the reaper above names and stops those. Another program
+            # opened or closed a port meanwhile; shown, and fatal on a runner only, where
+            # nothing else runs.
+            echo "listeners other programs opened (>) or closed (<) while the suite ran:"
+            diff <(echo "$ports_before") <(echo "$ports_after") | grep '^[<>]' || true
+            for addr in $(comm -13 <(echo "$ports_before") <(echo "$ports_after")); do
+              ss -Htlnp "sport = :${addr##*:}" 2>/dev/null | awk '{print "  held by:", $4, $6}'
+            done
+            [ "${GITHUB_ACTIONS:-}" != "true" ] || { echo "(nothing else runs on a runner)"; exit 1; }
+          fi
           if [ -s "$probe/contacts" ]; then
             echo "the offline suite contacted a serving port:"
             sort "$probe/contacts" | uniq -c | sort -rn | head -20
             exit 1
           fi
           rm -rf "$witness" "$probe"
-          echo "  ok: HOME untouched, no socket left listening, no serving port contacted"
+          echo "  ok: HOME untouched, nothing left running or listening, no serving port contacted"
 
       - name: Coverage floors (measured, per module)
         run: |

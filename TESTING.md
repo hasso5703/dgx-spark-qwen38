@@ -465,10 +465,14 @@ the hole, a conditional is both branches.
   systemctl, no real API key. That is a **checked property**, not an intention,
   because these tests are run on the machine that serves production: the CI step
   "The offline suite touches nothing outside itself" gives the suite a witness
-  `HOME`, hashes every file in it before and after, and compares the listening
-  sockets on both sides. It earned its place immediately by catching
-  `test_cockpit_code.py` writing `cockpit-secret` into the developer's own
-  `~/.config/qwen38`, because importing `cockpit.py` persists an HMAC secret (so
-  a service restart does not log every browser out) and that suite had not
-  redirected `COCKPIT_CONFIG_DIR`. `test_cockpit_collectors.py` adds the other
-  half by recording every argv its stub was asked for.
+  `HOME`, hashes every file in it before and after, and runs the suite under
+  `tests/suite_reaper.py`, a child subreaper: whatever the suite's processes
+  leave running, listening or not, is theirs to answer for, while an editor that
+  opens a port meanwhile is not (comparing every listener of the machine failed
+  twice on 2026-10-03 while VS Code opened and closed ports). It earned its
+  place immediately by catching `test_cockpit_code.py` writing `cockpit-secret`
+  into the developer's own `~/.config/qwen38`, because importing `cockpit.py`
+  persists an HMAC secret (so a service restart does not log every browser out)
+  and that suite had not redirected `COCKPIT_CONFIG_DIR`.
+  `test_cockpit_collectors.py` adds the other half by recording every argv its
+  stub was asked for.

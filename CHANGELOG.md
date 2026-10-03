@@ -13,6 +13,17 @@ local run and written over by any second run beside it: they now go under `${TMP
 and a new step fails the workflow on a fixed path in /tmp. A full local run now leaves /tmp
 as it found it. Nothing changes on GitHub's runners, which set no TMPDIR and start empty.
 
+The step that checks the offline suite leaves nothing behind compared every listener of the
+machine before and after the suite, and failed twice on the reference box on 2026-10-03 for
+ports opened or closed while the suite ran: VS Code's own log named one of the first two, and
+a log of every listener and its owner, kept each second, named VS Code for both of the
+second, a run in which the suite itself left nothing. The suite now runs under
+`tests/suite_reaper.py`, a child subreaper: every process it starts stays its descendant,
+whatever session or environment that process gives itself, so what still runs once the suite
+is over is the suite's own. It is named with the sockets it listens on, stopped, and fails
+the step, a process left running without a socket included. Other programs' listeners are
+shown, and fail the step on a GitHub runner only, where nothing else runs.
+
 TESTING.md said what `ci-local.sh` did two versions ago: it now says where the test venv is
 looked for (`QWEN38_TEST_PYTHON` first, which a fresh clone needs, or the four steps that use
 `coverage` or `hypothesis` are skipped), how a step is skipped (a missing tool it calls, a
