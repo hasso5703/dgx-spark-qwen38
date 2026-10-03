@@ -38,9 +38,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
+          # a runner sets no TMPDIR, so this is the system's temporary directory there;
+          # tests/test_check_pins.py runs this step as written, and its pins.txt was left
+          # in that directory at every run of the suite (2026-10-03)
+          scratch="${TMPDIR:-/tmp}"
           rc=0
-          ./check-pins.sh | sed -r 's/\x1b\[[0-9;]*m//g' > /tmp/pins.txt || rc=$?
-          cat /tmp/pins.txt
+          ./check-pins.sh | sed -r 's/\x1b\[[0-9;]*m//g' > "$scratch/pins.txt" || rc=$?
+          cat "$scratch/pins.txt"
           if [ "$rc" != 0 ]; then
             # An endpoint having a bad minute is no dead pin: the run of 2026-10-01 13:08 got
             # three 504s from the GitHub API and filed issue #33 for pins that all resolved
@@ -48,8 +52,8 @@ jobs:
             echo "a pin did not resolve; asking again in 10 minutes"
             sleep 600
             rc=0
-            ./check-pins.sh | sed -r 's/\x1b\[[0-9;]*m//g' > /tmp/pins.txt || rc=$?
-            cat /tmp/pins.txt
+            ./check-pins.sh | sed -r 's/\x1b\[[0-9;]*m//g' > "$scratch/pins.txt" || rc=$?
+            cat "$scratch/pins.txt"
           fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
 
@@ -59,13 +63,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          scratch="${TMPDIR:-/tmp}"   # the pins step's own, the same directory on a runner
           open="$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=pin-watch" \
                   --jq length 2>/dev/null || echo 0)"
           if [ "$open" -gt 0 ]; then
             echo "an open pin-watch issue exists, not filing another"
             exit 0
           fi
-          DEAD="$(grep -m1 FAIL /tmp/pins.txt | tr -s ' ' | cut -d' ' -f2- || true)"
+          DEAD="$(grep -m1 FAIL "$scratch/pins.txt" | tr -s ' ' | cut -d' ' -f2- || true)"
           {
             echo '### A pin no longer resolves upstream'
             echo
@@ -75,7 +80,7 @@ jobs:
             echo 'The second output below.'
             echo
             echo '```'
-            cat /tmp/pins.txt
+            cat "$scratch/pins.txt"
             echo '```'
             echo
             echo 'First, confirm it is real: a pin that could not be asked'
@@ -84,7 +89,7 @@ jobs:
             echo 'install cannot download without a token. Then re-pin'
             echo 'install.sh to a surviving revision with the bench and'
             echo 'quality cycle the target table demands, or mirror the bytes.'
-          } > /tmp/pin-body.md
+          } > "$scratch/pin-body.md"
           # --label fails the whole call when the label does not exist, and nothing else in the
           # repo creates it: the first dead pin would have ended in a red run and no issue
           # (found in review, 2026-09-24). --force makes this a no-op when it is there.
@@ -92,4 +97,4 @@ jobs:
             --color B60205 --description "a pinned revision, digest or release no longer resolves"
           gh issue create -R "$GITHUB_REPOSITORY" --label pin-watch \
             --title "a pin died: ${DEAD:0:80}" \
-            --body-file /tmp/pin-body.md
+            --body-file "$scratch/pin-body.md"

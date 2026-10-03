@@ -35,14 +35,15 @@ coverage floors, the property checks) are reported SKIPPED, missing the package.
 `ci-local.sh` runs every step as GitHub does (`bash -e`), each under a HOME and a TMPDIR of its
 own, both removed when the step ends: a test that read the developer's real API key passed here
 and failed on the runner, and the suite's temporary directories used to stay in /tmp (761 of
-them on the reference box on 2026-10-03). The workflow's own scratch files (coverage reports,
-rendered units) go under `${TMPDIR:-/tmp}` too, and a step of it fails on a fixed path in /tmp:
-on a runner, which sets no TMPDIR, that is /tmp as before. A step that calls `shellcheck`, `docker` or `gh` when
-the tool is not installed is reported SKIPPED (a stub records the call), and so is a step whose
-runner-only `pip install` line names a package this box cannot provide (`ruff` must be on
-`PATH`; the others are looked for through `tests/testpy.sh`). A skipped gate checked nothing,
-and a run in which every step was skipped still exits 0: read the last line, and a complete
-run ends with `0 sautes` (`CI local: N ok, N echecs, N sautes`).
+them on the reference box on 2026-10-03). The workflows' own scratch files (coverage reports,
+rendered units, pin-watch's report) go under `${TMPDIR:-/tmp}` too, and a step fails CI on a
+fixed path in /tmp in any workflow: on a runner, which sets no TMPDIR, that is /tmp as before. A
+step that calls `shellcheck`, `docker` or `gh` when the tool is not installed is reported
+SKIPPED (a stub records the call), and so is a step whose runner-only `pip install` line names a
+package this box cannot provide (`ruff` must be on `PATH`; the others are looked for through
+`tests/testpy.sh`). A skipped gate checked nothing, and a run in which every step was skipped
+still exits 0: read the last line, and a complete run ends with `0 sautes`
+(`CI local: N ok, N echecs, N sautes`).
 
 ## The layers
 

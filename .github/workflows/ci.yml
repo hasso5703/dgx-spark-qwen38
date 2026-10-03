@@ -39,13 +39,16 @@ jobs:
           # left it on the developer's box after every run (the coverage reports, the
           # rendered units, the opencode test config: 2026-10-03), and two runs side by
           # side wrote over each other's. A runner sets no TMPDIR, so the fallback stays
-          # where it was. The needle is assembled, or this step would find itself.
+          # where it was. Every workflow, not this one alone: tests/test_check_pins.py runs
+          # pin-watch's step as written, and its pins.txt was left behind the same way.
+          # The needle is assembled, or this step would find itself.
           python3 - <<'PY'
           import pathlib, sys
           needle = "/" + "tmp"
           allowed = "${TMPDIR:-" + needle + "}"
-          lines = pathlib.Path(".github/workflows/ci.yml").read_text().splitlines()
-          bad = [f"  line {n}: {line.strip()}" for n, line in enumerate(lines, 1)
+          bad = [f"  {wf.name}:{n}: {line.strip()}"
+                 for wf in sorted(pathlib.Path(".github/workflows").glob("*.yml"))
+                 for n, line in enumerate(wf.read_text().splitlines(), 1)
                  if needle in line.replace(allowed, "")]
           if bad:
               print(f"a step names a fixed path in {needle}; write it under \"{allowed}\" instead:")

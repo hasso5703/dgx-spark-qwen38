@@ -17,12 +17,14 @@ Each step of `ci-local.sh` already ran under a HOME of its own, removed when it 
 gets a TMPDIR inside that HOME too. The suite's temporary directories, and its scripts'
 `mktemp`, stayed in /tmp after every local run: 761 of them on the reference box on
 2026-10-03, some with modification times in 2027 (a test that dates files after an engine's
-start), which read as files changed by whatever ran next on the box. The workflow's own steps
-also wrote twelve fixed names there (the two coverage reports, the rendered units and flash
-launchers, the pin blocks, an error capture, the opencode test config), left behind by every
-local run and written over by any second run beside it: they now go under `${TMPDIR:-/tmp}`,
-and a new step fails the workflow on a fixed path in /tmp. A full local run now leaves /tmp
-as it found it. Nothing changes on GitHub's runners, which set no TMPDIR and start empty.
+start), which read as files changed by whatever ran next on the box. The workflows' own steps
+also wrote fixed names there: twelve in `ci.yml` (the two coverage reports, the rendered
+units and flash launchers, the pin blocks, an error capture, the opencode test config) and
+pin-watch's report, which `tests/test_check_pins.py` runs as written. Every local run left
+them behind, and any second run beside it wrote over them: they now go under
+`${TMPDIR:-/tmp}`, and a new step fails CI on a fixed path in /tmp in any workflow. A full
+local run now leaves /tmp as it found it. Nothing changes on GitHub's runners, which set no
+TMPDIR and start empty.
 
 The installers left files of their own in /tmp: `dashboard/install-dashboard.sh`,
 `dashboard/install-agent.sh` and `install.sh` render each unit (and the flash launch script)
