@@ -78,6 +78,9 @@ stale_since(){
 }
 
 TMP_UNIT="$(mktemp)"
+# removed however this ends: a die, or a failed install under set -e, between here and the rm
+# below left the rendered unit in /tmp, once for every test run that took such a path (2026-10-03)
+trap 'rm -f "$TMP_UNIT"' EXIT
 sed -e "s|__PORT__|$PORT|g" -e "s|__BIND__|$BIND|g" -e "s|__USER__|$(id -un)|g" \
     -e "s|__GROUP__|$(id -gn)|g" -e "s|__REPO_DIR__|$REPO_DIR|g" \
     -e "s|__HOME__|$HOME|g" \
@@ -90,6 +93,7 @@ cmp -s "$TMP_UNIT" "$INSTALLED" || { sudo install -m 644 "$TMP_UNIT" "$INSTALLED
 rm -f "$TMP_UNIT"
 
 TMP_SUDO="$(mktemp)"
+trap 'rm -f "$TMP_UNIT" "$TMP_SUDO"' EXIT
 # read-only forensics wrapper (scheduler stack dump), referenced by the sudoers line below
 sudo install -m 755 "$HERE/pyspy-scheduler.sh" /usr/local/bin/qwen38-pyspy-scheduler
 sed -e "s|__USER__|$(id -un)|g" -e "s|__HOME__|$HOME|g" "$HERE/sudoers-cockpit.template" > "$TMP_SUDO"

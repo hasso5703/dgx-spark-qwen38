@@ -14,6 +14,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -234,21 +235,30 @@ class TheConfigStopsSelfUpdating(unittest.TestCase):
 
 
 
-class TheCockpitNamesThePin(unittest.TestCase):
+class Scratch:
+    """A temporary directory per call, removed with the test that asked for it."""
+    def scratch(self, prefix):
+        d = tempfile.mkdtemp(prefix=prefix)
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return d
+
+
+class TheCockpitNamesThePin(Scratch, unittest.TestCase):
     """The Agent tab says when the served opencode is not the version install.sh pins,
     and reads that version out of install.sh, so the two can never name different ones."""
 
     def test_the_cockpit_reads_the_installers_pin(self):
-        code = ("import importlib.util, os, sys, tempfile\n"
-                "t = tempfile.mkdtemp(); open(t + '/api-key', 'w').write('k')\n"
+        code = ("import importlib.util, os, sys\n"
+                "t = sys.argv[2]; open(t + '/api-key', 'w').write('k')\n"
                 "os.environ.update(COCKPIT_DRY_RUN='1', COCKPIT_CONFIG_DIR=t, COCKPIT_PORT='0',\n"
                 "                  COCKPIT_AGENT_PORT='0', COCKPIT_REPO_DIR=sys.argv[1])\n"
                 "sys.path.insert(0, sys.argv[1] + '/dashboard')\n"
                 "spec = importlib.util.spec_from_file_location('ck', sys.argv[1] + '/dashboard/cockpit.py')\n"
                 "ck = importlib.util.module_from_spec(spec); spec.loader.exec_module(ck)\n"
                 "print(ck.opencode_pinned())\n")
-        r = subprocess.run(["python3", "-c", code, str(REPO)], capture_output=True, text=True, timeout=60,
-                           env={**os.environ, "HOME": tempfile.mkdtemp(prefix="oc-ck-")})
+        cfg, home = self.scratch("oc-ck-cfg-"), self.scratch("oc-ck-")
+        r = subprocess.run(["python3", "-c", code, str(REPO), cfg], capture_output=True, text=True,
+                           timeout=60, env={**os.environ, "HOME": home})
         self.assertEqual(r.stdout.strip().splitlines()[-1], pinned_default(), r.stderr[-400:])
 
     def test_the_agent_tab_says_when_it_serves_another_version(self):
@@ -257,7 +267,7 @@ class TheCockpitNamesThePin(unittest.TestCase):
         self.assertIn("./install.sh brings it in line", js)
 
 
-class AMissingOpencodeIsSaidPlainly(unittest.TestCase):
+class AMissingOpencodeIsSaidPlainly(Scratch, unittest.TestCase):
     """A first-time user with no opencode must read what is missing and what to run, in
     the installer's last lines, from the oc launcher and in the cockpit's Agent tab."""
 
@@ -313,8 +323,8 @@ class AMissingOpencodeIsSaidPlainly(unittest.TestCase):
         self.assertIn("re-run ./install.sh to install it", out)
 
     def test_the_cockpit_knows_a_box_with_no_opencode(self):
-        code = ("import importlib.util, os, sys, tempfile\n"
-                "t = tempfile.mkdtemp(); open(t + '/api-key', 'w').write('k')\n"
+        code = ("import importlib.util, os, sys\n"
+                "t = sys.argv[2]; open(t + '/api-key', 'w').write('k')\n"
                 "os.environ.update(COCKPIT_DRY_RUN='1', COCKPIT_CONFIG_DIR=t, COCKPIT_PORT='0',\n"
                 "                  COCKPIT_AGENT_PORT='0', COCKPIT_REPO_DIR=sys.argv[1])\n"
                 "sys.path.insert(0, sys.argv[1] + '/dashboard')\n"
@@ -322,9 +332,11 @@ class AMissingOpencodeIsSaidPlainly(unittest.TestCase):
                 "ck = importlib.util.module_from_spec(spec); spec.loader.exec_module(ck)\n"
                 "out = ck.collect_agent(); out = out.get('data', out)\n"
                 "print(repr(out.get('enabled')), repr(out.get('opencode_found')), out.get('pinned'))\n")
-        home = tempfile.mkdtemp(prefix="oc-none-")
-        r = subprocess.run(["python3", "-c", code, str(REPO)], capture_output=True, text=True, timeout=60,
-                           env={"HOME": home, "PATH": "/usr/bin:/bin"})
+        # the config directory comes from here and goes with the test: made inside a child
+        # that has no TMPDIR, it was left in /tmp at every run (2026-10-03)
+        cfg, home = self.scratch("oc-none-cfg-"), self.scratch("oc-none-")
+        r = subprocess.run(["python3", "-c", code, str(REPO), cfg], capture_output=True, text=True,
+                           timeout=60, env={"HOME": home, "PATH": "/usr/bin:/bin"})
         self.assertEqual(r.stdout.strip().splitlines()[-1], f"False None {pinned_default()}", r.stderr[-400:])
 
     def test_the_agent_tab_tells_no_opencode_from_no_tab(self):

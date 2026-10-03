@@ -163,6 +163,7 @@ stale_since(){
 
 # ── render and install the unit ────────────────────────────────────────────
 TMP_UNIT="$(mktemp)"
+trap 'rm -f "$TMP_UNIT"' EXIT   # however this ends, as install-dashboard.sh does
 sed -e "s|__USER__|$(id -un)|g" -e "s|__GROUP__|$(id -gn)|g" -e "s|__HOME__|$HOME|g" \
     -e "s|__OPENCODE_BIN__|$OPENCODE_BIN|g" -e "s|__OPENCODE_PORT__|$OPENCODE_PORT|g" \
     -e "s|__PATH__|$SVC_PATH|g" -e "s|__OUTPUT_TOKEN_MAX__|$OUT_MAX|g" \

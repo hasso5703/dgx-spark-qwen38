@@ -24,6 +24,15 @@ local run and written over by any second run beside it: they now go under `${TMP
 and a new step fails the workflow on a fixed path in /tmp. A full local run now leaves /tmp
 as it found it. Nothing changes on GitHub's runners, which set no TMPDIR and start empty.
 
+The installers left files of their own in /tmp: `dashboard/install-dashboard.sh`,
+`dashboard/install-agent.sh` and `install.sh` render each unit (and the flash launch script)
+into a temporary file and removed it only on the way that succeeds, so a run that stopped in
+between left it there. They now remove it however they end. Two tests gave a child an
+environment of its own, without TMPDIR, so what the child created went to /tmp whatever
+`ci-local.sh` had set: one passes TMPDIR now, the other makes the directory itself and
+removes it. `dashboard/tests/smoke-http.sh` also removes its second cookie jar, which holds a
+cockpit session.
+
 The step that checks the offline suite leaves nothing behind compared every listener of the
 machine before and after the suite, and failed twice on the reference box on 2026-10-03 for
 ports opened or closed while the suite ran: VS Code's own log named one of the first two, and

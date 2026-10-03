@@ -2133,12 +2133,17 @@ render_tpl() {  # $1 template file; substituted result on stdout
       -e "s|__SPEC_TOKEN_MAP_LINE__|$(esc "$SPEC_TOKEN_MAP_LINE")|g" \
       "$1"
 }
+# What this run renders before installing it is removed however the run ends: a die between
+# a mktemp and its rm left the rendered file in /tmp (2026-10-03). Subshells reset the trap.
+RENDERED=()
+forget_rendered(){ local f; for f in "${RENDERED[@]}"; do if [ -f "$f" ]; then rm -f -- "$f"; fi; done; return 0; }
+trap forget_rendered EXIT
 if [ "$LANE" = "flash" ]; then
   mkdir -p "$PLE_DIR"
   # The docker-run command lives in a plain launch script, not in ExecStart:
   # systemd applies its own C-style unescaping before bash would, and the JSON
   # arguments (--speculative-config, splitting_ops) do not survive two rounds.
-  TMP_LAUNCH="$(mktemp)"
+  TMP_LAUNCH="$(mktemp)"; RENDERED+=("$TMP_LAUNCH")
   render_tpl "$REPO_DIR/qwen38-flash-launch.sh.template" > "$TMP_LAUNCH"
   bash -n "$TMP_LAUNCH" || die "rendered flash launch script does not parse (report this repo bug)"
   # rewritten only when it changes: the engine reads it at start, and a rewrite, even an
@@ -2152,7 +2157,7 @@ if [ "$LANE" = "flash" ]; then
   fi
   rm -f "$TMP_LAUNCH"
 fi
-TMP_UNIT="$(mktemp)"
+TMP_UNIT="$(mktemp)"; RENDERED+=("$TMP_UNIT")
 render_tpl "$UNIT_TPL" > "$TMP_UNIT"
 apply_context_configs              # the configs, then at once the unit that reads them
 # the same rule for the unit: an identical one is left as it is, mtime included
@@ -2226,7 +2231,7 @@ FLASH_PROMPT_CEILING="${FLASH_PROMPT_CEILING_TOKENS:-250000}"
 # opencode). It also aborts zombie generations when the client disconnects.
 cmp -s "$REPO_DIR/keepalive-proxy.py" "$CONFIG_DIR/keepalive-proxy.py" \
   || { install -m 755 "$REPO_DIR/keepalive-proxy.py" "$CONFIG_DIR/keepalive-proxy.py"; KA_CHANGED=1; }
-TMP_KA="$(mktemp)"
+TMP_KA="$(mktemp)"; RENDERED+=("$TMP_KA")
 sed -e "s|__HOME__|$HOME|g" \
     -e "s|__USER__|$(id -un)|g" \
     -e "s|__GROUP__|$(id -gn)|g" \

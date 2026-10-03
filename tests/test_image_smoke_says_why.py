@@ -6,6 +6,7 @@ the assignment of its status code fail, and set -e ended install-image.sh before
 message and the journal meant for that case (found in review, 2026-09-24). This runs the
 script's own lines with curl and sudo replaced by stubs."""
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -24,8 +25,13 @@ def run(curl_body):
         (d / f).chmod(0o755)
     script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
               "IMAGE_BIND=127.0.0.1; PORT=30020; UNIT=qwen38-image.service\n" + BLOCK + "\necho SURVIVED\n")
-    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
-                       env={"PATH": f"{d}:/usr/bin:/bin"})
+    # TMPDIR too: the block's OUT="$(mktemp)" has no trap of its own here (the script sets
+    # it further up), and with no TMPDIR every run left its file in /tmp (2026-10-03)
+    try:
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
+                           env={"PATH": f"{d}:/usr/bin:/bin", "TMPDIR": str(d)})
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
     return r.stdout + r.stderr
 
 
