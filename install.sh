@@ -1194,6 +1194,11 @@ if [ "$NO_SERVICE" -eq 0 ] && ! sudo -n true 2>/dev/null; then
   sudo -v || die "sudo could not be used here: run 'sudo -v' in this terminal, then re-run ./install.sh"
 fi
 echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
+# What is known about this box's own layer (the maker's firmware, DGX OS, the kernel, the
+# driver), which differs from one GB10 box to the next while the containers do not: read-only,
+# bounded, and never a reason to stop (docs/platforms.md).
+echo "What is known about this box (./doctor.py for the full report):"
+timeout 180 python3 "$REPO_DIR/doctor.py" --brief || echo "  (doctor.py did not answer; the install goes on)"
 
 if [ "$LANE" = "flash" ]; then
   step "2/10 Pulling the official SGLang Flash-Next image (~30 GB, one-time, resumable)"

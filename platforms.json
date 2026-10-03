@@ -1,0 +1,148 @@
+{
+  "schema": 1,
+  "comment": "What doctor.py knows. Each known issue is a fact a box can be checked for, with the evidence that makes it known; each platform lists the reports made on it. docs/platforms.md shows the same matrix (doctor.py --matrix writes it).",
+  "known_issues": [
+    {
+      "id": "gpu-unreachable",
+      "kind": "gpu_unreachable",
+      "level": "fail",
+      "title": "nvidia-smi does not reach the GPU",
+      "detail": "Nothing can run on the GPU. After an apt upgrade to driver 580.173.02 on OTA2607 boxes, nvidia-smi said \"No devices were found\" and the kernel log \"Xid 119 ... GSP_INIT_DONE\": the driver was newer than, and not paired with, the GPU firmware of that OTA (NVIDIA forum, 2026-07-26).",
+      "action": "Read sudo journalctl -k -b | grep -i xid, then update the system the way its maker supports and reboot. On the Founders Edition NVIDIA recommends the DGX Dashboard; its manual path is sudo apt update && sudo apt dist-upgrade (NVIDIA asked for dist-upgrade, not upgrade, in that thread).",
+      "evidence": [
+        "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200",
+        "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html"
+      ]
+    },
+    {
+      "id": "memory-below-110",
+      "kind": "memory_below_gib",
+      "params": {"gib": 110},
+      "level": "fail",
+      "title": "Less than 110 GiB of memory",
+      "detail": "Every lane is sized for the memory a GB10 box shows (about 121 GiB of its 128 GB); install.sh refuses below 110 GiB.",
+      "action": "This box cannot serve the lanes as they are sized.",
+      "evidence": []
+    },
+    {
+      "id": "docker-unreachable",
+      "kind": "docker_unreachable",
+      "level": "fail",
+      "title": "Docker does not answer this user",
+      "detail": "Every engine runs in a container.",
+      "action": "sudo usermod -aG docker $USER, then log in again (install.sh says the same).",
+      "evidence": []
+    },
+    {
+      "id": "driver-580.159.03",
+      "kind": "driver_is",
+      "params": {"versions": ["580.159.03"]},
+      "level": "warn",
+      "title": "Driver 580.159.03, the one every report of engines dying with \"operation not permitted\" ran",
+      "detail": "Engines died with CUDA error: operation not permitted (cudaErrorNotPermitted) after hours or days of serving, on GB10 boxes on this driver: SGLang #40948, vLLM #52877 and this repo's issue #26, whose reporter saw no such death after updating to 580.178.04 (2026-10-02). A version boundary seen in reports, not a proven cause.",
+      "action": "Update the system the way its maker supports: on the Founders Edition NVIDIA recommends the DGX Dashboard, and a manual update is sudo apt update && sudo apt dist-upgrade, never apt upgrade alone.",
+      "evidence": [
+        "https://github.com/sgl-project/sglang/issues/40948",
+        "https://github.com/vllm-project/vllm/issues/52877",
+        "https://github.com/hasso5703/dgx-spark-qwen38/issues/26#issuecomment-5962195541",
+        "https://docs.nvidia.com/dgx/dgx-spark/os-and-component-update.html"
+      ]
+    },
+    {
+      "id": "kernel-7.0.0-1019",
+      "kind": "kernel_starts",
+      "params": {"prefixes": ["7.0.0-1019-"]},
+      "level": "warn",
+      "title": "Kernel 7.0.0-1019, which NVIDIA asked to hold off",
+      "detail": "NVIDIA's DGX Spark Update Advisory (2026-09-14) asked to \"hold off on updating to kernel 7.0.0-1019, including updates via DGX Dashboard\" (multi-node RoCE failures); on 2026-09-17 it said updates were rolling out to mitigate it. On this repo's reference box, this kernel reserved 9.30 GiB that long-lived GPU pinning could no longer use (measured 2026-09-16).",
+      "action": "Follow NVIDIA's advisory thread for the kernel that mitigates it; the memory signature is checked separately (CmaTotal).",
+      "evidence": [
+        "https://forums.developer.nvidia.com/t/383254",
+        "https://forums.developer.nvidia.com/t/383023"
+      ]
+    },
+    {
+      "id": "cma-reserved-uncounted",
+      "kind": "cma_reserved_uncounted",
+      "level": "warn",
+      "title": "Memory the kernel reserves without counting it (CmaTotal 0 with CmaFree above 0)",
+      "detail": "The signature of the 7.0.0-1019 kernel's reservation: \"CmaTotal is not announced correctly as it was in 6.17.0-1032\" (NVIDIA forum, 2026-09-13). On the reference box it was 9.30 GiB that long-lived GPU pinning could no longer use. The engines still start; the box has less room under its memory edge.",
+      "action": "Same as for kernel 7.0.0-1019: follow NVIDIA's advisory for a kernel without it.",
+      "evidence": [
+        "https://forums.developer.nvidia.com/t/383023",
+        "https://forums.developer.nvidia.com/t/383254"
+      ]
+    },
+    {
+      "id": "gpu-not-gb10",
+      "kind": "gpu_not",
+      "params": {"contains": "GB10"},
+      "level": "warn",
+      "title": "The GPU is not a GB10",
+      "detail": "Every lane is sized and measured on a GB10 (install.sh warns too).",
+      "action": "Expect the memory sizing not to fit: nothing here was measured on another GPU.",
+      "evidence": []
+    },
+    {
+      "id": "toolkit-missing",
+      "kind": "toolkit_missing",
+      "level": "warn",
+      "title": "No NVIDIA Container Toolkit (nvidia-ctk not found)",
+      "detail": "Containers reach the GPU through the NVIDIA Container Toolkit, stock on DGX OS.",
+      "action": "Install it the way NVIDIA documents for this OS; install.sh checks that docker run --gpus all sees the GPU before any large download.",
+      "evidence": []
+    },
+    {
+      "id": "apport-active",
+      "kind": "apport_active",
+      "level": "info",
+      "title": "Crash reports are on (apport)",
+      "detail": "When a process dies on a signal, apport keeps its memory in /var/crash, even under a core limit of 0 (measured 2026-10-03: 639 MB for a small test process). An engine's would be far larger.",
+      "action": "Nothing to do in normal use. Before capturing a GPU core dump on purpose, read the issue #26 comment on it.",
+      "evidence": [
+        "https://github.com/hasso5703/dgx-spark-qwen38/issues/26#issuecomment-5969864317"
+      ]
+    }
+  ],
+  "platforms": [
+    {
+      "name": "ASUS Ascent GX10",
+      "match": {"dgx_platform": ["GX10"], "dmi_product": ["GX10"]},
+      "reports": [
+        {
+          "date": "2026-10-03",
+          "ota": "7.6.0",
+          "kernel": "6.17.0-1032-nvidia",
+          "driver": "580.178.04",
+          "lanes": "27B (1M), flash, image, video",
+          "result": "works: this repo's reference box, every lane measured",
+          "source": "reference box"
+        }
+      ]
+    },
+    {
+      "name": "HP ZGX Nano G1n",
+      "match": {"dgx_platform": ["HP ZGX Nano G1n AI Station"]},
+      "reports": [
+        {
+          "date": "2026-09-30",
+          "ota": "unknown",
+          "kernel": "unknown",
+          "driver": "580.159.03",
+          "lanes": "27B (1M)",
+          "result": "engine deaths, \"operation not permitted\"; systemd brought the lane back",
+          "source": "[#26](https://github.com/hasso5703/dgx-spark-qwen38/issues/26)"
+        },
+        {
+          "date": "2026-10-02",
+          "ota": "7.5.0",
+          "kernel": "unknown",
+          "driver": "580.178.04",
+          "lanes": "27B (1M)",
+          "result": "no \"operation not permitted\" since; one CUBLAS_STATUS_INTERNAL_ERROR crash after 2 h 35, under investigation",
+          "source": "[#26](https://github.com/hasso5703/dgx-spark-qwen38/issues/26#issuecomment-5962195541)"
+        }
+      ]
+    }
+  ]
+}

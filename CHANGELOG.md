@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased (branch feat/platform-doctor): the repo checks the box it runs on
+
+Every GB10 box runs this repo's engines in the same containers, pinned by digest, and differs
+underneath them: the maker's firmware, the DGX OS release, the kernel, the NVIDIA driver and its
+GSP firmware, Docker and the NVIDIA Container Toolkit. Issue #26 is that difference: an HP ZGX
+Nano G1n on driver 580.159.03, engines dying with "operation not permitted", and none of those
+deaths after the update to 580.178.04. NVIDIA's own update guide covers the Founders Edition
+only and says other makers "might have different update procedures".
+
+**`./doctor.py`** reads what the box is and says what is known about its combination, each
+finding with its evidence and what to do: the driver every report of those engine deaths ran
+(580.159.03; SGLang #40948, vLLM #52877, #26), kernel 7.0.0-1019, which NVIDIA asked to hold
+off, and its memory signature (CmaTotal 0 with CmaFree above 0), a GPU nvidia-smi cannot
+reach (the apt upgrade of driver 580.173.02 on OTA2607 boxes, NVIDIA forum 378200), less than
+110 GiB, Docker or the NVIDIA Container Toolkit missing, and apport keeping a dying process's
+memory in /var/crash. It is read-only, needs no sudo, bounds every command, exits 0 whatever
+it finds, and never reads a serial number: /etc/dgx-release, which every user can read, holds
+the box's, so it is read by a list of keys. `--report` writes anonymised Markdown for an
+issue. install.sh prints its findings at the end of its preflight and goes on.
+
+**`platforms.json` and [docs/platforms.md](docs/platforms.md)**: the known issues with their
+evidence, and the boxes reported so far (the reference ASUS Ascent GX10, the HP ZGX Nano G1n
+of #26); a test keeps the doc's table equal to `./doctor.py --matrix`.
+
 ## v1.22.6 (2026-10-03): the engine key masked everywhere in /server_info, a local CI that leaves nothing behind
 
 Proxy v6.32. SGLang's `/server_info` repeats the engine's whole command line in
