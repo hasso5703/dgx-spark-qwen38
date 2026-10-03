@@ -40,7 +40,7 @@ The README is the entry point. Everything longer lives next to it, one subject p
 | The cockpit, view by view, including the Agent view and how it behaves on a phone | [docs/cockpit.md](docs/cockpit.md) |
 | Day-to-day commands, the opt-in extras, upgrading from an earlier version | [docs/operations.md](docs/operations.md) |
 | When an engine stops: the timeline of a crash, the start guard, requests held through a restart | [docs/engine-restarts.md](docs/engine-restarts.md) |
-| Every GB10 box: what differs under the containers, what `./doctor.py` checks, the boxes reported so far | [docs/platforms.md](docs/platforms.md) |
+| Every GB10 box: what differs under the containers, what `./doctor.py` checks, `./selftest.py`, the boxes reported so far | [docs/platforms.md](docs/platforms.md) |
 | What the installer writes for opencode, and how to opt out | [docs/opencode.md](docs/opencode.md) |
 | pi and omp: the same configs in their own formats, generated from the same artifact | [docs/pi.md](docs/pi.md) |
 | Clients: Claude Code, VS Code Copilot, Open WebUI, Cursor, TLS, per-client identity | [docs/clients.md](docs/clients.md) |

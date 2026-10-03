@@ -2652,6 +2652,10 @@ except Exception as e:
     echo "  Anthropic  : http://<host>:$PROXY_PORT/v1/messages   (Bearer auth only)"
     echo "  Engine     : $ENGINE_BIND:$PORT, behind the proxy (ENGINE_BIND=0.0.0.0 opens it)"
     echo "  API key    : $CONFIG_DIR/api-key"
+    # a minute of real requests through the proxy, the way clients send them (docs/platforms.md)
+    ST_ENV=""; [ "$PORT" = 30000 ] || ST_ENV="PORT=$PORT "
+    ST_ARG=""; [ "$PROXY_PORT" = 30001 ] || ST_ARG=" --port $PROXY_PORT"
+    echo "  Self-test  : ${ST_ENV}$REPO_DIR/selftest.py$ST_ARG   (and $REPO_DIR/doctor.py: what this box is)"
     if [ "$OPENCODE" -eq 1 ]; then
       OC_NOW="$( { opencode --version 2>/dev/null || true; } | tail -1 | tr -d 'v[:space:]')"
       # What starts it from the user's own shell: this script's PATH is not theirs, the

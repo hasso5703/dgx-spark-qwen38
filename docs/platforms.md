@@ -59,6 +59,25 @@ checked for, with its evidence:
 | `apport-active` | info | Crash reports are on (apport) |
 <!-- issues:end -->
 
+## selftest.py: does this box serve?
+
+```bash
+./selftest.py            # seven real requests through the keepalive proxy (:30001)
+./selftest.py --report   # the same, as Markdown for an issue
+```
+
+The model list, one answer, one streamed answer that ends with `[DONE]`, one tool call, a
+passphrase found in about 8,000 tokens of filler, four questions at once, and one answer in
+the Anthropic dialect (the one Claude Code speaks), each with what it got. On the reference
+box, through the flash lane while it also served an audit's three requests, the seven passed
+in 51 s (one answer waited 29 s behind the audit's own prompts). It refuses to run
+while the engine serves
+anything, since a test would then slow real work and be slowed by it (`--force` runs it
+anyway), and exits 0 when every check passed, 1 when one failed, 3 when it refused. It reads
+the API key from `~/.config/qwen38/api-key` and never prints it. The deeper instruments are
+the repo's own: `tools-check.py` (15 tool cases), `needle.sh` (retrieval up to the window),
+`conc-check.py` (40 and 80 exact answers) and `bench.sh`.
+
 ## The boxes reported so far
 
 <!-- matrix:start -->
@@ -69,8 +88,8 @@ checked for, with its evidence:
 | HP ZGX Nano G1n | 7.5.0 | unknown | 580.178.04 | 27B (1M) | no "operation not permitted" since; one CUBLAS_STATUS_INTERNAL_ERROR crash after 2 h 35, under investigation | 2026-10-02 | [#26](https://github.com/hasso5703/dgx-spark-qwen38/issues/26#issuecomment-5962195541) |
 <!-- matrix:end -->
 
-To add yours: once the install is done, run `./doctor.py --report` and open an issue with its
-output and a word on what you serve and how it went. The table is printed by
+To add yours: once the install is done, run `./selftest.py --report` and `./doctor.py --report`,
+and open an issue with both outputs and a word on what you serve and how it went. The table is printed by
 `./doctor.py --matrix` from `platforms.json`, and a test keeps both tables of this page equal to it.
 
 [Back to the README](../README.md)

@@ -20,6 +20,13 @@ it finds, and never reads a serial number: /etc/dgx-release, which every user ca
 the box's, so it is read by a list of keys. `--report` writes anonymised Markdown for an
 issue. install.sh prints its findings at the end of its preflight and goes on.
 
+**`./selftest.py`**: seven real requests through the proxy, the way clients send them (the
+model list, an answer, a stream that ends with [DONE], a tool call, a passphrase in about 8,000
+tokens, four at once, the Anthropic dialect), each saying what it got; refused while the engine
+serves anything unless `--force`; exit 0, 1 (a check failed) or 3 (refused). On the reference
+box, beside an audit's three requests, the seven passed in 51 s. install.sh's last lines
+name it.
+
 **`platforms.json` and [docs/platforms.md](docs/platforms.md)**: the known issues with their
 evidence, and the boxes reported so far (the reference ASUS Ascent GX10, the HP ZGX Nano G1n
 of #26); a test keeps the doc's table equal to `./doctor.py --matrix`.
