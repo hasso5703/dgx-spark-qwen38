@@ -20,6 +20,16 @@ it finds, and never reads a serial number: /etc/dgx-release, which every user ca
 the box's, so it is read by a list of keys. `--report` writes anonymised Markdown for an
 issue. install.sh prints its findings at the end of its preflight and goes on.
 
+It also reads what lies between the kernel and the driver, from files any user can read: the
+kernel the next boot picks (the one /etc/default/grub names, or the newest for GRUB_DEFAULT=0)
+and whether it has an NVIDIA module (booting one without it leaves the GPU with no driver; on the
+reference box three older kernels have none, and the next boot's has it); the module loaded
+against the driver installed (an update waiting for a reboot); NVIDIA's own reference for these
+boxes, which DGX OS ships as the JSON of nvidia-spark-ota-check (the newest there: OTA2607, July
+2026, kernel 6.17.0-1022, driver 580.159.03), read and never run, since that tool can update
+itself with sudo; and, in --report, apt's history of kernel and driver changes. It never updates
+anything: what to do is said, and left to the box's owner.
+
 **`./selftest.py`**: seven real requests through the proxy, the way clients send them (the
 model list, an answer, a stream that ends with [DONE], a tool call, a passphrase in about 8,000
 tokens, four at once, the Anthropic dialect), each saying what it got; refused while the engine

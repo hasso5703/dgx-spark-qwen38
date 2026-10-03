@@ -52,6 +52,9 @@ checked for, with its evidence:
 | `memory-below-110` | fail | Less than 110 GiB of memory |
 | `docker-unreachable` | fail | Docker does not answer this user |
 | `driver-580.159.03` | warn | Driver 580.159.03, the one every report of engines dying with "operation not permitted" ran |
+| `next-boot-without-nvidia` | warn | The kernel the next boot picks ({next}) has no NVIDIA module |
+| `driver-reboot-pending` | warn | A driver update waits for a reboot (loaded {loaded}, installed {installed}) |
+| `driver-older-than-reference` | warn | Driver {driver} is older than NVIDIA's newest reference on this box ({ref_name}, {ref_label}: {ref_driver}) |
 | `kernel-7.0.0-1019` | warn | Kernel 7.0.0-1019, which NVIDIA asked to hold off |
 | `cma-reserved-uncounted` | warn | Memory the kernel reserves without counting it (CmaTotal 0 with CmaFree above 0) |
 | `gpu-not-gb10` | warn | The GPU is not a GB10 |

@@ -55,6 +55,37 @@
       ]
     },
     {
+      "id": "next-boot-without-nvidia",
+      "kind": "next_boot_without_nvidia",
+      "level": "warn",
+      "title": "The kernel the next boot picks ({next}) has no NVIDIA module",
+      "detail": "Booting it leaves the GPU without a driver, and nvidia-smi then says \"No devices were found\", what an apt upgrade that left the driver unpaired did on OTA2607 boxes (NVIDIA forum 378200). NVIDIA's own script on DGX OS, nvidia-spark-run-apt-upgrade-once.sh, runs a full upgrade when the NVIDIA modules do not match the kernel.",
+      "action": "Before rebooting: update through the DGX Dashboard, or sudo apt update && sudo apt dist-upgrade, which installs that kernel's NVIDIA modules; then run ./doctor.py again.",
+      "evidence": [
+        "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+      ]
+    },
+    {
+      "id": "driver-reboot-pending",
+      "kind": "driver_reboot_pending",
+      "level": "warn",
+      "title": "A driver update waits for a reboot (loaded {loaded}, installed {installed})",
+      "detail": "The kernel runs the NVIDIA module it loaded at boot, and the driver installed since is another version: the two meet only after a reboot.",
+      "action": "Reboot when the lanes can stop; the start guard and systemd bring the lane back by themselves.",
+      "evidence": []
+    },
+    {
+      "id": "driver-older-than-reference",
+      "kind": "driver_older_than_reference",
+      "level": "warn",
+      "title": "Driver {driver} is older than NVIDIA's newest reference on this box ({ref_name}, {ref_label}: {ref_driver})",
+      "detail": "DGX OS ships NVIDIA's own reference for each OTA in /opt/nvidia/spark-ota-check/metadata; this box's driver is older than the newest one there. NVIDIA's release notes name the Founders Edition and say partner systems may receive updates later.",
+      "action": "Update the system the way its maker supports (the DGX Dashboard on the Founders Edition).",
+      "evidence": [
+        "https://docs.nvidia.com/dgx/dgx-spark/release-notes.html"
+      ]
+    },
+    {
       "id": "kernel-7.0.0-1019",
       "kind": "kernel_starts",
       "params": {

@@ -26,6 +26,8 @@ nothing anywhere, and exits 0 whatever it finds: it warns, it never blocks.
 The known issues and the boxes reported so far live in platforms.json, each with its
 evidence; docs/platforms.md shows the same matrix to people.
 """
+import glob
+import gzip
 import json
 import os
 import re
@@ -137,6 +139,110 @@ def read_kernel(box):
     return {"release": box.release, "holds": holds}
 
 
+def kernel_key(release):
+    """6.17.0-1032-nvidia -> (6, 17, 0, 1032): the order kernels are listed in."""
+    return tuple(int(x) for x in re.findall(r"\d+", release.split("-nvidia")[0])[:4])
+
+
+def version_key(v):
+    """580.159.03 -> (580, 159, 3); the Ubuntu suffix of a package version is not part of it."""
+    return tuple(int(x) for x in re.findall(r"\d+", (v or "").split("-")[0]))
+
+
+def read_boot(box):
+    """The installed kernels, which of them have no NVIDIA module (booting one leaves the GPU
+    without a driver), and the one the next boot picks when /etc/default/grub says: a kernel it
+    names, the newest one for GRUB_DEFAULT=0 (the order grub-mkconfig writes), else unknown.
+    grub.cfg itself is root-only on DGX OS and is not read."""
+    kernels = sorted((os.path.basename(f)[len("vmlinuz-"):] for f in glob.glob(str(box.root / "boot/vmlinuz-*"))),
+                     key=kernel_key)
+    def has_nvidia(k):
+        mods = box.root / "lib/modules" / k
+        return any(glob.glob(str(mods / pat), recursive=True)
+                   for pat in ("kernel/nvidia*/nvidia.ko*", "updates/dkms/nvidia.ko*", "**/nvidia.ko*"))
+    without = [k for k in kernels if not has_nvidia(k)]
+    grub = box.read("/etc/default/grub")
+    m = re.search(r"^GRUB_DEFAULT=\"?([^\"\n]*)\"?", grub or "", re.M)
+    default = m.group(1).strip() if m else ("0" if grub is not None else None)
+    named = re.search(r"gnulinux-(\d[^>]*?-nvidia)-advanced", default or "")
+    if named:
+        nxt = named.group(1)
+    elif default in ("0", "") and kernels:
+        nxt = kernels[-1]
+    else:
+        nxt = None
+    return {"installed": kernels, "without_nvidia": without, "next": nxt,
+            "grub_default": default[:120] if default is not None else None}
+
+
+def read_driver_install(box):
+    """The NVIDIA module the kernel has loaded, and the driver package installed: when they differ,
+    a driver update waits for a reboot."""
+    loaded = (box.read("/sys/module/nvidia/version", limit=64) or "").strip() or None
+    out, err = box.run(["dpkg-query", "-W", "-f=${Package} ${Version}\\n", "nvidia-driver-*"], 15)
+    pkgs = []
+    for ln in (out or "").splitlines() if err is None else []:
+        name, _, ver = ln.strip().partition(" ")
+        if re.fullmatch(r"nvidia-driver-\d+(-open|-server|-server-open)?", name) and ver:
+            pkgs.append((name, ver))
+    installed = pkgs[0][1].split("-")[0] if len(pkgs) == 1 else None
+    return {"loaded": loaded, "installed": installed, "packages": [f"{n} {v}" for n, v in pkgs]}
+
+
+def read_nvidia_reference(box):
+    """NVIDIA's own reference for this kind of box, as it ships on DGX OS (the package
+    nvidia-spark-ota-check, /opt/nvidia/spark-ota-check/metadata): the newest OTA it describes,
+    with its kernel and driver. Only the JSON is read: the tool itself can update itself with
+    sudo apt-get, and is never run."""
+    best = None
+    for f in sorted(glob.glob(str(box.root / "opt/nvidia/spark-ota-check/metadata/spark-ota-*.json"))):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                d = json.load(fh)
+            meta = d.get("metadata") or {}
+            sw = {x.get("name"): x.get("version") for x in d.get("software") or []}
+        except (OSError, ValueError, AttributeError):
+            continue
+        name = meta.get("name") or ""
+        if "beta" in name.lower():
+            continue                      # a beta is not what boxes are told to run
+        cand = {"name": name, "label": meta.get("external_name") or None,
+                "date": (meta.get("releaseDate") or "")[:10], "kernel": sw.get("kernel"), "driver": sw.get("driver")}
+        if best is None or cand["date"] > best["date"]:
+            best = cand
+    return best
+
+
+def read_changes(box, days=120, limit=5):
+    """The latest apt transactions that touched the kernel or the NVIDIA driver (apt's own history,
+    readable by every user): what changed before something broke."""
+    texts = []
+    for f in sorted(glob.glob(str(box.root / "var/log/apt/history.log*")), reverse=True):
+        try:
+            if f.endswith(".gz"):
+                with gzip.open(f, "rt", encoding="utf-8", errors="replace") as fh:
+                    texts.append(fh.read())
+            else:
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    texts.append(fh.read())
+        except OSError:
+            continue
+    found = []
+    for block in "\n".join(texts).split("\n\n"):
+        m = re.search(r"^Start-Date: (\d{4}-\d{2}-\d{2})", block, re.M)
+        if not m:
+            continue
+        what = []
+        for action, pkgs in re.findall(r"^(Install|Upgrade|Downgrade|Remove|Purge|Reinstall): (.*)$", block, re.M):
+            names = sorted({n for n in re.findall(r"(?:^|, )((?:linux-image|linux-modules-nvidia|nvidia-driver)-[\w.+-]+?):", pkgs)})
+            if names:
+                what.append(f"{action.lower()} " + ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else ""))
+        if what:
+            found.append({"date": m.group(1), "what": "; ".join(what)})
+    found.sort(key=lambda x: x["date"], reverse=True)
+    return found[:limit]
+
+
 def read_memory(box):
     text = box.read("/proc/meminfo") or ""
     kb = {k: int(v) for k, v in re.findall(r"^(\w+):\s+(\d+) kB$", text, re.M)}
@@ -207,7 +313,9 @@ def read_repo(box):
 def collect(box=None):
     box = box or Box()
     return {"machine": read_machine(box), "dgx": read_dgx(box), "os": read_os(box),
-            "kernel": read_kernel(box), "memory": read_memory(box), "gpu": read_gpu(box),
+            "kernel": read_kernel(box), "boot": read_boot(box), "driver_install": read_driver_install(box),
+            "nvidia_reference": read_nvidia_reference(box), "changes": read_changes(box),
+            "memory": read_memory(box), "gpu": read_gpu(box),
             "containers": read_containers(box), "firmware": read_firmware(box),
             "disk": read_disk(box), "crash_reports": read_crash_reports(box),
             "repo": read_repo(box)}
@@ -245,6 +353,15 @@ def _matches(rule, facts):
         return facts["containers"].get("toolkit") is None
     if kind == "apport_active":
         return facts["crash_reports"].get("apport") is True
+    if kind == "next_boot_without_nvidia":
+        boot = facts["boot"]
+        return boot.get("next") is not None and boot["next"] in boot.get("without_nvidia", [])
+    if kind == "driver_reboot_pending":
+        di = facts["driver_install"]
+        return bool(di.get("loaded") and di.get("installed")) and version_key(di["loaded"]) != version_key(di["installed"])
+    if kind == "driver_older_than_reference":
+        ref = facts.get("nvidia_reference") or {}
+        return bool(gpu.get("driver") and ref.get("driver")) and version_key(gpu["driver"]) < version_key(ref["driver"])
     raise ValueError(f"unknown rule kind {kind!r}")
 
 
@@ -261,11 +378,30 @@ def platform_of(facts, data):
     return None
 
 
+class _Keep(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def _values(facts):
+    """What a rule's text may name: the box's own values, never a guess."""
+    ref = facts.get("nvidia_reference") or {}
+    di, boot = facts.get("driver_install") or {}, facts.get("boot") or {}
+    return _Keep(next=boot.get("next") or "unknown", loaded=di.get("loaded") or "unknown",
+                 installed=di.get("installed") or "unknown", driver=facts["gpu"].get("driver") or "unknown",
+                 ref_name=ref.get("name") or "unknown", ref_label=ref.get("label") or ref.get("date") or "unknown",
+                 ref_kernel=ref.get("kernel") or "unknown", ref_driver=ref.get("driver") or "unknown")
+
+
 def evaluate(facts, data):
     found = []
+    vals = _values(facts)
     for rule in data["known_issues"]:
         if _matches(rule, facts):
-            found.append({k: rule[k] for k in ("id", "level", "title", "detail", "action", "evidence")})
+            f = {k: rule[k] for k in ("id", "level", "title", "detail", "action", "evidence")}
+            for k in ("title", "detail", "action"):
+                f[k] = f[k].format_map(vals)
+            found.append(f)
     entry = platform_of(facts, data)
     if entry is None:
         found.append({"id": "platform-not-reported", "level": "info",
@@ -360,9 +496,19 @@ def summary_lines(facts):
     else:
         firmware = f"unknown ({fw.get('error') or 'nothing reported'})"
     disk = facts["disk"]
+    boot, ref = facts.get("boot") or {}, facts.get("nvidia_reference")
+    nxt = boot.get("next")
+    if nxt is None:
+        nextboot = f"unknown (GRUB_DEFAULT={boot.get('grub_default')})" if boot.get("grub_default") else "unknown"
+    else:
+        nextboot = nxt + (", without an NVIDIA module" if nxt in boot.get("without_nvidia", []) else ", NVIDIA module present")
+    nvref = (f"{ref['name']} ({ref.get('label') or ref.get('date')}): kernel {_v(ref.get('kernel'))}, driver {_v(ref.get('driver'))}"
+             if ref else "none on this box (no nvidia-spark-ota-check metadata)")
     return [("maker / model", maker + bios),
             ("DGX OS", dgx + (f", {facts['os']['pretty']}" if facts["os"].get("pretty") else "")),
             ("kernel", _v(k.get("release")) + held),
+            ("next boot", nextboot),
+            ("NVIDIA reference", nvref),
             ("GPU", gpu), ("memory", memory), ("containers", containers),
             ("firmware", firmware),
             ("free disk", f"home {_v(disk.get('home_free_gib'), ' GiB')}, /var/lib {_v(disk.get('var_lib_free_gib'), ' GiB')}"),
@@ -374,9 +520,11 @@ def render_text(facts, findings, entry, brief=False):
     if not brief:
         out.append("Platform check (doctor.py: read-only, nothing was changed)")
         out.append("")
-        out += [f"  {k:<14} {v}" for k, v in summary_lines(facts)]
+        lines = summary_lines(facts)
+        w = max(len(k) for k, _ in lines) + 1
+        out += [f"  {k:<{w}}{v}" for k, v in lines]
         if entry:
-            out.append(f"  {'matrix':<14} {entry['name']}: {len(entry['reports'])} report(s) in docs/platforms.md")
+            out.append(f"  {'matrix':<{w}}{entry['name']}: {len(entry['reports'])} report(s) in docs/platforms.md")
         out.append("")
     shown = [f for f in findings if not brief or f["level"] in ("warn", "fail")]
     if not shown:
@@ -398,6 +546,8 @@ def render_report(facts, findings, entry):
     lines += [f"| {k} | {v.replace('|', '/')} |" for k, v in summary_lines(facts)]
     lines.append(f"| matrix | {entry['name'] if entry else 'not reported yet'} |")
     lines.append(f"| findings | {', '.join(f['id'] for f in findings) or 'none'} |")
+    for ch in facts.get("changes") or []:
+        lines.append(f"| kernel or driver change {ch['date']} | {ch['what'].replace('|', '/')} |")
     lines += ["", "</details>", ""]
     text = "\n".join(lines)
     home = str(Path.home())

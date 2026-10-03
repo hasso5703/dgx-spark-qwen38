@@ -319,7 +319,7 @@ class WhatCouldNotBeRead(unittest.TestCase):
         text = doctor.render_text(facts, findings, entry)
         self.assertIn("no /etc/dgx-release (not DGX OS?)", text)
         self.assertIn("unknown total", text)
-        self.assertIn("firmware       unknown (not installed)", text)
+        self.assertRegex(text, r"firmware +unknown \(not installed\)")
 
     def test_fwupd_printing_something_that_is_not_json(self):
         fx = Fixture(self, answers={"fwupdmgr get-devices --json": ("WARNING: something\n", None)})
@@ -388,7 +388,9 @@ class TheData(unittest.TestCase):
                 self.assertTrue(rule[k].strip(), (rule["id"], k))
             for url in rule["evidence"]:
                 self.assertTrue(url.startswith("https://"), url)
-            if rule["level"] in ("warn",) and rule["id"] not in ("gpu-not-gb10", "toolkit-missing"):
+            # a warning that claims something about a version needs its evidence; these three say only
+            # what the box itself shows (its GPU's name, a missing tool, two of its own versions)
+            if rule["level"] == "warn" and rule["id"] not in ("gpu-not-gb10", "toolkit-missing", "driver-reboot-pending"):
                 self.assertTrue(rule["evidence"], f"{rule['id']}: a warning about a version needs its evidence")
 
     def test_every_platform_report_is_complete(self):
@@ -538,6 +540,135 @@ class CrashSignatures(unittest.TestCase):
         out = io.StringIO()
         self.assertEqual(doctor.main(["--why", str(d / "missing.txt")], out=out), 2)
         self.assertIn("cannot read", out.getvalue())
+
+
+OTA_2607 = {"metadata": {"name": "OTA2607", "external_name": "July 2026", "releaseDate": "2026-07-15T00:00:00.000Z"},
+            "software": [{"name": "kernel", "version": "6.17.0-1022-nvidia"}, {"name": "driver", "version": "580.159.03"}]}
+OTA_BETA = {"metadata": {"name": "OTA2610-ebeta", "releaseDate": "2026-10-01T00:00:00.000Z"},
+            "software": [{"name": "kernel", "version": "7.1.0-1-nvidia"}, {"name": "driver", "version": "595.1"}]}
+HISTORY = """Start-Date: 2026-09-11  23:53:56
+Commandline: aptdaemon role='role-upgrade-system'
+Install: linux-image-7.0.0-1019-nvidia:arm64 (7.0.0-1019.19~24.04.2, automatic), linux-modules-nvidia-580-open-7.0.0-1019-nvidia:arm64 (7.0.0-1019.19~24.04.2, automatic)
+Upgrade: linux-image-nvidia-hwe-24.04:arm64 (6.17.0-1032.32, 7.0.0-1019.19~24.04.2), python3-pyasn1:arm64 (0.4.8-4ubuntu0.2, 0.4.8-4ubuntu0.3)
+End-Date: 2026-09-11  23:55:01
+
+Start-Date: 2026-09-12  08:00:00
+Upgrade: firefox:arm64 (1, 2)
+End-Date: 2026-09-12  08:00:05
+"""
+HISTORY_OLD = """Start-Date: 2026-09-16  17:00:00
+Remove: linux-modules-nvidia-580-open-6.17.0-1031-nvidia:arm64 (6.17.0-1031.31)
+Upgrade: nvidia-driver-580-open:arm64 (580.173.02-0ubuntu0.24.04.1, 580.178.04-0ubuntu0.24.04.1)
+End-Date: 2026-09-16  17:01:00
+"""
+
+
+class TheBoxUnderTheDriver(unittest.TestCase):
+    """The next boot, the loaded driver against the installed one, NVIDIA's own reference on the
+    box (spark-ota-check's metadata, read and never run), and apt's history of the kernel and
+    driver."""
+
+    def box(self, grub='GRUB_DEFAULT=0\n', kernels=("6.17.0-1031-nvidia", "6.17.0-1032-nvidia"),
+            with_nvidia=("6.17.0-1032-nvidia",), loaded="580.178.04", installed="580.178.04-0ubuntu0.24.04.1",
+            ota=(OTA_2607,), driver="580.178.04"):
+        fx = Fixture(self, answers={
+            "nvidia-smi --query-gpu=name,driver_version --format=csv,noheader": (f"NVIDIA GB10, {driver}\n", None),
+            "dpkg-query -W -f=${Package} ${Version}\\n nvidia-driver-*":
+                (f"nvidia-driver-580-open {installed}\nnvidia-driver-570 \n" if installed else "", None)})
+        for k in kernels:
+            fx.write(f"boot/vmlinuz-{k}", "")
+            (fx.root / "lib/modules" / k / "kernel").mkdir(parents=True, exist_ok=True)
+        for k in with_nvidia:
+            fx.write(f"lib/modules/{k}/kernel/nvidia-580-open/nvidia.ko", "")
+        fx.write("etc/default/grub", grub)
+        if loaded:
+            fx.write("sys/module/nvidia/version", loaded + "\n")
+        for i, o in enumerate(ota):
+            fx.write(f"opt/nvidia/spark-ota-check/metadata/spark-ota-{i}.json", json.dumps(o))
+        return fx
+
+    def test_the_reference_box_as_it_is(self):
+        fx = self.box(grub='GRUB_DEFAULT="gnulinux-advanced-27173d25>gnulinux-6.17.0-1032-nvidia-advanced-27173d25"\n')
+        facts, findings, _ = fx.outputs()
+        self.assertEqual(facts["boot"]["next"], "6.17.0-1032-nvidia", "the kernel /etc/default/grub names")
+        self.assertEqual(facts["boot"]["without_nvidia"], ["6.17.0-1031-nvidia"])
+        self.assertEqual((facts["driver_install"]["loaded"], facts["driver_install"]["installed"]), ("580.178.04", "580.178.04"))
+        self.assertEqual(facts["nvidia_reference"]["name"], "OTA2607")
+        found = ids(findings)
+        for rid in ("next-boot-without-nvidia", "driver-reboot-pending", "driver-older-than-reference"):
+            self.assertNotIn(rid, found)
+        text = doctor.render_text(facts, findings, None)
+        self.assertIn("next boot", text)
+        self.assertIn("6.17.0-1032-nvidia, NVIDIA module present", text)
+        self.assertIn("OTA2607 (July 2026): kernel 6.17.0-1022-nvidia, driver 580.159.03", text)
+
+    def test_a_next_boot_into_a_kernel_without_nvidia(self):
+        fx = self.box(kernels=("6.17.0-1032-nvidia", "6.17.0-1040-nvidia"), with_nvidia=("6.17.0-1032-nvidia",))
+        facts, findings, _ = fx.outputs()
+        self.assertEqual(facts["boot"]["next"], "6.17.0-1040-nvidia", "GRUB_DEFAULT=0 boots the newest")
+        f = next(f for f in findings if f["id"] == "next-boot-without-nvidia")
+        self.assertIn("(6.17.0-1040-nvidia)", f["title"], "the text names the box's own kernel")
+        self.assertIn("dist-upgrade", f["action"])
+
+    def test_a_default_it_cannot_read_is_unknown_and_warns_of_nothing(self):
+        fx = self.box(grub="GRUB_DEFAULT=saved\n", kernels=("6.17.0-1040-nvidia",), with_nvidia=())
+        facts, findings, _ = fx.outputs()
+        self.assertIsNone(facts["boot"]["next"])
+        self.assertNotIn("next-boot-without-nvidia", ids(findings))
+        self.assertIn("unknown (GRUB_DEFAULT=saved)", doctor.render_text(facts, findings, None))
+
+    def test_a_dkms_module_counts(self):
+        fx = self.box(kernels=("6.17.0-1040-nvidia",), with_nvidia=())
+        fx.write("lib/modules/6.17.0-1040-nvidia/updates/dkms/nvidia.ko.zst", "")
+        self.assertEqual(fx.outputs()[0]["boot"]["without_nvidia"], [])
+
+    def test_a_driver_waiting_for_a_reboot(self):
+        fx = self.box(loaded="580.159.03")
+        f = next(f for f in fx.outputs()[1] if f["id"] == "driver-reboot-pending")
+        self.assertEqual(f["title"], "A driver update waits for a reboot (loaded 580.159.03, installed 580.178.04)")
+
+    def test_no_loaded_module_or_no_package_is_no_finding(self):
+        self.assertNotIn("driver-reboot-pending", ids(self.box(loaded=None).outputs()[1]))
+        self.assertNotIn("driver-reboot-pending", ids(self.box(installed=None).outputs()[1]))
+
+    def test_older_than_nvidias_reference(self):
+        fx = self.box(driver="580.142", loaded="580.142", installed="580.142-0ubuntu1")
+        f = next(f for f in fx.outputs()[1] if f["id"] == "driver-older-than-reference")
+        self.assertEqual(f["title"], "Driver 580.142 is older than NVIDIA's newest reference on this box (OTA2607, July 2026: 580.159.03)")
+
+    def test_a_beta_reference_is_not_the_reference(self):
+        facts = self.box(ota=(OTA_2607, OTA_BETA)).outputs()[0]
+        self.assertEqual(facts["nvidia_reference"]["name"], "OTA2607")
+
+    def test_no_reference_on_the_box(self):
+        facts, findings, _ = self.box(ota=()).outputs()
+        self.assertIsNone(facts["nvidia_reference"])
+        self.assertIn("none on this box", doctor.render_text(facts, findings, None))
+
+    def test_a_reference_file_that_is_not_json_is_skipped(self):
+        fx = self.box()
+        fx.write("opt/nvidia/spark-ota-check/metadata/spark-ota-zzz.json", "not json")
+        self.assertEqual(fx.outputs()[0]["nvidia_reference"]["name"], "OTA2607")
+
+    def test_apt_history_names_the_kernel_and_driver_changes_only(self):
+        fx = self.box()
+        fx.write("var/log/apt/history.log", HISTORY)
+        import gzip
+        (fx.root / "var/log/apt").mkdir(parents=True, exist_ok=True)
+        with gzip.open(fx.root / "var/log/apt/history.log.1.gz", "wt") as g:
+            g.write(HISTORY_OLD)
+        changes = fx.outputs()[0]["changes"]
+        self.assertEqual([c["date"] for c in changes], ["2026-09-16", "2026-09-11"], "newest first, firefox left out")
+        self.assertEqual(changes[0]["what"], "remove linux-modules-nvidia-580-open-6.17.0-1031-nvidia; upgrade nvidia-driver-580-open")
+        self.assertTrue(changes[1]["what"].startswith("install linux-image-7.0.0-1019-nvidia, linux-modules-nvidia-580-open-7.0.0-1019-nvidia; upgrade linux-image-nvidia-hwe-24.04"))
+        facts, findings, entry = fx.outputs()
+        self.assertIn("| kernel or driver change 2026-09-11 |", doctor.render_report(facts, findings, entry))
+
+    def test_version_keys(self):
+        self.assertLess(doctor.version_key("580.142"), doctor.version_key("580.159.03"))
+        self.assertLess(doctor.version_key("580.159.03"), doctor.version_key("580.178.04-0ubuntu0.24.04.1"))
+        self.assertLess(doctor.kernel_key("6.17.0-1032-nvidia"), doctor.kernel_key("7.0.0-1019-nvidia"))
+        self.assertLess(doctor.kernel_key("6.17.0-1031-nvidia"), doctor.kernel_key("6.17.0-1032-nvidia"))
 
 
 if __name__ == "__main__":
