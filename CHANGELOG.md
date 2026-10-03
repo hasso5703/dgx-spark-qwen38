@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.22.6 (2026-10-03): ci-local.sh leaves nothing behind in /tmp
+
+Each step of `ci-local.sh` already ran under a HOME of its own, removed when it ended; it now
+gets a TMPDIR inside that HOME too. The suite's temporary directories, and its scripts'
+`mktemp`, stayed in /tmp after every local run: 761 of them on the reference box on 2026-10-03,
+some with modification times in 2027 (a test that dates files after an engine's start), which
+read as files changed by whatever ran next on the box. A full run now leaves /tmp as it found
+it. Nothing changes on GitHub's runners, which start empty.
+
+TESTING.md said what `ci-local.sh` did two versions ago: it now says where the test venv is
+looked for (`QWEN38_TEST_PYTHON` first, which a fresh clone needs, or the four steps that use
+`coverage` or `hypothesis` are skipped), how a step is skipped (a missing tool it calls, a
+package it cannot provide), and how long a full run took in October 2026.
+
+An update restarts the cockpit; the engines and the proxy keep running.
+
 ## v1.22.5 (2026-10-03): a stream the engine has not started is kept open, and its caller watched
 
 In the night of 2 to 3 October an opencode session on the flash lane started eight

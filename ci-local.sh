@@ -50,7 +50,13 @@ try:
             # key passed here and failed there; local has to be the harder of the two.
             home = tempfile.mkdtemp(prefix="ci-local-home-")
             called = os.path.join(home, ".ci-local-called")
-            env = {**os.environ, "HOME": home, "CI_LOCAL_CALLED": called,
+            # and a TMPDIR inside it, removed with it: the suite's own temporary directories
+            # (and its scripts' mktemp) stayed in /tmp after every run, 761 of them on the
+            # reference box on 2026-10-03, some with mtimes in 2027 that read as files changed
+            # by whatever ran next
+            tmp = os.path.join(home, "tmp")
+            os.mkdir(tmp)
+            env = {**os.environ, "HOME": home, "TMPDIR": tmp, "CI_LOCAL_CALLED": called,
                    "PATH": stubs + os.pathsep + os.environ.get("PATH", "")}
             try:
                 # The runner installs its pinned packages; here they have to be there
