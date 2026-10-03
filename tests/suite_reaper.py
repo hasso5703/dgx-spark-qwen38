@@ -93,7 +93,7 @@ def command_line(pid):
 
 
 def stop(pids):
-    """SIGTERM, a moment to exit, then SIGKILL for what is left."""
+    """SIGTERM, a moment to exit, then SIGKILL for what is left; then collect the dead."""
     for sig, wait in ((signal.SIGTERM, 3.0), (signal.SIGKILL, 1.0)):
         for pid in pids:
             try:
@@ -101,12 +101,24 @@ def stop(pids):
             except ProcessLookupError:
                 pass
         deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
+        while pids and time.monotonic() < deadline:
             reap()
             pids = [p for p in pids if p in descendants(os.getpid())]
-            if not pids:
-                return
-            time.sleep(0.1)
+            if pids:
+                time.sleep(0.1)
+        if not pids:
+            break
+    # A process that died after the last reap() is a zombie of ours, which descendants() does
+    # not count: left to this process's exit, it outlived the report until init collected it
+    # (the test of it failed 5 times in 24 under load, 2026-10-03). Wait for every child.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return  # no child left, dead or alive
+        if pid == 0:
+            time.sleep(0.05)
 
 
 def main(argv):
