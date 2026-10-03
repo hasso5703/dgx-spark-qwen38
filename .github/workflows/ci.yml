@@ -32,6 +32,28 @@ jobs:
           for f in $files; do bash -n "$f"; done
           echo "$(echo "$files" | wc -l) scripts parse"
 
+      - name: Every step keeps its scratch files under TMPDIR
+        run: |
+          # ci-local.sh runs each step with a TMPDIR inside the throwaway HOME it removes
+          # afterwards. A step that wrote a fixed name in the system temporary directory
+          # left it on the developer's box after every run (the coverage reports, the
+          # rendered units, the opencode test config: 2026-10-03), and two runs side by
+          # side wrote over each other's. A runner sets no TMPDIR, so the fallback stays
+          # where it was. The needle is assembled, or this step would find itself.
+          python3 - <<'PY'
+          import pathlib, sys
+          needle = "/" + "tmp"
+          allowed = "${TMPDIR:-" + needle + "}"
+          lines = pathlib.Path(".github/workflows/ci.yml").read_text().splitlines()
+          bad = [f"  line {n}: {line.strip()}" for n, line in enumerate(lines, 1)
+                 if needle in line.replace(allowed, "")]
+          if bad:
+              print(f"a step names a fixed path in {needle}; write it under \"{allowed}\" instead:")
+              print("\n".join(bad))
+              sys.exit(1)
+          print("every step keeps its scratch files under TMPDIR")
+          PY
+
       - name: shellcheck (warning severity)
         run: |
           files=$(git ls-files | while read -r f; do case "$f" in
@@ -133,6 +155,7 @@ jobs:
 
       - name: Coverage floors, the root modules
         run: |
+          scratch="${TMPDIR:-/tmp}"   # ci-local.sh gives each step its own; a runner has none
           pip install 'coverage==7.16.0' 2>/dev/null || true
           PY="$(./tests/testpy.sh coverage)"
           rm -f .coverage*
@@ -145,9 +168,9 @@ jobs:
               --omit="dashboard/*,tests/*,.venv-test/*" "$f" >/dev/null 2>&1 || true
           done
           "$PY" -m coverage combine -q
-          "$PY" -m coverage report --sort=cover | tee /tmp/rootcov.txt
+          "$PY" -m coverage report --sort=cover | tee "$scratch/rootcov.txt"
           rm -f .coverage*
-          "$PY" - <<'PYEOF'
+          "$PY" - "$scratch/rootcov.txt" <<'PYEOF'
           import re, sys
           # Measured 2026-09-10. keepalive-proxy.py is the production serving path
           # and had no floor at all until this step; it went 68 to 75% when the
@@ -163,7 +186,7 @@ jobs:
           FLOORS = {"keepalive-proxy.py": 85, "patch-yarn.py": 90,
                     "oc-fit-limits.py": 37, "build-token-map.py": 35}
           got, bad = {}, []
-          for line in open("/tmp/rootcov.txt"):
+          for line in open(sys.argv[1]):
               m = re.match(r"^(\S+\.py)\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)%", line)
               if m:
                   got[m.group(1)] = int(m.group(2))
@@ -259,6 +282,7 @@ jobs:
 
       - name: Coverage floors (measured, per module)
         run: |
+          scratch="${TMPDIR:-/tmp}"   # ci-local.sh gives each step its own; a runner has none
           pip install 'coverage==7.16.0' 2>/dev/null || true
           PY="$(./tests/testpy.sh coverage)"
           cd dashboard
@@ -271,11 +295,11 @@ jobs:
           "$PY" -m coverage run --branch --parallel-mode --source=. \
             tests/property_checks.py >/dev/null
           "$PY" -m coverage combine -q
-          "$PY" -m coverage report --sort=cover | tee /tmp/cov.txt
+          "$PY" -m coverage report --sort=cover | tee "$scratch/cov.txt"
           rm -f .coverage*
           # A floor per module, raised in a commit and never lowered quietly.
           # These are what was measured on 2026-09-10, minus a point of slack.
-          "$PY" - <<'PYEOF'
+          "$PY" - "$scratch/cov.txt" <<'PYEOF'
           import re, sys
           # Raised in a commit, never lowered quietly. cockpit.py went
           # 14 -> 30 -> 53 -> 59 -> 71 over one day of writing tests.
@@ -298,7 +322,7 @@ jobs:
                     "lifecycle.py": 100, "recipes.py": 100}
           TOTAL_FLOOR = 89
           got, bad = {}, []
-          for line in open("/tmp/cov.txt"):
+          for line in open(sys.argv[1]):
               m = re.match(r"^(\S+\.py|TOTAL)\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)%", line)
               if m:
                   got[m.group(1)] = int(m.group(2))
@@ -336,6 +360,7 @@ jobs:
 
       - name: Pin contracts (every consumer's own block runs against install.sh)
         run: |
+          scratch="${TMPDIR:-/tmp}"   # ci-local.sh gives each step its own; a runner has none
           n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT2_REPO|DRAFT2_REV|DRAFT2_QUANT|DRAFT2_TOKENS|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)
           [ "$n" -eq 19 ] || { echo "run.sh pin contract broken: $n != 19"; exit 1; }
           n=$(grep -cE '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' install.sh)
@@ -364,10 +389,10 @@ jobs:
           # another pin the grep did not select, which is unbound under set -u.
           # A count sees neither; running the block sees both.
           for consumer in run.sh switch-model.sh; do
-            awk '/^PINS=/{p=1} p{print} p && /^unset _v$/{exit}' "$consumer" > /tmp/pinblock.sh
-            [ -s /tmp/pinblock.sh ] || { echo "$consumer: no PINS block found"; exit 1; }
-            { echo 'die() { echo "$*" >&2; exit 1; }'; cat /tmp/pinblock.sh; } > /tmp/pincheck.sh
-            REPO_DIR=. bash -euo pipefail /tmp/pincheck.sh \
+            awk '/^PINS=/{p=1} p{print} p && /^unset _v$/{exit}' "$consumer" > "$scratch/pinblock.sh"
+            [ -s "$scratch/pinblock.sh" ] || { echo "$consumer: no PINS block found"; exit 1; }
+            { echo 'die() { echo "$*" >&2; exit 1; }'; cat "$scratch/pinblock.sh"; } > "$scratch/pincheck.sh"
+            REPO_DIR=. bash -euo pipefail "$scratch/pincheck.sh" \
               || { echo "$consumer: its own pin block does not run against install.sh"; exit 1; }
           done
           PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|MODEL_CHOICE|CONTEXT_MODE|DRAFT_REPO|DRAFT_REV|DRAFT2_REPO|DRAFT2_REV|SERVE_IMAGE|PORT|HF_CACHE|CONFIG_DIR)=' install.sh)"
@@ -450,6 +475,7 @@ jobs:
 
       - name: Unit templates render with no leftover placeholder
         run: |
+          scratch="${TMPDIR:-/tmp}"   # ci-local.sh gives each step its own; a runner has none
           render() {
             sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" \
                 -e "s|__PORT__|30000|g" -e "s|__PROXY_PORT__|30001|g" -e "s|__IMAGE__|img:v|g" \
@@ -462,9 +488,9 @@ jobs:
               -e "s|__FLASH_TIER_ARGS__|--max-running-requests 4 --max-mamba-cache-size 20 --mamba-radix-cache-strategy extra_buffer --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4|g" "$1"
           }
           for t in qwen38-sglang.service.template qwen38-sglang-1m.service.template qwen38-flash.service.template qwen38-keepalive.service.template; do
-            render "$t" > /tmp/unit.rendered
-            if grep -q '__[A-Z][A-Z0-9_]*__' /tmp/unit.rendered; then
-              echo "unsubstituted placeholder in $t:"; grep '__[A-Z][A-Z0-9_]*__' /tmp/unit.rendered; exit 1
+            render "$t" > "$scratch/unit.rendered"
+            if grep -q '__[A-Z][A-Z0-9_]*__' "$scratch/unit.rendered"; then
+              echo "unsubstituted placeholder in $t:"; grep '__[A-Z][A-Z0-9_]*__' "$scratch/unit.rendered"; exit 1
             fi
           done
       - name: No document ships a placeholder nobody filled in
@@ -481,6 +507,7 @@ jobs:
 
       - name: Unit templates keep the flags their lane is measured with
         run: |
+          scratch="${TMPDIR:-/tmp}"   # ci-local.sh gives each step its own; a runner has none
           render() {
             sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" \
                 -e "s|__PORT__|30000|g" -e "s|__PROXY_PORT__|30001|g" -e "s|__IMAGE__|img:v|g" \
@@ -528,26 +555,26 @@ jobs:
           # unescaping first, learned live on the reference box). The GB10 and
           # correctness-critical serving flags live in the launch template and
           # must never regress (see flash-sglang/ATTRIBUTION.md for each one).
-          render qwen38-flash.service.template > /tmp/flash-unit.rendered
-          grep -q 'Restart=always' /tmp/flash-unit.rendered
-          grep -q 'launch-flash.sh' /tmp/flash-unit.rendered
-          render qwen38-flash-launch.sh.template > /tmp/flash.rendered
-          if grep -q '__[A-Z][A-Z0-9_]*__' /tmp/flash.rendered; then echo "unsubstituted placeholder in the flash launcher:"; grep '__[A-Z][A-Z0-9_]*__' /tmp/flash.rendered; exit 1; fi
-          bash -n /tmp/flash.rendered
+          render qwen38-flash.service.template > "$scratch/flash-unit.rendered"
+          grep -q 'Restart=always' "$scratch/flash-unit.rendered"
+          grep -q 'launch-flash.sh' "$scratch/flash-unit.rendered"
+          render qwen38-flash-launch.sh.template > "$scratch/flash.rendered"
+          if grep -q '__[A-Z][A-Z0-9_]*__' "$scratch/flash.rendered"; then echo "unsubstituted placeholder in the flash launcher:"; grep '__[A-Z][A-Z0-9_]*__' "$scratch/flash.rendered"; exit 1; fi
+          bash -n "$scratch/flash.rendered"
           # The table must be file-backed: pinned host RAM is the upstream default and
           # frees nothing on unified memory, so a launcher that lost this pair does not
           # boot at all on a 128 GB box (sglang#37068).
-          grep -q -- '--ple-offload-embedding --ple-offload-backend file' /tmp/flash.rendered
-          grep -q -- '--ple-offload-dir /ple' /tmp/flash.rendered
-          grep -q -- '--mamba-radix-cache-strategy extra_buffer' /tmp/flash.rendered
-          grep -q -- '--speculative-algorithm NEXTN' /tmp/flash.rendered
-          grep -q -- '--speculative-eagle-topk 1' /tmp/flash.rendered
-          grep -q -- '--chunked-prefill-size 4096' /tmp/flash.rendered
-          grep -q -- '--page-size 64' /tmp/flash.rendered
-          grep -q -- '--fp4-gemm-backend flashinfer_cutlass' /tmp/flash.rendered
-          grep -q -- '--mem-fraction-static 0.85' /tmp/flash.rendered
-          grep -q -- '--max-mamba-cache-size' /tmp/flash.rendered
-          grep -q -- '--speculative-token-map /out/token-map-65536.pt' /tmp/flash.rendered
+          grep -q -- '--ple-offload-embedding --ple-offload-backend file' "$scratch/flash.rendered"
+          grep -q -- '--ple-offload-dir /ple' "$scratch/flash.rendered"
+          grep -q -- '--mamba-radix-cache-strategy extra_buffer' "$scratch/flash.rendered"
+          grep -q -- '--speculative-algorithm NEXTN' "$scratch/flash.rendered"
+          grep -q -- '--speculative-eagle-topk 1' "$scratch/flash.rendered"
+          grep -q -- '--chunked-prefill-size 4096' "$scratch/flash.rendered"
+          grep -q -- '--page-size 64' "$scratch/flash.rendered"
+          grep -q -- '--fp4-gemm-backend flashinfer_cutlass' "$scratch/flash.rendered"
+          grep -q -- '--mem-fraction-static 0.85' "$scratch/flash.rendered"
+          grep -q -- '--max-mamba-cache-size' "$scratch/flash.rendered"
+          grep -q -- '--speculative-token-map /out/token-map-65536.pt' "$scratch/flash.rendered"
           # No --allow-auto-truncate, ever. A prompt above the window must come back
           # as an error, not as a confident answer from a context the engine quietly
           # cut: probed 2026-09-13, an over-long prompt returned prompt_tokens exactly
@@ -566,40 +593,40 @@ jobs:
               ! render qwen38-flash-launch.sh.template | grep -v '^[[:space:]]*#' | grep -q -- '--allow-auto-truncate' ) \
               || { echo "the $tier tier renders --allow-auto-truncate into the launcher"; exit 1; }
           done
-          grep -q -- '--speculative-draft-model-quantization unquant' /tmp/flash.rendered
+          grep -q -- '--speculative-draft-model-quantization unquant' "$scratch/flash.rendered"
           # the key comes through a file SGLang merges in memory, never the command line
-          grep -q -- '--config /out/engine-secrets.yaml' /tmp/flash.rendered
-          ! grep -q -- '--api-key' /tmp/flash.rendered || { echo "the flash launcher puts the key on a command line"; exit 1; }
-          grep -q 'engine-secrets.sh' /tmp/flash.rendered
-          grep -q 'chat-template-flashnext.jinja' /tmp/flash.rendered
-          grep -q 'HF_HUB_OFFLINE=1' /tmp/flash.rendered
-          grep -q -- '--revision cafe' /tmp/flash.rendered
-          if grep -q -- '--language-only' /tmp/flash.rendered; then
+          grep -q -- '--config /out/engine-secrets.yaml' "$scratch/flash.rendered"
+          ! grep -q -- '--api-key' "$scratch/flash.rendered" || { echo "the flash launcher puts the key on a command line"; exit 1; }
+          grep -q 'engine-secrets.sh' "$scratch/flash.rendered"
+          grep -q 'chat-template-flashnext.jinja' "$scratch/flash.rendered"
+          grep -q 'HF_HUB_OFFLINE=1' "$scratch/flash.rendered"
+          grep -q -- '--revision cafe' "$scratch/flash.rendered"
+          if grep -q -- '--language-only' "$scratch/flash.rendered"; then
             echo "flash launcher must NOT pass --language-only (vision stays on)"; exit 1
           fi
           # The previous table file goes before every boot: the server rewrites the whole
           # table each time, and over a cold populated file that is ~17 MB/s (~55 min)
           # against GB/s on a fresh sparse one. This replaced the poisoned-table guard.
-          grep -q 'rm -f "$PLE_DIR"/ple_table_' /tmp/flash.rendered
-          grep -q 'SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB=8' /tmp/flash.rendered
-          grep -q 'SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1' /tmp/flash.rendered
+          grep -q 'rm -f "$PLE_DIR"/ple_table_' "$scratch/flash.rendered"
+          grep -q 'SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB=8' "$scratch/flash.rendered"
+          grep -q 'SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1' "$scratch/flash.rendered"
           # A tier that does not speculate must not receive the draft vocabulary.
           sed -e "s|__FLASH_TIER_ARGS__|--max-running-requests 24 --max-mamba-cache-size 96 --mamba-radix-cache-strategy extra_buffer_lazy|g" \
-              -e "s|__SPEC_TOKEN_MAP_LINE__||g" qwen38-flash-launch.sh.template > /tmp/flash.thr
-          if grep -q -- '--speculative-token-map' /tmp/flash.thr; then
+              -e "s|__SPEC_TOKEN_MAP_LINE__||g" qwen38-flash-launch.sh.template > "$scratch/flash.thr"
+          if grep -q -- '--speculative-token-map' "$scratch/flash.thr"; then
             echo "the throughput tier must not carry a draft vocabulary"; exit 1
           fi
-          bash -n /tmp/flash.thr
+          bash -n "$scratch/flash.thr"
           # Each flash checkpoint keeps its own flag pair. The NVDA export resolves its
           # own scheme and pins the MoE runner; the two NVFP4 ones declare the scheme and
           # must tell the draft their in-checkpoint MTP tensors are BF16. Swapping either
           # is silent: an fp8 head loaded as dense, or an autotune rejection.
-          sed -e "s|__FLASH_QUANT_ARGS__|--moe-runner-backend flashinfer_cutlass |g" qwen38-flash-launch.sh.template > /tmp/flash.nvda
-          grep -q -- '--moe-runner-backend flashinfer_cutlass' /tmp/flash.nvda
-          if grep -q -- '--quantization modelopt_fp4' /tmp/flash.nvda; then
+          sed -e "s|__FLASH_QUANT_ARGS__|--moe-runner-backend flashinfer_cutlass |g" qwen38-flash-launch.sh.template > "$scratch/flash.nvda"
+          grep -q -- '--moe-runner-backend flashinfer_cutlass' "$scratch/flash.nvda"
+          if grep -q -- '--quantization modelopt_fp4' "$scratch/flash.nvda"; then
             echo "the NVDA render must not pass --quantization (it resolves to modelopt_mixed)"; exit 1
           fi
-          if grep -q -- '--speculative-draft-model-quantization' /tmp/flash.nvda; then
+          if grep -q -- '--speculative-draft-model-quantization' "$scratch/flash.nvda"; then
             echo "the NVDA render must not pass a draft quantization"; exit 1
           fi
           arm() { grep -A2 -E "^ *$1\)$|^ *$1\) " install.sh; }
@@ -756,6 +783,7 @@ jobs:
 
       - name: opencode limits, the one table and both callers
         run: |
+          scratch="${TMPDIR:-/tmp}"   # ci-local.sh gives each step its own; a runner has none
           # The limits are not decoration: opencode compacts at limit.context, so a
           # limit above what the lane serves means the proxy answers 400 before
           # opencode ever compacts. One table (oc-limits.sh), and both callers must
@@ -792,9 +820,9 @@ jobs:
           [ "$(l stock --from "$tmp/u1m.service")" = "700000 200000 local, 1M" ] || { echo "derived 1m wrong"; exit 1; }
           [ "$(l stock --from "$tmp/unat.service")" = "173000 64000 local" ] || { echo "derived native wrong"; exit 1; }
           [ "$(l flash --from /nonexistent)" = "205000 32000 local" ] || { echo "a missing invocation must fall back to the default tier"; exit 1; }
-          out="$(l flash --from /nonexistent 2>/tmp/oclim.err)"; rc=$?
+          out="$(l flash --from /nonexistent 2>"$scratch/oclim.err")"; rc=$?
           [ "$rc" = "0" ] || { echo "a missing invocation must not fail the switch"; exit 1; }
-          grep -q "not a file" /tmp/oclim.err || { echo "a missing invocation must say so on stderr"; exit 1; }
+          grep -q "not a file" "$scratch/oclim.err" || { echo "a missing invocation must say so on stderr"; exit 1; }
           rm -rf "$tmp"
           # The FP8 pair must ask for strictly less than the NVFP4 pair and fit the
           # measured FP8 pool. We do NOT assert an absolute NVFP4 pool: the repo
@@ -928,18 +956,19 @@ jobs:
 
       - name: opencode generator produces a valid config (all three install shapes)
         run: |
+          scratch="${TMPDIR:-/tmp}"   # ci-local.sh gives each step its own; a runner has none
           gen() {  # engine, has27b, hasflash, ctx, out, context_mode
-            rm -f /tmp/octest/opencode.json; mkdir -p /tmp/octest
+            rm -f "$scratch/octest/opencode.json"; mkdir -p "$scratch/octest"
             OC_LANE="$1" OC_27B="$2" OC_FLASH="$3" OC_PORT=30001 OC_CTX="$4" OC_OUT="$5" \
-            OC_LABEL=local OC_CONTEXT_MODE="$6" OC_CONFIG_DIR=/tmp/octest \
+            OC_LABEL=local OC_CONTEXT_MODE="$6" OC_CONFIG_DIR="$scratch/octest" \
             OC_27B_CTX="$(./oc-limits.sh stock "$6" | cut -d' ' -f1)" OC_27B_OUT="$(./oc-limits.sh stock "$6" | cut -d' ' -f2)" \
             OC_KEEP="$(./oc-limits.sh --preserve "$4")" \
             python3 <(sed -n '/^OC_LANE=/,/^PYEOF$/p' install.sh | sed -n '/^import json$/,/^PYEOF$/p' | sed '$d')
           }
           gen 27b 1 0 173000 64000 native
-          python3 - <<'PY'
-          import json
-          c = json.load(open("/tmp/octest/opencode.json"))
+          python3 - "$scratch/octest/opencode.json" <<'PY'
+          import json, sys
+          c = json.load(open(sys.argv[1]))
           assert set(c["provider"]) == {"qwen38"}, c["provider"].keys()
           m = c["provider"]["qwen38"]["models"]["qwen3.8-27b"]
           assert set(m["variants"]) == {"lean", "low", "medium", "xhigh"}, m["variants"]
@@ -949,9 +978,9 @@ jobs:
           assert c["compaction"] == {"preserve_recent_tokens": 38000, "prune": True}, c["compaction"]
           PY
           gen flash 0 1 110000 32000 native
-          python3 - <<'PY'
-          import json
-          c = json.load(open("/tmp/octest/opencode.json"))
+          python3 - "$scratch/octest/opencode.json" <<'PY'
+          import json, sys
+          c = json.load(open(sys.argv[1]))
           assert set(c["provider"]) == {"flashnext"}, c["provider"].keys()
           m = c["provider"]["flashnext"]["models"]["qwen3.8-flash-next"]
           assert m["limit"] == {"context": 110000, "input": 110000, "output": 32000}
@@ -960,9 +989,9 @@ jobs:
           assert c["compaction"]["preserve_recent_tokens"] == 22000, c["compaction"]
           PY
           gen flash 1 1 110000 32000 1m
-          python3 - <<'PY'
-          import json
-          c = json.load(open("/tmp/octest/opencode.json"))
+          python3 - "$scratch/octest/opencode.json" <<'PY'
+          import json, sys
+          c = json.load(open(sys.argv[1]))
           assert set(c["provider"]) == {"qwen38", "flashnext"}
           assert c["provider"]["qwen38"]["models"]["qwen3.8-27b"]["limit"]["context"] == 700000
           assert c["model"] == "flashnext/qwen3.8-flash-next"
@@ -970,9 +999,9 @@ jobs:
           # the lane not being installed keeps its checkpoint's name, from the one table
           # (a generic name here flipped at every first update after a switch, 2026-09-30)
           OC_27B_NAME="$(python3 oc-point-default.py --label uncensored 1010000)" gen flash 1 1 110000 32000 1m
-          python3 - <<'PY'
-          import json
-          c = json.load(open("/tmp/octest/opencode.json"))
+          python3 - "$scratch/octest/opencode.json" <<'PY'
+          import json, sys
+          c = json.load(open(sys.argv[1]))
           assert c["provider"]["qwen38"]["models"]["qwen3.8-27b"]["name"] == "Qwen3.8-27B NVFP4 abliterated + DFlash2 (local, 1M)", c["provider"]["qwen38"]["models"]["qwen3.8-27b"]["name"]
           PY
 
@@ -1398,6 +1427,7 @@ jobs:
 
       - name: Cockpit and agent unit templates render, and their installers know every placeholder
         run: |
+          scratch="${TMPDIR:-/tmp}"   # ci-local.sh gives each step its own; a runner has none
           r() { sed -e "s|__HOME__|/home/u|g" -e "s|__USER__|u|g" -e "s|__GROUP__|u|g" -e "s|__PORT__|30090|g" \
                     -e "s|__BIND__|127.0.0.1|g" -e "s|__REPO_DIR__|/r|g" -e "s|__AGENT_PORT__|30091|g" \
                     -e "s|__AGENT_BIND__|tailscale|g" -e "s|__AGENT_UPSTREAM__|http://127.0.0.1:4096|g" \
@@ -1405,8 +1435,8 @@ jobs:
                     -e "s|__PATH__|/usr/bin:/bin|g" -e "s|__OUTPUT_TOKEN_MAX__|160000|g" \
                     -e "s|__AUTO_LINE__|Environment='OPENCODE_PERMISSION={\"*\":\"allow\"}'|g" "$1"; }
           for t in dashboard/qwen38-dashboard.service.template dashboard/opencode-web.service.template; do
-            r "$t" > /tmp/u.rendered
-            if grep -q '__[A-Z][A-Z0-9_]*__' /tmp/u.rendered; then echo "unsubstituted placeholder in $t:"; grep '__[A-Z][A-Z0-9_]*__' /tmp/u.rendered; exit 1; fi
+            r "$t" > "$scratch/u.rendered"
+            if grep -q '__[A-Z][A-Z0-9_]*__' "$scratch/u.rendered"; then echo "unsubstituted placeholder in $t:"; grep '__[A-Z][A-Z0-9_]*__' "$scratch/u.rendered"; exit 1; fi
           done
           # opencode stays on loopback: the relay is the one way in
           r dashboard/opencode-web.service.template | grep -q -- 'serve --hostname 127.0.0.1 --port 4096'

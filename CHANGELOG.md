@@ -4,10 +4,14 @@
 
 Each step of `ci-local.sh` already ran under a HOME of its own, removed when it ended; it now
 gets a TMPDIR inside that HOME too. The suite's temporary directories, and its scripts'
-`mktemp`, stayed in /tmp after every local run: 761 of them on the reference box on 2026-10-03,
-some with modification times in 2027 (a test that dates files after an engine's start), which
-read as files changed by whatever ran next on the box. A full run now leaves /tmp as it found
-it. Nothing changes on GitHub's runners, which start empty.
+`mktemp`, stayed in /tmp after every local run: 761 of them on the reference box on
+2026-10-03, some with modification times in 2027 (a test that dates files after an engine's
+start), which read as files changed by whatever ran next on the box. The workflow's own steps
+also wrote twelve fixed names there (the two coverage reports, the rendered units and flash
+launchers, the pin blocks, an error capture, the opencode test config), left behind by every
+local run and written over by any second run beside it: they now go under `${TMPDIR:-/tmp}`,
+and a new step fails the workflow on a fixed path in /tmp. A full local run now leaves /tmp
+as it found it. Nothing changes on GitHub's runners, which set no TMPDIR and start empty.
 
 TESTING.md said what `ci-local.sh` did two versions ago: it now says where the test venv is
 looked for (`QWEN38_TEST_PYTHON` first, which a fresh clone needs, or the four steps that use
