@@ -1,5 +1,65 @@
 # Changelog
 
+## v1.22.5 (2026-10-03): a stream the engine has not started is kept open, and its caller watched
+
+In the night of 2 to 3 October an opencode session on the flash lane started eight
+sub-agents at once, and by the morning the engine's queue held 163 requests for those eight
+agents. SGLang sends a stream's status and headers with its first chunk, after the request
+waited in the queue and its prompt was computed (`_handle_streaming_request` in
+`serving_chat.py`, in the images of both lanes). The eight agents' contexts outgrew the KV
+pool (771,301 tokens at 01:00 against 437,184), so the engine ran 3 to 5 requests at a time
+and computed most prompts again at each turn, and the wait grew past 300 s. opencode 1.18.32
+waits 300 s for a response's headers (`headerTimeout`, its default), then gives up and sends
+the request again. The proxy relayed the engine's headers when they came, wrote nothing
+before them and did not watch the caller of a stream meanwhile, so each request opencode gave
+up on stayed queued until its turn, had its prompt computed for nobody, and was aborted at
+the proxy's first write. From 00:12 to 11:36, 950 requests went through the proxy and 238
+were answered, the last at 05:43; opencode logged 704 header timeouts and sent each of those
+requests again, and from 02:15 to 11:36 the engine computed 47,939,516 prompt tokens and
+decoded 18,807.
+
+**The proxy keeps a stream the engine has not started (v6.31).** Until the engine answers,
+the caller of a stream is watched, as the caller of a non-streamed answer already was: when
+it leaves, its request is aborted by rid where the engine allows it and the upstream
+connection is closed, which SGLang sees within 4 s and answers by aborting the request
+itself. After 10 s (`KEEPALIVE_S`) with no headers from the engine, the proxy opens the
+stream (200 and its headers, as a hold does since v6.28) and writes role 1's keepalives into
+it until the engine answers: the client waits as long as the engine needs, and a client that
+has gone is found at the next write. An engine that answers before then is relayed as
+before, its own status and headers included, so a quick refusal keeps its 400; a refusal or
+a stopping engine after it is an error event of the stream, as in a hold. Past
+`MAX_SILENCE_S` (3,600 s) with nothing from the engine, the request is dropped, as a silent
+stream is.
+
+Measured:
+
+- the real opencode 1.18.32, against an engine that holds its headers 320 s (a fake one, as
+  SGLang does behind a queue): through v6.30, opencode gave up at 300 s
+  (`ProviderHeaderTimeoutError: Provider response headers timed out after 300000ms`) and
+  sent the request again at 303.8 s and 608.7 s, while the engine answered each earlier copy
+  320 s after it came, to nobody, and opencode had no answer when it was stopped at 760 s;
+  through v6.31, the stream opened at 10 s and opencode took the answer at 322 s, exit code
+  0, one request;
+- the flash lane itself, with a prompt of about 150,000 tokens its cache had never seen:
+  the status came at 10.0 s, then a keepalive every 10 s, and the first token at 76.5 s. A
+  client that left at 25 s had its request aborted at once, with about 99,000 of its prompt
+  tokens not yet computed; through v6.30 the same departure went unnoticed until the
+  engine's first token at 76.6 s, about 50 s of prefill for nobody;
+- `tests/test_proxy_engine_withholds_headers.py`: 10 tests with a fake engine that holds
+  its headers back as SGLang does; 7 fail on v6.30.
+
+opencode's own 300 s stays as it is: through the proxy the headers now come at 10 s, so it
+cannot fire on a stream, and every request opencode sent that night was one.
+
+**Several agents share one pool.** The proxy no longer lets a request nobody waits for take
+the engine's time, but eight agents still do not fit in a pool that holds four: once their
+contexts add up to more than the pool, each turn computes its whole prompt again. The
+night's counters and the rule (keep the sum of the agents' contexts under the pool shown on
+the cockpit's Lanes page) are in [docs/flash-lane.md](docs/flash-lane.md), "Several agents
+at once".
+
+An update restarts the proxy once (v6.31) and the cockpit; the engines keep running.
+
 ## v1.22.4 (2026-10-03): the Traffic badge counts every request in flight
 
 The badge beside Traffic in the rail, and the "in flight" rows of the Requests table, count

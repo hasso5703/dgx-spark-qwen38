@@ -99,6 +99,44 @@ the boot-time half, which is why the launcher still waits for a busy box to go
 quiet before it starts. At this tier both ends of the range are above the
 262,144-token window, which is the property that matters.
 
+## Several agents at once: their contexts share one pool
+
+The tier caps how many requests run together; the pool caps how much context they hold
+between them, and with agents that is the limit reached first. An agent keeps its whole
+conversation in the prefix cache from one turn to the next, which is why a turn costs only
+its new tokens (99.5 to 99.9% of a repeated prefix comes from the cache). When the agents'
+contexts add up to more than the pool, each turn evicts another agent's prefix, and that
+agent's next turn computes its whole prompt again.
+
+Measured on 2026-10-03 at the `concurrency` tier, pool 437,184 tokens: an opencode session
+that started eight sub-agents at once. Each sub-agent's first request held about 28,500
+tokens there (opencode's system prompt, that box's tools and the task), and every file it
+read added to it; at 01:00 the eight held 66,103 to 116,159 tokens each, 771,301 in all
+(opencode's own count, in its database). The
+engine's counters, per half hour:
+
+| | 00:15-00:45 | 00:45-01:15 | 01:15-02:15 |
+|---|---|---|---|
+| prompt tokens served from the cache | 94.5% | 50.5% | 27.6% |
+| prompt tokens computed | 303/s | 1,074/s | 1,041 to 1,320/s |
+| tokens decoded, all requests together | 69.3/s | 15.7/s | 2.9 to 3.0/s |
+| requests running (mean, max) | 5.5, 8 | 4.1, 6 | 3.0 to 3.5, 5 |
+
+The rest of that night was another failure, fixed in v1.22.5: requests waited in the queue
+past opencode's 300 s wait for headers, opencode sent them again, and from 02:15 to 11:36
+the engine computed 47,939,516 prompt tokens and decoded 18,807: prompts for callers that
+had already gone (CHANGELOG, v1.22.5). The proxy now keeps such a stream open and ends the
+request of a caller that leaves. What the table shows is left, and it is arithmetic, not a
+bug.
+
+**Keep the sum of the agents' contexts under the pool.** The pool of the running boot is on
+the cockpit's Lanes page (and in the engine's log, `max_total_num_tokens`). An agent that
+reads a lot of files reaches 100,000 to 140,000 tokens (that night's eight peaked at 66,103
+to 142,638), and opencode's compaction keeps each agent under the lane's limit (205,000
+here), not their sum. On a 437,184-token pool that is three or four such agents at once,
+and two at their full limit. More agents still run, but each of their turns costs a whole
+prefill, at about 1,000 to 1,500 tokens a second.
+
 Measured on the reference box at the `context` tier, image
 `dev-qwen38-next-local` (`4ccff141db`):
 
