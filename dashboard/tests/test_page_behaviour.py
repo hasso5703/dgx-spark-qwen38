@@ -841,6 +841,29 @@ class TheStartGuardAndALostSchedulerAreSaidAsTheyAre(unittest.TestCase):
         self.assertNotIn("keeps crashing", r["banner"])
         self.assertEqual(r["card"], "restarting after a crash")
 
+    CRASH = ("{id: 'cublas-internal-error', title: 'cuBLAS internal error in a GEMM', "
+             "meaning: 'It can be the first report of a fault in another kernel.', "
+             "action: 'Look for an Xid line in the kernel log at the same minute.', "
+             "xid_said: ['Xid 31: a GPU memory page fault (MMU fault)'], evidence: ['https://example.org/26']}")
+
+    def test_a_known_crash_cause_is_said_with_what_to_do(self):
+        r = self.page("eng('failed', {restarting: true, restarts: 1, crashed_serving: true, crash: %s, crash_age: 30})" % self.CRASH)
+        self.assertIn("stopped while it was serving and is starting again.", r["banner"])
+        self.assertIn("stopped 30 s ago: cuBLAS internal error in a GEMM.", r["banner"])
+        self.assertIn("Xid 31: a GPU memory page fault (MMU fault)", r["banner"])
+        self.assertIn("It can be the first report of a fault in another kernel.", r["banner"])
+        self.assertIn("What to do: Look for an Xid line in the kernel log at the same minute.", r["banner"])
+        self.assertIn("Evidence: https://example.org/26", r["banner"])
+
+    def test_no_cause_known_no_cause_banner(self):
+        r = self.page("eng('failed', {restarting: true, restarts: 1, crashed_serving: true})")
+        self.assertNotIn(" ago: ", r["banner"])
+
+    def test_the_cause_stays_once_the_lane_is_back(self):
+        r = self.page("eng('ready', {crash: %s, crash_age: 600})" % self.CRASH)
+        self.assertIn("stopped 10 min 00 ago: cuBLAS internal error in a GEMM.", r["banner"])
+        self.assertNotIn("is starting again", r["banner"])
+
     def test_a_real_crash_loop_still_says_so(self):
         r = self.page("eng('failed', {restarting: true, restarts: 4})")
         self.assertIn("keeps crashing.", r["banner"])

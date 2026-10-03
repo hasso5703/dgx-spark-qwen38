@@ -17,7 +17,9 @@
     {
       "id": "memory-below-110",
       "kind": "memory_below_gib",
-      "params": {"gib": 110},
+      "params": {
+        "gib": 110
+      },
       "level": "fail",
       "title": "Less than 110 GiB of memory",
       "detail": "Every lane is sized for the memory a GB10 box shows (about 121 GiB of its 128 GB); install.sh refuses below 110 GiB.",
@@ -36,7 +38,11 @@
     {
       "id": "driver-580.159.03",
       "kind": "driver_is",
-      "params": {"versions": ["580.159.03"]},
+      "params": {
+        "versions": [
+          "580.159.03"
+        ]
+      },
       "level": "warn",
       "title": "Driver 580.159.03, the one every report of engines dying with \"operation not permitted\" ran",
       "detail": "Engines died with CUDA error: operation not permitted (cudaErrorNotPermitted) after hours or days of serving, on GB10 boxes on this driver: SGLang #40948, vLLM #52877 and this repo's issue #26, whose reporter saw no such death after updating to 580.178.04 (2026-10-02). A version boundary seen in reports, not a proven cause.",
@@ -51,7 +57,11 @@
     {
       "id": "kernel-7.0.0-1019",
       "kind": "kernel_starts",
-      "params": {"prefixes": ["7.0.0-1019-"]},
+      "params": {
+        "prefixes": [
+          "7.0.0-1019-"
+        ]
+      },
       "level": "warn",
       "title": "Kernel 7.0.0-1019, which NVIDIA asked to hold off",
       "detail": "NVIDIA's DGX Spark Update Advisory (2026-09-14) asked to \"hold off on updating to kernel 7.0.0-1019, including updates via DGX Dashboard\" (multi-node RoCE failures); on 2026-09-17 it said updates were rolling out to mitigate it. On this repo's reference box, this kernel reserved 9.30 GiB that long-lived GPU pinning could no longer use (measured 2026-09-16).",
@@ -76,7 +86,9 @@
     {
       "id": "gpu-not-gb10",
       "kind": "gpu_not",
-      "params": {"contains": "GB10"},
+      "params": {
+        "contains": "GB10"
+      },
       "level": "warn",
       "title": "The GPU is not a GB10",
       "detail": "Every lane is sized and measured on a GB10 (install.sh warns too).",
@@ -107,7 +119,14 @@
   "platforms": [
     {
       "name": "ASUS Ascent GX10",
-      "match": {"dgx_platform": ["GX10"], "dmi_product": ["GX10"]},
+      "match": {
+        "dgx_platform": [
+          "GX10"
+        ],
+        "dmi_product": [
+          "GX10"
+        ]
+      },
       "reports": [
         {
           "date": "2026-10-03",
@@ -122,7 +141,11 @@
     },
     {
       "name": "HP ZGX Nano G1n",
-      "match": {"dgx_platform": ["HP ZGX Nano G1n AI Station"]},
+      "match": {
+        "dgx_platform": [
+          "HP ZGX Nano G1n AI Station"
+        ]
+      },
       "reports": [
         {
           "date": "2026-09-30",
@@ -144,5 +167,72 @@
         }
       ]
     }
-  ]
+  ],
+  "crash_signatures": [
+    {
+      "id": "cuda-900-stream-capture",
+      "pattern": "operation not permitted when stream is capturing",
+      "title": "CUDA error 900: an operation CUDA forbids while a graph is being captured",
+      "meaning": "cudaErrorStreamCaptureUnsupported: something ran, during a CUDA graph capture, an operation the capture does not allow (the message names it; libcudart 13.0.96 reads it \"operation not permitted when stream is capturing\").",
+      "action": "Note the line just before it and whether the engine was booting or serving, and report both with ./doctor.py --report.",
+      "evidence": []
+    },
+    {
+      "id": "cuda-800-not-permitted",
+      "pattern": "(CUDA error|Triton Error \\[CUDA\\]): operation not permitted",
+      "title": "CUDA error 800: operation not permitted, the engine deaths seen on driver 580.159.03",
+      "meaning": "cudaErrorNotPermitted. Every report of engines dying this way on a GB10 ran driver 580.159.03 (SGLang #40948, vLLM #52877, issue #26), and the reporter of #26 saw none after updating to 580.178.04.",
+      "action": "Run ./doctor.py: when it names driver 580.159.03, update the system the way its maker supports.",
+      "evidence": [
+        "https://github.com/sgl-project/sglang/issues/40948",
+        "https://github.com/vllm-project/vllm/issues/52877",
+        "https://github.com/hasso5703/dgx-spark-qwen38/issues/26#issuecomment-5962195541"
+      ]
+    },
+    {
+      "id": "cublas-internal-error",
+      "pattern": "CUBLAS_STATUS_INTERNAL_ERROR",
+      "title": "cuBLAS internal error in a GEMM",
+      "meaning": "It can be the first report of a fault in another kernel: in vLLM #54173, on a GB10, the same error came before an illegal memory access, and a GPU core dump named a mamba-state kernel. NVIDIA fixed bf16 and fp16 GEMMs that could access memory illegally on DGX Spark in cuBLAS 13.2; the 27B lane's image carries cuBLAS 13.1.1.3.",
+      "action": "Look for an Xid line in the kernel log at the same minute (named above when one was found); issue #26 says how to make a GPU core dump name the kernel at fault.",
+      "evidence": [
+        "https://github.com/hasso5703/dgx-spark-qwen38/issues/26#issuecomment-5969864317",
+        "https://github.com/vllm-project/vllm/issues/54173",
+        "https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/"
+      ]
+    },
+    {
+      "id": "illegal-memory-access",
+      "pattern": "an illegal memory access was encountered",
+      "title": "CUDA error 700: a kernel accessed memory it should not have",
+      "meaning": "A GPU kernel read or wrote out of bounds, and the driver logged an Xid 31 (MMU fault) naming the process (measured on the reference box, 2026-10-03). The traceback names the next call that checked for errors, not always the kernel at fault.",
+      "action": "Issue #26 says how to capture a GPU core dump that names the kernel at fault.",
+      "evidence": [
+        "https://github.com/hasso5703/dgx-spark-qwen38/issues/26#issuecomment-5969864317"
+      ]
+    },
+    {
+      "id": "cuda-out-of-memory",
+      "pattern": "CUDA out of memory|torch\\.OutOfMemoryError|CUDA error: out of memory",
+      "title": "The engine ran out of GPU memory",
+      "meaning": "An allocation failed: the lane's pool and whatever else holds unified memory went past what the box has.",
+      "action": "See what else holds memory (nvidia-smi --query-compute-apps=pid,used_memory --format=csv) before starting the lane again.",
+      "evidence": []
+    },
+    {
+      "id": "cuda-graph-capture-failed",
+      "pattern": "Capture cuda graph failed",
+      "title": "The engine could not capture its CUDA graphs",
+      "meaning": "SGLang captures CUDA graphs while it boots, and the error after this line says why. The reference box's 27B lane hit it three times in September, each at boot, with \"operation failed due to a previous error during capture\".",
+      "action": "systemd starts the lane again; if it repeats, report the lines around it with ./doctor.py --report.",
+      "evidence": []
+    }
+  ],
+  "xids": {
+    "catalog": "https://docs.nvidia.com/deploy/xid-errors/index.html",
+    "known": {
+      "31": "a GPU memory page fault (MMU fault): a kernel read or wrote memory it should not have",
+      "119": "the driver timed out waiting for the GPU's GSP firmware (NVIDIA forum 378200: a driver not paired with its firmware)"
+    }
+  }
 }

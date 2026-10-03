@@ -27,6 +27,17 @@ serves anything unless `--force`; exit 0, 1 (a check failed) or 3 (refused). On 
 box, beside an audit's three requests, the seven passed in 51 s. install.sh's last lines
 name it.
 
+**Known crash causes, in the cockpit.** When a text lane's run ends in failure (a crash while
+it served, or a boot that keeps dying), the cockpit reads that run's own journal (its systemd
+invocation) and the kernel's lines of the 15 minutes before, and names what platforms.json knows:
+CUDA error 900 or 800 (the 800 deaths of driver 580.159.03), a cuBLAS internal error (#26), an
+illegal memory access, out of memory, a CUDA graph capture that failed, and the driver's Xid
+numbers of the same minutes (31, a GPU memory page fault; 119, the GSP firmware timing out). A
+banner for half an hour and a line in the events, the API key masked in the line shown; once per
+run; a journal that did not answer is read again; the kernel lines come through the one
+`journalctl -k` the cockpit already ran, so nothing changes in sudoers. A crash with no known
+signature is said to have none. `./doctor.py --why <file>` does the same on a pasted journal.
+
 **`platforms.json` and [docs/platforms.md](docs/platforms.md)**: the known issues with their
 evidence, and the boxes reported so far (the reference ASUS Ascent GX10, the HP ZGX Nano G1n
 of #26); a test keeps the doc's table equal to `./doctor.py --matrix`.

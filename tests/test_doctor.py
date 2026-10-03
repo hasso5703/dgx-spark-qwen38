@@ -405,6 +405,12 @@ class TheData(unittest.TestCase):
         self.assertIsNotNone(m, "docs/platforms.md has no known-issues block")
         self.assertEqual(m.group(1), doctor.render_issues(DATA))
 
+    def test_the_doc_lists_the_crash_signatures(self):
+        doc = (REPO / "docs/platforms.md").read_text()
+        m = re.search(r"<!-- signatures:start -->\n(.*?)<!-- signatures:end -->", doc, re.S)
+        self.assertIsNotNone(m, "docs/platforms.md has no signatures block")
+        self.assertEqual(m.group(1), doctor.render_signatures(DATA))
+
     def test_the_doc_shows_the_matrix_doctor_prints(self):
         doc = (REPO / "docs/platforms.md").read_text()
         m = re.search(r"<!-- matrix:start -->\n(.*?)<!-- matrix:end -->", doc, re.S)
@@ -434,6 +440,104 @@ class TheInstallerAsksIt(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("doctor.py did not answer; the install goes on", r.stdout)
         self.assertIn("STEP 2 REACHED", r.stdout)
+
+
+# Lines as the engines and the kernel printed them: imriss's crash (#26, 2026-10-02), the
+# first #26 report and SGLang #40948 (driver 580.159.03), the reference box's 27B journal
+# (2026-09-17), a fault caused on purpose on the reference box (2026-10-03), forum 378200.
+L_CUBLAS = ("RuntimeError: CUDA error: CUBLAS_STATUS_INTERNAL_ERROR when calling `cublasGemmEx( handle, opa, opb, "
+            "m, n, k, &falpha, a, CUDA_R_16BF, lda, b, CUDA_R_16BF, ldb, &fbeta, c, CUDA_R_16BF, ldc, "
+            "compute_type, CUBLAS_GEMM_DEFAULT_TENSOR_OP)`")
+L_800 = "torch.AcceleratorError: CUDA error: operation not permitted"
+L_800_TRITON = "RuntimeError: Triton Error [CUDA]: operation not permitted"
+L_900 = "torch.AcceleratorError: CUDA error: operation not permitted when stream is capturing"
+L_IMA = "torch.AcceleratorError: CUDA error: an illegal memory access was encountered"
+L_OOM = "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB"
+L_CAPTURE = "Exception: Capture cuda graph failed: CUDA error: operation failed due to a previous error during capture"
+K_XID31 = ("NVRM: Xid (PCI:000f:01:00): 31, pid=3003984, name=python3, channel 0x00000015, intr 00000000. "
+           "MMU Fault: ENGINE GRAPHICS GPC0 GPCCLIENT_T1_0 faulted @ 0x403_2ee00000.")
+K_XID119 = "NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!"
+K_XID13 = "NVRM: Xid (PCI:000f:01:00): 13, Graphics Exception"
+ROUTINE = ["NVRM: nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned "
+           "from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1359",
+           "Health check failed. Server couldn't get a response from detokenizer for last 20 seconds.",
+           "[2026-10-02 15:01:17] Decode batch, #running-req: 4, #token: 313875, token usage: 0.36",
+           "Prefill batch, #new-seq: 1, #new-token: 8192, #cached-token: 0, full token usage: 0.26"]
+
+
+class CrashSignatures(unittest.TestCase):
+    def cause(self, *lines, kernel=()):
+        return doctor.crash_cause(ROUTINE + list(lines) + ROUTINE, list(kernel), DATA)
+
+    def test_imriss_crash_with_and_without_an_xid(self):
+        c = self.cause("Traceback (most recent call last):", L_CUBLAS)
+        self.assertEqual(c["id"], "cublas-internal-error")
+        self.assertIn("13.1.1.3", c["meaning"])
+        self.assertEqual(c["xids"], [])
+        c = self.cause(L_CUBLAS, kernel=[K_XID31])
+        self.assertEqual(c["xids"], [31])
+        self.assertIn("MMU fault", c["xid_said"][0])
+        self.assertIn("xid-errors", c["evidence"][-1])
+
+    def test_800_and_900_are_told_apart(self):
+        self.assertEqual(self.cause(L_800)["id"], "cuda-800-not-permitted")
+        self.assertEqual(self.cause(L_800_TRITON)["id"], "cuda-800-not-permitted")
+        self.assertEqual(self.cause(L_900)["id"], "cuda-900-stream-capture",
+                         "the 900 message begins like the 800 one: the longer one is checked first")
+
+    def test_the_other_signatures(self):
+        self.assertEqual(self.cause(L_IMA)["id"], "illegal-memory-access")
+        self.assertEqual(self.cause(L_OOM)["id"], "cuda-out-of-memory")
+        self.assertEqual(self.cause(L_CAPTURE)["id"], "cuda-graph-capture-failed")
+
+    def test_the_order_of_platforms_json_decides_between_two_signatures(self):
+        """vLLM #54173: the cuBLAS error first, the illegal memory access after it."""
+        self.assertEqual(self.cause(L_CUBLAS, L_IMA)["id"], "cublas-internal-error")
+
+    def test_the_line_shown_is_the_newest_match(self):
+        c = self.cause("RuntimeError: CUDA error: an illegal memory access was encountered (first)", L_IMA)
+        self.assertEqual(c["line"], L_IMA)
+
+    def test_routine_lines_match_nothing(self):
+        self.assertIsNone(doctor.crash_cause(ROUTINE, ["NVRM: GPU at PCI:000f:01:00: GPU-ebe6d60d"], DATA))
+
+    def test_an_xid_alone_is_said_and_an_unknown_one_points_at_the_catalog(self):
+        c = self.cause(kernel=[K_XID119, K_XID13])
+        self.assertEqual(c["id"], "xid")
+        self.assertEqual(c["xids"], [13, 119])
+        self.assertIn("see NVIDIA's Xid catalog", c["xid_said"][0])
+        self.assertIn("GSP firmware", c["xid_said"][1])
+        self.assertIsNone(c["line"])
+
+    def test_every_signature_is_sound(self):
+        ids = [s["id"] for s in DATA["crash_signatures"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        for sig in DATA["crash_signatures"]:
+            re.compile(sig["pattern"])
+            for k in ("title", "meaning", "action"):
+                self.assertTrue(sig[k].strip(), (sig["id"], k))
+            for url in sig["evidence"]:
+                self.assertTrue(url.startswith("https://"), url)
+            for ln in ROUTINE:
+                self.assertIsNone(re.search(sig["pattern"], ln), (sig["id"], ln))
+        self.assertTrue(DATA["xids"]["catalog"].startswith("https://"))
+
+    def test_why_reads_a_file_or_stdin(self):
+        d = Path(tempfile.mkdtemp(prefix="doctor-why-"))
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        f = d / "journal.txt"
+        f.write_text("\n".join(ROUTINE + [L_800, K_XID31]) + "\n")
+        out = io.StringIO()
+        self.assertEqual(doctor.main(["--why", str(f)], out=out), 0)
+        self.assertIn("Known: CUDA error 800", out.getvalue())
+        self.assertIn("Xid 31:", out.getvalue())
+        r = subprocess.run([sys.executable, str(REPO / "doctor.py"), "--why", "-"], input="\n".join(ROUTINE),
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("Nothing known in these lines", r.stdout)
+        out = io.StringIO()
+        self.assertEqual(doctor.main(["--why", str(d / "missing.txt")], out=out), 2)
+        self.assertIn("cannot read", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from collections import deque
 
@@ -538,6 +539,64 @@ def collect_kernel():
     return {"node_id": "local", "nvrm_oom_1h": count, "nvrm_last": last}
 
 
+def _doctor():
+    """doctor.py and platforms.json, loaded once. None when either cannot be read: the cockpit
+    then names no cause, and says so once, rather than failing."""
+    if not _DOCTOR:
+        try:
+            spec = importlib.util.spec_from_file_location("qwen38_doctor", REPO_DIR / "doctor.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _DOCTOR.append((mod, mod.load_data(REPO_DIR / "platforms.json")))
+        except Exception as e:  # noqa: BLE001 (a missing or broken file must not stop the cockpit)
+            add_event("crash", f"crash causes unavailable: doctor.py or platforms.json did not load ({type(e).__name__})")
+            _DOCTOR.append(None)
+    return _DOCTOR[0]
+
+
+def _iso_epoch(line):
+    """The epoch of a journalctl -o short-iso line, or None."""
+    try:
+        return datetime.fromisoformat(line.split(" ", 1)[0]).timestamp()
+    except (ValueError, IndexError):
+        return None
+
+
+def crash_cause(unit, invocation, now=None):
+    """The known cause of the run `invocation` of `unit`, read once per run: its last 400 lines
+    and the kernel's lines of the 15 minutes before (the same exact sudo argv collect_kernel
+    uses). The matched line is shown with the API key masked, as the diagnostics bundle masks it."""
+    now = time.time() if now is None else now
+    seen = CRASH_CAUSE.get(unit)
+    if seen and seen.get("invocation") == invocation:
+        return seen
+    loaded = _doctor()
+    cause = None
+    if loaded and invocation:
+        mod, data = loaded
+        raw = run(["journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}", "-n", "400",
+                   "--no-pager", "-o", "cat"], timeout=10)
+        if not answered(raw):
+            return seen                 # a journal that did not answer is read again next tick
+        lines = raw.splitlines()
+        kern = run(["sudo", "-n", "/usr/bin/journalctl", "-k", "--since", "-1h", "--no-pager", "-o", "short-iso"], timeout=8)
+        kernel = [ln for ln in kern.splitlines()
+                  if (t := _iso_epoch(ln)) is not None and now - 900 <= t <= now + 60]
+        cause = mod.crash_cause(lines, kernel, data)
+        key = api_key()
+        if cause and cause.get("line") and key:
+            cause["line"] = cause["line"].replace(key, "<masked>")
+    rec = {"invocation": invocation, "at": now, "cause": cause}
+    CRASH_CAUSE[unit] = rec
+    short = unit.replace(".service", "")
+    if cause:
+        xids = f" (Xid {', '.join(str(x) for x in cause['xids'])})" if cause.get("xids") else ""
+        add_event("crash", f"{short} stopped: {cause['title']}{xids}")
+    elif loaded and invocation:
+        add_event("crash", f"{short} stopped: nothing known in its last 400 lines")
+    return rec
+
+
 @guard
 def collect_engine_info():
     # 10 s, not 6: SGLang's event loop stalls under a long prefill and a late answer is
@@ -601,6 +660,13 @@ LAST_ZOMBIE_RESTART: dict = {}
 # dying, and both read "keeps crashing, it dies during startup" (seen 2026-10-01 after one
 # crash of a serving engine). Per unit: it was serving when it went down this time.
 CRASHED_SERVING: dict = {}
+# What platforms.json knows about a text lane's run that ended in failure (a crash while it
+# served, or a boot that keeps dying): doctor.py matches the crash signatures on that run's own
+# journal and the driver's Xid numbers on the kernel's lines of the same minutes. Once per run
+# (its systemd invocation), shown for CRASH_SHOWN_S after it.
+CRASH_CAUSE: dict = {}
+CRASH_SHOWN_S = 1800.0
+_DOCTOR: list = []
 LAST_PROGRESS: dict = {"ts": None}
 UNHEALTHY_TICKS: dict = {}     # per unit: consecutive ticks with health down
 IMAGE_READY_ENTER: dict = {}   # image lane: the activation (enter timestamp) it served in
@@ -1542,6 +1608,10 @@ def collect_lifecycle():
                 st = {**st, "crashed_serving": True}
         elif st["state"] != "failed":
             CRASHED_SERVING.pop(unit, None)
+        if st["state"] == "failed" and not is_image and not is_video:
+            crash_cause(unit, d.get("InvocationID", ""))
+        crash = CRASH_CAUSE.get(unit)
+        crash_age = time.time() - crash["at"] if crash else None
         # what the start guard said, when it is why the lane is not up (held, refused)
         if active in ("activating", "failed"):
             st = lc.preflight_flags(st, unit_sub=d.get("SubState", "?"),
@@ -1598,6 +1668,10 @@ def collect_lifecycle():
                          "zombie": bool(st.get("zombie")), "zombie_in": st.get("zombie_in"),
                          # down between two attempts after it stopped while serving, not at boot
                          "crashed_serving": bool(st.get("crashed_serving")),
+                         # what is known about the run that ended (doctor.py's crash signatures),
+                         # for CRASH_SHOWN_S after it
+                         "crash": crash["cause"] if crash and crash_age < CRASH_SHOWN_S else None,
+                         "crash_age": round(crash_age) if crash and crash_age < CRASH_SHOWN_S else None,
                          "restarts": int(d.get("NRestarts") or 0) if str(d.get("NRestarts", "")).isdigit() else 0,
                          "elapsed": round(elapsed, 1) if elapsed else None,
                          "state_elapsed": round(state_elapsed, 1) if state_elapsed is not None else None,

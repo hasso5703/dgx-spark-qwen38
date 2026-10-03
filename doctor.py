@@ -6,6 +6,7 @@ Usage: doctor.py             the full report
        doctor.py --json      the facts and the findings, as JSON
        doctor.py --report    anonymised Markdown to paste into an issue
        doctor.py --matrix    the boxes reported so far, as the table of docs/platforms.md
+       doctor.py --why FILE  what is known about an engine crash in a pasted journal (- reads stdin)
 
 Every GB10 box runs this repo's engines in the same containers, pinned by digest, so what
 differs from one box to the next is underneath them: the maker's firmware (BIOS, embedded
@@ -278,6 +279,54 @@ def evaluate(facts, data):
     return found, entry
 
 
+XID = re.compile(r"NVRM: Xid \([^)]*\): (\d+)")
+
+
+def crash_cause(lines, kernel_lines, data):
+    """What is known about why an engine run ended: the first known signature of
+    platforms.json found in that run's own lines (the newest line of it), and the Xid numbers
+    the driver logged in the kernel's lines of the same minutes. None when nothing known
+    matched: a crash with no known cause is said to have none, never given one."""
+    found = None
+    for sig in data["crash_signatures"]:
+        rx = re.compile(sig["pattern"])
+        hit = next((ln for ln in reversed(lines) if rx.search(ln)), None)
+        if hit is not None:
+            found = {k: sig[k] for k in ("id", "title", "meaning", "action", "evidence")}
+            found["line"] = hit.strip()[-300:]
+            break
+    xids = sorted({int(m.group(1)) for ln in kernel_lines for m in [XID.search(ln)] if m})
+    if found is None and not xids:
+        return None
+    known, catalog = data["xids"]["known"], data["xids"]["catalog"]
+    said = [f"Xid {x}: {known[str(x)]}" if str(x) in known else f"Xid {x}: see NVIDIA's Xid catalog"
+            for x in xids]
+    if found is None:
+        found = {"id": "xid", "title": "The GPU driver logged an Xid as the engine stopped",
+                 "meaning": "No known line in the engine's own output; the kernel log has the driver's.",
+                 "action": "Report the engine's journal and the kernel log of that minute with ./doctor.py --report.",
+                 "evidence": [], "line": None}
+    found["xids"], found["xid_said"] = xids, said
+    if xids and catalog not in found["evidence"]:
+        found["evidence"] = found["evidence"] + [catalog]
+    return found
+
+
+def render_why(cause):
+    if cause is None:
+        return ("Nothing known in these lines: no signature of platforms.json and no Xid. That is no "
+                "proof of anything; report them with ./doctor.py --report.\n")
+    out = [f"Known: {cause['title']}"]
+    if cause.get("line"):
+        out.append(f"  the line: {cause['line']}")
+    out += [f"  {x}" for x in cause["xid_said"]]
+    out.append(f"  what it means: {cause['meaning']}")
+    out.append(f"  what to do: {cause['action']}")
+    if cause["evidence"]:
+        out.append("  evidence: " + " ".join(cause["evidence"]))
+    return "\n".join(out) + "\n"
+
+
 # ---- output -------------------------------------------------------------------------------
 
 def _v(x, unit=""):
@@ -361,6 +410,13 @@ def render_issues(data):
     return "\n".join(rows) + "\n"
 
 
+def render_signatures(data):
+    rows = ["| id | a line that contains | what it is |", "|---|---|---|"]
+    rows += [f"| `{x['id']}` | `{x['pattern'].replace('|', ' or ')}` | {x['title']} |"
+             for x in data["crash_signatures"]]
+    return "\n".join(rows) + "\n"
+
+
 def render_matrix(data):
     rows = ["| make and model | DGX OS (OTA) | kernel | driver | lanes | result | date | source |",
             "|---|---|---|---|---|---|---|---|"]
@@ -373,6 +429,17 @@ def render_matrix(data):
 
 def main(argv=None, box=None, data_path=DATA, out=sys.stdout):
     args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) == 2 and args[0] == "--why":
+        data = load_data(data_path)
+        try:
+            src = sys.stdin if args[1] == "-" else open(args[1], encoding="utf-8", errors="replace")
+        except OSError as e:
+            out.write(f"cannot read {args[1]}: {e.strerror}\n")
+            return 2
+        with src:
+            lines = src.read().splitlines()
+        out.write(render_why(crash_cause(lines, [ln for ln in lines if "NVRM: Xid" in ln], data)))
+        return 0
     known = {"--brief", "--json", "--report", "--matrix", "-h", "--help"}
     if any(a not in known for a in args) or len(args) > 1:
         out.write(__doc__.split("\n\n", 1)[0] + "\n")

@@ -78,6 +78,38 @@ the API key from `~/.config/qwen38/api-key` and never prints it. The deeper inst
 the repo's own: `tools-check.py` (15 tool cases), `needle.sh` (retrieval up to the window),
 `conc-check.py` (40 and 80 exact answers) and `bench.sh`.
 
+## When an engine dies: what is known about why
+
+The cockpit reads the journal of the run that ended (its own systemd invocation) and the kernel's
+lines of the 15 minutes before it, and says what `platforms.json` knows: a banner for half an
+hour, and a line in the events. The kernel lines come through the one `journalctl -k` the cockpit
+was already allowed to run (nothing new in sudoers), and the line shown has the API key masked.
+A crash with no known signature is said to have none, never given one. The same matching works
+on a pasted journal:
+
+```bash
+journalctl -u qwen38-sglang.service --since "2026-10-02 14:51" --until "2026-10-02 15:06" > crash.txt
+sudo journalctl -k --since "2026-10-02 14:51" --until "2026-10-02 15:06" >> crash.txt
+./doctor.py --why crash.txt
+```
+
+<!-- signatures:start -->
+| id | a line that contains | what it is |
+|---|---|---|
+| `cuda-900-stream-capture` | `operation not permitted when stream is capturing` | CUDA error 900: an operation CUDA forbids while a graph is being captured |
+| `cuda-800-not-permitted` | `(CUDA error or Triton Error \[CUDA\]): operation not permitted` | CUDA error 800: operation not permitted, the engine deaths seen on driver 580.159.03 |
+| `cublas-internal-error` | `CUBLAS_STATUS_INTERNAL_ERROR` | cuBLAS internal error in a GEMM |
+| `illegal-memory-access` | `an illegal memory access was encountered` | CUDA error 700: a kernel accessed memory it should not have |
+| `cuda-out-of-memory` | `CUDA out of memory or torch\.OutOfMemoryError or CUDA error: out of memory` | The engine ran out of GPU memory |
+| `cuda-graph-capture-failed` | `Capture cuda graph failed` | The engine could not capture its CUDA graphs |
+<!-- signatures:end -->
+
+The first signature in this order that a line matches is the one named (the cuBLAS error comes
+before an illegal memory access because, in vLLM #54173, it was the first report of one); the
+driver's Xid numbers of the same minutes are named beside it (31: a GPU memory page fault, 119:
+the driver timing out on the GPU's GSP firmware; others: NVIDIA's
+[Xid catalog](https://docs.nvidia.com/deploy/xid-errors/index.html)).
+
 ## The boxes reported so far
 
 <!-- matrix:start -->
