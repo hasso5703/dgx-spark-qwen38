@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.30). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.31). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -10,12 +10,17 @@ Six roles, nothing else:
    Anthropic dialect (an SSE comment ": keepalive" KILLS Claude-family parsers:
    measured 2026-08-23, client death 10-20 s after the first comment) and an
    authentic empty chunk on the OpenAI dialect (opencode/AI SDK stall detectors
-   ignore comments and drop the stream after ~140-180 s without a real chunk);
+   ignore comments and drop the stream after ~140-180 s without a real chunk). It
+   starts before the engine answers: SGLang sends a stream's headers with its first
+   chunk, after the queue and the prefill, so past KEEPALIVE_S without them the proxy
+   opens the stream itself (v6.31);
 2. never leave a generation running for a client that is gone: the proxy names every
    request itself (x-override-rid), POSTs /abort_request BEFORE it closes the upstream
    socket, and drains the answer when the engine offers no rid to abort with. The caller
    of a non-streamed answer, who hears nothing until it is whole, is watched instead: when
-   it leaves, the upstream is ended, and the engine drops the request on its own;
+   it leaves, the upstream is ended, and the engine drops the request on its own. So is the
+   caller of a stream until the engine answers (v6.31): a request queued behind a full KV
+   pool otherwise stayed in the engine's queue after its caller had gone;
 3. never lull a client on a dead upstream: past MAX_SILENCE_S an EXPLICIT SSE
    error event is sent, then the stream is closed. MAX_SILENCE_S must stay
    ABOVE the worst legitimate prefill (40 min measured for 690K tokens on a
@@ -34,6 +39,18 @@ Six roles, nothing else:
    answer and its unit (PROXY_HOLD_UNITS) is on its way back waits for it, at most
    PROXY_HOLD_MAX_S, instead of failing at once. A streamed one hears from the proxy at
    once (200, then the keepalives of role 1); see "Holding a request" below.
+
+v6.31: a stream is kept, and watched, before the engine answers. SGLang holds a stream's
+status and headers back until its first chunk, after the request was queued and its prompt
+computed, and this proxy wrote nothing before them and did not watch the caller. On
+2026-10-03, eight agents whose contexts (771,301 tokens at 01:00) overflowed the KV pool
+(437,184) waited longer than opencode's 300 s for headers; opencode gave up and sent again, and
+each request it gave up on stayed queued until the engine reached it, computed its prompt for
+nobody, and was aborted at the proxy's first write: 704 between 01:24 and 11:36, and 163
+requests in the queue at the end, for eight agents. Now the caller of a stream is watched until the engine answers, and its leaving ends
+the upstream, which the engine sees within 4 s; past KEEPALIVE_S the stream is opened and
+kept alive, as a hold does; past MAX_SILENCE_S without the engine's first byte the request is
+dropped, as a silent stream is.
 
 v6.30: a level SGLang refuses at the top of a request that also names one in
 chat_template_kwargs is dropped. SGLang takes the chat_template_kwargs copy over the top-level
@@ -2912,16 +2929,106 @@ class H(BaseHTTPRequestHandler):
             except OSError:
                 pass
             self._caller_left = True
-            while not done.is_set():     # the upstream may not be connected yet (loopback: not for long)
-                conn = getattr(getattr(self, "_upstream_req", None), "upstream", None)
-                up = getattr(conn, "sock", None)
-                if up is not None:
-                    try: up.shutdown(socket.SHUT_RDWR)
-                    except OSError: pass
-                    log(f"{self._peer} client gone before its non-streamed answer: upstream "
-                        f"closed, the engine drops the request at its next disconnect check")
+            self._end_upstream(done, "client gone before its non-streamed answer")
+            return
+
+    def _end_upstream(self, done, why):
+        """Close the connection to the engine while _open still waits on it. SGLang checks its
+        HTTP client every 4 s while a request waits, queued or prefilling (_wait_one_response),
+        and aborts the request itself once it sees it gone, its state still there."""
+        while not done.is_set():         # the upstream may not be connected yet (loopback: not for long)
+            conn = getattr(getattr(self, "_upstream_req", None), "upstream", None)
+            up = getattr(conn, "sock", None)
+            if up is not None:
+                try: up.shutdown(socket.SHUT_RDWR)
+                except OSError: pass
+                log(f"{self._peer} {why}: upstream closed, the engine drops the request at its next "
+                    f"disconnect check")
+                return
+            done.wait(0.05)
+
+    def _keep_waiting(self, done):
+        """A stream, while the engine has not answered yet (v6.31).
+
+        SGLang sends a stream's status and headers with its first chunk, so only once the
+        request was queued, scheduled and its prompt computed: it holds the first chunk back
+        to answer a request it cannot validate with a real HTTP 400 (serving_chat.py,
+        _handle_streaming_request, in the image the flash lane serves). This proxy relayed
+        those headers when they came, wrote nothing before, and did not watch the caller,
+        trusting the keepalives that only start with the headers. With eight agents whose
+        contexts overflowed the KV pool (2026-10-03), requests waited past opencode's 300 s
+        for headers (its headerTimeout), opencode gave up and sent them again, and every one
+        it gave up on stayed queued in the engine until its turn came: 704 in a night, each
+        computing a prompt of about 100,000 tokens for nobody, and 163 requests in the queue
+        at the end, for eight agents.
+
+        So, until the engine answers: the caller is watched as a non-streamed one is, and
+        its leaving ends the upstream at once; after KEEPALIVE_S the stream is opened (200
+        and its headers, as a hold opens it) and role 1's keepalives are written into it,
+        which keeps a client waiting as long as the engine needs and finds a closed one at
+        the next write; past MAX_SILENCE_S the request is dropped, as a silent stream is."""
+        try:
+            self._keep_waiting_inner(done)
+        except Exception as e:          # never silently: a keeper that died left a stream unwatched
+            log(f"{getattr(self, '_peer', '?')} the stream keeper failed: {type(e).__name__}: {e}")
+
+    def _keep_waiting_inner(self, done):
+        # An engine that answers at once is the relay's, as before: its leaving caller is
+        # aborted by rid or drained there. Ending the upstream of a stream the engine has
+        # already begun could orphan its generation (sglang#35255, in neither image served
+        # here), so the watch starts once the engine has kept the stream waiting. The times
+        # count from the request going out.
+        start = time.time()
+        if done.wait(min(1.0, KEEPALIVE_S)):
+            return
+        sock = self.connection
+        peek = not isinstance(sock, ssl.SSLSocket)   # a peek through TLS is not this simple
+        anthropic = self.path.startswith("/v1/messages")
+        next_ka = start + KEEPALIVE_S
+        while not done.is_set():
+            now = time.time()
+            if now - start >= MAX_SILENCE_S:
+                self._silent_before_head = now - start
+                self._end_upstream(done, f"the engine has not answered in {now - start:.0f}s")
+                return
+            if now >= next_ka:
+                with self._wlock:
+                    if done.is_set():
+                        return
+                    try:
+                        if not getattr(self, "_held_sse", False):
+                            self._begin(200, {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
+                            self._held_sse = True
+                            log(f"{self._peer} the engine has not answered in {now - start:.0f}s: stream "
+                                f"opened, keepalives until it does")
+                        self._chunk(KA_ANTHROPIC if anthropic else KA_OPENAI)
+                    except Exception:
+                        self._caller_left = True
+                if getattr(self, "_caller_left", False):
+                    self._abort_upstream("client gone before the engine answered")
+                    self._end_upstream(done, "client gone before the engine answered")
                     return
-                done.wait(0.05)
+                next_ka = now + KEEPALIVE_S
+            if not peek:
+                done.wait(min(0.5, max(0.0, next_ka - time.time())))
+                continue
+            try:
+                readable, _, _ = select.select([sock], [], [], min(0.5, max(0.0, next_ka - time.time())))
+            except (OSError, ValueError):
+                return
+            if not readable:
+                continue
+            try:
+                if sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT):
+                    peek = False         # the client sent bytes: pipelining, not a goodbye
+                    continue
+            except BlockingIOError:
+                continue
+            except OSError:
+                pass
+            self._caller_left = True
+            self._abort_upstream("client gone before the engine answered")
+            self._end_upstream(done, "client gone before the engine answered")
             return
 
     def _drain_detached(self, resp):
@@ -3307,17 +3414,26 @@ class H(BaseHTTPRequestHandler):
                                                       "param": "messages",
                                                       "message": msg}}).encode())
                     self._done("400 oversize refused"); return None
-        # A non-streamed answer's headers only come once it is whole, so this proxy waits
-        # inside _open for the whole generation and cannot see the caller leave: its socket
-        # is watched for exactly that wait. A stream is not: its relay writes every
-        # KEEPALIVE_S and finds a closed client at the next write.
+        # The engine's headers come once a non-streamed answer is whole, and once a stream's
+        # first chunk is out, after its queue and its prefill (_keep_waiting). Until then this
+        # proxy waits inside _open, and the caller is watched for that wait: its leaving ends
+        # the upstream, and a stream is kept alive meanwhile.
         done = threading.Event()
-        if body and answered_whole(body):
-            threading.Thread(target=self._watch_client, args=(done,), daemon=True).start()
+        self._wlock = threading.Lock()      # the keeper writes into the stream until _open returns
+        whole = bool(body) and answered_whole(body)
+        keeper = None
+        if body:
+            keeper = threading.Thread(target=self._watch_client if whole else self._keep_waiting,
+                                      args=(done,), daemon=True)
+            keeper.start()
         try:
             resp, herr, cerr = self._open(body)
         finally:
             done.set()                      # headers, or an error: the generation is over
+            if keeper is not None:
+                keeper.join(timeout=CLIENT_IO_S)
+            with self._wlock:               # and nothing is half-written into the stream
+                pass
         if getattr(self, "_caller_left", False):
             # the watch ended the upstream, or the answer raced it: either way nobody is
             # left to answer, and an error here is not the engine's
@@ -3325,7 +3441,25 @@ class H(BaseHTTPRequestHandler):
                 if r is not None:
                     try: r.close()
                     except Exception: pass
-            self._done("CLIENT GONE during non-sse wait"); return None
+            self._done("CLIENT GONE during non-sse wait" if whole else "CLIENT GONE before the engine answered")
+            return None
+        silent = getattr(self, "_silent_before_head", None)
+        if silent is not None:
+            for r in (resp, herr):
+                if r is not None:
+                    try: r.close()
+                    except Exception: pass
+            log(f"upstream silent for {silent:.0f}s before its first byte, dropping the request")
+            if getattr(self, "_held_sse", False):
+                if self.path.startswith("/v1/messages"):
+                    try: self._chunk(sse_error(f"upstream silent for {silent:.0f}s, request dropped"))
+                    except Exception: pass
+                self._finish()
+            else:
+                self._answer(504, {"Content-Type": "application/json"},
+                             json.dumps({"error": {"type": "upstream_silent",
+                                                   "message": f"keepalive-proxy: the engine did not answer in {silent:.0f}s"}}).encode())
+            self._done("DROPPED upstream silent"); return None
         if cerr is not None:
             invalidate_pool()           # same: the next pool must be read fresh
             return ("unreachable", str(cerr), None)
@@ -3578,7 +3712,7 @@ if __name__ == "__main__":
     holds = (f"holds requests up to {HOLD_MAX_S:.0f}s while {' or '.join(HOLD_UNITS)} comes back"
              if HOLD_UNITS and HOLD_MAX_S > 0 else "holds nothing")
     # one f-string: the cockpit's tests render this line from the source
-    log(f"v6.30 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
+    log(f"v6.31 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))

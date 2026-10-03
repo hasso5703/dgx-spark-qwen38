@@ -470,6 +470,7 @@ class FeedOutcomes(unittest.TestCase):
         "422 systemone refused": "fail",
         "500 systemone failed": "fail",    # the catch-all: nothing leaves the route unanswered
         "CLIENT GONE mid-systemone": "gone",
+        "CLIENT GONE before the engine answered": "gone",   # v6.31: a stream's caller left while it was queued
         "502 systemone upstream": "fail",
         "529 systemone overloaded": "fail",   # admission: the caller past SYSTEMONE_MAX_CALLS got no answer
     }
