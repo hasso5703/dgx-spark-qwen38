@@ -936,6 +936,36 @@ class AnEmptyStateIsSaidNotPending(unittest.TestCase):
         self.assertEqual(sorted(r["cps"]), ["not installed", "not installed", "unknown", "unknown"], r)
         self.assertEqual((r["image"], r["video"], r["u27"], r["flash"]), (False, False, True, True), r)
 
+    def test_the_platform_panel_says_what_doctor_says(self):
+        r = run(self, r"""
+        const panel = () => ({facts: txt('pf-facts'), findings: txt('pf-findings'),
+                              links: [...$('pf-findings').querySelectorAll('a')].map(a => a.href)});
+        feed({config: CONFIG, units: UNITS, lifecycle: life({})});
+        const before = panel();
+        feed({platform: {available: true, summary: [['maker / model', 'ASUSTeK COMPUTER INC. GX10'], ['GPU', 'NVIDIA GB10, driver 580.159.03']],
+                         findings: [{id: 'driver-580.159.03', level: 'warn', title: 'Driver 580.159.03', action: 'Update the system.',
+                                     evidence: ['https://github.com/x/26', 'javascript:alert(1)']},
+                                    {id: 'apport-active', level: 'info', title: 'Crash reports are on', action: 'Nothing.', evidence: []}],
+                         platform: 'ASUS Ascent GX10', reports: 1}});
+        const known = panel();
+        feed({platform: {available: true, summary: [['GPU', 'NVIDIA GB10, driver 580.178.04']], findings: [], platform: null, reports: 0}});
+        const clean = panel();
+        feed({platform: {available: false, why: 'doctor.py or platforms.json did not load'}});
+        const down = panel();
+        report({before, known, clean, down});
+        """)
+        self.assertIn("…", r["before"]["facts"], "before the first answer the value is on its way")
+        self.assertIn("ASUSTeK COMPUTER INC. GX10", r["known"]["facts"])
+        self.assertIn("ASUS Ascent GX10, 1 report", r["known"]["facts"])
+        self.assertIn("Driver 580.159.03. What to do: Update the system.", r["known"]["findings"])
+        self.assertNotIn("Crash reports are on", r["known"]["findings"], "an info line is not a finding to act on")
+        self.assertEqual(r["known"]["links"], ["https://github.com/x/26"], "only https evidence becomes a link")
+        self.assertIn("Nothing known against this box.", r["clean"]["findings"])
+        self.assertIn("not reported yet", r["clean"]["facts"])
+        self.assertIn("unknown: doctor.py or platforms.json did not load", r["down"]["facts"])
+        for k in ("known", "clean", "down"):
+            self.assertNotIn("…", r[k]["facts"] + r[k]["findings"], k)
+
     def test_a_gpu_that_did_not_answer_reads_no_reading_and_nothing_made_up(self):
         r = run(self, r"""
         const v = id => [$(id).children[1].textContent, $(id).children[2].textContent];

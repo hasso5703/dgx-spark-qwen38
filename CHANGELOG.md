@@ -38,6 +38,9 @@ run; a journal that did not answer is read again; the kernel lines come through 
 `journalctl -k` the cockpit already ran, so nothing changes in sudoers. A crash with no known
 signature is said to have none. `./doctor.py --why <file>` does the same on a pasted journal.
 
+The cockpit's Machine view has a Platform panel: the lines `./doctor.py` prints and the findings
+to act on, every 10 minutes, with only https evidence turned into links.
+
 **`platforms.json` and [docs/platforms.md](docs/platforms.md)**: the known issues with their
 evidence, and the boxes reported so far (the reference ASUS Ascent GX10, the HP ZGX Nano G1n
 of #26); a test keeps the doc's table equal to `./doctor.py --matrix`.

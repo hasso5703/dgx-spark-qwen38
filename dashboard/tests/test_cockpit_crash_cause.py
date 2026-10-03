@@ -123,6 +123,33 @@ class TheCrashCause(unittest.TestCase):
             self.cp.REPO_DIR = repo
             self.cp._DOCTOR[:] = saved
 
+    def test_the_platform_panel_reads_doctor_on_a_box_it_is_given(self):
+        root = Path(tempfile.mkdtemp(prefix="cockpit-platform-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "etc").mkdir()
+        (root / "etc/dgx-release").write_text('DGX_PLATFORM="GX10"\nDGX_SERIAL_NUMBER="SERIAL-123"\nDGX_OTA_VERSION="7.6.0"\n')
+        answers = {"nvidia-smi --query-gpu=name,driver_version --format=csv,noheader": ("NVIDIA GB10, 580.159.03\n", None)}
+        mod, _ = self.cp._doctor()
+        self.cp.PLATFORM_BOX = mod.Box(root=root, run=lambda argv, t: answers.get(" ".join(argv), (None, "not installed")),
+                                       release="6.17.0-1032-nvidia", home="/")
+        try:
+            out = self.cp.collect_platform()
+        finally:
+            self.cp.PLATFORM_BOX = None
+        self.assertTrue(out["available"])
+        self.assertEqual(out["platform"], "ASUS Ascent GX10")
+        self.assertIn(["GPU", "NVIDIA GB10, driver 580.159.03, GSP unknown, CUDA unknown"], out["summary"])
+        self.assertIn("driver-580.159.03", [f["id"] for f in out["findings"]])
+        self.assertNotIn("SERIAL-123", str(out))
+
+    def test_the_platform_panel_without_doctor(self):
+        saved = list(self.cp._DOCTOR)
+        self.cp._DOCTOR[:] = [None]
+        try:
+            self.assertEqual(self.cp.collect_platform(), {"available": False, "why": "doctor.py or platforms.json did not load"})
+        finally:
+            self.cp._DOCTOR[:] = saved
+
     def test_iso_epoch(self):
         self.assertIsNone(self.cp._iso_epoch("garbage line"))
         self.assertIsNone(self.cp._iso_epoch(""))

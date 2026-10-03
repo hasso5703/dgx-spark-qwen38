@@ -597,6 +597,27 @@ def crash_cause(unit, invocation, now=None):
     return rec
 
 
+# the box doctor.py reads: this machine, or a fixture in the tests
+PLATFORM_BOX = None
+
+
+@guard
+def collect_platform():
+    """What doctor.py says this box is and what is known about it (docs/platforms.md): the
+    lines ./doctor.py prints, every 10 minutes (it asks nvidia-smi, docker, apt-mark and
+    fwupdmgr, each bounded in time, and changes nothing)."""
+    loaded = _doctor()
+    if loaded is None:
+        return {"available": False, "why": "doctor.py or platforms.json did not load"}
+    mod, data = loaded
+    facts = mod.collect(PLATFORM_BOX)
+    findings, entry = mod.evaluate(facts, data)
+    return {"available": True, "summary": [list(x) for x in mod.summary_lines(facts)],
+            "findings": [{k: f[k] for k in ("id", "level", "title", "action", "evidence")} for f in findings],
+            "platform": entry["name"] if entry else None,
+            "reports": len(entry["reports"]) if entry else 0}
+
+
 @guard
 def collect_engine_info():
     # 10 s, not 6: SGLang's event loop stalls under a long prefill and a late answer is
@@ -1765,6 +1786,7 @@ TIERS = [
     (30.0, {"engine_info": collect_engine_info, "repo": collect_repo, "kernel": collect_kernel,
             "opencode": collect_opencode, "reqguard": collect_guard,
             "update": collect_update}),
+    (600.0, {"platform": collect_platform}),
 ]
 
 
