@@ -32,6 +32,8 @@ Nothing shells out free-form; every action is a fixed argv template.
 | Decode telemetry | docker log scheduler lines | Traffic view: KV pool held, KV usage from the engine log, Mamba state slots, accept length |
 | Requests through proxy | keepalive proxy request lines | Requests table: start, client, path, bytes, duration, outcome |
 | Machine | nvidia-smi (power/temp/procs), /proc, df | Machine view: unified memory, page cache and swap, free disk at home and under Docker, GPU power, temperature and processes, CPU load, the safety belts |
+| Platform | `./doctor.py` (DMI, /etc/dgx-release, nvidia-smi, docker, nvidia-ctk, apt-mark, fwupdmgr) | Machine view, Platform panel: what this box is and what is known against it, every 10 minutes (docs/platforms.md) |
+| Crash causes | `./doctor.py --why <journal>` | A banner for 30 min and an event when a text lane's run ends in failure: the known signature in that run's journal, the driver's Xid of the same minutes |
 | Benchmarks | `./bench.sh`, `./bench-matrix.sh` | None: terminal tools (BENCHMARKS.md) |
 | Quality canaries | (campaign scripts) | No battery. The cockpit runs one real generation of its own when the engine has been quiet a minute (Generation probe), and Smoke sends one through the proxy on demand |
 

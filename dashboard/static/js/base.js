@@ -650,6 +650,10 @@ function renderBanners(state, errors){
     if (e.zombie) add('err', `${name} lost its scheduler.`, 'Its server process lives on and answers nothing, and systemd sees nothing wrong, so it would never come back by itself. '
       + ((F.config || {}).zombie_restart ? (e.zombie_in > 0 ? `The cockpit restarts it in ${fmtDur(e.zombie_in)}.` : 'The cockpit restarts it now.') : 'Restart it from Lanes (COCKPIT_ZOMBIE_RESTART=0 keeps the cockpit from doing it).'));
     else if (e.state === 'degraded') add('warn', `${name} stopped answering.`, 'It was serving; health probes retry every 2 s. If it stays here, Logs says why.');
+    // what platforms.json knows about the run that ended (doctor.py's crash signatures), for half an hour
+    if (e.crash) add('warn', `${name} stopped ${fmtDur(e.crash_age || 0)} ago: ${e.crash.title}.`,
+      [(e.crash.xid_said || []).join('. '), e.crash.meaning, `What to do: ${e.crash.action}`,
+       (e.crash.evidence || []).length ? `Evidence: ${e.crash.evidence.join(' ')}` : ''].filter(Boolean).join(' '));
   });
   if (F.memFloor && F.memFloor.aborts && F.memFloor.last_abort && Date.now() / 1000 - F.memFloor.last_abort < 600)
     add('warn', 'The memory floor fired.', `Memory fell under ${F.memFloor.gib} GiB with requests running: every generation was aborted ${fmtDur(Date.now() / 1000 - F.memFloor.last_abort)} ago to keep the box out of a livelock.`);
