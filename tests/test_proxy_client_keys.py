@@ -88,8 +88,13 @@ class Engine(http.server.BaseHTTPRequestHandler):
             return
         if self.path.split("?")[0] in ("/server_info", "/get_server_info"):
             # What the real engine answers (checked on the reference box, 2026-09-24):
-            # its own serving key in clear, at the top and in every internal state.
+            # its own serving key in clear, at the top and in every internal state; and
+            # its whole command line, key included, in launch_command (2026-10-03).
             body = json.dumps({"api_key": "engine-K", "admin_api_key": "admin-K",
+                               "ssl_keyfile_password": "pw-K",
+                               "launch_command": "--api-key engine-K --model-path m "
+                                                 "--admin-api-key admin-K "
+                                                 "--ssl-keyfile-password pw-K",
                                "max_total_num_tokens": 1000, "served_model_name": "m",
                                "internal_states": [{"api_key": "engine-K",
                                                     "admin_api_key": "admin-K"}]}).encode()
@@ -366,8 +371,29 @@ class ClientKeys(unittest.TestCase):
                     self.assertEqual(status, 200)
                     self.assertNotIn(b"engine-K", body)
                     self.assertNotIn(b"admin-K", body)
+                    self.assertNotIn(b"pw-K", body)
                     doc = json.loads(body)
                     self.assertEqual(doc["max_total_num_tokens"], 1000, "the rest is intact")
+                    self.assertEqual(doc["launch_command"],
+                                     "--api-key <masked> --model-path m --admin-api-key "
+                                     "<masked> --ssl-keyfile-password <masked>")
+
+    def test_a_key_is_masked_in_every_form_a_command_line_gives_it(self):
+        """launch_command (v6.32) is one shape; the masking does not depend on it."""
+        mod = fresh_proxy_module(1, upstream_key="engine-key-long")
+        doc = {"a": "--api-key=k1 --api-key 'k 2' --api-key \"k 3\" --admin-api-key\tk4",
+               "b": ["x engine-key-long y", {"c": "--ssl-keyfile-password=pw --port 30000"}],
+               "n": 42}
+        self.assertEqual(mod.mask_secrets(doc),
+                         {"a": "--api-key=<masked> --api-key <masked> --api-key <masked> "
+                               "--admin-api-key\t<masked>",
+                          "b": ["x <masked> y", {"c": "--ssl-keyfile-password=<masked> --port 30000"}],
+                          "n": 42})
+
+    def test_a_key_too_short_to_be_real_is_not_looked_for_by_value(self):
+        mod = fresh_proxy_module(1, upstream_key="mod")
+        self.assertEqual(mod.mask_secrets({"model_path": "org/model", "cmd": "--api-key mod"}),
+                         {"model_path": "org/model", "cmd": "--api-key <masked>"})
 
     def test_a_doubly_encoded_path_is_refused_in_both_modes(self):
         """canonical_path decodes once and SGLang decodes again, so /%2576%2531/... became

@@ -1,6 +1,17 @@
 # Changelog
 
-## v1.22.6 (2026-10-03): ci-local.sh leaves nothing behind in /tmp
+## v1.22.6 (2026-10-03): the engine key masked everywhere in /server_info, a local CI that leaves nothing behind
+
+Proxy v6.32. SGLang's `/server_info` repeats the engine's whole command line in
+`launch_command`, the API key included, and the proxy took out only the key fields
+(`api_key`, `admin_api_key`): a client named in `QWEN38_CLIENT_KEYS_FILE` could read, through
+the proxy, the one secret the identity wall keeps from it. Without the wall the caller
+already holds that key, so only boxes that use the wall were exposed. The value of every key
+flag is now masked in every string of that answer, and the engine's own key wherever it
+shows; `ssl_keyfile_password` joins the key fields. Found by the audit of the flash recipe on
+2026-10-03, and checked on the reference box: through the proxy, the key was in
+`launch_command` and in no other answer (`/v1/loads`, `/v1/models`, `/metrics`,
+`/model_info`).
 
 Each step of `ci-local.sh` already ran under a HOME of its own, removed when it ended; it now
 gets a TMPDIR inside that HOME too. The suite's temporary directories, and its scripts'
@@ -29,7 +40,7 @@ looked for (`QWEN38_TEST_PYTHON` first, which a fresh clone needs, or the four s
 `coverage` or `hypothesis` are skipped), how a step is skipped (a missing tool it calls, a
 package it cannot provide), and how long a full run took in October 2026.
 
-An update restarts the cockpit; the engines and the proxy keep running.
+An update restarts the proxy and the cockpit; the engines keep running.
 
 ## v1.22.5 (2026-10-03): a stream the engine has not started is kept open, and its caller watched
 

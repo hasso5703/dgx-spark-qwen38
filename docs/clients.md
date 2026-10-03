@@ -227,7 +227,9 @@ carries the engine key in clear), `/generate`, `/flush_cache` and
 `/abort_request` went through with no key at all, and so did a path escaped
 twice (`/%2576%2531/...`), which SGLang decodes once more before routing. Since
 v1.18.7 a path still escaped after one decode is refused, and `/server_info` is
-relayed without the engine's key fields in either mode. The label appears on
+relayed without the engine's key fields in either mode; since v1.22.6 (proxy v6.32)
+without the key's value anywhere else in it either, where SGLang's `launch_command`
+repeated it with the rest of the engine's command line. The label appears on
 every journal line of the request (`journalctl -u qwen38-keepalive`), the first
 one included since v1.18.7, as one word (a space or a control character in it is
 written `_`), so per-client throughput and refusals become readable without a

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.31). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.32). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -39,6 +39,14 @@ Six roles, nothing else:
    answer and its unit (PROXY_HOLD_UNITS) is on its way back waits for it, at most
    PROXY_HOLD_MAX_S, instead of failing at once. A streamed one hears from the proxy at
    once (200, then the keepalives of role 1); see "Holding a request" below.
+
+v6.32: /server_info no longer carries the engine's key anywhere. v6.24 took SGLang's key
+fields out of the answer, at the top and in every internal state, but the answer also
+repeats the engine's whole command line in launch_command, the key included (the flash lane
+on the reference box, found by the audit of 2026-10-03): a named client behind the wall could
+still read the one secret the wall keeps from it. The value of every key flag is now masked in
+every string of the answer, and the engine's key itself wherever it shows; the TLS key
+password field goes with the key fields.
 
 v6.31: a stream is kept, and watched, before the engine answers. SGLang holds a stream's
 status and headers back until its first chunk, after the request was queued and its prompt
@@ -526,7 +534,26 @@ def _upstream_auth(handler):
 # /v1/... only, while _upstream_auth attaches the engine's key to everything relayed.
 OPEN_ROUTES = frozenset({"/health"})
 SERVER_INFO_ROUTES = frozenset({"/server_info", "/get_server_info"})
-KEY_FIELDS = ("api_key", "admin_api_key")
+KEY_FIELDS = ("api_key", "admin_api_key", "ssl_keyfile_password")
+# A secret flag's value, wherever a string of the answer repeats a command line (SGLang's
+# launch_command, v6.32): `--api-key K`, `--api-key=K`, quoted or not.
+SECRET_FLAG_VALUE = re.compile(r"(--(?:admin-api-key|api-key|ssl-keyfile-password)(?:=|\s+))"
+                               r"(\"[^\"]*\"|'[^']*'|\S+)")
+
+
+def mask_secrets(node):
+    """node with every secret flag's value masked in its strings, and the engine's own key
+    wherever it shows. A key under 8 characters is not looked for by value: no real one is
+    that short, and masking one would garble every string that happens to contain it."""
+    if isinstance(node, dict):
+        return {k: mask_secrets(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [mask_secrets(v) for v in node]
+    if isinstance(node, str):
+        node = SECRET_FLAG_VALUE.sub(r"\1<masked>", node)
+        if len(UPSTREAM_API_KEY) >= 8:
+            node = node.replace(UPSTREAM_API_KEY, "<masked>")
+    return node
 
 
 def strip_key_fields(data):
@@ -534,7 +561,9 @@ def strip_key_fields(data):
     serving key in clear there, at the top level and in every internal state (seen on
     the reference box, 2026-09-24). A caller of this proxy has no use for it: behind
     the wall it is the one secret a named client must not learn, and without the wall
-    the caller already holds it. Anything that is not a JSON object is left as it is."""
+    the caller already holds it. Anything that is not a JSON object is left as it is.
+    v6.32: the answer also repeats the engine's command line in launch_command, key
+    included, so every string of it goes through mask_secrets as well."""
     try:
         doc = json.loads(data)
     except Exception:
@@ -545,7 +574,7 @@ def strip_key_fields(data):
     for holder in holders:
         for field in KEY_FIELDS:
             holder.pop(field, None)
-    return json.dumps(doc).encode()
+    return json.dumps(mask_secrets(doc)).encode()
 
 
 # Tool-schema guard (v6.13): SGLang validates every tool's parameter schema with
@@ -3712,7 +3741,7 @@ if __name__ == "__main__":
     holds = (f"holds requests up to {HOLD_MAX_S:.0f}s while {' or '.join(HOLD_UNITS)} comes back"
              if HOLD_UNITS and HOLD_MAX_S > 0 else "holds nothing")
     # one f-string: the cockpit's tests render this line from the source
-    log(f"v6.31 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
+    log(f"v6.32 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))
