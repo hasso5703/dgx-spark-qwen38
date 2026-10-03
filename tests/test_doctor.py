@@ -286,6 +286,13 @@ class TheKnownIssues(unittest.TestCase):
         fx = Fixture(self, answers={"nvidia-ctk --version": (None, "not installed")})
         self.assertIn("toolkit-missing", ids(fx.outputs()[1]))
 
+    def test_a_driver_off_the_580_branch(self):
+        fx = Fixture(self, answers={"nvidia-smi --query-gpu=name,driver_version --format=csv,noheader":
+                                    ("NVIDIA GB10, 595.71.05\n", None)})
+        f = next(f for f in fx.outputs()[1] if f["id"] == "driver-branch-not-580")
+        self.assertEqual(f["title"], "Driver 595.71.05 is not on the 580 branch, the one NVIDIA supports on DGX Spark")
+        self.assertNotIn("driver-branch-not-580", ids(Fixture(self).outputs()[1]), "580.178.04 is on it")
+
     def test_a_gpu_that_is_not_a_gb10(self):
         fx = Fixture(self, answers={"nvidia-smi --query-gpu=name,driver_version --format=csv,noheader":
                                     ("NVIDIA RTX PRO 6000, 580.178.04\n", None)})

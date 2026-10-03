@@ -36,6 +36,20 @@
       "evidence": []
     },
     {
+      "id": "driver-branch-not-580",
+      "kind": "driver_branch_not",
+      "params": {
+        "branch": "580"
+      },
+      "level": "warn",
+      "title": "Driver {driver} is not on the 580 branch, the one NVIDIA supports on DGX Spark",
+      "detail": "NVIDIA, on its forum (2026-06-08): \"Driver 595 is not yet supported on DGX Spark\". Every lane of this repo is measured on 580.",
+      "action": "Go back to the 580 driver the box's maker ships (the DGX Dashboard on the Founders Edition) before reporting an engine problem.",
+      "evidence": [
+        "https://forums.developer.nvidia.com/t/364688"
+      ]
+    },
+    {
       "id": "driver-580.159.03",
       "kind": "driver_is",
       "params": {

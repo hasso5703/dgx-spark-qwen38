@@ -11,7 +11,8 @@ only and says other makers "might have different update procedures".
 
 **`./doctor.py`** reads what the box is and says what is known about its combination, each
 finding with its evidence and what to do: the driver every report of those engine deaths ran
-(580.159.03; SGLang #40948, vLLM #52877, #26), kernel 7.0.0-1019, which NVIDIA asked to hold
+(580.159.03; SGLang #40948, vLLM #52877, #26), a driver off the 580 branch ("Driver 595 is not yet
+supported on DGX Spark", NVIDIA, 2026-06-08), kernel 7.0.0-1019, which NVIDIA asked to hold
 off, and its memory signature (CmaTotal 0 with CmaFree above 0), a GPU nvidia-smi cannot
 reach (the apt upgrade of driver 580.173.02 on OTA2607 boxes, NVIDIA forum 378200), less than
 110 GiB, Docker or the NVIDIA Container Toolkit missing, and apport keeping a dying process's

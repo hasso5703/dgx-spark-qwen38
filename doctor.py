@@ -359,6 +359,8 @@ def _matches(rule, facts):
     if kind == "driver_reboot_pending":
         di = facts["driver_install"]
         return bool(di.get("loaded") and di.get("installed")) and version_key(di["loaded"]) != version_key(di["installed"])
+    if kind == "driver_branch_not":
+        return bool(gpu.get("driver")) and gpu["driver"].split(".")[0] != p["branch"]
     if kind == "driver_older_than_reference":
         ref = facts.get("nvidia_reference") or {}
         return bool(gpu.get("driver") and ref.get("driver")) and version_key(gpu["driver"]) < version_key(ref["driver"])

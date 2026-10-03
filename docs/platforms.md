@@ -51,6 +51,7 @@ checked for, with its evidence:
 | `gpu-unreachable` | fail | nvidia-smi does not reach the GPU |
 | `memory-below-110` | fail | Less than 110 GiB of memory |
 | `docker-unreachable` | fail | Docker does not answer this user |
+| `driver-branch-not-580` | warn | Driver {driver} is not on the 580 branch, the one NVIDIA supports on DGX Spark |
 | `driver-580.159.03` | warn | Driver 580.159.03, the one every report of engines dying with "operation not permitted" ran |
 | `next-boot-without-nvidia` | warn | The kernel the next boot picks ({next}) has no NVIDIA module |
 | `driver-reboot-pending` | warn | A driver update waits for a reboot (loaded {loaded}, installed {installed}) |
