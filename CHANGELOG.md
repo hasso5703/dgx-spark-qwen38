@@ -58,6 +58,11 @@ night's counters and the rule (keep the sum of the agents' contexts under the po
 the cockpit's Lanes page) are in [docs/flash-lane.md](docs/flash-lane.md), "Several agents
 at once".
 
+The CI step that checks the offline suite touches nothing ran each test file with its output
+thrown away, so its one red run of this release said only `tests/test_proxy_hold.py failed`.
+The same file then passed 82 times (48 on the reference box, 34 on GitHub runners), so what
+failed is not known. A file that fails there now prints the end of its output.
+
 An update restarts the proxy once (v6.31) and the cockpit; the engines keep running.
 
 ## v1.22.4 (2026-10-03): the Traffic badge counts every request in flight

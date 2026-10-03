@@ -230,7 +230,11 @@ jobs:
           (cd dashboard && python3 -m unittest \
              $(cd tests && ls test_*.py | sed 's/\.py$//' | sed 's/^/tests./' | tr '\n' ' ') \
              2>&1 | tail -3)
-          (for f in tests/test_*.py; do python3 "$f" >/dev/null 2>&1 || { echo "$f failed"; exit 1; }; done)
+          # a file that fails says how: a red run of 2026-10-03 said only
+          # "tests/test_proxy_hold.py failed", and left nothing to read
+          (for f in tests/test_*.py; do
+             out="$(python3 "$f" 2>&1)" || { echo "$f failed, the end of its output:"; printf '%s\n' "$out" | tail -60; exit 1; }
+           done)
           after="$(find "$witness" -type f -exec sha256sum {} + | sort)"
           if [ "$before" != "$after" ]; then
             echo "the offline suite wrote into HOME:"
