@@ -1,5 +1,34 @@
 # LLMs, System One decisions, images and video on one DGX Spark (GB10)
 
+**One command turns a DGX Spark, or another GB10 box such as the ASUS Ascent GX10, into a
+private AI server.** Everything runs on the box: no prompt, image or video goes to a cloud
+service.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get.sh | bash
+```
+
+- **Text**: Qwen3.8 27B at 71.4 tok/s with a 1M context by default, and Qwen3.8-Flash-Next
+  176B on the same box, seven switchable targets, an OpenAI- and Anthropic-compatible API.
+- **Images**: Qwen-Image 2.1, a 1024×1024 image in about 38 s.
+- **Video with sound**: MiniMax-H3, a 4 s clip at 480p with its audio in 10 to 13 minutes.
+- **Agents**: opencode wired to the local model, in a terminal or in the cockpit's Agent
+  view, from a laptop or a phone.
+- **Typed decisions**: a System One endpoint that answers with calibrated probabilities
+  instead of text.
+- **A cockpit** that shows what holds the memory, loads a lane with one button, and runs the
+  whole box from a browser.
+
+Used and cited by others: [Kevin Welter's write-up](https://kevinwelter.com/en/blog/qwen-3-8-lokal)
+of running Qwen3.8 on a DGX Spark follows this recipe,
+[MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark)
+builds on its published config,
+[heterogeneous-gpu-pd-lab](https://github.com/Soulmate-Halo/heterogeneous-gpu-pd-lab/blob/main/results/dgx-spark-community-control.md)
+takes its measurements as its DGX Spark reference, and it is listed in
+[awesome-dgx-spark](https://github.com/bidual/awesome-dgx-spark).
+
+## In detail
+
 One command installs a boot-persistent, hardened serving stack on a single DGX Spark,
 and it is not one model: **large language models** (the Qwen3.8 family, seven
 switchable targets, 27B at 71 tok/s and Flash-Next 176B on one box), **typed decisions**
@@ -14,7 +43,7 @@ The text lanes come with **seven switchable targets** and **zero quality loss** 
 
 | target | model | engine | headline (measured here) |
 |---|---|---|---|
-| `stock` (default) | Qwen3.8-27B NVFP4 | SGLang + DFlash2 | **71.4 tok/s** greedy median, 135-148 aggregate at 8 streams, optional 1M context |
+| `stock` (default) | Qwen3.8-27B NVFP4 | SGLang + DFlash2 | **71.4 tok/s** greedy median, 135-148 aggregate at 8 streams, 1M context by default |
 | `uncensored` | Qwen3.8-27B abliterated NVFP4 | SGLang + DFlash2 | same speed and serving path as stock |
 | `fp8` | Qwen3.8-27B FP8, Qwen's own release | SGLang + DFlash2 | the quantization reference: 108 tok/s aggregate at 8 streams, ~92K less KV pool |
 | `uncensored-fp8` | Qwen3.8-27B abliterated FP8 | SGLang + DFlash2 | same serving path and same cost as `fp8` |
