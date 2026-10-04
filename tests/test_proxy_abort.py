@@ -307,8 +307,17 @@ class Abort(unittest.TestCase):
         s.close()
         self.assertIn(b"[DONE]", got)
         self.assertEqual(got.count(b'"n": 5'), 1, "the last event never reached the client")
+        # The engine writes its drain down after the [DONE] is out, so the client can hold
+        # the whole answer before the engine's thread has recorded it: the count read 0 once
+        # in a full local run (2026-10-04). Wait for the record, as the tests above do, then
+        # half a second more: an abort sent after a whole answer was relayed reaches the
+        # engine after its drain, and lands in ignored, its state gone by then.
+        self.assertTrue(self._wait(lambda: FakeEngine.drained or FakeEngine.aborted
+                                   or FakeEngine.ignored, timeout=10))
+        time.sleep(0.5)
         with FakeEngine.lock:
             self.assertEqual(FakeEngine.aborted, [])
+            self.assertEqual(FakeEngine.ignored, [], "a request relayed whole was aborted after it")
             self.assertEqual(len(FakeEngine.drained), 1)
 
 
