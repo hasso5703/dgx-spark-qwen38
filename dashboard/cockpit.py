@@ -562,11 +562,14 @@ def _iso_epoch(line):
         return None
 
 
-def crash_cause(unit, invocation, now=None):
+def crash_cause(unit, invocation, now=None, ended=None):
     """The known cause of the run `invocation` of `unit`, read once per run: its last 400 lines
-    and the kernel's lines of the 15 minutes before (the same exact sudo argv collect_kernel
-    uses). The matched line is shown with the API key masked, as the diagnostics bundle masks it."""
+    and the kernel's lines of the 15 minutes around the minute it entered failed (the same exact
+    sudo argv collect_kernel uses, the hour it can reach). `ended` is that minute: a cockpit
+    that looks late still reads the minutes of the crash, not the minutes of the looking. The
+    matched line is shown with the API key masked, as the diagnostics bundle masks it."""
     now = time.time() if now is None else now
+    anchor = now if ended is None else ended
     seen = CRASH_CAUSE.get(unit)
     if seen and seen.get("invocation") == invocation:
         return seen
@@ -580,8 +583,10 @@ def crash_cause(unit, invocation, now=None):
             return seen                 # a journal that did not answer is read again next tick
         lines = raw.splitlines()
         kern = run(["sudo", "-n", "/usr/bin/journalctl", "-k", "--since", "-1h", "--no-pager", "-o", "short-iso"], timeout=8)
+        if not answered(kern):
+            return seen                 # and so is a kernel log that did not answer
         kernel = [ln for ln in kern.splitlines()
-                  if (t := _iso_epoch(ln)) is not None and now - 900 <= t <= now + 60]
+                  if (t := _iso_epoch(ln)) is not None and anchor - 900 <= t <= anchor + 60]
         cause = mod.crash_cause(lines, kernel, data)
         key = api_key()
         if cause and cause.get("line") and key:
@@ -1630,7 +1635,9 @@ def collect_lifecycle():
         elif st["state"] != "failed":
             CRASHED_SERVING.pop(unit, None)
         if st["state"] == "failed" and not is_image and not is_video:
-            crash_cause(unit, d.get("InvocationID", ""))
+            chg_us = int(d.get("StateChangeTimestampMonotonic") or 0)
+            crash_cause(unit, d.get("InvocationID", ""),
+                        ended=time.time() - (monotonic_now() - chg_us / 1e6) if chg_us else None)
         crash = CRASH_CAUSE.get(unit)
         crash_age = time.time() - crash["at"] if crash else None
         # what the start guard said, when it is why the lane is not up (held, refused)

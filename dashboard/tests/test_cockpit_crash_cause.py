@@ -1,9 +1,9 @@
 """A text lane that stopped is told what is known about why (doctor.py's crash signatures).
 
 Once per run: the run's own journal (its systemd invocation) and the kernel's lines of the 15
-minutes before, through the exact sudo argv collect_kernel uses. A journal that did not answer
-is read again; the API key never reaches the page; a doctor.py that does not load costs the
-cockpit nothing but the causes."""
+minutes around the minute it failed, through the exact sudo argv collect_kernel uses. A journal
+or a kernel log that did not answer is read again; the API key never reaches the page; a
+doctor.py that does not load costs the cockpit nothing but the causes."""
 import importlib.util
 import os
 import shutil
@@ -59,6 +59,7 @@ class TheCrashCause(unittest.TestCase):
                        f"{iso(self.now - 5)} gx10 kernel: NVRM: Xid (PCI:000f:01:00): 31, pid=4242, name=python3",
                        "not a dated line"]
         self.journal_ok = True
+        self.kernel_ok = True
 
         def fake(argv, timeout=5.0, merge_err=False):
             self.calls.append(list(argv))
@@ -66,7 +67,9 @@ class TheCrashCause(unittest.TestCase):
                 r = self.cp.Ran("\n".join(self.journal) + "\n" if self.journal_ok else "")
                 r.ok = self.journal_ok
                 return r
-            return self.cp.Ran("\n".join(self.kernel) + "\n")
+            r = self.cp.Ran("\n".join(self.kernel) + "\n")
+            r.ok = self.kernel_ok
+            return r
         self.cp.run = fake
 
     def test_a_known_cause_with_the_xid_of_the_same_minutes(self):
@@ -106,6 +109,23 @@ class TheCrashCause(unittest.TestCase):
         self.journal_ok = True
         self.assertEqual(self.cp.crash_cause("qwen38-flash.service", "inv-4", now=self.now)["cause"]["id"],
                          "cublas-internal-error")
+
+    def test_a_kernel_log_that_did_not_answer_is_read_again(self):
+        self.kernel_ok = False
+        self.assertIsNone(self.cp.crash_cause("qwen38-flash.service", "inv-8", now=self.now))
+        self.assertEqual(self.events, [], "no cause is claimed while the kernel log has not answered")
+        self.kernel_ok = True
+        rec = self.cp.crash_cause("qwen38-flash.service", "inv-8", now=self.now)
+        self.assertEqual(rec["cause"]["id"], "cublas-internal-error")
+        self.assertEqual(len(self.events), 1, "said once, when the kernel log answered")
+
+    def test_the_kernel_window_follows_the_crash_not_the_reading(self):
+        self.kernel = [f"{iso(self.now - 1800)} gx10 kernel: NVRM: Xid (PCI:000f:01:00): 31, pid=4242, name=python3"]
+        rec = self.cp.crash_cause("qwen38-sglang.service", "inv-9", now=self.now, ended=self.now - 1800)
+        self.assertEqual(rec["cause"]["xids"], [31], "a late look finds the Xid of the crash minutes")
+        self.cp.CRASH_CAUSE.clear()
+        rec = self.cp.crash_cause("qwen38-sglang.service", "inv-10", now=self.now)
+        self.assertEqual(rec["cause"]["xids"], [], "without a crash minute, the half-hour before the look is the rule")
 
     def test_a_doctor_that_does_not_load_costs_only_the_causes(self):
         saved = list(self.cp._DOCTOR)
