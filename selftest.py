@@ -12,8 +12,9 @@ questions at once, and one answer in the Anthropic dialect (the one Claude Code 
 says what it got. The deeper instruments are the repo's own: tools-check.py (15 tool cases),
 needle.sh (retrieval up to the window), conc-check.py (40 and 80 exact answers), bench.sh.
 
-It refuses to run while the engine serves anything (its /metrics says so), because a test
-then slows real work down and the work slows the test: --force runs it anyway. It reads the
+It refuses to run while the engine says it is serving (its /metrics), because a test
+then slows real work down and the work slows the test: --force runs it anyway, and metrics
+that cannot answer say nothing, so the test runs. It reads the
 API key from ~/.config/qwen38/api-key and never prints it, writes nothing, changes nothing.
 Exit status: 0 when every check passed, 1 when one failed, 3 when it refused to run.
 """
