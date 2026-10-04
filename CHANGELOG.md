@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.22.7 (2026-10-05): a box from before v1.13 gets the lean default, the image and video lanes ask for python3-dev first, the hints name a standard target first, an editor's session stays out of the Agent tab's PATH
+
+- **Reasoning default.** Since v1.18.7 a run that does not set `LEAN_DEFAULT` keeps the
+  default the installed chat template has, so that a box installed with `LEAN_DEFAULT=0`
+  stays on xhigh. A template written before v1.13 has no lean level and defaults to xhigh,
+  the one default there was, and was read as that choice: a box updated from there stayed
+  on xhigh without anyone asking for it, and its `./bench.sh` measured other text than the
+  reference box's (a user's box, 2026-10-05). Such a template gets the lean default now,
+  and the run says so; one written with `LEAN_DEFAULT=0` keeps xhigh, as before.
+- **Image and video lanes on a stock DGX OS.** `sglang[diffusion]` asks for xatlas, which
+  PyPI ships for no aarch64 Python, so pip builds it on the box, against Python's headers.
+  DGX OS installs python3-pip without its recommends, python3-dev among them, and the build
+  stopped on a missing `/usr/include/python3.12` in the middle of the lane's pip install (a
+  user's box, 2026-10-05; proved in a clean Ubuntu 24.04 container). Both installers now
+  ask for `python3-dev` before they build anything, with the command that installs it, and
+  the README's requirements say so.
+- **Hints.** The first target a hint names is a standard one: the project advises the
+  standard checkpoints. The abliterated targets stay named, after the standard ones, so that
+  they are known without ever being the default. The "Switch back" line of
+  `./switch-model.sh` named `uncensored` first after every switch to `stock`: it names
+  `flash` now, and every line lists the abliterated targets last. The closing line of
+  `./install.sh` on a box that boots images or video, for a text lane installed abliterated,
+  named only that target: it names the standard one first, with what a first switch
+  downloads (about 21, 31 or 126 GB), then the abliterated one. The run that installs the
+  other text lane no longer ends on "Load it from the cockpit's Lanes view" right after
+  naming its target: the serving run's summary that follows says the way back.
+  `tests/test_hints_name_standard_targets.py` runs these lines as written.
+- **Agent tab.** `dashboard/install-agent.sh` leaves out of opencode-web's PATH what an
+  editor's session puts on its terminal's PATH: VS Code's remote CLI and its extensions'
+  directories, known by their layout, which its forks share. An update run from a VS Code
+  terminal on 2026-10-03 wrote three of them into the unit, which restarted opencode-web,
+  and the remote CLI's directory, named after the editor's build, goes at the next VS Code
+  update. A unit that holds some loses them at the next update, with a note that names
+  them. The order of the PATH is unchanged.
+- **Bug reports.** The template asks for the journal with the engine key masked: SGLang
+  prints its `server_args`, `api_key` included, at every engine start, and on 2026-10-04 a
+  key reached an issue comment that way. Its `sed` masks both shapes SGLang has printed on
+  the reference box (`'api_key': '...'` and `api_key='...'`), and for a CUDA error the
+  template asks for the kernel's lines too, where an Xid is logged.
+- **README.** It opens on the one command, a line for each kind of work with the number
+  measured here, and the write-up and the projects that cite or build on this one. The
+  27B's row says what it has done since v1.12.1: a 1M context by default.
+- **CI.** A proxy test read the fake engine's drain record before the engine's thread had
+  written it, and failed once in a full local run. It waits for the record now, and fails a
+  proxy that aborts a request after relaying it whole.
+
+An update restarts the cockpit; opencode-web, once, on a box whose unit held an editor's
+directories; and the engine that serves, once, on a box whose chat template still had the
+xhigh default from before v1.13, so that it serves lean. Otherwise the proxy and the
+engines keep running.
+
 ## v1.22.6 (2026-10-03): the engine key masked everywhere in /server_info, a local CI that leaves nothing behind
 
 Proxy v6.32. SGLang's `/server_info` repeats the engine's whole command line in
