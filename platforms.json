@@ -89,6 +89,17 @@
       "evidence": []
     },
     {
+      "id": "driver-gsp-mismatch",
+      "kind": "driver_gsp_mismatch",
+      "level": "warn",
+      "title": "The driver ({driver}) and the GPU's GSP firmware ({gsp}) are not the same version",
+      "detail": "The NVIDIA driver and its GSP firmware are installed as a pair: an apt-only driver update leaves them unpaired, which is what made nvidia-smi print \"No devices were found\" with Xid 119 on OTA2607 boxes (NVIDIA forum, 2026-07-26).",
+      "action": "Update the system the way its maker supports: the update moves the driver and its firmware together, and the reboot meets them.",
+      "evidence": [
+        "https://forums.developer.nvidia.com/t/dgx-spark-apt-upgrade-to-driver-580-173-02-breaks-gpu-on-ota2607-nvidia-smi-no-devices-found/378200"
+      ]
+    },
+    {
       "id": "driver-older-than-reference",
       "kind": "driver_older_than_reference",
       "level": "warn",
@@ -109,11 +120,13 @@
       },
       "level": "warn",
       "title": "Kernel 7.0.0-1019, which NVIDIA asked to hold off",
-      "detail": "NVIDIA's DGX Spark Update Advisory (2026-09-14) asked to \"hold off on updating to kernel 7.0.0-1019, including updates via DGX Dashboard\" (multi-node RoCE failures); on 2026-09-17 it said updates were rolling out to mitigate it. On this repo's reference box, this kernel reserved 9.30 GiB that long-lived GPU pinning could no longer use (measured 2026-09-16).",
-      "action": "Follow NVIDIA's advisory thread for the kernel that mitigates it; the memory signature is checked separately (CmaTotal).",
+      "detail": "NVIDIA's DGX Spark Update Advisory (2026-09-14) asked to \"hold off on updating to kernel 7.0.0-1019, including updates via DGX Dashboard\" (multi-node RoCE failures); on 2026-09-17 it said updates were rolling out to mitigate it. Owners of single-node boxes reported a 50-60 % slowdown and general slowness on this kernel (NVIDIA forums, September 2026). On this repo's reference box, this kernel reserved 9.30 GiB that long-lived GPU pinning could no longer use (measured 2026-09-16).",
+      "action": "Update the way the box's maker supports. NVIDIA's mitigation is a hotfix adding the boot parameter kho=off (the nvidia-spark-grub-kho package): after updating, check it is on the kernel command line (cat /proc/cmdline) before rebooting. No kernel without the flaw is named yet, so check again when the release notes name a newer DGX OS.",
       "evidence": [
         "https://forums.developer.nvidia.com/t/383254",
-        "https://forums.developer.nvidia.com/t/383023"
+        "https://forums.developer.nvidia.com/t/383023",
+        "https://forums.developer.nvidia.com/t/383926",
+        "https://forums.developer.nvidia.com/t/383185"
       ]
     },
     {
@@ -122,10 +135,11 @@
       "level": "warn",
       "title": "Memory the kernel reserves without counting it (CmaTotal 0 with CmaFree above 0)",
       "detail": "The signature of the 7.0.0-1019 kernel's reservation: \"CmaTotal is not announced correctly as it was in 6.17.0-1032\" (NVIDIA forum, 2026-09-13). On the reference box it was 9.30 GiB that long-lived GPU pinning could no longer use. The engines still start; the box has less room under its memory edge.",
-      "action": "Same as for kernel 7.0.0-1019: follow NVIDIA's advisory for a kernel without it.",
+      "action": "Same as for kernel 7.0.0-1019: the hotfix adds the boot parameter kho=off. The community workaround cma=128M (kernel command line) restored the room on a reported box (NVIDIA forum, September 2026); it is a report, not an NVIDIA fix.",
       "evidence": [
         "https://forums.developer.nvidia.com/t/383023",
-        "https://forums.developer.nvidia.com/t/383254"
+        "https://forums.developer.nvidia.com/t/383254",
+        "https://forums.developer.nvidia.com/t/383185"
       ]
     },
     {
@@ -277,7 +291,8 @@
     "catalog": "https://docs.nvidia.com/deploy/xid-errors/index.html",
     "known": {
       "31": "a GPU memory page fault (MMU fault): a kernel read or wrote memory it should not have",
-      "119": "the driver timed out waiting for the GPU's GSP firmware (NVIDIA forum 378200: a driver not paired with its firmware)"
+      "119": "the driver timed out waiting for the GPU's GSP firmware (NVIDIA forum 378200: a driver not paired with its firmware)",
+      "120": "the GSP firmware itself reported a task exception; seen on GB10 boxes right before they rebooted on their own (NVIDIA forums 379959, 371799)"
     }
   }
 }

@@ -298,6 +298,18 @@ class TheKnownIssues(unittest.TestCase):
                                     ("NVIDIA RTX PRO 6000, 580.178.04\n", None)})
         self.assertIn("gpu-not-gb10", ids(fx.outputs()[1]))
 
+    def test_a_driver_that_does_not_match_its_gsp_firmware(self):
+        unpaired = SMI_Q.replace("GSP Firmware Version                               : 580.178.04",
+                                 "GSP Firmware Version                               : 580.159.03")
+        fx = Fixture(self, answers={"nvidia-smi -q": (unpaired, None)})
+        self.assertIn("driver-gsp-mismatch", ids(fx.outputs()[1]))
+        self.assertNotIn("driver-gsp-mismatch", ids(Fixture(self).outputs()[1]),
+                         "the reference box's driver and firmware meet")
+
+    def test_an_unread_gsp_version_is_not_a_mismatch(self):
+        fx = Fixture(self, answers={"nvidia-smi -q": (None, "no answer in 30 s")})
+        self.assertNotIn("driver-gsp-mismatch", ids(fx.outputs()[1]))
+
     def test_a_box_nobody_reported_yet(self):
         fx = Fixture(self, dgx='DGX_PLATFORM="Some Future Box"\nDGX_OTA_VERSION="7.7.0"\n',
                      dmi={"sys_vendor": "Someone", "product_name": "Box"})
@@ -466,6 +478,7 @@ L_CAPTURE = "Exception: Capture cuda graph failed: CUDA error: operation failed 
 K_XID31 = ("NVRM: Xid (PCI:000f:01:00): 31, pid=3003984, name=python3, channel 0x00000015, intr 00000000. "
            "MMU Fault: ENGINE GRAPHICS GPC0 GPCCLIENT_T1_0 faulted @ 0x403_2ee00000.")
 K_XID119 = "NVRM: Xid (PCI:000f:01:00): 119, Timeout after 6s of waiting for RPC response from GPU0 GSP!"
+K_XID120 = "NVRM: Xid (PCI:000f:01:00): 120, pid=2702, name=Xorg, GSP task exception: supervisor timer interrupt (cause:0x8000000000000005)"
 K_XID13 = "NVRM: Xid (PCI:000f:01:00): 13, Graphics Exception"
 ROUTINE = ["NVRM: nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned "
            "from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1359",
@@ -517,6 +530,12 @@ class CrashSignatures(unittest.TestCase):
         self.assertIn("see NVIDIA's Xid catalog", c["xid_said"][0])
         self.assertIn("GSP firmware", c["xid_said"][1])
         self.assertIsNone(c["line"])
+
+    def test_the_xid_the_gsp_itself_reports_is_known_too(self):
+        c = self.cause(kernel=[K_XID120])
+        self.assertEqual(c["xids"], [120])
+        self.assertIn("task exception", c["xid_said"][0])
+        self.assertNotIn("catalog", c["xid_said"][0], "known means known, not sent to the catalog")
 
     def test_every_signature_is_sound(self):
         ids = [s["id"] for s in DATA["crash_signatures"]]

@@ -55,6 +55,7 @@ checked for, with its evidence:
 | `driver-580.159.03` | warn | Driver 580.159.03, the one every report of engines dying with "operation not permitted" ran |
 | `next-boot-without-nvidia` | warn | The kernel the next boot picks ({next}) has no NVIDIA module |
 | `driver-reboot-pending` | warn | A driver update waits for a reboot (loaded {loaded}, installed {installed}) |
+| `driver-gsp-mismatch` | warn | The driver ({driver}) and the GPU's GSP firmware ({gsp}) are not the same version |
 | `driver-older-than-reference` | warn | Driver {driver} is older than NVIDIA's newest reference on this box ({ref_name}, {ref_label}: {ref_driver}) |
 | `kernel-7.0.0-1019` | warn | Kernel 7.0.0-1019, which NVIDIA asked to hold off |
 | `cma-reserved-uncounted` | warn | Memory the kernel reserves without counting it (CmaTotal 0 with CmaFree above 0) |
@@ -75,9 +76,10 @@ passphrase found in about 8,000 tokens of filler, four questions at once, and on
 the Anthropic dialect (the one Claude Code speaks), each with what it got. On the reference
 box, through the flash lane while it also served an audit's three requests, the seven passed
 in 51 s (one answer waited 29 s behind the audit's own prompts). It refuses to run
-while the engine serves
-anything, since a test would then slow real work and be slowed by it (`--force` runs it
-anyway), and exits 0 when every check passed, 1 when one failed, 3 when it refused. It reads
+while the engine says it is serving,
+since a test would then slow real work and be slowed by it (`--force` runs it anyway, and
+metrics that cannot answer say nothing, so the test runs), and exits 0 when every check
+passed, 1 when one failed, 3 when it refused. It reads
 the API key from `~/.config/qwen38/api-key` and never prints it. The deeper instruments are
 the repo's own: `tools-check.py` (15 tool cases), `needle.sh` (retrieval up to the window),
 `conc-check.py` (40 and 80 exact answers) and `bench.sh`.
@@ -111,7 +113,8 @@ sudo journalctl -k --since "2026-10-02 14:51" --until "2026-10-02 15:06" >> cras
 The first signature in this order that a line matches is the one named (the cuBLAS error comes
 before an illegal memory access because, in vLLM #54173, it was the first report of one); the
 driver's Xid numbers of the same minutes are named beside it (31: a GPU memory page fault, 119:
-the driver timing out on the GPU's GSP firmware; others: NVIDIA's
+the driver timing out on the GPU's GSP firmware, 120: a task exception the GSP itself reported on
+GB10 boxes that then rebooted (NVIDIA forums 379959, 371799); others: NVIDIA's
 [Xid catalog](https://docs.nvidia.com/deploy/xid-errors/index.html)).
 
 ## The boxes reported so far

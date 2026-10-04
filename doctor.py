@@ -364,6 +364,9 @@ def _matches(rule, facts):
     if kind == "driver_older_than_reference":
         ref = facts.get("nvidia_reference") or {}
         return bool(gpu.get("driver") and ref.get("driver")) and version_key(gpu["driver"]) < version_key(ref["driver"])
+    if kind == "driver_gsp_mismatch":
+        dv, gv = version_key(gpu.get("driver")), version_key(gpu.get("gsp"))
+        return bool(dv and gv) and dv != gv
     raise ValueError(f"unknown rule kind {kind!r}")
 
 
@@ -391,6 +394,7 @@ def _values(facts):
     di, boot = facts.get("driver_install") or {}, facts.get("boot") or {}
     return _Keep(next=boot.get("next") or "unknown", loaded=di.get("loaded") or "unknown",
                  installed=di.get("installed") or "unknown", driver=facts["gpu"].get("driver") or "unknown",
+                 gsp=facts["gpu"].get("gsp") or "unknown",
                  ref_name=ref.get("name") or "unknown", ref_label=ref.get("label") or ref.get("date") or "unknown",
                  ref_kernel=ref.get("kernel") or "unknown", ref_driver=ref.get("driver") or "unknown")
 
