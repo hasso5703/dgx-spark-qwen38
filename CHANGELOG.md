@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased (branch feat/platform-doctor): the repo checks the box it runs on
+
+Every GB10 box runs this repo's engines in the same containers, pinned by digest, and differs
+underneath them: the maker's firmware, the DGX OS release, the kernel, the NVIDIA driver and its
+GSP firmware, Docker and the NVIDIA Container Toolkit. Issue #26 is that difference: an HP ZGX
+Nano G1n on driver 580.159.03, engines dying with "operation not permitted", and none of those
+deaths after the update to 580.178.04. NVIDIA's own update guide covers the Founders Edition
+only and says other makers "might have different update procedures".
+
+**`./doctor.py`** reads what the box is and says what is known about its combination, each
+finding with its evidence and what to do: the driver every report of those engine deaths ran
+(580.159.03; SGLang #40948, vLLM #52877, #26), a driver off the 580 branch ("Driver 595 is not yet
+supported on DGX Spark", NVIDIA, 2026-06-08), kernel 7.0.0-1019, which NVIDIA asked to hold
+off, and its memory signature (CmaTotal 0 with CmaFree above 0), a GPU nvidia-smi cannot
+reach (the apt upgrade of driver 580.173.02 on OTA2607 boxes, NVIDIA forum 378200), less than
+110 GiB, Docker or the NVIDIA Container Toolkit missing, and apport keeping a dying process's
+memory in /var/crash. It is read-only, needs no sudo, bounds every command, exits 0 whatever
+it finds, and never reads a serial number: /etc/dgx-release, which every user can read, holds
+the box's, so it is read by a list of keys. `--report` writes anonymised Markdown for an
+issue. install.sh prints its findings at the end of its preflight and goes on.
+
+It also reads what lies between the kernel and the driver, from files any user can read: the
+kernel the next boot picks (the one /etc/default/grub names, or the newest for GRUB_DEFAULT=0)
+and whether it has an NVIDIA module (booting one without it leaves the GPU with no driver; on the
+reference box three older kernels have none, and the next boot's has it); the module loaded
+against the driver installed (an update waiting for a reboot); NVIDIA's own reference for these
+boxes, which DGX OS ships as the JSON of nvidia-spark-ota-check (the newest there: OTA2607, July
+2026, kernel 6.17.0-1022, driver 580.159.03), read and never run, since that tool can update
+itself with sudo; and, in --report, apt's history of kernel and driver changes. It never updates
+anything: what to do is said, and left to the box's owner.
+
+**`./selftest.py`**: seven real requests through the proxy, the way clients send them (the
+model list, an answer, a stream that ends with [DONE], a tool call, a passphrase in about 8,000
+tokens, four at once, the Anthropic dialect), each saying what it got; refused while the engine
+serves anything unless `--force`; exit 0, 1 (a check failed) or 3 (refused). On the reference
+box, beside an audit's three requests, the seven passed in 51 s. install.sh's last lines
+name it.
+
+**Known crash causes, in the cockpit.** When a text lane's run ends in failure (a crash while
+it served, or a boot that keeps dying), the cockpit reads that run's own journal (its systemd
+invocation) and the kernel's lines of the 15 minutes before, and names what platforms.json knows:
+CUDA error 900 or 800 (the 800 deaths of driver 580.159.03), a cuBLAS internal error (#26), an
+illegal memory access, out of memory, a CUDA graph capture that failed, and the driver's Xid
+numbers of the same minutes (31, a GPU memory page fault; 119, the GSP firmware timing out). A
+banner for half an hour and a line in the events, the API key masked in the line shown; once per
+run; a journal that did not answer is read again; the kernel lines come through the one
+`journalctl -k` the cockpit already ran, so nothing changes in sudoers. A crash with no known
+signature is said to have none. `./doctor.py --why <file>` does the same on a pasted journal.
+
+The cockpit's Machine view has a Platform panel: the lines `./doctor.py` prints and the findings
+to act on, every 10 minutes, with only https evidence turned into links.
+
+**`platforms.json` and [docs/platforms.md](docs/platforms.md)**: the known issues with their
+evidence, and the boxes reported so far (the reference ASUS Ascent GX10, the HP ZGX Nano G1n
+of #26); a test keeps the doc's table equal to `./doctor.py --matrix`.
+
 ## v1.22.6 (2026-10-03): the engine key masked everywhere in /server_info, a local CI that leaves nothing behind
 
 Proxy v6.32. SGLang's `/server_info` repeats the engine's whole command line in

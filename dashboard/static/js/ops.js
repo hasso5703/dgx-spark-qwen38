@@ -121,6 +121,19 @@ on('gpu', d => {
   if (!tb.rows.length){ const tr = tb.insertRow(); tr.className = 'empty'; const c = tr.insertCell(); c.colSpan = 3;
     c.textContent = Array.isArray(d.procs) ? 'No process on the GPU.' : 'No reading: nvidia-smi did not answer.'; }
 });
+// what doctor.py says this box is (docs/platforms.md): its own lines, and what is known
+on('platform', d => {
+  const dl = $('pf-facts'), ul = $('pf-findings'); if (!dl || !ul) return;
+  clear(dl); clear(ul);
+  if (!d.available){ dl.append(el('dt', '', 'This box'), el('dd', '', `unknown: ${d.why || 'no answer'}`)); return; }
+  (d.summary || []).forEach(([k, v]) => dl.append(el('dt', '', k), el('dd', 'wrap', v)));
+  dl.append(el('dt', '', 'In the matrix'), el('dd', '', d.platform ? `${d.platform}, ${d.reports} report${d.reports === 1 ? '' : 's'}` : 'not reported yet'));
+  const shown = (d.findings || []).filter(f => f.level !== 'info');
+  if (!shown.length){ ul.append(el('li', 'empty', 'Nothing known against this box.')); return; }
+  shown.forEach(f => { const li = el('li'); li.append(tag(f.level, f.level === 'fail' ? 'err' : 'warn'), document.createTextNode(` ${f.title}. What to do: ${f.action}`));
+    (f.evidence || []).filter(u => /^https:\/\//.test(u)).forEach(u => { const a = el('a', '', ' evidence'); a.href = u; a.target = '_blank'; a.rel = 'noopener'; li.append(a); });
+    ul.append(li); });
+});
 on('kernel', d => { const n = d.nvrm_oom_1h;
   setText('dk-nvrm', n == null ? 'n/a (the kernel log did not answer)' : n ? `${n}, the last at ${(d.nvrm_last || '').slice(11, 19)}` : 'none'); });
 

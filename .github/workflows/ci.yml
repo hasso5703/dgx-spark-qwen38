@@ -107,7 +107,7 @@ jobs:
           py=$(git ls-files '*.py' ':!flash-sglang/')
           [ "$(echo "$py" | wc -l)" -ge 100 ] || { echo "found only: $py"; exit 1; }
           ruff check --select F,E9 $py
-          python3 -m py_compile patch-template.py patch-yarn.py keepalive-proxy.py engine-inputs.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py bench-agent.py conc-check.py build-token-map.py tools-check.py systemone-check.py bench-systemone.py evals/mmlu.py evals/humaneval.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
+          python3 -m py_compile doctor.py selftest.py patch-template.py patch-yarn.py keepalive-proxy.py engine-inputs.py oc-merge-limits.py oc-point-default.py oc-fit-limits.py bench-agent.py conc-check.py build-token-map.py tools-check.py systemone-check.py bench-systemone.py evals/mmlu.py evals/humaneval.py flash-sglang/qwen4_exp.py flash-sglang/qwen_sparse_attn_backend.py flash-sglang/sm121_varlen.py dashboard/cockpit.py dashboard/lifecycle.py dashboard/recipes.py dashboard/registry.py dashboard/agent_relay.py
 
       - name: Cockpit unit tests (every tests/test_*.py, discovered)
         run: |
@@ -166,7 +166,8 @@ jobs:
                    tests/test_proxy_keepalive.py tests/test_proxy_client_keys.py \
                    tests/test_proxy_systemone.py tests/test_proxy_hold.py \
                    tests/test_proxy_short_body.py tests/test_proxy_engine_withholds_headers.py \
-                   tests/test_tools.py tests/test_oc_fit_limits.py tests/test_oc_merge_limits.py; do
+                   tests/test_tools.py tests/test_oc_fit_limits.py tests/test_oc_merge_limits.py \
+                   tests/test_doctor.py tests/test_selftest.py; do
             "$PY" -m coverage run --branch --parallel-mode --source=. \
               --omit="dashboard/*,tests/*,.venv-test/*" "$f" >/dev/null 2>&1 || true
           done
@@ -186,8 +187,10 @@ jobs:
           # with their own tests, so the floor follows again.
           # 2026-10-01: 87% with the hold of v6.28 and its suite run in-process as well
           # (run only as a process, it took the module down to 81%): the floor follows.
+          # doctor.py and selftest.py came with their suites at 97% branch coverage (2026-10-03).
           FLOORS = {"keepalive-proxy.py": 85, "patch-yarn.py": 90,
-                    "oc-fit-limits.py": 37, "build-token-map.py": 35}
+                    "oc-fit-limits.py": 37, "build-token-map.py": 35, "doctor.py": 95,
+                    "selftest.py": 95}
           got, bad = {}, []
           for line in open(sys.argv[1]):
               m = re.match(r"^(\S+\.py)\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)%", line)

@@ -257,6 +257,14 @@
             <div><p>The GPU driver logs an out-of-memory refusal when an allocation lands on the edge of the unified pool, typically during a large prefill or a lane's warmup. A few per boot are normal on this box; a steady stream during serving is the sign to look at the pool.</p></div>
           </details>
         </section>
+        <section class="panel" data-src="platform" id="machine-platform">
+          <header><h2>Platform</h2><span class="aside age"></span></header>
+          <dl class="facts" id="pf-facts"><dt>This box</dt><dd>…</dd></dl>
+          <ul class="findings" id="pf-findings"></ul>
+          <details class="why"><summary>What this is</summary>
+            <div><p>Every GB10 box runs the same containers; what differs is underneath them: the maker's firmware, the DGX OS release, the kernel, the driver and its GSP firmware. This is what ./doctor.py reads (read-only, every 10 minutes) and what is known about that combination, each finding with its evidence. docs/platforms.md has the boxes reported so far.</p></div>
+          </details>
+        </section>
       </div>
     </section>
 

@@ -380,6 +380,11 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px color
 .tbl.dense td{padding-top:7px; padding-bottom:7px}
 .tbl tbody tr:hover td{background:color-mix(in srgb, var(--ink-2) 60%, transparent)}
 .tbl .empty td, td.empty{color:var(--fg-3); text-align:center; padding:var(--s-6) 0}
+/* the platform panel's findings (doctor.py): one line each, the level as a tag */
+.findings{list-style:none; margin:var(--s-4) 0 0; padding:0; display:grid; gap:var(--s-2)}
+.findings li{line-height:1.5; overflow-wrap:anywhere}
+.findings li.empty{color:var(--fg-3)}
+.findings a{margin-left:var(--s-2)}
 .scroll-x{overflow-x:auto; -webkit-overflow-scrolling:touch}
 
 /* code blocks: commands and logs, the only mono in the app */

@@ -1194,6 +1194,11 @@ if [ "$NO_SERVICE" -eq 0 ] && ! sudo -n true 2>/dev/null; then
   sudo -v || die "sudo could not be used here: run 'sudo -v' in this terminal, then re-run ./install.sh"
 fi
 echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
+# What is known about this box's own layer (the maker's firmware, DGX OS, the kernel, the
+# driver), which differs from one GB10 box to the next while the containers do not: read-only,
+# bounded, and never a reason to stop (docs/platforms.md).
+echo "What is known about this box (./doctor.py for the full report):"
+timeout 180 python3 "$REPO_DIR/doctor.py" --brief || echo "  (doctor.py did not answer; the install goes on)"
 
 if [ "$LANE" = "flash" ]; then
   step "2/10 Pulling the official SGLang Flash-Next image (~30 GB, one-time, resumable)"
@@ -2647,6 +2652,10 @@ except Exception as e:
     echo "  Anthropic  : http://<host>:$PROXY_PORT/v1/messages   (Bearer auth only)"
     echo "  Engine     : $ENGINE_BIND:$PORT, behind the proxy (ENGINE_BIND=0.0.0.0 opens it)"
     echo "  API key    : $CONFIG_DIR/api-key"
+    # a minute of real requests through the proxy, the way clients send them (docs/platforms.md)
+    ST_ENV=""; [ "$PORT" = 30000 ] || ST_ENV="PORT=$PORT "
+    ST_ARG=""; [ "$PROXY_PORT" = 30001 ] || ST_ARG=" --port $PROXY_PORT"
+    echo "  Self-test  : ${ST_ENV}$REPO_DIR/selftest.py$ST_ARG   (and $REPO_DIR/doctor.py: what this box is)"
     if [ "$OPENCODE" -eq 1 ]; then
       OC_NOW="$( { opencode --version 2>/dev/null || true; } | tail -1 | tr -d 'v[:space:]')"
       # What starts it from the user's own shell: this script's PATH is not theirs, the
