@@ -27,9 +27,10 @@
 # new version. Variables: OPENCODE_PORT, AGENT_PORT, AGENT_BIND (an address, or
 # "tailscale"), AGENT_AUTO=1 (approve every tool call, like the oc launcher's
 # --yolo; opencode serve has no such flag, so the unit sets OPENCODE_PERMISSION),
-# AGENT_OUTPUT_TOKEN_MAX, AGENT_PATH (the PATH the service gets). A re-run keeps
-# what is installed unless you set it again: both ports, the relay's address, the
-# AGENT_AUTO choice (0 or 1), and every directory of the service's PATH.
+# AGENT_OUTPUT_TOKEN_MAX, AGENT_PATH (the PATH the service gets, as given, on the run
+# that sets it). A re-run keeps what is installed unless you set it again: both ports,
+# the relay's address, the AGENT_AUTO choice (0 or 1), and every directory of the
+# service's PATH but what an editor's session put there (see below).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT=opencode-web.service
@@ -143,9 +144,22 @@ esac
 # ── PATH for the service: yours, deduplicated, the opencode dir first ──────
 # (AGENT_PATH= overrides it, for an install run from a wrapper or an odd shell), and the
 # installed one's directories after it, so an update run from a shell with a shorter PATH
-# takes no tool away from the agent
+# takes no tool away from the agent.
+# Left out of both: what an editor's session puts on its terminal's PATH, known by its
+# layout, which the forks of VS Code share: the remote CLI of its server (bin/remote-cli),
+# its extensions' storage (User/globalStorage) and its versioned extensions
+# (extensions/<publisher>.<name>-<version>). An update run from a VS Code terminal wrote
+# three of them into the unit, so opencode-web restarted, and the remote CLI's directory,
+# named after the editor's build, goes at the next VS Code update (the reference box,
+# 2026-10-03).
 INSTALLED_PATH="$({ grep -m1 -E '^Environment=PATH=' "$INSTALLED_OC" 2>/dev/null || true; } | cut -d= -f3-)"
-SVC_PATH="${AGENT_PATH:-$(printf '%s:%s:%s' "$(dirname "$OPENCODE_BIN")" "$PATH" "$INSTALLED_PATH" | tr ':' '\n' | awk 'NF && !seen[$0]++' | paste -sd: -)}"
+EDITOR_DIRS='/bin/remote-cli(/|$)|/User/globalStorage/|/extensions/[^/]+[.][^/]+-[0-9][^/]*(/|$)'
+SVC_PATH="${AGENT_PATH:-$(printf '%s:%s:%s' "$(dirname "$OPENCODE_BIN")" "$PATH" "$INSTALLED_PATH" | tr ':' '\n' \
+  | awk -v ed="$EDITOR_DIRS" 'NF && $0 !~ ed && !seen[$0]++' | paste -sd: -)}"
+if [ -z "${AGENT_PATH:-}" ]; then
+  GONE="$(printf '%s' "$INSTALLED_PATH" | tr ':' '\n' | awk -v ed="$EDITOR_DIRS" '$0 ~ ed' | paste -sd' ' -)"
+  if [ -n "$GONE" ]; then note "opencode-web's PATH leaves out what an editor's session had put in it: $GONE"; fi
+fi
 case "$SVC_PATH" in *'|'*|*' '*) die "PATH contains a space or a | character; set PATH to something plain and re-run" ;; esac
 
 # True (0) when a service has to be restarted to run what is on disk: it is not running, or
