@@ -137,6 +137,16 @@ the cockpit drift panel says so, per lane, until it is.
   on every text lane: the panel's own canary stays the source of truth for
   "is this lane alive", the metrics join as history, not as a second
   opinion about life.
+- **A speech lane: Qwen3-ASR and Qwen3-TTS** (asked for in
+  [discussion #38](https://github.com/hasso5703/dgx-spark-qwen38/discussions/38)).
+  Both are Apache-2.0, at 0.6B and 1.7B. A user's companion installer measured
+  the 0.6B pair beside the 27B in 1M mode on 2026-10-05: 70 ms to the first
+  audio, a real-time factor of 0.25 for TTS and 0.065 for ASR, and about
+  10.2 GiB between the two services, which left the box 10.0 GiB. That rules
+  out the flash lane, which leaves 16.6 GiB idle, and makes the 27B the lane
+  it would sit beside. Before it is built: its memory, and the LLM's speed with
+  and without it, measured on the reference box, and a cockpit Load that keeps
+  it from starting beside a lane it does not fit.
 
 ## Considered (and why not yet)
 
