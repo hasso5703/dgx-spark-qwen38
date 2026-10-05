@@ -529,7 +529,9 @@ class TheBootLaneConvergenceHoldsEveryWay(unittest.TestCase):
         """A kept custom model is MODEL_CHOICE=custom, which switch-model.sh rejects."""
         i = self.text.index('if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then')
         early = self.text[i:self.text.index("exit 0", i)]
-        self.assertIn('if [ "$MODEL_CHOICE" = "custom" ]; then', early)
+        # the case names custom before the line that names ./switch-model.sh $MODEL_CHOICE
+        case = early.index('case "$MODEL_CHOICE" in')
+        self.assertLess(early.index("    custom)", case), early.index("./switch-model.sh $MODEL_CHOICE", case))
 
 
 class ThePageNeverShowsAStaleOrRacingState(unittest.TestCase):

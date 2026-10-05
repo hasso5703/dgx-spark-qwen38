@@ -755,12 +755,16 @@ fi
 # engine" button). Measured three times on 2026-09-18 while testing switches.
 echo "Then fit them:    python3 oc-fit-limits.py   (the limits above are this target's"
 echo "                  nominal pair; the pool is only known once the engine is up)"
+# The first target a hint names is a standard one: the project advises the standard
+# checkpoints. The abliterated targets stay named, last in the parentheses, so that they are
+# known without ever being the default. This line named `uncensored` first after every
+# switch to stock.
 case "$CHOICE" in
-  stock)      echo "Switch back:      ./switch-model.sh uncensored   (or fp8, flash, image, video)" ;;
+  stock)      echo "Switch back:      ./switch-model.sh flash   (or fp8, image, video, uncensored)" ;;
   uncensored) echo "Switch back:      ./switch-model.sh stock   (or fp8, flash)" ;;
-  fp8)        echo "Switch back:      ./switch-model.sh stock   (or uncensored, uncensored-fp8, flash)" ;;
-  uncensored-fp8) echo "Switch back:      ./switch-model.sh fp8   (or stock, uncensored, flash)" ;;
-  flash)      echo "Switch back:      ./switch-model.sh stock   (or uncensored, fp8, flash-nvda, flash-uncensored)" ;;
-  flash-nvda) echo "Switch back:      ./switch-model.sh flash   (or flash-uncensored, stock, uncensored, fp8)" ;;
-  flash-uncensored) echo "Switch back:      ./switch-model.sh flash   (or flash-nvda, stock, uncensored, fp8)" ;;
+  fp8)        echo "Switch back:      ./switch-model.sh stock   (or flash, uncensored, uncensored-fp8)" ;;
+  uncensored-fp8) echo "Switch back:      ./switch-model.sh fp8   (or stock, flash, uncensored)" ;;
+  flash)      echo "Switch back:      ./switch-model.sh stock   (or fp8, flash-nvda, uncensored, flash-uncensored)" ;;
+  flash-nvda) echo "Switch back:      ./switch-model.sh flash   (or stock, fp8, flash-uncensored, uncensored)" ;;
+  flash-uncensored) echo "Switch back:      ./switch-model.sh flash   (or flash-nvda, stock, fp8, uncensored)" ;;
 esac

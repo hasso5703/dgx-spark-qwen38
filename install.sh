@@ -2266,7 +2266,7 @@ rm -f "$CONFIG_DIR/warmup-claude-code.sh"
 sudo systemctl daemon-reload
 if [ -n "$SECONDARY" ]; then
   # Installed, not enabled and not started: the serving run proves it once it is new.
-  step "Done: installed as $UNIT_NAME ($MODEL_CHOICE), not enabled at boot; Load it from the cockpit's Lanes view"
+  step "Done: installed as $UNIT_NAME ($MODEL_CHOICE), not enabled at boot"
   exit 0
 fi
 if [ "$IMAGE_BOOT" -eq 0 ] && [ "$VIDEO_BOOT" -eq 0 ]; then
@@ -2301,12 +2301,19 @@ else
   if [ "$VIDEO_BOOT" -eq 1 ]; then SERVING_LANE="video"; else SERVING_LANE="image"; fi
   step "Done: the text lane is up to date; the $SERVING_LANE lane stays this box's serving lane"
   echo "  text lane : installed as $UNIT_NAME, not enabled at boot"
-  if [ "$MODEL_CHOICE" = "custom" ]; then
-    # a kept custom model has no switch target of its own; the installer is the way back
-    echo "  back to it: MODEL_CHOICE=<target> ./install.sh (this box serves a custom model)"
-  else
-    echo "  back to it: Load on that lane in the cockpit's Lanes view, or ./switch-model.sh $MODEL_CHOICE"
-  fi
+  # The first target the hint names is the standard one: the project advises the standard
+  # checkpoints. The abliterated one a lane was installed with comes after it; this line
+  # named only that one.
+  case "$MODEL_CHOICE" in
+    custom)
+      # a kept custom model has no switch target of its own; the installer is the way back
+      echo "  back to it: MODEL_CHOICE=<target> ./install.sh (this box serves a custom model)" ;;
+    uncensored)       echo "  back to it: ./switch-model.sh stock, the standard checkpoint of that lane (a first switch downloads about 21 GB), or ./switch-model.sh uncensored, the abliterated one it was installed with" ;;
+    uncensored-fp8)   echo "  back to it: ./switch-model.sh fp8, the standard checkpoint of that lane (a first switch downloads about 31 GB), or ./switch-model.sh uncensored-fp8, the abliterated one it was installed with" ;;
+    flash-uncensored) echo "  back to it: ./switch-model.sh flash, the standard checkpoint of that lane (a first switch downloads about 126 GB), or ./switch-model.sh flash-uncensored, the abliterated one it was installed with" ;;
+    *)
+      echo "  back to it: Load on that lane in the cockpit's Lanes view, or ./switch-model.sh $MODEL_CHOICE" ;;
+  esac
   exit 0
 fi
 
