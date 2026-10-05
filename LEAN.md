@@ -185,4 +185,7 @@ context, temperature 0.7, top_p 0.95, max_tokens 16,000. 7,008 runs in total.
 
 `LEAN_DEFAULT=0 ./install.sh` installs the level without making it the default,
 for a box that would rather keep Qwen's shipped behaviour until it has run its
-own numbers.
+own numbers. The choice is kept: a later `./install.sh` or switch that does not name
+it leaves the default as it is, and `LEAN_DEFAULT=1 ./install.sh` moves it back. A
+template written before v1.13, which had no lean level and defaulted to xhigh, made no
+choice: since v1.22.7 the next run gives it lean.

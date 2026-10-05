@@ -6,6 +6,10 @@ read the choice from the environment of each run, and neither a plain ./install.
 the cockpit's Switch passes it, so a box installed with LEAN_DEFAULT=0 went back to lean at
 the next of either; LEAN.md presents it as a kept choice. And the refusal of an unknown
 level said "lean (default)" whatever the default was (found in review, 2026-09-24).
+
+A template written before v1.13 has no lean level and defaults to xhigh, the one default
+there was: read as a kept LEAN_DEFAULT=0, it held a box updated from there on xhigh without
+anyone asking for it (a user's box, 2026-10-05). It chose nothing, and gets the default.
 """
 import importlib.util
 import os
@@ -40,7 +44,18 @@ class TheDefaultIsKept(unittest.TestCase):
         r = subprocess.run([sys.executable, str(SCRIPT), str(self.base), str(self.out), SHA, REPO_ID],
                            capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.log = r.stdout
         return self.out.read_text()
+
+    def before_the_lean_level(self):
+        """What the patcher wrote before v1.13: the effort and system fixes, default xhigh,
+        and no lean level."""
+        old = (self.base / "hub" / "models--org--model" / "snapshots" / SHA / "chat_template.jinja").read_text()
+        old = old.replace(pt.EFFORT_ANCHOR, pt.EFFORT_PATCHED.replace("@@DEF@@", "xhigh"), 1)
+        old = old.replace(pt.SYSTEM_ANCHOR, pt.SYSTEM_PATCHED, 1)
+        self.assertIn("reasoning_effort|default('xhigh')", old)
+        self.assertNotIn(pt.LEAN_MARKER, old)
+        return old
 
     def test_a_run_without_the_variable_keeps_xhigh(self):
         self.assertIn("reasoning_effort|default('xhigh')", self.run_patch("0"))
@@ -55,6 +70,25 @@ class TheDefaultIsKept(unittest.TestCase):
     def test_naming_it_again_moves_it(self):
         self.run_patch("0")
         self.assertIn("reasoning_effort|default('lean')", self.run_patch("1"))
+
+    def test_a_template_from_before_the_lean_level_chose_nothing(self):
+        self.out.write_text(self.before_the_lean_level())
+        text = self.run_patch()
+        self.assertIn("reasoning_effort|default('lean')", text, "it kept xhigh, which nobody chose")
+        self.assertIn("lean (default), xhigh, medium, and low", text)
+        self.assertIn("predates the lean level", self.log)
+        self.assertNotIn("kept from the installed template", self.log)
+
+    def test_it_says_lean_kept_on_the_run_after(self):
+        self.out.write_text(self.before_the_lean_level())
+        first = self.run_patch()
+        self.assertEqual(self.run_patch(), first)
+        self.assertIn("lean (kept from the installed template)", self.log)
+
+    def test_naming_xhigh_on_such_a_box_still_keeps_it(self):
+        self.out.write_text(self.before_the_lean_level())
+        self.run_patch("0")
+        self.assertIn("reasoning_effort|default('xhigh')", self.run_patch(), "the choice made then was lost")
 
     def test_a_fresh_install_defaults_to_lean(self):
         text = self.run_patch()

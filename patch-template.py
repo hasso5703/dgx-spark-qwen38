@@ -60,6 +60,8 @@ EFFORT_PATCHED = (
 # DEFAULT moves, which is what every client that sends nothing receives.
 # LEAN_DEFAULT=0 keeps Qwen's xhigh default while still offering the level.
 LEAN_INSTRUCTIONS = "Answer immediately, with no reasoning, whenever the request asks for something you can simply write down: a rename, a reformat, a definition, a lookup, a single concrete edit. Reason only when producing the answer needs steps you cannot skip.\n\nIf the request is underspecified, pick the most common sensible interpretation, state it in one line, and proceed. If you notice yourself checking something twice, or weighing the same options again, stop there and commit."
+# What a template that offers the lean level holds, and one written before v1.13 does not.
+LEAN_MARKER = "'lean' %}"
 LEAN_ANCHOR = "    {%- if resolved_reasoning_effort == 'xhigh' %}\n"
 LEAN_PATCHED = (
     "    {%- if resolved_reasoning_effort == 'lean' %}\n"
@@ -128,7 +130,14 @@ def main() -> None:
     # every run, so a box installed with LEAN_DEFAULT=0 went back to lean at its next
     # ./install.sh or cockpit Switch, neither of which passes it (found in review,
     # 2026-09-24). LEAN.md presents it as a kept choice.
+    # A template can only keep a choice it was able to make: one written before v1.13 has
+    # no lean level and defaults to xhigh, the one default there was, so it chose nothing,
+    # and read as LEAN_DEFAULT=0 it kept a box updated from there on xhigh without anyone
+    # asking for it (a user's box, 2026-10-05: every bench.sh probe measured other text).
+    # Only a template that offers lean and still defaults to xhigh was installed with
+    # LEAN_DEFAULT=0.
     asked = os.environ.get("LEAN_DEFAULT")
+    installed, why = "", ""
     if asked is not None:
         lean_default = asked != "0"
     else:
@@ -137,15 +146,18 @@ def main() -> None:
                 installed = f.read()
         except OSError:
             installed = ""
-        lean_default = "reasoning_effort|default('xhigh')" not in installed
+        has_lean = LEAN_MARKER in installed
+        lean_default = not (has_lean and "reasoning_effort|default('xhigh')" in installed)
+        if installed:
+            why = (" (kept from the installed template)" if has_lean
+                   else " (the installed template predates the lean level and chose nothing)")
     effort_patched = EFFORT_PATCHED.replace("@@DEF@@", "lean" if lean_default else "xhigh")
     msg_patched = MSG_PATCHED.replace("@@LEVELS@@", MSG_LEVELS[lean_default])
-    print(f"default reasoning effort: {'lean' if lean_default else 'xhigh'}"
-          + ("" if asked is not None else " (kept from the installed template)" if installed else ""))
+    print(f"default reasoning effort: {'lean' if lean_default else 'xhigh'}{why}")
 
     for name, anchor, patched, marker in (
         ("reasoning_effort", EFFORT_ANCHOR, effort_patched, "'minimal'"),
-        ("lean", LEAN_ANCHOR, LEAN_PATCHED, "'lean' %}"),
+        ("lean", LEAN_ANCHOR, LEAN_PATCHED, LEAN_MARKER),
         ("effort-message", MSG_ANCHOR, msg_patched, "Supported types are lean"),
         ("system-reminder", SYSTEM_ANCHOR, SYSTEM_PATCHED, "<system-reminder>"),
     ):
