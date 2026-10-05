@@ -156,6 +156,9 @@ command -v ffmpeg >/dev/null || die "ffmpeg is missing, and the MiniMax-H3 pipel
 command -v ffprobe >/dev/null || die "ffprobe is missing, and the MiniMax-H3 pipeline refuses to start without it (with ffmpeg). Fix: sudo apt-get install -y ffmpeg"
 # ensurepip, not just venv: a box without python3-venv makes a venv with no pip.
 python3 -c 'import venv, ensurepip' 2>/dev/null || die "python3-venv is missing (a venv made without it has no pip). Fix: sudo apt-get install -y python3-venv"
+# python3-dev too: xatlas, which sglang[diffusion] asks for, is built here against Python's
+# headers (PyPI has no aarch64 wheel of it), and DGX OS installs python3-pip without them.
+[ -f "$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["include"])')/Python.h" ] || die "python3-dev is missing (xatlas, which this lane needs, is built here against Python's headers). Fix: sudo apt-get install -y python3-dev"
 [ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key. Run ./install.sh first: the cockpit is the authenticated door in front of this lane, and it reads that file."
 # Measured where each part lands, by bytes in the blobs: the folder alone says nothing,
 # since huggingface_hub creates it before the first byte.

@@ -141,6 +141,12 @@ command -v git >/dev/null || die "git is required (stock on DGX OS)."
 # python3-venv that ships ensurepip, which gives a venv its pip. Checked on venv alone,
 # a box without the package made a venv with no pip (found in review, 2026-09-24).
 python3 -c 'import venv, ensurepip' 2>/dev/null || die "python3-venv is missing (a venv made without it has no pip). Fix: sudo apt-get install -y python3-venv"
+# python3-dev too: sglang[diffusion] asks for xatlas, which PyPI ships for no aarch64
+# Python, so pip builds it here, against Python's headers. DGX OS installs python3-pip
+# without its recommends, python3-dev among them, and without the headers that build stops
+# on a missing /usr/include/python3.12 (a user's box, 2026-10-05; proved in a clean Ubuntu
+# 24.04 container, the reference box having had them from an install by hand).
+[ -f "$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["include"])')/Python.h" ] || die "python3-dev is missing (xatlas, which this lane needs, is built here against Python's headers). Fix: sudo apt-get install -y python3-dev"
 [ -s "$CONFIG_DIR/api-key" ] || die "no API key at $CONFIG_DIR/api-key. Run ./install.sh first: the cockpit is the authenticated door in front of this lane, and it reads that file."
 # Measured where each part lands, not under $HOME (install.sh had fixed the same bug):
 # the checkpoint goes to HF_CACHE, the runtime and its build to the lane's folder. What the
