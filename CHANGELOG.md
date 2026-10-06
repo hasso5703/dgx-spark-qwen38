@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.22.8 (2026-10-06): one Server header and one Date on every answer the proxy relays
+
+Proxy v6.33. The proxy writes its own `Server` and `Date` headers, and relayed the engine's
+beside them (uvicorn's `server: uvicorn` and `date`): every relayed answer carried two of
+each, which RFC 9110 (section 5.3) does not allow. aiohttp refuses such an answer by default
+in 3.13.4, and in its strict mode (`python -X dev`) since then, so a LiteLLM gateway in front
+of the proxy failed with `Duplicate 'Server' header found.` (issue #39). The engine's two are
+no longer relayed, as the cockpit's agent relay already did; every other header the engine
+sends still comes through. `tests/test_proxy_answer_headers.py` checks a relayed GET, a
+generation whole and streamed, and an error of the engine; its four tests fail on v6.32.
+Checked on the reference box's flash lane: LiteLLM 1.104.0 (`hosted_vllm`, aiohttp in strict
+mode) gives the issue's error through v6.32 and answers through v6.33, streamed or not; Claude
+Code 2.1.291, opencode 1.18.32, Hermes Agent (main of 2026-10-06) and pi 0.73.1 each read a
+file with a tool and answered from it, through both.
+
+An update restarts the proxy once (v6.33) and the cockpit; the engines keep running.
+
 ## v1.22.7 (2026-10-05): a box from before v1.13 gets the lean default, the image and video lanes ask for python3-dev first, the hints name a standard target first, an editor's session stays out of the Agent tab's PATH
 
 - **Reasoning default.** Since v1.18.7 a run that does not set `LEAN_DEFAULT` keeps the

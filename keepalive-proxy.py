@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.32). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.33). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -39,6 +39,13 @@ Six roles, nothing else:
    answer and its unit (PROXY_HOLD_UNITS) is on its way back waits for it, at most
    PROXY_HOLD_MAX_S, instead of failing at once. A streamed one hears from the proxy at
    once (200, then the keepalives of role 1); see "Holding a request" below.
+
+v6.33: an answer relayed from the engine carries one Server header and one Date. The proxy
+writes its own, and relayed the engine's beside them (uvicorn's `server: uvicorn` and `date`):
+two of each on every relayed answer, which RFC 9110 (5.3) does not allow. aiohttp refuses
+such an answer by default in 3.13.4, and in its strict mode (python -X dev) since then, so a
+LiteLLM gateway in front of the proxy answered "Duplicate 'Server' header found." (issue #39,
+2026-10-06). The engine's two are no longer relayed, as the cockpit's agent relay already did.
 
 v6.32: /server_info no longer carries the engine's key anywhere. v6.24 took SGLang's key
 fields out of the answer, at the top and in every internal state, but the answer also
@@ -2419,6 +2426,9 @@ def systemone_response(req, plan, reads, served=None):
 
 
 HOP = {"host", "content-length", "connection", "keep-alive", "transfer-encoding"}
+# send_response writes this proxy's own Server and Date, so the engine's are not relayed:
+# an answer with two of each is refused by a strict client (issue #39).
+RESPONSE_DROP = HOP | {"server", "date"}
 # Whether the engine answers a request in one piece, read on the raw bytes (a body can be
 # megabytes): every "stream" key says false, or there is none. Any other value, even one
 # SGLang reads as true ("stream": 1), counts as a stream, because _watch_client's remedy
@@ -2619,7 +2629,7 @@ class H(BaseHTTPRequestHandler):
         self.close_connection = True
         self.send_response(status)
         for k, v in headers.items():
-            if k.lower() not in HOP: self.send_header(k, v)
+            if k.lower() not in RESPONSE_DROP: self.send_header(k, v)
         self.send_header("Connection", "close")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -2715,7 +2725,7 @@ class H(BaseHTTPRequestHandler):
         self.close_connection = True
         self.send_response(status)
         for k, v in headers.items():
-            if k.lower() not in HOP: self.send_header(k, v)
+            if k.lower() not in RESPONSE_DROP: self.send_header(k, v)
         self.send_header("Connection", "close")
         self.send_header("X-Accel-Buffering", "no")
         self.send_header("Transfer-Encoding", "chunked")
@@ -3741,7 +3751,7 @@ if __name__ == "__main__":
     holds = (f"holds requests up to {HOLD_MAX_S:.0f}s while {' or '.join(HOLD_UNITS)} comes back"
              if HOLD_UNITS and HOLD_MAX_S > 0 else "holds nothing")
     # one f-string: the cockpit's tests render this line from the source
-    log(f"v6.32 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
+    log(f"v6.33 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))
