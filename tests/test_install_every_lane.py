@@ -173,6 +173,45 @@ class TheOtherTextLaneConvergesOnItsOwnUnit(unittest.TestCase):
         self.assertIn("QWEN38_SECONDARY names a text lane", out)
 
 
+class ATextLaneBeforeBothSideLanes(unittest.TestCase):
+    """A switch to video writes down the lane it leaves, the image lane when images served
+    (install-video.sh goes back to it), so the text lane is the one written before the
+    images. The reference box went flash, image, video, and its update took the 27B for
+    its text lane and pointed opencode at it (2026-10-06)."""
+
+    FLASH_UNIT = "[Service]\nExecStart=/bin/bash /x/launch-flash.sh\n"
+    LAUNCHER = ("docker run --rm -v /home/x/.cache/huggingface:/root/.cache/huggingface img "
+                "python3 -m sglang.launch_server --model-path dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4 "
+                "--revision be794b990578ef3031eccf9f28e675a289a09ee9 --port 30000 "
+                "--max-running-requests 8 --context-length 262144\n")
+
+    def resolve(self, before_image, before_video, boot):
+        home = tmp("lane-sides-home-")
+        cfg = home / ".config" / "qwen38"
+        cfg.mkdir(parents=True)
+        (cfg / "lane-before-image").write_text(before_image + "\n")
+        (cfg / "lane-before-video").write_text(before_video + "\n")
+        (cfg / "launch-flash.sh").write_text(self.LAUNCHER)
+        units = {"qwen38-sglang.service": SGL_UNIT, "qwen38-flash.service": self.FLASH_UNIT,
+                 "qwen38-image.service": "[Service]\n", "qwen38-video.service": "[Service]\n"}
+        rc, out, _ = converge(units, enabled=(boot,), env=SHARED, home=home)
+        self.assertEqual(rc, 97, out)
+        return out
+
+    def test_video_after_images_updates_the_text_lane_before_them(self):
+        out = self.resolve("qwen38-flash.service", "qwen38-image.service", "qwen38-video.service")
+        self.assertIn("RESOLVED LANE=flash", out)
+        self.assertIn("INSTALLED=flash", out)
+
+    def test_images_after_video_do_the_same(self):
+        out = self.resolve("qwen38-video.service", "qwen38-flash.service", "qwen38-image.service")
+        self.assertIn("INSTALLED=flash", out)
+
+    def test_a_27b_before_them_stays_the_27b(self):
+        out = self.resolve("qwen38-sglang.service", "qwen38-image.service", "qwen38-video.service")
+        self.assertIn("INSTALLED=27b", out)
+
+
 class ItLeavesWhatIsSharedToItsParent(unittest.TestCase):
     """What the run for the other lane must not touch, read where it would."""
 

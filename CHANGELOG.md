@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.22.9 (2026-10-06): an update keeps the text lane of a box that went from images to video, and the flash entry beside a 27B comes from the table
+
+- **The text lane of a box on a side lane.** A switch to video writes down the lane it
+  leaves, so that `install-video.sh` can go back to it, and from the image lane that is the
+  image lane. A later `./install.sh` found no text lane there and brought the 27B up to date
+  as the text lane: on the reference box (flash, then images, then video) the update to
+  v1.22.8 pointed opencode's default model at the 27B and sized its compaction for the 27B's
+  window, until the next Load of the flash put both back. It now follows the switch one step
+  back, to the text lane written before the other side lane, both ways.
+  `tests/test_install_every_lane.py` resolves three such boxes; two took the 27B before.
+
+An update restarts the cockpit; the engines and the proxy keep running.
+
 ## v1.22.8 (2026-10-06): one Server header and one Date on every answer the proxy relays, `./pi-gen.py` runs
 
 Proxy v6.33. The proxy writes its own `Server` and `Date` headers, and relayed the engine's

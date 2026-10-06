@@ -671,6 +671,11 @@ fi
 # fallback, the same one the code below picks when nothing is enabled.
 LANE_BEFORE_IMAGE="$(cat "$CONFIG_DIR/lane-before-image" 2>/dev/null || true)"
 LANE_BEFORE_VIDEO="$(cat "$CONFIG_DIR/lane-before-video" 2>/dev/null || true)"
+# A switch from one side lane to the other writes the side lane it leaves (the installers
+# of those lanes go back to it): the text lane is then the one written before it. The
+# reference box went flash, image, video, and its update took the 27B (2026-10-06).
+[ "$LANE_BEFORE_VIDEO" = "qwen38-image.service" ] && LANE_BEFORE_VIDEO="$LANE_BEFORE_IMAGE"
+[ "$LANE_BEFORE_IMAGE" = "qwen38-video.service" ] && LANE_BEFORE_IMAGE="$LANE_BEFORE_VIDEO"
 if [ "$FLASH_READABLE" -eq 1 ] && [ "$FLASH_ENABLED" -eq 1 ] && [ "$SGL_ENABLED" -eq 1 ]; then
   echo "NOTE: both qwen38-sglang and qwen38-flash are enabled (only one can serve the port)."
   echo "      Following the 27B unit; run ./switch-model.sh to resolve this cleanly."
