@@ -681,11 +681,21 @@ def collect_canary():
 
 DECODE_RE = re.compile(
     r"#running-req: (\d+).*?token usage: ([\d.]+).*?accept len: ([\d.]+)")
+# SGLang's own rates and cache counters, on the same scheduler lines: gen
+# throughput rides the decode line, input throughput and the radix cache split
+# (#cached-token against #new-token) ride the prefill line. All of it parsed
+# fresh from every 30 s tail, nothing persisted: a rate out of a dead window
+# is not a rate.
+GEN_TPS_RE = re.compile(r"gen throughput \(token/s\): ([\d.]+)")
+PREF_TPS_RE = re.compile(r"input throughput \(token/s\): ([\d.]+)")
+CACHED_TOK_RE = re.compile(r"#cached-token: (\d+)")
+NEW_TOK_RE = re.compile(r"#new-token: (\d+)")
 
 
 @guard
 def collect_decode_telemetry():
-    """Parse the newest scheduler lines from the serving container's log."""
+    """Parse the newest scheduler lines from the serving container's log: the
+    decode line's rate and the prefill line's cache split, nothing persisted."""
     active = None
     for c in CONTAINERS:
         if run(["docker", "ps", "-q", "-f", f"name=^{c}$"]).strip():
@@ -696,6 +706,8 @@ def collect_decode_telemetry():
     tail = run(["docker", "logs", "--since", "30s", active], timeout=6,
                merge_err=True)[-8000:]
     last = None
+    prefill_tps = None
+    cached = new = 0
     for line in tail.splitlines():
         if PROBE_LINE_RE.search(line):
             continue
@@ -709,10 +721,22 @@ def collect_decode_telemetry():
             LAST_USAGE["mamba"] = float(mm.group(1))
         m = DECODE_RE.search(line)
         if m:
+            g = GEN_TPS_RE.search(line)
             last = {"running": int(m.group(1)),
                     "token_usage": float(m.group(2)),
-                    "accept_len": float(m.group(3))}
-    return {"node_id": "local", "lane": active, "decode": last,
+                    "accept_len": float(m.group(3)),
+                    "gen_tps": float(g.group(1)) if g else None}
+        pm = PREF_TPS_RE.search(line)
+        if pm:
+            prefill_tps = float(pm.group(1))
+        cm = CACHED_TOK_RE.search(line)
+        if cm:
+            cached += int(cm.group(1))
+            nm = NEW_TOK_RE.search(line)
+            new += int(nm.group(1)) if nm else 0
+    prefill = ({"input_tps": prefill_tps, "cached_tokens": cached, "new_tokens": new}
+               if prefill_tps is not None or cached or new else None)
+    return {"node_id": "local", "lane": active, "decode": last, "prefill": prefill,
             "usage": {"tokens": LAST_USAGE["value"], "mamba": LAST_USAGE["mamba"],
                       "age": round(time.time() - LAST_USAGE["ts"], 1) if LAST_USAGE["ts"] else None}}
 

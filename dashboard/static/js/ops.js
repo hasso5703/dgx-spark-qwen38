@@ -19,11 +19,91 @@ afterApply(() => {
   cap('tr-cap', none ? (imageServing() ? 'no text engine: the image lane serves' : videoServing() ? 'no text engine: the video lane serves' : 'no text engine')
       : n || 'idle', none ? '' : n ? 'ok' : '', n && !none ? 'live' : true);
 });
+// the same 30 s tail also carries SGLang's own rates and the radix cache split:
+// decode t/s off the decode line, prefill t/s and the cached/fresh token counts
+// off the prefill lines. 'idle' between windows, like the accept length above.
+const fmtTps = v => v >= 1000 ? (v / 1000).toFixed(1) + 'K' : v >= 100 ? String(Math.round(v)) : v.toFixed(1);
+// the "Last 5 minutes" box: the page's own memory, fed by every live tick, so
+// the server keeps no state and a reload just shortens the window (the verdict
+// line says so). Known bias: a tick value repeats while its 30 s tail ages out,
+// so a brief burst counts a little long next to a sustained one. Means of
+// samples over 5 min answer the owner's question; per-request curves would
+// belong to the proxy feed, which knows when each request began and ended.
+const WIN_S = 300;
+const WIN = {lane: null, dec: [], pre: [], hit: []};    // [t, value] / hit rows [t, cached, fresh]
+const winPrune = q => { const t = Date.now(); while (q.length && t - q[0][0] > WIN_S * 1000) q.shift(); };
+// pruning at render, not only at push: a queue that gets no new value keeps
+// its rows, and the 5 min title would then average samples older than the window
+const winPush = (q, row) => {
+  q.push([Date.now()].concat(row));
+  winPrune(q);
+};
+const winStats = q => {
+  if (!q.length) return null;
+  const v = q.map(r => r[1]);
+  return {mean: v.reduce((a, b) => a + b, 0) / v.length, min: Math.min(...v), max: Math.max(...v), n: v.length};
+};
+function renderWin(){
+  [WIN.dec, WIN.pre, WIN.hit].forEach(winPrune);
+  const d = winStats(WIN.dec), p = winStats(WIN.pre);
+  // a number grid marks no-data with a dash; the readouts above say 'idle',
+  // because there the word is the message, here the caption and the row are
+  const cell = (id, v) => setText(id, v == null ? '-' : fmtTps(v));
+  cell('wp-dec-min', d && d.min); cell('wp-dec', d && d.mean); cell('wp-dec-max', d && d.max);
+  setText('wp-dec-n', d ? String(d.n) : '-');
+  cell('wp-pre-min', p && p.min); cell('wp-pre', p && p.mean); cell('wp-pre-max', p && p.max);
+  setText('wp-pre-n', p ? String(p.n) : '-');
+  // avg is token-weighted, not a mean of ratios: what a token held in cache saved
+  // over recomputing it is the same on a 900-token step and a 90k one. min and max
+  // span the reads themselves: each is the reuse of the engine's 30 s tail as one
+  // read saw it. The diff between two reads cannot serve: the tail slides, older
+  // lines leave it, and the cached part can then grow more than the total does.
+  // A diff said 400 %, and 123.4 % on the owner's page (2026-10-06); no ratio of
+  // one read's own counts can pass 100.
+  const hit = WIN.hit.reduce((a, r) => [a[0] + r[1], a[1] + r[2]], [0, 0]), ht = hit[0] + hit[1];
+  let hmin = null, hmax = null;
+  for (const r of WIN.hit){
+    const t = r[1] + r[2];
+    if (t <= 0) continue;
+    const v = 100 * r[1] / t;
+    if (hmin === null || v < hmin) hmin = v;
+    if (hmax === null || v > hmax) hmax = v;
+  }
+  const pc = v => v == null ? '-' : v.toFixed(1) + ' %';
+  setText('wp-hit-min', pc(hmin)); setText('wp-hit-max', pc(hmax));
+  setText('wp-hit', ht ? (100 * hit[0] / ht).toFixed(1) + ' %' : '-');
+  setText('wp-hit-n', WIN.hit.length ? String(WIN.hit.length) : '-');
+  const seen = [WIN.dec, WIN.pre, WIN.hit].filter(q => q.length).map(q => q[0][0]);
+  const watched = (Date.now() - Math.min(...seen)) / 1000;
+  setText('wp-note', !seen.length ? '(nothing watched yet)'
+                                 : watched >= WIN_S - 5 ? '' : `(watched ${fmtDur(watched)})`);
+  cap('wp-cap', seen.length ? 'watching' : 'quiet', seen.length ? 'ok' : '');
+}
 on('decode', d => {
-  const t = d.decode, u = d.usage || {};
-  if (!d.lane){ setText('tr-acc', 'none'); setText('tr-kv', 'none'); return; }
+  const t = d.decode, u = d.usage || {}, p = d.prefill;
+  if (!d.lane){ ['tr-acc', 'tr-kv', 'tr-dec', 'tr-pre', 'tr-tok', 'wp-dec-min', 'wp-dec', 'wp-dec-max', 'wp-dec-n',
+                 'wp-pre-min', 'wp-pre', 'wp-pre-max', 'wp-pre-n', 'wp-hit-min', 'wp-hit', 'wp-hit-max', 'wp-hit-n'].forEach(id => setText(id, 'none'));
+                setText('wp-note', ''); cap('wp-cap', 'no text engine'); return; }
+  // one box is one engine: a switch between the text lanes empties the window, so
+  // the 27B's rates and the flash's never share a min, an avg or a max (review 2026-10-06)
+  if (WIN.lane !== d.lane){ WIN.lane = d.lane; WIN.dec.length = WIN.pre.length = WIN.hit.length = 0; }
   setText('tr-acc', t ? t.accept_len.toFixed(2) : 'idle');
   setText('tr-kv', t ? (100 * t.token_usage).toFixed(1) + ' %' : u.tokens ? (100 * u.tokens).toFixed(0) + ' %' : 'idle');
+  setText('tr-dec', t && t.gen_tps != null ? fmtTps(t.gen_tps) : 'idle');
+  setText('tr-pre', p && p.input_tps != null ? fmtTps(p.input_tps) : 'idle');
+  const tot = p ? (p.cached_tokens || 0) + (p.new_tokens || 0) : 0;
+  if (t && t.gen_tps != null) winPush(WIN.dec, [t.gen_tps]);
+  if (p){
+    if (p.input_tps != null) winPush(WIN.pre, [p.input_tps]);
+    // the tail's totals repeat on every tick whose 30 s window still holds the
+    // same prefill lines: push a row only when the counts differ, or the same
+    // 254 fresh tokens are counted fifteen times over one window (the page
+    // read "6.3 million cached" for eleven seconds of watching, 2026-10-06)
+    const last = WIN.hit[WIN.hit.length - 1];
+    if (tot && !(last && last[1] === (p.cached_tokens || 0) && last[2] === (p.new_tokens || 0)))
+      winPush(WIN.hit, [p.cached_tokens || 0, p.new_tokens || 0]);
+  }
+  renderWin();
 });
 const feedTime = ts => {
   if (!ts || ts.length < 19) return ts || '';

@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.22.10 (2026-10-06): the Traffic view says how fast the engine generates and prefills, and what its cache holds, over the last 5 minutes
+
+The engine already said its own speeds, on the very scheduler lines the cockpit
+reads every few seconds for its counts: the Decode line carries
+`gen throughput (token/s)`, the Prefill line `input throughput (token/s)`, and both
+carry `#cached-token` and `#new-token`, which is how much of a prompt the engine
+already held. The collector kept the counts and threw the rest away. The Traffic
+strip now shows `Decode t/s` and `Prefill t/s` beside the running and waiting
+counts (thousands as `52.1K`), and the view gained a **Last 5 minutes** box: min,
+avg, max and sample count for decode, prefill and reuse. Reuse is the share of
+prompt tokens the engine found in its cache; the avg is token-weighted (a token
+held in cache over 900 reads is the same saving as over 90,000 in one), and min
+and max span the reads themselves, each one a fraction of the engine's own 30 s
+tail. The box's memory is the page's: the server holds no window, so a reload
+only shortens the window, and the caption counts the watched time until the
+window is full and then goes away, since the title says no more than that. The
+numbers live and die with the engine's log: `Decode t/s` reads `idle` when no
+line came in 30 s, and the cockpit's own one-token health probe never becomes a
+speed.
+
+Four rules keep the answer true. One read of the engine's tail counts once, not
+once per tick that still holds it: the counts are cumulative over the 30 s
+window, so a row recurs only when the totals move, and the sample count says so
+honestly. The reuse min and max span the per-read fractions, so no sample can
+pass 100 % (the difference of two reads of the sliding tail is not a fraction: a
+hand-made pair gives it 400 %). All three rings prune at every render, so a
+stream that stopped growing cannot make the box average samples older than the
+window its title names. And a switch between the text lanes empties the window,
+so one min, avg and max never blend two engines.
+
+`dashboard/tests/test_cockpit_collectors.py` gained the rates and the cache
+split parsed from verbatim engine lines, several Prefill lines of one tail
+adding up rather than replacing, a printed 0.0 rate still a reading, and a pin
+that the health probe's `0.03 t/s` never becomes a reported speed.
+`dashboard/tests/test_page_behaviour.py` gained the window rules, as
+`TheFiveMinuteBoxNeverLiesAboutItsWindow`, and the box's cells in the
+empty-state test. Checked in the browser on the reference box, strip and box
+through a real opencode session and `idle` after it went quiet; resilience
+17/17, monkey 61/61, update-banner 11/11 and touch 247/247 pass.
+
+An update restarts the cockpit; the engines and the proxy keep running.
+
 ## v1.22.9 (2026-10-06): an update keeps the text lane of a box that went from images to video, and the flash entry beside a 27B comes from the table
 
 - **The text lane of a box on a side lane.** A switch to video writes down the lane it

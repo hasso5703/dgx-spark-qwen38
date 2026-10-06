@@ -29,7 +29,7 @@ Nothing shells out free-form; every action is a fixed argv template.
 |---|---|---|
 | Server state | `systemctl status`, `journalctl`, `docker logs` | Logs view: the last 120 lines of an engine container's log or of a unit's journal, re-read every 3 s with follow ticked (no filter, no download) |
 | Engine internals | `/server_info`, `/v1/loads`, `/health` | Lanes view (model, revision, quantization, window, KV pool, speculative, attention, radix cache, engine version, image) and the Now view's Activity (running, waiting, tokens in KV, accept length) |
-| Decode telemetry | docker log scheduler lines | Traffic view: KV pool held, KV usage from the engine log, Mamba state slots, accept length |
+| Decode telemetry | docker log scheduler lines | Traffic view: KV pool held, KV usage from the engine log, Mamba state slots, accept length, decode and prefill speed and cache reuse (SGLang's own rates on the same lines), with a last-5-minutes table of min, avg, max and sample count |
 | Requests through proxy | keepalive proxy request lines | Requests table: start, client, path, bytes, duration, outcome |
 | Machine | nvidia-smi (power/temp/procs), /proc, df | Machine view: unified memory, page cache and swap, free disk at home and under Docker, GPU power, temperature and processes, CPU load, the safety belts |
 | Benchmarks | `./bench.sh`, `./bench-matrix.sh` | None: terminal tools (BENCHMARKS.md) |

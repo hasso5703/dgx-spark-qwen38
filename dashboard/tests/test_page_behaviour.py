@@ -875,10 +875,14 @@ class AnEmptyStateIsSaidNotPending(unittest.TestCase):
         r = run(self, r"""
         feed({config: CONFIG, units: UNITS, lifecycle: life({'qwen38-sglang.service': eng('stopped')}),
               engine_fast: {load: null}, decode: {lane: null}});
-        report(['tr-run', 'tr-wait', 'tr-tok', 'tr-acc', 'tr-kv', 'tr-cap'].map(txt));
+        report(['tr-run', 'tr-wait', 'tr-dec', 'tr-pre', 'tr-acc', 'tr-tok', 'tr-kv',
+                'wp-dec-min', 'wp-dec', 'wp-dec-max', 'wp-dec-n',
+                'wp-pre-min', 'wp-pre', 'wp-pre-max', 'wp-pre-n', 'wp-hit-min', 'wp-hit', 'wp-hit-max', 'wp-hit-n',
+                'wp-cap', 'tr-cap'].map(txt));
         """)
-        self.assertEqual(r[:5], ["none"] * 5, r)
-        self.assertEqual(r[5], "no text engine", r)
+        self.assertEqual(r[:19], ["none"] * 19, r)
+        self.assertEqual(r[19], "no text engine", r)
+        self.assertEqual(r[20], "no text engine", r)
 
     def test_a_lane_whose_launch_file_names_no_checkpoint_says_unknown(self):
         r = run(self, r"""
@@ -1038,6 +1042,59 @@ class TheTrafficBadgeCountsEveryRequestInFlight(unittest.TestCase):
         self.assertEqual(r["badge"], "2", r)
         self.assertEqual((r["live"], r["rows"]), (2, 27), r)
 
+
+class TheFiveMinuteBoxNeverLiesAboutItsWindow(unittest.TestCase):
+    """The box answers how fast the engine ran and what its cache held over the
+    last 5 minutes, and four rules make the answer true: one read of the
+    engine's 30 s tail counts once (its counts are cumulative, and a page that
+    re-counted every tick holding a line read "6.3 million cached" against a
+    6.35 million prompt over eleven seconds), the reuse min and max are
+    fractions of one read and cannot pass 100 % (the difference of two reads
+    of the sliding tail is not a fraction: a hand-made pair gives it 400 %),
+    the window holds no row older than the title it sits under, and one
+    window is one engine: a switch between the text lanes empties it. Every
+    test below is the mutant that breaks one rule."""
+
+    def test_a_reuse_never_passes_hundred(self):
+        r = run(self, r"""
+        const tick = p => feed({decode: {lane: 'qwen38-flash', decode: null, prefill: p}});
+        tick({input_tps: 100, cached_tokens: 0, new_tokens: 1500});
+        tick({input_tps: 100, cached_tokens: 2000, new_tokens: 0});   // the 123.4 % shape
+        report({min: txt('wp-hit-min'), avg: txt('wp-hit'), max: txt('wp-hit-max'), n: txt('wp-hit-n')});
+        """)
+        self.assertEqual((r["min"], r["avg"], r["max"], r["n"]), ("0.0 %", "57.1 %", "100.0 %", "2"), r)
+
+    def test_the_same_tail_is_counted_once_not_fifteen_times(self):
+        r = run(self, r"""
+        const p = {input_tps: 100, cached_tokens: 79104, new_tokens: 494};
+        feed({decode: {lane: 'qwen38-flash', decode: null, prefill: p}});
+        feed({decode: {lane: 'qwen38-flash', decode: null, prefill: {...p}}});
+        feed({decode: {lane: 'qwen38-flash', decode: null, prefill: {...p}}});
+        const once = txt('wp-hit-n');
+        feed({decode: {lane: 'qwen38-flash', decode: null, prefill: {input_tps: 100, cached_tokens: 79104, new_tokens: 1518}}});
+        report({once, twice: txt('wp-hit-n')});
+        """)
+        self.assertEqual((r["once"], r["twice"]), ("1", "2"), r)
+
+    def test_a_row_older_than_the_window_is_gone_before_the_average(self):
+        r = run(self, r"""
+        WIN.dec.push([Date.now() - 400 * 1000, 999]);      // pushed five minutes ago
+        feed({decode: {lane: 'qwen38-flash', decode: null, prefill: null}});   // a tick, nothing new
+        report({dec: txt('wp-dec'), n: txt('wp-dec-n'), title: txt('wp-note')});
+        """)
+        self.assertEqual((r["dec"], r["n"], r["title"]), ("-", "-", "(nothing watched yet)"), r)
+
+    def test_a_lane_switch_sends_the_last_five_minutes_away(self):
+        r = run(self, r"""
+        const tick = (lane, v) => feed({decode: {lane, prefill: null,
+          decode: {running: 1, token_usage: 0.02, accept_len: 2.4, gen_tps: v}}});
+        tick('qwen38-sglang.service', 40);
+        tick('qwen38-sglang.service', 45);
+        const before = txt('wp-dec-n');
+        tick('qwen38-flash.service', 300);            // the switch: another engine
+        report({before, after: txt('wp-dec-n'), min: txt('wp-dec-min')});
+        """)
+        self.assertEqual((r["before"], r["after"], r["min"]), ("2", "1", "300"), r)
 
 if __name__ == "__main__":
     unittest.main()

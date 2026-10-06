@@ -252,7 +252,7 @@ img,svg,video,canvas{display:block; max-width:100%}
   font-variant-numeric:tabular-nums}
 .readout .v small{font-size:var(--t-14); font-weight:500; font-stretch:100%; color:var(--fg-2); margin-left:6px; letter-spacing:0}
 .readout .k{font-size:var(--t-13); color:var(--fg-2)}
-.readouts{display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:var(--s-5) var(--s-6)}
+.readouts{display:grid; grid-template-columns:repeat(auto-fit, minmax(118px, 1fr)); gap:var(--s-5) var(--s-4)}
 
 /* ── capsules and chips ── */
 .cap{display:inline-flex; align-items:center; gap:7px; padding:4px 11px 4px 9px; border-radius:var(--r-chip);

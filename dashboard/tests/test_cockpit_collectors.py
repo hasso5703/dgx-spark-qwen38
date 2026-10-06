@@ -241,7 +241,50 @@ class Parse(Base):
         out = self.cp.collect_decode_telemetry()
         self.assertIsNotNone(out["lane"])
         self.assertEqual(out["decode"], {"running": 3, "token_usage": 0.12,
-                                         "accept_len": 2.41})
+                                         "accept_len": 2.41, "gen_tps": None})
+        self.assertIsNone(out["prefill"], "no prefill line rode in this tail")
+
+    def test_the_speed_and_the_cache_split_come_off_the_same_tail(self):
+        """SGLang prints its own rates on these very lines: gen throughput on
+        the decode line, input throughput and the radix cache split on the
+        prefill line. Both lines are the reference box's, verbatim."""
+        log = ("[2026-09-24 09:45:10] Prefill batch, #new-seq: 1, #new-token: 8192, #cached-token: 40960, "
+               "full token usage: 0.71, mamba usage: 0.12, #running-req: 0, #queue-req: 0, "
+               "#pending-token: 0, cuda graph: False, input throughput (token/s): 5210.40\n"
+               "[2026-09-10 10:00:02] Decode batch, #running-req: 1, token usage: 0.02, "
+               "accept len: 2.40, gen throughput (token/s): 70.1\n")
+        self.box({"docker ps -q": "abc123\n", "docker logs": log})
+        out = self.cp.collect_decode_telemetry()
+        self.assertEqual(out["decode"], {"running": 1, "token_usage": 0.02,
+                                         "accept_len": 2.40, "gen_tps": 70.1})
+        self.assertEqual(out["prefill"], {"input_tps": 5210.4,
+                                          "cached_tokens": 40960, "new_tokens": 8192})
+
+    def test_several_prefill_lines_add_up_rather_than_replace(self):
+        """A long prompt comes through the engine's log as several Prefill lines
+        inside one tail. The reuse share is of the tail's totals: last-line-wins
+        would drop most of the prompt, and the page could not see it."""
+        log = ("[2026-09-24 09:45:10] Prefill batch, #new-seq: 1, #new-token: 8192, #cached-token: 40960, "
+               "full token usage: 0.71, mamba usage: 0.12, #running-req: 0, #queue-req: 0, "
+               "#pending-token: 0, cuda graph: False, input throughput (token/s): 5210.40\n"
+               "[2026-09-24 09:45:11] Prefill batch, #new-seq: 1, #new-token: 512, #cached-token: 1024, "
+               "full token usage: 0.72, mamba usage: 0.12, #running-req: 0, #queue-req: 0, "
+               "#pending-token: 0, cuda graph: False, input throughput (token/s): 300.00\n")
+        self.box({"docker ps -q": "abc123\n", "docker logs": log})
+        out = self.cp.collect_decode_telemetry()
+        self.assertEqual(out["prefill"], {"input_tps": 300.0,
+                                          "cached_tokens": 41984, "new_tokens": 8704})
+
+    def test_a_prefill_line_of_printed_zeros_is_still_a_reading(self):
+        """The gate is `is not None`: a chunk whose instantaneous rate prints 0.0
+        with no tokens moved is a speed of 0 and reaches the page, it does not
+        vanish with the rate."""
+        log = ("[2026-09-24 09:45:10] Prefill batch, #new-seq: 1, #new-token: 0, #cached-token: 0, "
+               "full token usage: 0.0, mamba usage: 0.0, #running-req: 0, #queue-req: 0, "
+               "#pending-token: 0, cuda graph: False, input throughput (token/s): 0.00\n")
+        self.box({"docker ps -q": "abc123\n", "docker logs": log})
+        out = self.cp.collect_decode_telemetry()
+        self.assertEqual(out["prefill"], {"input_tps": 0.0, "cached_tokens": 0, "new_tokens": 0})
 
     def test_the_zombie_guard_reads_both_sides_of_the_wire(self):
         engine = ("[2026-09-10 10:00:00] Received output for rid='abc' but the state "
@@ -950,17 +993,19 @@ class TheCockpitsOwnProbeIsNotAClient(Base):
     def read(self, logs):
         self.box({"docker ps -q -f name=^qwen38-sglang$": "c0ffee\n",
                   "docker logs --since 30s qwen38-sglang": logs})
-        self.cp.collect_decode_telemetry()
+        return self.cp.collect_decode_telemetry()
 
-    def test_probe_lines_are_neither_activity_nor_a_pool_reading(self):
-        self.read(self.PROBE * 3)
+    def test_probe_lines_are_neither_activity_nor_a_pool_nor_a_rate_reading(self):
+        out = self.read(self.PROBE * 3)
         self.assertIsNone(self.cp.LAST_PROGRESS["ts"])
         self.assertEqual(self.cp.LAST_USAGE["value"], 0.93, "the last real reading is kept")
+        self.assertIsNone(out["prefill"], "the probe's 0.03 is never shown as a prefill speed")
 
     def test_a_client_line_still_is(self):
-        self.read(self.PROBE + self.REAL)
+        out = self.read(self.PROBE + self.REAL)
         self.assertIsNotNone(self.cp.LAST_PROGRESS["ts"])
         self.assertEqual(self.cp.LAST_USAGE["value"], 0.71)
+        self.assertEqual(out["prefill"]["input_tps"], 5210.4)
 
     def test_the_canary_runs_on_an_engine_that_only_answered_probes(self):
         self.read(self.PROBE * 3)

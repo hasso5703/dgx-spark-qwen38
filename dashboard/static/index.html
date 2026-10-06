@@ -175,9 +175,11 @@
         <div class="readouts">
           <div class="readout"><span class="v" id="tr-run">…</span><span class="k">Running</span></div>
           <div class="readout"><span class="v" id="tr-wait">…</span><span class="k">Waiting</span></div>
-          <div class="readout"><span class="v" id="tr-tok">…</span><span class="k">Tokens held in the KV pool</span></div>
-          <div class="readout"><span class="v" id="tr-acc">…</span><span class="k">Accepted per draft step</span></div>
-          <div class="readout"><span class="v" id="tr-kv">…</span><span class="k">KV pool in use</span></div>
+          <div class="readout"><span class="v" id="tr-dec">…</span><span class="k">Decode t/s</span></div>
+          <div class="readout"><span class="v" id="tr-pre">…</span><span class="k">Prefill t/s</span></div>
+          <div class="readout"><span class="v" id="tr-acc">…</span><span class="k">Accept length</span></div>
+          <div class="readout"><span class="v" id="tr-tok">…</span><span class="k">KV tokens</span></div>
+          <div class="readout"><span class="v" id="tr-kv">…</span><span class="k">KV pool %</span></div>
         </div>
         <canvas class="spark tall" id="tr-spark" aria-hidden="true" style="margin-top:var(--s-5)"></canvas>
       </section>
@@ -191,20 +193,34 @@
             </table>
           </div>
         </section>
-        <section class="panel" data-src="reqguard">
-          <header><h2>Abandoned requests</h2><span class="cap" id="zg-cap">…</span></header>
-          <p id="zg-verdict" class="muted">…</p>
-          <dl class="facts" style="margin-top:var(--s-3)">
-            <dt>Proxy running</dt><dd id="zg-ver">…</dd>
-            <dt>Request id override</dt><dd id="zg-override">…</dd>
-            <dt>What the proxy did</dt><dd class="wrap" id="zg-acted">…</dd>
-            <dt>Orphan log lines</dt><dd id="zg-flood">…</dd>
-          </dl>
-          <p class="help warn-t" id="zg-note" hidden style="margin-top:var(--s-3)"></p>
-          <table class="tbl dense" id="zg-table" hidden style="margin-top:var(--s-3)">
-            <thead><tr><th>Request</th><th class="r">Lines</th><th class="r">For</th></tr></thead><tbody></tbody>
-          </table>
-        </section>
+        <div class="stack">
+          <section class="panel" data-src="decode">
+            <header><h2>Last 5 minutes <span id="wp-note" style="font-weight:400; font-size:var(--t-14)"></span></h2><span class="cap" id="wp-cap">…</span></header>
+            <p id="wp-verdict" class="muted">What this page has watched since you opened it; a reload starts the window fresh.</p>
+            <table class="tbl dense" style="margin-top:var(--s-3)">
+              <thead><tr><th></th><th class="r">min</th><th class="r">avg</th><th class="r">max</th><th class="r">samples</th></tr></thead>
+              <tbody>
+                <tr><td>Decode, t/s</td><td class="r num" id="wp-dec-min">…</td><td class="r num" id="wp-dec">…</td><td class="r num" id="wp-dec-max">…</td><td class="r num" id="wp-dec-n">…</td></tr>
+                <tr><td>Prefill, t/s</td><td class="r num" id="wp-pre-min">…</td><td class="r num" id="wp-pre">…</td><td class="r num" id="wp-pre-max">…</td><td class="r num" id="wp-pre-n">…</td></tr>
+                <tr><td>Cache reuse</td><td class="r num" id="wp-hit-min">…</td><td class="r num" id="wp-hit">…</td><td class="r num" id="wp-hit-max">…</td><td class="r num" id="wp-hit-n">…</td></tr>
+              </tbody>
+            </table>
+          </section>
+          <section class="panel" data-src="reqguard">
+            <header><h2>Abandoned requests</h2><span class="cap" id="zg-cap">…</span></header>
+            <p id="zg-verdict" class="muted">…</p>
+            <dl class="facts" style="margin-top:var(--s-3)">
+              <dt>Proxy running</dt><dd id="zg-ver">…</dd>
+              <dt>Request id override</dt><dd id="zg-override">…</dd>
+              <dt>What the proxy did</dt><dd class="wrap" id="zg-acted">…</dd>
+              <dt>Orphan log lines</dt><dd id="zg-flood">…</dd>
+            </dl>
+            <p class="help warn-t" id="zg-note" hidden style="margin-top:var(--s-3)"></p>
+            <table class="tbl dense" id="zg-table" hidden style="margin-top:var(--s-3)">
+              <thead><tr><th>Request</th><th class="r">Lines</th><th class="r">For</th></tr></thead><tbody></tbody>
+            </table>
+          </section>
+        </div>
       </div>
     </section>
 

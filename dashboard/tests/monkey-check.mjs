@@ -262,7 +262,7 @@ if (textUp) {
   ok('with no text engine, engine actions are disabled', gated.flush_cache.disabled && gated.abort_all.disabled && gated.smoke.disabled, JSON.stringify(gated));
   ok('and they say why', /text engine|lane is serving/i.test(gated.smoke.title), gated.smoke.title);
   ok('an action that needs no engine stays available', !gated.diag_bundle.disabled, JSON.stringify(gated.diag_bundle));
-  const named = await evalJs("['tr-run','tr-wait','tr-tok','tr-acc'].map(i=>document.getElementById(i).textContent).join(' | ')");
+  const named = await evalJs("['tr-run','tr-wait','tr-dec','tr-pre','tr-acc','tr-tok'].map(i=>document.getElementById(i).textContent).join(' | ')");
   ok('the live-request fields name the empty state instead of a placeholder', !named.includes('…'), named);
 }
 
