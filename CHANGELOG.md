@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.22.10 (2026-10-07): an idle video lane no longer holds a CPU core
+
+The video lane now carries the image lane's idle-loop patch
+(`image-sglang/scheduler-idle-poll.patch`, one file for both lanes, which serve the same
+SGLang commit). SGLang Diffusion's scheduler polls its request socket without ever
+waiting, so a video lane with nothing to do held one CPU core at 100%. On the reference
+box, the CPU sat near 6 % through an evening with the lane loaded and idle (hourly
+means, sysstat) against near 1.3 % on quiet hours the day before, and its hottest zone
+near 61 °C at rest against 43 °C with no lane loaded, enough to keep its fans loud. The
+image lane has carried the patch since it was measured there; this lane was left on the
+cookbook's code as upstream wrote it, a choice reversed now that its cost is measured
+(2026-10-06, 3 min after the lane was ready): 1.05 cores without the patch, 0.05 with it,
+the box's hottest zone 67 °C against 54 °C. A 4 s 480P request was picked up in the
+second it arrived and ran in 691 s (592 to 760 s measured before), its MP4 h264 864x480
+with its aac audio, and a stop at rest took 0.24 s. The image lane's other patch, the
+HTTP shutdown bound, stays out.
+
+`install-video.sh` applies the patch as `install-image.sh` does: applied, already
+applied, or a note when a new pin no longer fits it, and taken off before a new pin is
+checked out. Its at-rest measurement after the test video now notes a lane past half a
+core. The CI step that checks each patch against its pinned commit covers both lanes,
+each at its own pin, and `tests/test_video_lane.py` runs the installer's own lines
+against a throwaway source tree.
+
+An update restarts the cockpit. It does not restart a video lane that is serving, so as
+not to end a video being made: the patch takes effect at that lane's next start (Load it
+again in the cockpit's Lanes view, or `sudo systemctl restart qwen38-video`). The other
+engines and the proxy keep running.
+
 ## v1.22.9 (2026-10-06): an update keeps the text lane of a box that went from images to video, and the flash entry beside a 27B comes from the table
 
 - **The text lane of a box on a side lane.** A switch to video writes down the lane it

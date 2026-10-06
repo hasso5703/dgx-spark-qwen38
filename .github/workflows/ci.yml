@@ -1484,24 +1484,30 @@ jobs:
           print(f"cockpit unit actions: all {len(cockpit.SERVING_UNITS) * len(cockpit.UNIT_VERBS)} covered")
           PY
 
-      - name: Every SGLang patch of the image lane applies to its pinned commit
-        # install-image.sh only notes a patch that no longer applies (the lane serves
-        # either way), so a pin moved without them would ship a lane that holds a CPU
-        # core at rest and times out on a Stop during a generation. This fetches each
-        # patched file at the pin and checks the hunk against it.
+      - name: Every SGLang patch of the image and video lanes applies to its pinned commit
+        # install-image.sh and install-video.sh only note a patch that no longer applies
+        # (the lane serves either way), so a pin moved without them would ship a lane that
+        # holds a CPU core at rest (and, for the image lane, times out on a Stop during a
+        # generation). This fetches each patched file at each lane's own pin and checks the
+        # hunk against it. Both lanes take their patches from image-sglang/.
         run: |
-          pin=$(grep -oE 'SGLANG_DIFFUSION_PIN:-[0-9a-f]{40}' install-image.sh | cut -d- -f2)
-          listed=$(grep -oE '^PATCHES=\(.*\)' install-image.sh | tr -d '()' | cut -d= -f2)
-          for name in $listed; do
-            patch="$PWD/image-sglang/$name.patch"
-            test -f "$patch" || { echo "install-image.sh lists $name, and image-sglang/$name.patch does not exist"; exit 1; }
-            test "$(grep -c '^+++ ' "$patch")" = 1 || { echo "$name touches more than one file"; exit 1; }
-            f=$(grep -m1 '^+++ b/' "$patch" | cut -c7-)
-            d=$(mktemp -d); mkdir -p "$d/$(dirname "$f")"
-            curl -fsSL --retry 3 "https://raw.githubusercontent.com/sgl-project/sglang/$pin/$f" -o "$d/$f"
-            (cd "$d" && git init -q && git apply --check "$patch")
-            echo "$name applies to ${pin:0:12} ($f)"
+          for inst in install-image.sh install-video.sh; do
+            pin=$(grep -oE 'SGLANG_DIFFUSION_PIN:-[0-9a-f]{40}' "$inst" | cut -d- -f2)
+            test -n "$pin" || { echo "$inst names no SGLANG_DIFFUSION_PIN"; exit 1; }
+            listed=$(grep -oE '^PATCHES=\(.*\)' "$inst" | tr -d '()' | cut -d= -f2)
+            test -n "$listed" || { echo "$inst lists no PATCHES"; exit 1; }
+            for name in $listed; do
+              patch="$PWD/image-sglang/$name.patch"
+              test -f "$patch" || { echo "$inst lists $name, and image-sglang/$name.patch does not exist"; exit 1; }
+              test "$(grep -c '^+++ ' "$patch")" = 1 || { echo "$name touches more than one file"; exit 1; }
+              f=$(grep -m1 '^+++ b/' "$patch" | cut -c7-)
+              d=$(mktemp -d); mkdir -p "$d/$(dirname "$f")"
+              curl -fsSL --retry 3 "https://raw.githubusercontent.com/sgl-project/sglang/$pin/$f" -o "$d/$f"
+              (cd "$d" && git init -q && git apply --check "$patch")
+              echo "$inst: $name applies to ${pin:0:12} ($f)"
+            done
           done
+          listed=$(grep -oE '^PATCHES=\(.*\)' install-image.sh | tr -d '()' | cut -d= -f2)
           for f in image-sglang/*.patch; do
             name=$(basename "$f" .patch)
             echo " $listed " | grep -q " $name " || { echo "$f is in the repo and install-image.sh never applies it"; exit 1; }

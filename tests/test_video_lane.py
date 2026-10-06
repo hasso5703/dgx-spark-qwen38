@@ -10,16 +10,21 @@ quality, num_outputs_per_prompt 1 to 10, num_inference_steps, flow_shift,
 audio_flow_shift, seed) and the OpenAI videos endpoints (POST /v1/videos, GET
 /v1/videos, GET /v1/videos/{id}/content).
 
-The lane serves that recipe exactly as upstream wrote it at the pinned commit: no
-local source patch. The image lane carries two, and this lane deliberately does not
-(Hasan, 2026-09-25: the official SGLang and MiniMax recommendations, nothing added).
-What that costs is stated, not patched around: a stop cancels the generation in
-flight (measured under a second), TimeoutStopSec is a ceiling, because the runtime
-has no abort.
+The lane serves that recipe as upstream wrote it at the pinned commit, with one local
+change: the image lane's scheduler-idle-poll. Hasan, 2026-09-25: the official SGLang
+and MiniMax recommendations, nothing added. Hasan, 2026-10-06: except the idle wait,
+once an idle lane was measured holding one CPU core at 100% (1.04 cores, 0.05 with the
+patch) and keeping the box hot and loud. The image lane's other patch, the HTTP
+shutdown bound, stays out: what that costs is stated, not patched around: a stop
+cancels the generation in flight (measured under a second), TimeoutStopSec is a
+ceiling, because the runtime has no abort.
 """
 import json
 import pathlib
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -185,12 +190,21 @@ class TheInstaller(unittest.TestCase):
     def test_the_source_overlay_needs_no_rust_toolchain(self):
         self.assertIn("SGLANG_BUILD_RUST_EXTS=none", self.text)
 
-    def test_there_is_no_local_patch_on_this_lane(self):
-        """Hasan, 2026-09-25: the official recommendations, nothing added on top. A
-        PATCHES= line or a video-sglang directory here is the custom method coming back."""
-        self.assertNotIn("PATCHES=", self.text)
+    def test_it_carries_the_image_lanes_idle_patch_and_nothing_else(self):
+        """Hasan, 2026-09-25: the official recommendations, nothing added on top. Hasan,
+        2026-10-06: except the idle wait, measured holding one core at rest. The patch is
+        the image lane's own file: one copy for both lanes, so no video-sglang directory."""
+        listed = re.search(r"^PATCHES=\((.*)\)$", self.text, re.M).group(1).split()
+        self.assertEqual(listed, ["scheduler-idle-poll"])
         self.assertFalse((REPO / "video-sglang").exists())
-        self.assertNotIn("apply --check", self.text)
+        self.assertIn('PF="$HERE/image-sglang/$P.patch"', self.text)
+        self.assertTrue((REPO / "image-sglang" / "scheduler-idle-poll.patch").is_file())
+
+    def test_the_smoke_test_says_when_the_idle_fix_is_not_in_effect(self):
+        smoke = self.text[self.text.index('step "6/6'):]
+        self.assertIn("at rest:", smoke)
+        self.assertIn("BEGIN{exit !(c > 0.5)}", smoke)
+        self.assertIn("the idle-loop fix is not in effect", smoke)
 
     def test_it_checks_for_room_before_downloading_the_135_gib(self):
         # GiB, as the room check counts them: 145 read as GiB asked for 10 the lane never takes
@@ -235,6 +249,95 @@ class TheInstaller(unittest.TestCase):
 
     def test_uninstall_restores_the_lane_it_replaced_at_boot(self):
         self.assertIn("lane-before-video", self.text)
+
+
+PATCHED = "python/sglang/multimodal_gen/runtime/managers/scheduler.py"
+# The hunk's context as it stands at the pin, three lines either side of the insertion:
+# the same as tests/test_image_lane.py's, since both lanes serve the same commit.
+CONTEXT_AT_PIN = (
+    "                        self._poller.poll(timeout=remaining_ms)\n"
+    "                    elif remaining_ms > 0:\n"
+    "                        time.sleep(remaining_ms / 1000.0)\n"
+    "                continue\n"
+    "\n"
+    "            if self.metrics is not None:\n"
+)
+
+
+class TheIdlePatch(unittest.TestCase):
+    """The installer's own lines for the patch, run as they are written against a
+    throwaway git tree holding the scheduler's code as it stands at the pin. Whether the
+    patch still applies to the real pin is the CI step that fetches the real file."""
+
+    def _block(self):
+        t = INSTALLER.read_text()
+        end = 'that part runs as upstream wrote it."\n  fi\ndone\n'
+        return t[t.index("PATCHES=("):t.index(end) + len(end)]
+
+    def _git(self, repo, *args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
+                              text=True, env={"PATH": "/usr/bin:/bin", "HOME": str(repo),
+                                              "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                                              "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
+
+    def _repo(self, sched=CONTEXT_AT_PIN):
+        d = pathlib.Path(tempfile.mkdtemp(prefix="vid-src-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        self._git(d, "init", "-q")
+        (d / PATCHED).parent.mkdir(parents=True, exist_ok=True)
+        (d / PATCHED).write_text(sched)
+        self._git(d, "add", "-A")
+        self._git(d, "commit", "-qm", "pin")
+        self._git(d, "remote", "add", "origin", str(d))
+        return d
+
+    def _install(self, src, pin):
+        script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
+                  f'HERE="{REPO}"; SRC="{src}"; PIN="{pin}"\n' + self._block())
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        return r.returncode, r.stdout + r.stderr
+
+    def test_applied_once_then_recognised(self):
+        src = self._repo()
+        pin = self._git(src, "rev-parse", "HEAD")
+        rc, out = self._install(src, pin)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("scheduler-idle-poll: applied", out)
+        rc, out = self._install(src, pin)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("scheduler-idle-poll: already applied", out)
+        self.assertEqual((src / PATCHED).read_text().count("self._poller.poll(timeout=1000)"), 1)
+
+    def test_a_new_pin_checks_out_over_a_patched_tree(self):
+        """The patch is a local edit, and git refuses to check out over a local edit of a
+        file the new commit changes: without taking it off first, the next pin bump would
+        die at the checkout on every box that installed the lane."""
+        src = self._repo()
+        old = self._git(src, "rev-parse", "HEAD")
+        self._install(src, old)                                  # a box patched at the old pin
+        self._git(src, "stash", "-q")
+        (src / PATCHED).write_text(CONTEXT_AT_PIN + "# a later upstream commit\n")
+        self._git(src, "commit", "-qam", "new pin")
+        new = self._git(src, "rev-parse", "HEAD")
+        self._git(src, "checkout", "-q", old)
+        self._git(src, "stash", "pop", "-q")                     # back to: old pin, patched
+        rc, out = self._install(src, new)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._git(src, "rev-parse", "HEAD"), new)
+        self.assertIn("scheduler-idle-poll: applied", out)
+
+    def test_a_pin_it_no_longer_fits_is_a_note_not_a_failure(self):
+        src = self._repo(sched=CONTEXT_AT_PIN.replace("remaining_ms > 0", "remaining_ms >= 0"))
+        rc, out = self._install(src, self._git(src, "rev-parse", "HEAD"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("NOTE: scheduler-idle-poll does not apply", out)
+
+    def test_it_goes_in_before_the_source_is_overlaid(self):
+        text = INSTALLER.read_text()
+        self.assertLess(text.index('git -C "$SRC" checkout --quiet "$PIN"'),
+                        text.index('git -C "$SRC" apply "$PF"'))
+        self.assertLess(text.index('git -C "$SRC" apply "$PF"'),
+                        text.index("overlaying the pinned source"))
 
 
 class TheSwitch(unittest.TestCase):

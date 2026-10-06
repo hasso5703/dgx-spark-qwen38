@@ -62,12 +62,19 @@ installs the lane on them instead, and the cockpit refuses keyframes it cannot s
 Video and audio are denoised jointly in one pass and muxed into one MP4: the sound is
 not dubbed afterwards, so the two stay in sync.
 
-## The cookbook's recipe, nothing added
+## The cookbook's recipe, and one local change
 
-This lane serves the cookbook's MiniMax-H3 recipe exactly as upstream wrote it at the
-pinned commit: **no local source patch**. The image lane carries two (an idle-loop wait
-and a graceful-shutdown bound), and this lane deliberately does not. The honest costs
-of that choice are stated here instead of patched around:
+This lane serves the cookbook's MiniMax-H3 recipe as upstream wrote it at the pinned
+commit, with **one local source patch**: the image lane's idle-loop wait
+(`image-sglang/scheduler-idle-poll.patch`, one file for both lanes, which serve the same
+SGLang commit). The diffusion scheduler's loop never waits, so a lane with nothing to do
+held one CPU core at 100%, which kept the box's hottest zone near 61 °C at rest (43 °C
+with no lane loaded) and its fans loud. Measured on the reference box (2026-10-06), 3 min
+after the lane was ready: 1.05 cores without the patch, 0.05 with it, the hottest zone 67
+°C against 54 °C; a 4 s 480P request was picked up in the second it arrived and ran in
+691 s, and a stop at rest took 0.24 s. The image lane's other patch, the
+graceful-shutdown bound, stays out, and the honest costs of that are stated here instead
+of patched around:
 
 - **A stop cancels the generation in flight.** There is no abort endpoint for a
   running job, but the runtime cancels its tasks as it shuts down: all seven logged
@@ -75,9 +82,9 @@ of that choice are stated here instead of patched around:
   `TimeoutStopSec` (60 min) is the ceiling, not the wait. The cockpit's **Cancel**
   is a restart through that stop: the video being made is lost, and the lane
   answers again in about 12 min, which is the boot, not the stop.
-- **An idle lane may hold a CPU core.** The diffusion scheduler's loop never waits;
-  the image lane patches that, this one does not. The installer measures the idle cost
-  and prints it. It serves either way.
+- **An idle lane holds about 0.05 of a CPU core.** The installer measures it after its
+  test video and prints it, with a note past half a core: the patch is then not in
+  effect, for example on a new pin it no longer fits. The lane serves either way.
 
 `sglang serve --model-path MiniMaxAI/MiniMax-H3 --model-variant fl2va --host 127.0.0.1
 --port 30022`, with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (the cookbook:
@@ -178,8 +185,8 @@ The validation of 2026-09-29, on the same box:
   depending on how hot the NVMe runs, and the view says so.
 - **15 s at 480P took 2,830 s** (47 min), peak memory 78.3 GB, the box's MemAvailable
   never under 25.2 GiB.
-- **An idle lane holds 1.04 cores**, the diffusion scheduler's loop that never waits
-  (the image lane patches it; this lane keeps the cookbook's code).
+- **An idle lane held 1.04 cores**, the diffusion scheduler's loop that never waits;
+  0.05 since the image lane's patch went in (2026-10-06).
 - **A second request sent straight to the lane queues** and runs after the first.
 - A keyframe call removed its staged PNGs; a seed past a 64-bit integer is refused by
   the lane itself; a stop during a generation ends it as `cancelled`. The Video view's cost table is fully measured here as of

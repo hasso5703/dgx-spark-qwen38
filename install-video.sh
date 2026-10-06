@@ -207,15 +207,30 @@ fi
 if [ ! -d "$SRC/.git" ]; then
   git clone --quiet https://github.com/sgl-project/sglang "$SRC" || die "could not clone SGLang."
 fi
-# No local patches on this lane: it serves the cookbook's recipe exactly as upstream
-# wrote it at the pinned commit. The image lane carries two (an idle-loop wait and a
-# graceful-shutdown bound), and this lane deliberately does not: running this model
-# means the official SGLang and MiniMax recommendations, nothing added on top. The
-# honest consequences live in the unit template (a stop cancels the generation in
-# flight, measured under a second on all seven logged stops, with TimeoutStopSec as
-# a ceiling, not a wait) and in docs/video-lane.md.
+# One local change to the pinned source, the image lane's scheduler-idle-poll (one file
+# in image-sglang/ for both lanes, which serve the same SGLang commit). The diffusion
+# scheduler's loop never waits: recv_reqs() polls its socket without blocking and nothing
+# else in the loop sleeps, so a lane with nothing to do held one CPU core at 100%, kept
+# the box's hottest zone near 61 C at rest (43 C with no lane loaded) and its fans
+# loud. The patch waits on the request socket for up to a second, as the LLM scheduler's
+# own IdleSleeper does. Measured on the reference box (2026-10-06), 3 min after the lane
+# was ready: 1.05 cores without it, 0.05 with it, the hottest zone 67 C against 54 C; a
+# 4 s 480P request was picked up in the second it arrived and ran in 691 s (592 to 760
+# measured before), and a stop at rest took 0.24 s. The rest is the cookbook's recipe
+# as upstream wrote it at the pinned commit; the honest consequences live in the unit
+# template (a stop cancels the generation in flight, measured under a second on all
+# seven logged stops, with TimeoutStopSec as a ceiling, not a wait) and in
+# docs/video-lane.md.
+PATCHES=(scheduler-idle-poll)
+declare -A PATCH_FIXES=(
+  [scheduler-idle-poll]="an idle lane no longer holds a CPU core"
+)
 CURRENT="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
 if [ "$CURRENT" != "$PIN" ]; then
+  # it is the only local edit in this tree: take it off, or the checkout trips on it
+  for P in "${PATCHES[@]}"; do
+    git -C "$SRC" apply --reverse "$HERE/image-sglang/$P.patch" >/dev/null 2>&1 || true
+  done
   git -C "$SRC" fetch --quiet origin "$PIN" 2>/dev/null || git -C "$SRC" fetch --quiet origin
   git -C "$SRC" checkout --quiet "$PIN" \
     || die "could not check out $PIN: not in the SGLang repository, or local edits in $SRC block it (git -C $SRC status says which)."
@@ -223,6 +238,19 @@ if [ "$CURRENT" != "$PIN" ]; then
 else
   echo "source already at ${PIN:0:12}"
 fi
+for P in "${PATCHES[@]}"; do
+  PF="$HERE/image-sglang/$P.patch"
+  if git -C "$SRC" apply --reverse --check "$PF" >/dev/null 2>&1; then
+    echo "$P: already applied"
+  elif git -C "$SRC" apply --check "$PF" >/dev/null 2>&1; then
+    git -C "$SRC" apply "$PF" || die "$P passed its check and then failed to apply to $SRC."
+    echo "$P: applied, ${PATCH_FIXES[$P]} (effective at the lane's next start)"
+  else
+    # A newer pin may have changed that code, or fixed it upstream. The lane works either
+    # way; the smoke test below measures what an idle lane costs and says so.
+    echo "NOTE: $P does not apply to ${PIN:0:12}; that part runs as upstream wrote it."
+  fi
+done
 # --no-deps: the wheel above already resolved them, and letting the source tree resolve
 # again pulls a transformers that breaks the encoders this model needs.
 # SGLANG_BUILD_RUST_EXTS=none: the pinned source declares five Rust extensions, all of
@@ -407,8 +435,8 @@ SZ="$(stat -c %s "$OUT.mp4" 2>/dev/null || echo 0)"
 [ "$SZ" -gt 100000 ] || die "the downloaded video is only $SZ bytes, not a real video."
 echo "   $(numfmt --to=iec "$SZ") of MP4; keeping it at $OUT.mp4 is left to you (trap removes only \$OUT)"
 # What the lane costs with nothing to do, from its own cgroup: the CPU time systemd
-# accounts to it over 10 s, after 5 s for the request's tail to finish. A note, not a
-# failure: it serves either way, and this lane takes the upstream scheduler as it is.
+# accounts to it over 10 s, after 5 s for the request's tail to finish. About 0 with the
+# idle-loop fix above, about 1 core without it. A note, not a failure: it serves either way.
 CG="/sys/fs/cgroup$(systemctl show -p ControlGroup --value "$UNIT" 2>/dev/null)"
 if [ -r "$CG/cpu.stat" ]; then
   sleep 5
@@ -416,6 +444,8 @@ if [ -r "$CG/cpu.stat" ]; then
   U1=$(awk '/^usage_usec/{print $2}' "$CG/cpu.stat")
   IDLE_CORES=$(awk -v a="$U0" -v b="$U1" 'BEGIN{printf "%.2f", (b-a)/1e7}')
   echo "   at rest: $IDLE_CORES CPU cores"
+  awk -v c="$IDLE_CORES" 'BEGIN{exit !(c > 0.5)}' \
+    && echo "NOTE: the lane holds a CPU core while idle; the idle-loop fix is not in effect (see step 3; a lane started before it went in keeps the old loop until its next start)."
 fi
 # the trap stops the lane and brings the other lane back, whichever way this ends
 
