@@ -31,8 +31,12 @@ PINS = "\n".join(line for line in INSTALL.read_text().splitlines()
 
 
 def generate(lane, mode, unit_ctx=None, flash_unit=False, model="RadixArk/Qwen3.8-27B-NVFP4",
-             pair=None, names=False):
+             pair=None, names=False, flash_running=None):
     t = pathlib.Path(tempfile.mkdtemp(prefix="oc-art-"))
+    if flash_running:
+        (t / "launch-flash.sh").write_text(
+            "docker run img python3 -m sglang.launch_server --model-path RadixArk/Qwen3.8-Flash-Next-NVFP4 "
+            f"--max-running-requests {flash_running} --context-length 262144\n")
     sgl = t / "qwen38-sglang.service"
     if unit_ctx:
         sgl.write_text(f"ExecStart=... --model-path {model} --context-length {unit_ctx} ...\n")
@@ -72,6 +76,17 @@ class EachLaneKeepsItsOwnLimits(unittest.TestCase):
         # the numbers themselves live in oc-limits.sh, once
         self.assertNotIn("(194048, 64000", INSTALL.read_text())
         self.assertNotIn("(700000, 200000", INSTALL.read_text())
+
+    def test_the_flash_block_beside_a_27b_is_read_from_the_table_too(self):
+        """A copy of one pair here, 110000/32000 (the throughput tier's), gave the flash its
+        205,000 window cut to 110,000 at every run that served the 27B (2026-10-06)."""
+        self.assertFalse("(110000, 32000)" in INSTALL.read_text(), "a flash pair is copied in install.sh")
+        lim = generate("27b", "1m", unit_ctx=1010000, flash_unit=True, flash_running=8)
+        self.assertEqual(lim["flashnext"], {"context": 205000, "input": 205000, "output": 32000})
+
+    def test_the_flash_block_follows_the_tier_its_launcher_runs(self):
+        lim = generate("27b", "1m", unit_ctx=1010000, flash_unit=True, flash_running=24)
+        self.assertEqual(lim["flashnext"], {"context": 110000, "input": 110000, "output": 32000})
 
     def test_a_flash_only_box_lists_no_27b(self):
         self.assertNotIn("qwen38", generate("flash", "native"))

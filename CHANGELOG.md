@@ -10,8 +10,15 @@
   window, until the next Load of the flash put both back. It now follows the switch one step
   back, to the text lane written before the other side lane, both ways.
   `tests/test_install_every_lane.py` resolves three such boxes; two took the 27B before.
+- **The flash entry beside a 27B.** A run that serves the 27B wrote opencode's flash entry
+  with a pair copied into `install.sh`, 110000/32000, the throughput tier's, where the
+  concurrency tier (the default) and the context tier have a 205,000 window. A switch to the
+  flash writes its pair from the table, so the copy held only from such a run to the next
+  switch. The pair now comes from `oc-limits.sh`, for the tier the flash launcher runs, as
+  the 27B entry beside a serving flash already did.
 
-An update restarts the cockpit; the engines and the proxy keep running.
+An update restarts the cockpit, and opencode-web once on a box that serves the 27B with
+the flash lane installed (its flash entry changes); the engines and the proxy keep running.
 
 ## v1.22.8 (2026-10-06): one Server header and one Date on every answer the proxy relays, `./pi-gen.py` runs
 

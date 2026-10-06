@@ -1769,6 +1769,15 @@ case "$(grep -oE -- '--model-path [^ ]+' "$CONFIG_DIR/launch-flash.sh" 2>/dev/nu
   "$FLASH_NVDA_REPO") OC_FLASH_TARGET=flash-nvda ;;
 esac
 OC_FLASH_NAME="$(python3 "$REPO_DIR/oc-point-default.py" --label "$OC_FLASH_TARGET" 262144 || true)"
+# Its pair from the same table, for the tier its launcher runs, as the 27B's above. A copy
+# here, 110000/32000 (the throughput tier's), cut the 205,000 window of the concurrency and
+# context tiers to 110,000 at every run that served the 27B (the reference box, 2026-10-06).
+OC_FLASH_CTX=""; OC_FLASH_OUT=""
+if [ "$OC_FLASH" -eq 1 ] && [ "$LANE" != "flash" ]; then
+  OC_FLASH_PAIR="$("$REPO_DIR/oc-limits.sh" "$OC_FLASH_TARGET" --from "$CONFIG_DIR/launch-flash.sh")" \
+    || die "oc-limits.sh refused $OC_FLASH_TARGET (repo bug: please open an issue)"
+  OC_FLASH_CTX="${OC_FLASH_PAIR%% *}"; OC_FLASH_OUT="$(echo "$OC_FLASH_PAIR" | cut -d' ' -f2)"
+fi
 # The served entry's name comes from the table oc-point-default.py applies below. The
 # generator wrote a generic one that the call below then renamed, so the file was written
 # twice at every run, and the rename now leaves a backup (found in review, 2026-09-24).
@@ -1779,6 +1788,7 @@ OC_LANE="$LANE" OC_27B="$OC_27B" OC_FLASH="$OC_FLASH" OC_PORT="$OC_PORT" \
 OC_CTX="$OC_CTX" OC_OUT="$OC_OUT" OC_LABEL="$OC_LABEL" OC_CONTEXT_MODE="$OC_27B_MODE" \
 OC_27B_CTX="$OC_27B_CTX" OC_27B_OUT="$OC_27B_OUT" OC_SERVED_NAME="$OC_SERVED_NAME" \
 OC_27B_NAME="$OC_27B_NAME" OC_FLASH_NAME="$OC_FLASH_NAME" \
+OC_FLASH_CTX="$OC_FLASH_CTX" OC_FLASH_OUT="$OC_FLASH_OUT" \
 OC_KEEP="$OC_KEEP" OC_PIN="$OPENCODE_PIN" \
 OC_CONFIG_DIR="$CONFIG_DIR" python3 - <<'PYEOF' || die "could not write the opencode provider config"
 import json
@@ -1839,8 +1849,9 @@ if os.environ["OC_27B"] == "1":
                                ctx, out)
 if os.environ["OC_FLASH"] == "1":
     # the flash lane's limits follow the pool math above (OC_CTX/OC_OUT); a 27B
-    # install that also lists flash gets the same pool-safe constants
-    fctx, fout = (int(os.environ["OC_CTX"]), int(os.environ["OC_OUT"])) if lane == "flash" else (110000, 32000)
+    # install that also lists flash takes the table's pair for the tier its launcher runs
+    fctx, fout = ((int(os.environ["OC_CTX"]), int(os.environ["OC_OUT"])) if lane == "flash"
+                  else (int(os.environ["OC_FLASH_CTX"]), int(os.environ["OC_FLASH_OUT"])))
     providers["flashnext"] = prov("Qwen3.8-Flash-Next (DGX Spark)", "qwen3.8-flash-next",
                                   lane == "flash" and served_name or os.environ.get("OC_FLASH_NAME")
                                   or "Qwen3.8-Flash-Next NVFP4+MTP (local, 262K)",
