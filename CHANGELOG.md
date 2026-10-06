@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.22.8 (2026-10-06): one Server header and one Date on every answer the proxy relays
+## v1.22.8 (2026-10-06): one Server header and one Date on every answer the proxy relays, `./pi-gen.py` runs
 
 Proxy v6.33. The proxy writes its own `Server` and `Date` headers, and relayed the engine's
 beside them (uvicorn's `server: uvicorn` and `date`): every relayed answer carried two of
@@ -14,6 +14,11 @@ Checked on the reference box's flash lane: LiteLLM 1.104.0 (`hosted_vllm`, aioht
 mode) gives the issue's error through v6.32 and answers through v6.33, streamed or not; Claude
 Code 2.1.291, opencode 1.18.32, Hermes Agent (main of 2026-10-06) and pi 0.73.1 each read a
 file with a tool and answered from it, through both.
+
+`pi-gen.py` is executable. The README and [docs/pi.md](docs/pi.md) run it as `./pi-gen.py`,
+which answered `Permission denied`: the file was committed without its execute bit (found by
+installing pi on the reference box). The scripts that regenerate its files call it through
+`python3` and were not affected.
 
 An update restarts the proxy once (v6.33) and the cockpit; the engines keep running.
 

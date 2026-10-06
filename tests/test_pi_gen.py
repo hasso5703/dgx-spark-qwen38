@@ -165,6 +165,11 @@ class PiGen(unittest.TestCase):
         again = self.gen()
         self.assertNotIn("wrote", again.stdout)
 
+    def test_the_documented_command_runs(self):
+        """The README and docs/pi.md run it as ./pi-gen.py, which a file committed without
+        its execute bit answered with Permission denied (found on the reference box, 2026-10-06)."""
+        self.assertTrue(os.access(GEN, os.X_OK), "pi-gen.py is not executable")
+
     def test_no_artifact_is_quiet_success(self):
         r = run(["--config", os.path.join(self.tmp.name, "none.json"), "--out", self.out])
         self.assertEqual(r.returncode, 0)
