@@ -41,6 +41,9 @@ process.on('exit', () => {
   rmSync(root, { recursive: true, force: true });
 });
 process.on('SIGINT', () => process.exit(130));
+// and SIGTERM, which a CI stopped through its process group sends: it ended node without
+// 'exit', and the cockpit, in a session of its own, kept its port (found 2026-10-07)
+process.on('SIGTERM', () => process.exit(143));
 const SHOT = process.env.COCKPIT_SHOT || join(tmpdir(), 'cockpit-monkey.png');
 let BASE = process.argv[2] || process.env.COCKPIT_BASE || '';
 let key;

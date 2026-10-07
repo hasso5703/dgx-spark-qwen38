@@ -8,10 +8,14 @@
 set -u
 FILTER="${1:-}"
 python3 - "$FILTER" <<'PY'
-import os, re, subprocess, sys, yaml, shutil, tempfile
+import os, re, signal, subprocess, sys, yaml, shutil, tempfile
 flt = sys.argv[1]
 d = yaml.safe_load(open(".github/workflows/ci.yml"))
 ok = fail = skip = 0
+# A run stopped through its process group gets SIGTERM, which ended python without its
+# finally blocks: the step's throwaway HOME, with the keys the cockpit tests write, and
+# the stubs stayed in TMPDIR (found 2026-10-07). As an exception, it runs them.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 # A tool is missing when a step CALLS it, not when its name appears in the step's text.
 # The test was a substring one: without gh, 13 of 61 steps were skipped for containing
 # "through", "high" or "github", the sudoers gate among them, and docker is named by two

@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.22.13 (2026-10-07): a CI run stopped midway leaves nothing running and nothing in /tmp
+
+The four browser checks that start a cockpit of their own (`touch-check.mjs`,
+`monkey-check.mjs`, `resilience-check.mjs`, `update-banner-check.mjs`) start it in a
+session of its own, so they can stop its whole process group, and stop it from their
+`exit` handler. SIGINT led there, SIGTERM did not: a CI stopped through its process group
+ended node at once, and the cockpit kept running on its loopback port, in dry-run mode,
+with its temporary directory left behind. One was found on the reference box, still
+running 13 h 45 min after it started (2026-10-07). SIGTERM now ends each check through
+`exit`, as SIGINT does.
+
+`ci-local.sh` removes each step's throwaway HOME (its TMPDIR is inside) and the run's
+stubs directory in `finally` blocks, which SIGTERM skipped: a run stopped that way left
+the step's HOME, with the test keys the cockpit tests write, and the stubs in /tmp.
+SIGTERM now exits through those blocks.
+
+Checked on the reference box, each check stopped by SIGTERM to its process group while
+its browser ran: before, the cockpit outlived it in all four and its temporary directory
+stayed; after, the cockpit is gone and the directory removed in all four. A `ci-local.sh`
+run stopped the same way during the cockpit unit tests left the step's HOME and the stubs
+before, and nothing after. The four checks pass as before.
+
+An update restarts the cockpit; the engines and the proxy keep running.
+
 ## v1.22.12 (2026-10-07): the Traffic view says the last 5 minutes from the engine's own counters
 
 The Traffic view gained a **Last 5 minutes** box: the requests that finished, the share

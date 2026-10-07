@@ -41,6 +41,9 @@ process.on('exit', () => {
   rmSync(root, { recursive: true, force: true });
 });
 process.on('SIGINT', () => process.exit(130));
+// and SIGTERM, which a CI stopped through its process group sends: it ended node without
+// 'exit', and the cockpit, in a session of its own, kept its port (found 2026-10-07)
+process.on('SIGTERM', () => process.exit(143));
 const cfgDir = join(root, 'config');
 const fence = join(root, 'bin');
 mkdirSync(cfgDir); mkdirSync(fence);
