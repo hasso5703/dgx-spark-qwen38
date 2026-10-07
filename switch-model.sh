@@ -35,6 +35,10 @@
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+# A download says its bytes every 10 s (hf-progress.py), and with no terminal on stdout (the
+# cockpit's Load runs this as a job) snapshot_download's own bars go: they count files, a
+# 53 GB safetensors the same as a 2 KB config, and in a job each redraw is one more line.
+DL_NO_BARS=""; [ -t 1 ] || DL_NO_BARS=1
 
 _ENV_HF_CACHE="${HF_CACHE:-}"      # before the pins below give it install.sh's default
 # No target, no switch: run bare, this used to switch the box to stock, re-enabling the
@@ -103,15 +107,33 @@ if [ "$CHOICE" = "image" ]; then
   # unauthenticated pull gets throttled. local_files_only first, so a complete cache
   # answers without touching the network at all.
   HF_HOME="${IMG_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 IMG_MODEL="$IMG_MODEL" \
+    HF_HUB_DISABLE_PROGRESS_BARS="$DL_NO_BARS" QWEN38_REPO_DIR="$REPO_DIR" \
     "$IMG_PY" - <<'PYIMG' || die "the image checkpoint could not be verified or fetched (re-run to resume; set HF_TOKEN if it stalls)"
+import contextlib
+import importlib.util
 import os
 from huggingface_hub import snapshot_download
+
+
+def reporting(*args, **kwargs):
+    """hf-progress.py's byte count while the rest comes; a progress line is never worth a download."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "hf_progress", os.path.join(os.environ["QWEN38_REPO_DIR"], "hf-progress.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.reporting(*args, **kwargs)
+    except Exception:
+        return contextlib.nullcontext()
+
+
 repo = os.environ["IMG_MODEL"]
 try:
     print(snapshot_download(repo, local_files_only=True))
 except Exception:
     print("not complete in the cache, fetching the rest", flush=True)
-    print(snapshot_download(repo))
+    with reporting(repo):
+        print(snapshot_download(repo))
 PYIMG
   # Which text lane this box served, written down before it is disabled: install.sh
   # updates that lane on a later run, and enablement cannot tell it once both are off.
@@ -208,10 +230,27 @@ if [ "$CHOICE" = "video" ]; then
   [ "${VID_FREE_GB:-0}" -ge "$VID_WANT_GB" ] \
     || die "not enough room for $VID_MODEL under HF_HOME=${VID_HF:-$HF_CACHE}: ${VID_FREE_GB:-?} GB free, about $VID_WANT_GB GB needed (nothing was changed). Free some space first, or point HF_HOME at a bigger disk."
   HF_HOME="${VID_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 VID_MODEL="$VID_MODEL" VID_ALLOW="$VID_ALLOW" VID_REV="$VID_REV" \
+    HF_HUB_DISABLE_PROGRESS_BARS="$DL_NO_BARS" QWEN38_REPO_DIR="$REPO_DIR" \
     "$VID_PY" - <<'PYVID' || die "the video checkpoint could not be verified or fetched (re-run to resume; set HF_TOKEN if it stalls; if the pinned revision was removed upstream, ./install-video.sh VIDEO_MODEL_REV=main re-pins it)"
+import contextlib
+import importlib.util
 import os
 import re
 from huggingface_hub import snapshot_download
+
+
+def reporting(*args, **kwargs):
+    """hf-progress.py's byte count while the rest comes; a progress line is never worth a download."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "hf_progress", os.path.join(os.environ["QWEN38_REPO_DIR"], "hf-progress.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.reporting(*args, **kwargs)
+    except Exception:
+        return contextlib.nullcontext()
+
+
 repo = os.environ["VID_MODEL"]
 rev = os.environ["VID_REV"]
 allow = [p for p in os.environ["VID_ALLOW"].split() if p] or None
@@ -221,7 +260,8 @@ try:
     path = snapshot_download(repo, revision=rev, local_files_only=True, allow_patterns=allow)
 except Exception:
     print("not complete in the cache, fetching the rest", flush=True)
-    path = snapshot_download(repo, revision=rev, allow_patterns=allow)
+    with reporting(repo, revision=rev, allow_patterns=allow):
+        path = snapshot_download(repo, revision=rev, allow_patterns=allow)
 print(path)
 # refs/main is what the offline unit resolves, and a download by sha never writes
 # it: create it when missing, repair it when it holds no commit hash (a corrupt ref
@@ -426,6 +466,12 @@ DL_TOKEN_ARGS=()
 # by name: docker takes the value from its own environment, so the token is not in the
 # docker client's argv, which any local user can read in /proc (found in review, 2026-09-24)
 if [ -n "${HF_TOKEN:-}" ]; then export HF_TOKEN; DL_TOKEN_ARGS=(-e HF_TOKEN); fi
+# The byte count reads hf-progress.py in the container. Mounted only when it is there: a
+# bind of a missing file makes docker create a root-owned directory in its place.
+DL_PROGRESS_ARGS=()
+if [ -f "$REPO_DIR/hf-progress.py" ]; then
+  DL_PROGRESS_ARGS=(-v "$REPO_DIR/hf-progress.py:/opt/qwen38/hf-progress.py:ro" -e QWEN38_REPO_DIR=/opt/qwen38)
+fi
 # --init: the cockpit stops a switch that overruns its job timeout with a TERM to the
 # whole process group, and docker run passes it on to the container, where python3 as
 # PID 1 has no handler for it and ignores it. Measured on the reference box: without
@@ -434,13 +480,28 @@ if [ -n "${HF_TOKEN:-}" ]; then export HF_TOKEN; DL_TOKEN_ARGS=(-e HF_TOKEN); fi
 docker run --rm -i --init --network host --user "$(id -u):$(id -g)" \
   --entrypoint python3 \
   -e HF_HOME=/hf -e HF_HUB_DOWNLOAD_TIMEOUT=30 -e HF_HUB_DISABLE_XET=1 \
+  -e HF_HUB_DISABLE_PROGRESS_BARS="$DL_NO_BARS" \
   -e MODEL_REPO="$TARGET_REPO" -e MODEL_REV="$TARGET_REV" \
-  "${DL_TOKEN_ARGS[@]}" \
+  "${DL_TOKEN_ARGS[@]}" "${DL_PROGRESS_ARGS[@]}" \
   -v "$HF_CACHE":/hf \
   "$DL_IMAGE" - <<'PYEOF' || die "download failed ($(dl_free_gb) GB left under $HF_CACHE; if that is near 0 the disk filled up, otherwise re-run to resume: HuggingFace throttles unauthenticated downloads, set HF_TOKEN=<your token> if it stalls)"
+import contextlib
+import importlib.util
 import os
 import time
 from huggingface_hub import constants, snapshot_download
+
+
+def reporting(*args, **kwargs):
+    """hf-progress.py's byte count while the checkpoint comes; never worth a download."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "hf_progress", os.path.join(os.environ["QWEN38_REPO_DIR"], "hf-progress.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.reporting(*args, **kwargs)
+    except Exception:
+        return contextlib.nullcontext()
 
 
 def download(repo, rev):
@@ -471,15 +532,18 @@ def download(repo, rev):
 
 
 print("──", os.environ["MODEL_REPO"], "@", os.environ["MODEL_REV"], flush=True)
-for attempt in range(1, 6):  # a resumed attempt reuses every finished byte
-    try:
-        path = download(os.environ["MODEL_REPO"], os.environ["MODEL_REV"])
-        break
-    except Exception as e:
-        if attempt == 5:
-            raise
-        print(f"download interrupted ({type(e).__name__}), resuming ({attempt}/5)...", flush=True)
-        time.sleep(10)
+with reporting(os.environ["MODEL_REPO"], revision=os.environ["MODEL_REV"]):
+    # a new attempt keeps every file already whole; one cut off mid-way starts over (the
+    # huggingface_hub of the pinned images, 1.30 and 1.33, keeps no partial file)
+    for attempt in range(1, 6):
+        try:
+            path = download(os.environ["MODEL_REPO"], os.environ["MODEL_REV"])
+            break
+        except Exception as e:
+            if attempt == 5:
+                raise
+            print(f"download interrupted ({type(e).__name__}), resuming ({attempt}/5)...", flush=True)
+            time.sleep(10)
 # Same guarantee as install.sh: offline serving resolves "main" via refs/main,
 # which a pinned-sha download never writes. Write it once, never overwrite.
 sha = os.path.basename(path.rstrip("/"))

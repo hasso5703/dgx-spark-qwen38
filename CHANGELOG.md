@@ -1,5 +1,58 @@
 # Changelog
 
+## v1.22.11 (2026-10-07): a Load that downloads says how far it is and runs to its end, and a switch not restarted yet is said and finished
+
+- **The Load window follows a step to its end.** It gave each step 20 minutes and then
+  said "did not finish in time", while the server gives a switch 7,200 s for its
+  download. On 2026-10-05 the switch of a Load of flash-uncensored, whose checkpoint is
+  135 GB (126 GiB), ran 22 minutes and ended well (rc 0 in the cockpit's audit log), and
+  the restart after it never ran: the window had given up 2 minutes before. The window now
+  waits as long as the job runs: past its own time limit the server stops it, and the
+  window then says it failed. A step whose job the cockpit no longer knows (a restarted
+  cockpit keeps no job history) is said unknown, not failed, after a minute without it,
+  with the Now view and Logs to read before anything is retried.
+- **It says what the step is doing.** Under the step that runs, the window shows the
+  time so far and the job's last line. For a download that line is now a byte count:
+  `hf-progress.py` says every 10 s how much of the checkpoint is in the cache, against
+  the total the Hub lists for the revision, with the rate since the fetch began and the
+  time left ("downloading: 0.5 of 1.0 GB (52 %), 88 MB/s, about 5 s left", decimal
+  GB). All three fetches of `switch-model.sh` count (text lanes, image, video).
+  It counts whole blobs and the files huggingface_hub writes on the way, under both
+  names it gives them: `<blob>.incomplete` in older releases, and
+  `<blob>.<8 hex>.incomplete`, one per process, in 1.30 and 1.33, the releases in the
+  images the lanes pin. snapshot_download's own bars, which count files, are left out
+  when no terminal is attached (the cockpit's job); a terminal keeps them. Without the
+  Hub's sizes the download goes on as before, under one line saying so. Checked on the
+  reference box: a real 1 GB download read 8, 30, 52, 74 and 95 % at 42 to 95 MB/s with
+  huggingface_hub 1.33 (10 to 96 % at 53 to 97 MB/s with 1.14), and the text lanes'
+  fetch block ran as written in both pinned images.
+- **A switch not restarted yet is said, and Load finishes it.** A switch rewrites what a
+  lane's next start loads and restarts nothing. When the restart after it did not run (a
+  Load stopped after its first step, or `switch-model.sh` from a terminal), the page read
+  the unit's file alone: Load had no step left and said "already serving" of a checkpoint
+  the engine did not serve, and the lane's card named that checkpoint as the one
+  serving (found 2026-10-05: flash served while its unit pointed at flash-uncensored).
+  Load now offers the restart, a banner says which checkpoint serves and which one the
+  next start loads, and the card shows the checkpoint serving with a "Next start loads"
+  line. What the engine serves comes from its own `/server_info` only when that read is
+  younger than the engine: the read comes every 30 s and is kept through a restart.
+- **A comment that no longer held.** `switch-model.sh` said a new attempt reuses every
+  finished byte. huggingface_hub 1.30 and 1.33 write a download into a file of its own
+  process and delete it on failure: a new attempt keeps every file already whole, and
+  one cut off mid-way starts over.
+
+`dashboard/tests/test_page_behaviour.py` gained `ASwitchNotRestartedYetIsSaidAndFinished`
+(5 tests) and `TheLoadWindowFollowsAStepToItsEnd` (3 tests: a step followed past 20
+minutes with the next one run after it, a failed step that stops the chain, a forgotten
+job said unknown). `tests/test_hf_progress.py` (28 tests) holds what is counted, how it
+is said, that no sizes and no huggingface_hub mean one line and the download as before,
+that the download's own failure still fails the switch, and how `switch-model.sh` wires
+the three fetches. Five of the eight page tests fail on the page before this change, on
+the defects above; the other three guard what it already did right. Six hand-made
+mutants of `hf-progress.py` and `switch-model.sh` each fail the new tests.
+
+An update restarts the cockpit; the engines and the proxy keep running.
+
 ## v1.22.10 (2026-10-07): an idle video lane no longer holds a CPU core
 
 The video lane now carries the image lane's idle-loop patch

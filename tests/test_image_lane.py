@@ -542,8 +542,10 @@ class ThePageNeverShowsAStaleOrRacingState(unittest.TestCase):
         self.js = PAGE_JS()
 
     def test_the_text_engines_target_never_labels_the_image_lane(self):
-        # the text engine's target, and only when it is one of this unit's (ownTarget)
-        self.assertIn("unit !== IMAGE_UNIT && unit !== VIDEO_UNIT && ownTarget(unit)", self.js)
+        # the text engine's target, and only when it is one of this unit's (ownTarget); a
+        # diffusion lane never takes it (servedTarget, which laneTarget reads first)
+        self.assertIn("unit === IMAGE_UNIT || unit === VIDEO_UNIT) return null", self.js)
+        self.assertIn("return servedTarget(unit) || (engines()[unit] || {}).target || null", self.js)
         self.assertIn("F.target && TARGET_UNIT(F.target) === unit", self.js)
         # every lifecycle snapshot restates the served target, so a text engine's
         # answer cannot survive as the image lane's label once that engine is gone

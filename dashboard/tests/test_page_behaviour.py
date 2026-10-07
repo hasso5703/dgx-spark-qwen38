@@ -1039,5 +1039,167 @@ class TheTrafficBadgeCountsEveryRequestInFlight(unittest.TestCase):
         self.assertEqual((r["live"], r["rows"]), (2, 27), r)
 
 
+FLASH_REPO = "RadixArk/Qwen3.8-Flash-Next-NVFP4"
+FLASH_UNC_REPO = "dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4"
+
+
+class ASwitchNotRestartedYetIsSaidAndFinished(unittest.TestCase):
+    """A switch rewrites what a lane's next start loads and restarts nothing. When the restart
+    after it did not run (a journey stopped after its first step, switch-model.sh from a
+    terminal), Load read the unit's file alone, had no step left and said "already serving"
+    of a checkpoint the engine did not serve, the lane's card named the next checkpoint as the
+    one serving, and nothing said a restart was owed (found 2026-10-05: flash served while its
+    unit pointed at flash-uncensored, and the switch could not be finished from the page)."""
+
+    def page(self, served, served_repo, nxt, next_repo, info_age, ask):
+        # the engine's own read is info_age seconds old, against an engine up for 600 s
+        return run(self, r"""
+        const units = JSON.parse(JSON.stringify(UNITS));
+        units.units['qwen38-sglang.service'] = {active: 'inactive', enabled: 'disabled'};
+        units.units['qwen38-flash.service'] = {active: 'active', enabled: 'enabled'};
+        const now = Date.now() / 1000, args = %s;
+        apply({config: {data: CONFIG, ts: now}, units: {data: units, ts: now},
+               engine_info: {data: {served_target: args.served, prompt_ceiling_tokens: 0,
+                                    info: {model_path: args.served_repo, served_model_name: 'x',
+                                           max_total_num_tokens: 800000, context_length: 262144}},
+                             ts: now - args.info_age},
+               lifecycle: {data: life({'qwen38-flash.service': eng('ready', {target: args.next, model: args.next_repo, elapsed: 600}),
+                                       'qwen38-sglang.service': eng('stopped', {target: 'stock'})}), ts: now}});
+        showView('lanes');
+        const dl = LCARDS.get('qwen38-flash.service').right, card = {};
+        [...dl.children].forEach((n, k, a) => { if (n.tagName === 'DT') card[n.textContent] = a[k + 1].textContent; });
+        const banners = txt('banners');
+        askJourney(args.ask);
+        report({open: !$('scrim').hidden, steps: [...$('sh-journey').children].map(li => li.textContent),
+                toast: toastText(), banners, card, label: laneLabel('qwen38-flash.service')});
+        """ % json.dumps({"served": served, "served_repo": served_repo, "next": nxt,
+                          "next_repo": next_repo, "info_age": info_age, "ask": ask}))
+
+    def test_load_offers_the_restart_the_switch_still_owes(self):
+        r = self.page("flash", FLASH_REPO, "flash-uncensored", FLASH_UNC_REPO, 5, "flash-uncensored")
+        self.assertTrue(r["open"], r)
+        self.assertEqual(len(r["steps"]), 1, r["steps"])
+        self.assertIn("Restart flash 176B on the new checkpoint", r["steps"][0])
+        self.assertIn("systemctl restart qwen38-flash.service", r["steps"][0])
+        self.assertNotIn("already serving", r["toast"])
+
+    def test_the_banner_and_the_card_say_what_serves_and_what_comes_next(self):
+        r = self.page("flash", FLASH_REPO, "flash-uncensored", FLASH_UNC_REPO, 5, "flash-uncensored")
+        self.assertIn("flash 176B, NVFP4 is serving, and the lane's next start loads flash 176B uncensored.", r["banners"])
+        self.assertIn("clients still get flash 176B, NVFP4", r["banners"])
+        self.assertEqual(r["card"]["Checkpoint"], "Qwen3.8-Flash-Next-NVFP4", r["card"])
+        self.assertEqual(r["card"]["Target"], "flash 176B, NVFP4", r["card"])
+        self.assertEqual(r["card"]["Next start loads"], "flash 176B uncensored", r["card"])
+        self.assertEqual(r["label"], "flash 176B", r)
+
+    def test_a_lane_serving_what_its_unit_loads_owes_nothing(self):
+        r = self.page("flash", FLASH_REPO, "flash", FLASH_REPO, 5, "flash")
+        self.assertFalse(r["open"], r)
+        self.assertIn("already serving", r["toast"])
+        self.assertNotIn("next start loads", r["banners"])
+        self.assertNotIn("Next start loads", r["card"])
+        self.assertEqual(r["card"]["Checkpoint"], "Qwen3.8-Flash-Next-NVFP4", r["card"])
+
+    def test_a_read_older_than_the_engine_names_nothing(self):
+        # read 700 s ago, from the engine before this one (up 600 s): the unit's file is the
+        # best word on what this engine loaded, and no restart is invented from the old read
+        r = self.page("flash", FLASH_REPO, "flash-uncensored", FLASH_UNC_REPO, 700, "flash-uncensored")
+        self.assertFalse(r["open"], r)
+        self.assertIn("already serving", r["toast"])
+        self.assertNotIn("next start loads", r["banners"])
+        self.assertNotIn("Next start loads", r["card"])
+        self.assertEqual(r["card"]["Target"], "flash 176B uncensored", r["card"])
+        self.assertEqual(r["card"]["Checkpoint"], "Qwen3.8-Flash-Next-ABLITERATED-NVFP4", r["card"])
+
+    def test_a_diffusion_lane_never_takes_the_text_engines_target(self):
+        # a fresh read naming a 27B target, the image lane serving: its label and its
+        # journey are its own, and no "next start" banner pairs the two lanes
+        r = run(self, r"""
+        const now = Date.now() / 1000;
+        apply({config: {data: CONFIG, ts: now}, units: {data: UNITS, ts: now},
+               engine_info: {data: {served_target: 'stock', prompt_ceiling_tokens: 0, info: {model_path: 'x/y'}}, ts: now - 5},
+               lifecycle: {data: life({'qwen38-image.service': eng('ready', {target: 'image', elapsed: 600}),
+                                       'qwen38-sglang.service': eng('stopped', {target: 'stock'})}), ts: now}});
+        report({label: laneLabel('qwen38-image.service'), served: servedTarget('qwen38-image.service'),
+                lane: laneTarget('qwen38-image.service'), banners: txt('banners')});
+        """)
+        self.assertIsNone(r["served"], r)
+        self.assertEqual(r["lane"], "image", r)
+        self.assertNotIn("27B", r["label"], r)
+        self.assertNotIn("next start loads", r["banners"])
+
+
+class TheLoadWindowFollowsAStepToItsEnd(unittest.TestCase):
+    """The window gave each step 20 min and then said "did not finish in time": a switch has
+    7,200 s on the server, for a download, and the switch to flash-uncensored (135 GB) took
+    22 min, finished well, and the restart after it never ran. And all that time the window
+    said "Step 1 of 2" and nothing else, which read as frozen (2026-10-05)."""
+
+    BODY = r"""
+    let jobs = 0;
+    __fetch = async url => url === '/api/csrf' ? __response(200, {token: 't'})
+      : url === '/api/action' ? __response(202, {job: 'j' + (++jobs)})
+      : new Promise(() => {});
+    const units = JSON.parse(JSON.stringify(UNITS));
+    feed({config: CONFIG, units, lifecycle: life({'qwen38-sglang.service': eng('stopped', {target: 'stock'}),
+                                                  'qwen38-flash.service': eng('stopped', {target: 'flash'})})});
+    askJourney('uncensored');
+    const steps0 = [...$('sh-journey').children].map(li => li.textContent);
+    $('sh-go').click(); await __settle(); await __advance(1000);
+    const job = (current, recent) => feed({job: {current, recent: recent || []}});
+    const running = (id, elapsed, line) => job({id, action: 'switch', params: {target: 'uncensored'}, elapsed, lines: [line]});
+    const state = () => ({cls: [...$('sh-journey').children].map(li => li.className),
+                          status: txt('sh-status'), live: [...$('sh-journey').children].map(li => (li.querySelector('.live') || {}).textContent || ''),
+                          actions: __fetches.filter(f => f.url === '/api/action').map(f => JSON.parse(f.init.body).name)});
+    """
+
+    def test_a_long_step_is_followed_past_twenty_minutes_and_the_next_one_runs(self):
+        r = run(self, self.BODY + r"""
+        for (let s = 60; s <= 25 * 60; s += 60){
+          running('j1', s, '\x1b[1;36mdownloading dealignai/x: ' + s + ' GB\x1b[0m');
+          await __advance(60000);
+        }
+        const at25 = state();
+        job(null, [{id: 'j1', action: 'switch', status: 'done', rc: 0, elapsed: 1500}]);
+        await __advance(2000); await __settle(); await __advance(2000);
+        report({steps0, at25, after: state()});
+        """)
+        self.assertEqual(len(r["steps0"]), 2, r["steps0"])
+        self.assertEqual(r["at25"]["cls"][0], "run", r["at25"])
+        self.assertNotIn("did not finish", r["at25"]["status"])
+        self.assertIn("25 min 00 so far: downloading dealignai/x: 1500 GB", r["at25"]["live"][0])
+        self.assertNotIn("\x1b", r["at25"]["live"][0])
+        self.assertEqual(r["after"]["cls"][0], "done", r["after"])
+        self.assertEqual(r["after"]["live"][0], "", "the live line goes once the step is done")
+        self.assertEqual(r["after"]["actions"], ["switch", "unit"], "the step after the download ran")
+
+    def test_a_failed_step_says_so_and_stops_the_chain(self):
+        r = run(self, self.BODY + r"""
+        running('j1', 30, 'downloading');
+        await __advance(1000);
+        job(null, [{id: 'j1', action: 'switch', status: 'failed', rc: 1, elapsed: 31}]);
+        await __advance(2000); await __settle();
+        report({after: state()});
+        """)
+        self.assertEqual(r["after"]["cls"][0], "fail", r["after"])
+        self.assertIn("Step 1 failed with exit code 1. Its log is in the dock.", r["after"]["status"])
+        self.assertEqual(r["after"]["actions"], ["switch"], "nothing ran after the failed step")
+
+    def test_a_job_the_cockpit_forgot_is_said_unknown_not_failed(self):
+        r = run(self, self.BODY + r"""
+        running('j1', 30, 'downloading');
+        await __advance(1000);
+        job(null, []);                                 // a cockpit restarted: no history
+        await __advance(30000); const at30 = state();
+        await __advance(40000);
+        report({at30, after: state()});
+        """)
+        self.assertEqual(r["at30"]["cls"][0], "run", "a minute of grace before saying anything")
+        self.assertEqual(r["after"]["cls"][0], "fail", r["after"])
+        self.assertIn("is no longer known to the cockpit (restarted?), so how it ended is unknown", r["after"]["status"])
+        self.assertIn("The Now view and Logs say where the lane is", r["after"]["status"])
+        self.assertEqual(r["after"]["actions"], ["switch"], r["after"])
+
+
 if __name__ == "__main__":
     unittest.main()

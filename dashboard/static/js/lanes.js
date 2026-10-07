@@ -110,12 +110,16 @@ function renderLanes(){
     } else c.boot.hidden = true;
     // the right column: the facts
     const en = (F.units[unit] || {}).enabled;
+    // The unit's file says what the NEXT start loads; a switch not restarted yet makes it
+    // another checkpoint than the one serving, and the card named the next one as served
+    const servesNow = servedTarget(unit), pending = !!(servesNow && e && e.target && servesNow !== e.target && F.model);
     facts(c.right, [
       // '…' is a value on its way: once the lifecycle is in and names no checkpoint (a launch
       // file unreadable, a lane it does not list), it read '…' for good (found by the monkey
       // check, 2026-10-02)
-      ['Checkpoint', e && e.model ? e.model.split('/').pop() : !has ? 'not installed' : e || F.life ? 'unknown' : '…'],
+      ['Checkpoint', pending ? F.model.split('/').pop() : e && e.model ? e.model.split('/').pop() : !has ? 'not installed' : e || F.life ? 'unknown' : '…'],
       ['Target', laneTarget(unit) ? TARGET_NAME[laneTarget(unit)] : null],
+      ['Next start loads', pending ? TARGET_NAME[e.target] : null],
       ['At boot', has ? (en === 'enabled' ? 'starts' : en === '?' ? 'unknown' : 'manual start') : null],
       ['Boot takes', has ? readyIn(unit) : null],
       ['Up for', seated && e && e.elapsed && (st === 'ready' || st === 'degraded') ? fmtDur(e.elapsed) : null],

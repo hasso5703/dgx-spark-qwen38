@@ -156,10 +156,17 @@ function bootSeconds(unit){
 const readyIn = unit => 'about ' + fmtDur(bootSeconds(unit));
 // the text engine's served target, when it is one of this unit's
 const ownTarget = unit => F.target && TARGET_UNIT(F.target) === unit ? F.target : null;
+// What the serving engine itself says it serves, only from a read taken after this engine
+// started: the read comes every 30 s and is kept through a restart, so for up to 30 s after
+// one it still names the previous engine's checkpoint. null when there is no such read.
+function servedTarget(unit){
+  const s = servingEngine(), age = lastAges.engine_info;
+  if (!s || s[0] !== unit || unit === IMAGE_UNIT || unit === VIDEO_UNIT) return null;
+  return s[1].elapsed != null && age != null && age < s[1].elapsed ? ownTarget(unit) : null;
+}
 function laneTarget(unit){
-  const serving = servingEngine();
   // A target of another lane is the previous engine's, read before this one answered.
-  return (serving && serving[0] === unit && unit !== IMAGE_UNIT && unit !== VIDEO_UNIT && ownTarget(unit)) || (engines()[unit] || {}).target || null;
+  return servedTarget(unit) || (engines()[unit] || {}).target || null;
 }
 function laneLabel(unit){
   if (unit === AGENT_UNIT) return 'the opencode web server';
@@ -462,7 +469,13 @@ function laneJourneySteps(target){
   if (serving && serving[0] !== unit)
     steps.push({name: 'unit', params: {verb: 'stop', unit: serving[0]}, title: `Stop ${laneLabel(serving[0])}`,
       desc: serving[0] === IMAGE_UNIT || serving[0] === VIDEO_UNIT ? 'A generation in flight is lost.' : 'Clients on :30001 see the engine unavailable until the next one answers.'});
-  if (serving && serving[0] === unit && steps.length)
+  // The engine serves what it loaded when it started; a switch since then (a journey that
+  // stopped after its first step, switch-model.sh from a terminal) changed only what the
+  // next start loads, and the restart is still owed. Read against the unit's file alone, the
+  // journey had no step left and said "already serving" of a checkpoint that was not
+  // (found 2026-10-05: flash served while its unit pointed at flash-uncensored).
+  const owed = !!(servedTarget(unit) && servedTarget(unit) !== target);
+  if (serving && serving[0] === unit && (steps.length || owed))
     steps.push({name: 'unit', params: {verb: 'restart', unit}, title: `Restart ${LANE_NAME[unit]} on the new checkpoint`, desc: `It answers again in ${readyIn(unit)}.`});
   else if (!serving || serving[0] !== unit)
     steps.push({name: 'unit', params: {verb: 'start', unit}, title: `Start ${LANE_NAME[unit]}`, desc: `It loads and answers in ${readyIn(unit)}.`});
@@ -501,6 +514,16 @@ function askJourney(target, opts = {}){
   openSheet();
 }
 function jStep(i, cls){ const li = $('sh-journey').children[i]; if (li) li.className = cls; }
+// What the step running now is doing, under it: its time so far and its job's last output
+// line. The window said only "Step 1 of 2" through a 22-minute download, and it read as
+// frozen (2026-10-05); the dock had the line, under the sheet.
+function jLive(i, text){
+  const li = $('sh-journey').children[i]; if (!li) return;
+  let p = li.querySelector('.live');
+  if (!p){ if (text == null) return; p = el('div', 'd live'); li.lastChild.append(p); }
+  if (text == null) p.remove(); else setText(p, text);
+}
+const jobLast = cur => String((cur.lines || []).slice(-1)[0] || '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').trim();
 async function runJourney(){
   const S = SHEET; S.running = true;
   $('sh-go').disabled = true; $('sh-cancel').disabled = true;
@@ -517,12 +540,14 @@ async function runJourney(){
       $('sh-go').disabled = false; $('sh-cancel').disabled = false; setText($('sh-go'), 'Retry from here'); return;
     }
     const id = r.out.job || r.out.id;
-    const res = await waitJob(id);
+    const res = await waitJob(id, cur => { const last = jobLast(cur); jLive(i, fmtDur(cur.elapsed) + ' so far' + (last ? ': ' + last : '')); });
     if (!res.ok){
       jStep(i, 'fail'); S.running = false; S.idx = i;
-      $('sh-status').className = 'status err'; setText('sh-status', `Step ${i + 1} ${res.why}. Its log is in the dock.`);
+      $('sh-status').className = 'status err';
+      setText('sh-status', `Step ${i + 1} ${res.why}. ` + (res.lost ? 'The Now view and Logs say where the lane is before anything is retried.' : 'Its log is in the dock.'));
       $('sh-go').disabled = false; $('sh-cancel').disabled = false; setText($('sh-go'), 'Retry from here'); return;
     }
+    jLive(i, null);
     jStep(i, 'done');
     if (st.name === 'unit' && st.params.verb !== 'start'){
       if (st.params.unit === IMAGE_UNIT) IMG_INTERRUPTED_AT.t = Date.now();
@@ -537,9 +562,15 @@ async function runJourney(){
   setText('sh-status', 'Done. The lane is booting: the Now view and the dock follow it.');
   setTimeout(() => { if (SHEET === S) closeSheet(); showView('now'); }, 900);
 }
-// A job is done when the job collector shows it finished. Resolves {ok, why}.
-function waitJob(id, timeoutMs = 20 * 60 * 1000){
-  const t0 = Date.now();
+// A job is done when the job collector shows it finished. Resolves {ok, why} ({lost} too, for
+// a job the cockpit no longer knows). It follows the job for as long as the job runs: the
+// server bounds every action itself (a switch has 7,200 s, for a download), and a fixed
+// 20 min here gave up 2 minutes before a healthy 22-minute switch to flash-uncensored (a
+// 135 GB checkpoint) ended, so the restart after it never ran (found 2026-10-05).
+// onTick(job) sees the running job at every tick.
+const JOB_LOST_MS = 60 * 1000;
+function waitJob(id, onTick){
+  let gone = null;
   return new Promise(resolve => {
     const tick = () => {
       const j = F.job || {};
@@ -547,7 +578,12 @@ function waitJob(id, timeoutMs = 20 * 60 * 1000){
       if (found && (!cur || cur.id !== id)){
         return resolve(found.status === 'done' ? {ok: true} : {ok: false, why: `failed${found.rc != null ? ' with exit code ' + found.rc : ''}`});
       }
-      if (Date.now() - t0 > timeoutMs) return resolve({ok: false, why: 'did not finish in time'});
+      if (cur && cur.id === id){
+        gone = null;
+        if (onTick) try { onTick(cur); } catch { /* the live line is a courtesy, never the wait */ }
+      } else if (gone === null) gone = Date.now();
+      // neither running nor finished: a cockpit restarted under it keeps no job history
+      else if (Date.now() - gone > JOB_LOST_MS) return resolve({ok: false, lost: true, why: 'is no longer known to the cockpit (restarted?), so how it ended is unknown'});
       setTimeout(tick, 500);
     };
     tick();
@@ -651,6 +687,15 @@ function renderBanners(state, errors){
       + ((F.config || {}).zombie_restart ? (e.zombie_in > 0 ? `The cockpit restarts it in ${fmtDur(e.zombie_in)}.` : 'The cockpit restarts it now.') : 'Restart it from Lanes (COCKPIT_ZOMBIE_RESTART=0 keeps the cockpit from doing it).'));
     else if (e.state === 'degraded') add('warn', `${name} stopped answering.`, 'It was serving; health probes retry every 2 s. If it stays here, Logs says why.');
   });
+  // A switch that is not restarted yet: the unit loads one checkpoint at its next start while
+  // the engine serves another, and nothing else on the page said so.
+  const sv = servingEngine();
+  if (sv && (sv[0] === U27 || sv[0] === UFLASH) && sv[1].state === 'ready'){
+    const served = servedTarget(sv[0]), next = sv[1].target;
+    if (served && next && served !== next)
+      add('info', `${TARGET_NAME[served]} is serving, and the lane's next start loads ${TARGET_NAME[next]}.`,
+          `The switch to ${TARGET_NAME[next]} is written but its restart has not run, so clients still get ${TARGET_NAME[served]}. Load ${TARGET_NAME[next]} in Lanes restarts it (${readyIn(sv[0])}).`);
+  }
   if (F.memFloor && F.memFloor.aborts && F.memFloor.last_abort && Date.now() / 1000 - F.memFloor.last_abort < 600)
     add('warn', 'The memory floor fired.', `Memory fell under ${F.memFloor.gib} GiB with requests running: every generation was aborted ${fmtDur(Date.now() / 1000 - F.memFloor.last_abort)} ago to keep the box out of a livelock.`);
   const upd = F.update || {};
@@ -718,6 +763,7 @@ on('engine_info', d => {
   if (d.prompt_ceiling_tokens != null) F.ceiling = d.prompt_ceiling_tokens;
   F.target = d.served_target || null;
   const i = d.info || {};
+  F.model = i.model_path || null;
   if (i.max_total_num_tokens) F.pool = i.max_total_num_tokens;
   if (i.context_length) F.window = i.context_length;
   if (i.max_running_requests) F.maxRun = i.max_running_requests;
