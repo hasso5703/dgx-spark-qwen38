@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The proxy refuses a request naming a model the engine does not serve (v6.33).
+"""The proxy refuses a request naming a model the engine does not serve (v6.34).
 
 SGLang routes on the model it loaded, not on the model a request names: a request for a
 model that is not loaded is answered by the one that IS, with no error and nothing in the

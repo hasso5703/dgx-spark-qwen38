@@ -461,7 +461,7 @@ class FeedOutcomes(unittest.TestCase):
         # refusing (sglang#40076, #31597). A client bug, like the oversize refusal.
         "400 logprob width over ceiling": "fail",
         "400 sampling field out of range": "fail",
-        # v6.33: the request named a model this engine does not serve. SGLang would have
+        # v6.34: the request named a model this engine does not serve. SGLang would have
         # answered it with the loaded model and nothing would have shown the swap.
         "400 model not served": "fail",
         # v6.19, POST /v1/systemone: the answer was delivered; the request was

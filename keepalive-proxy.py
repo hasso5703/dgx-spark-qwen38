@@ -40,13 +40,6 @@ Six roles, nothing else:
    PROXY_HOLD_MAX_S, instead of failing at once. A streamed one hears from the proxy at
    once (200, then the keepalives of role 1); see "Holding a request" below.
 
-v6.33: an answer relayed from the engine carries one Server header and one Date. The proxy
-writes its own, and relayed the engine's beside them (uvicorn's `server: uvicorn` and `date`):
-two of each on every relayed answer, which RFC 9110 (5.3) does not allow. aiohttp refuses
-such an answer by default in 3.13.4, and in its strict mode (python -X dev) since then, so a
-LiteLLM gateway in front of the proxy answered "Duplicate 'Server' header found." (issue #39,
-2026-10-06). The engine's two are no longer relayed, as the cockpit's agent relay already did.
-
 v6.34: a request naming a model this engine does not serve is refused, not answered by
 whichever model happens to be loaded. SGLang routes on what it loaded, not on what the
 request asks for: on the reference box a request for qwen3.8-27b while the flash lane held
@@ -62,6 +55,13 @@ moment a correct request must not be refused; an engine that names nobody, or do
 answer, is not refused here - the relay path's 503 with Retry-After is the honest answer
 while a lane boots. MODEL_IDENTITY_GUARD=0 turns it off, EXTRA_SERVED_ALIASES admits names
 the engine does not list.
+
+v6.33: an answer relayed from the engine carries one Server header and one Date. The proxy
+writes its own, and relayed the engine's beside them (uvicorn's `server: uvicorn` and `date`):
+two of each on every relayed answer, which RFC 9110 (5.3) does not allow. aiohttp refuses
+such an answer by default in 3.13.4, and in its strict mode (python -X dev) since then, so a
+LiteLLM gateway in front of the proxy answered "Duplicate 'Server' header found." (issue #39,
+2026-10-06). The engine's two are no longer relayed, as the cockpit's agent relay already did.
 
 v6.32: /server_info no longer carries the engine's key anywhere. v6.24 took SGLang's key
 fields out of the answer, at the top and in every internal state, but the answer also
@@ -1389,7 +1389,7 @@ def _is_prompt_route(route):
         "/generate", "/invocations", "/vertex_generate", "/api/chat", "/api/generate")
 
 
-# ---- the model identity guard (v6.33) --------------------------------------------------
+# ---- the model identity guard (v6.34) --------------------------------------------------
 # The engine answers with the model it loaded, whatever the request names. Refusing is the
 # proxy's call to make because it already reads /v1/models (for the ceiling), so it is the
 # one thing on the path that knows which lane holds the port; the client does not, and the
@@ -3837,7 +3837,7 @@ if __name__ == "__main__":
     holds = (f"holds requests up to {HOLD_MAX_S:.0f}s while {' or '.join(HOLD_UNITS)} comes back"
              if HOLD_UNITS and HOLD_MAX_S > 0 else "holds nothing")
     # one f-string: the cockpit's tests render this line from the source
-    log(f"v6.33 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
+    log(f"v6.34 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))

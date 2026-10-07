@@ -146,7 +146,7 @@ First boot takes **~7-9 minutes** for a 27B target (CUDA graph capture + kernel 
 - **Any OpenAI client**: `http://<host>:30001/v1/chat/completions`, model `qwen3.8-27b` (flash: `qwen3.8-flash-next`), Bearer key from `~/.config/qwen38/api-key`
 - **Anthropic protocol**: `http://<host>:30001/v1/messages` (`Authorization: Bearer` only, not `x-api-key`)
 - Both are the **keepalive proxy**, not the engine: it relays every route the engine serves and adds the guards for the requests SGLang dies on rather than refuses. Since v1.17 the engine itself binds `127.0.0.1` and `:30000` answers on the box only ([docs/clients.md](docs/clients.md), [SECURITY.md](SECURITY.md))
-- **One lane at a time, and the proxy says so.** SGLang routes on the model it loaded, not on the one a request names: a request for the other lane is answered by the loaded model, with no error to notice it by. Since v1.22.7 (proxy v6.33) the proxy refuses that with a `400` naming what it does serve, because a lane switch costs 6-11 minutes and a config naming the previous lane is what every switch leaves behind until the tooling catches up
+- **One lane at a time, and the proxy says so.** SGLang routes on the model it loaded, not on the one a request names: a request for the other lane is answered by the loaded model, with no error to notice it by. Since v1.22.13 (proxy v6.34) the proxy refuses that with a `400` naming what it does serve, because a lane switch costs 6-11 minutes and a config naming the previous lane is what every switch leaves behind until the tooling catches up
 - **Don't want a systemd service?** `./install.sh --no-service && ./run.sh`: the native unit's pins and flags, foreground, no sudo, Ctrl+C and it's gone (27B targets; flash is service-only in this release). That path has no proxy: clients talk to the engine on `:30000`, without the guards, and `run.sh` serves it on `127.0.0.1` like the units (`ENGINE_BIND=0.0.0.0 ./run.sh` puts it on every interface).
 - Everything is **pinned twice** (base image digest + checkpoint revisions at download, and the same `--revision` passed to the server itself, so an upstream push to a checkpoint repo can never change what you serve; the files of the retired flash overlay keep their sha256 manifest, checked in CI, as the record of what upstream replaced, `flash-sglang/ATTRIBUTION.md`). It still works months from now; the installer is idempotent and every failure path says how to fix itself. `MODEL_REV=main ./install.sh` overrides the pins; `git checkout v1.1 && ./install.sh` returns to the DSpark config.
 - Since 2026-08-21 this same combination (DFLASH2, draft depth 16 since v1.9) is the **official recipe in the
@@ -564,7 +564,7 @@ and the keepalive proxy stay put.
   one that is, with nothing in the answer to notice it by. The switch re-points the
   opencode default model and refits the limits, but a client whose own config names the
   other lane (a second box, a script, a stale default) is not reachable from here. Since
-  v1.22.7 (proxy v6.33) the proxy refuses those with a `400` naming the model it does
+  v1.22.13 (proxy v6.34) the proxy refuses those with a `400` naming the model it does
   serve; `MODEL_IDENTITY_GUARD=0` turns that off and `EXTRA_SERVED_ALIASES` admits names
   the engine does not list itself.
 - Speculation stays lossless with every target (DFlash2 drafts and MTP drafts

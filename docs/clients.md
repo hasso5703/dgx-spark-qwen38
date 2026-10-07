@@ -18,7 +18,7 @@ whole arrangement in one line: one door, and it is the one with the lock.
 a box that wants it, and a box that already had it there keeps it across
 updates.
 
-**One lane answers `:30001`, and since v1.22.7 (proxy v6.33) the proxy says when you asked
+**One lane answers `:30001`, and since v1.22.13 (proxy v6.34) the proxy says when you asked
 for the other one.** SGLang routes on the model it loaded, not on the model a request names:
 ask it for `qwen3.8-27b` while the flash lane holds the port and the flash model answers, with
 a `200`, a normal body, and nothing anywhere to notice the swap by. A lane switch takes 6-11
