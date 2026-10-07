@@ -25,6 +25,39 @@ on('decode', d => {
   setText('tr-acc', t ? t.accept_len.toFixed(2) : 'idle');
   setText('tr-kv', t ? (100 * t.token_usage).toFixed(1) + ' %' : u.tokens ? (100 * u.tokens).toFixed(0) + ' %' : 'idle');
 });
+// ── the last 5 minutes, from the engine's own counters (engine_metrics.py) ──────
+// Each request is counted once, when it finishes; a speed holds no idle time; the cockpit's
+// canary is taken out. The window is the cockpit's, so a reload of the page loses nothing.
+// No rate off the scheduler's log lines sits here: each of those is a token count over the
+// time since the previous line of its kind, idle time included (the v1.22.12 notes in
+// CHANGELOG.md have the measurements).
+on('metrics', d => {
+  if (!d.lane){
+    cap('wm-cap', 'no text engine', ''); setText('wm-note', '');
+    setText('wm-verdict', 'No text engine is serving: there is nothing to count.');
+    facts($('wm-facts'), []); return;
+  }
+  if (d.requests == null){
+    // nothing read yet for this engine: a read that failed is said apart from one on its way
+    cap('wm-cap', d.read === false ? 'no counters' : 'first read', ''); setText('wm-note', '');
+    setText('wm-verdict', d.read === false
+      ? 'The engine has not answered /metrics. An engine started without --enable-metrics has no counters to show (both text lanes here start with it), and a busy one answers a later read.'
+      : 'The first read of the engine’s counters is on its way.');
+    facts($('wm-facts'), []); return;
+  }
+  const w = d.watched_s || 0, any = d.requests > 0 || d.decode_tps != null || d.ttft_s != null;
+  setText('wm-note', w > 0 && w < 295 ? `watched ${fmtDur(w)}` : '');
+  cap('wm-cap', d.approximate ? 'approximate' : any ? 'watching' : 'quiet', d.approximate ? 'warn' : any ? 'ok' : '');
+  setText('wm-verdict', (d.read === false ? 'The last read of the engine’s counters failed: these numbers come from the one before. ' : '')
+      + (d.approximate ? 'A canary ran beside a client request, so it is counted as one while it lies inside the window. ' : '')
+      + 'From the engine’s own counters: each request counted once, when it finishes, and the cockpit’s canary taken out.');
+  facts($('wm-facts'), [
+    ['Requests finished', fmtN(d.requests)],
+    ['Prompt tokens from the cache', d.reuse == null ? 'no request finished' : `${(100 * d.reuse).toFixed(1)} % of ${fmtN(d.prompt_tokens)}`],
+    ['Decode speed', d.decode_tps == null ? null : `${d.decode_tps.toFixed(1)} tok/s per request`],
+    ['First token after', d.ttft_s == null ? null : `${d.ttft_s < 10 ? d.ttft_s.toFixed(2) : d.ttft_s.toFixed(1)} s on average`],
+    ['Generated, all clients', d.throughput_tps == null ? null : `${d.throughput_tps.toFixed(1)} tok/s`]]);
+});
 const feedTime = ts => {
   if (!ts || ts.length < 19) return ts || '';
   const n = new Date(), today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;

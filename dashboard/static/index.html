@@ -191,20 +191,27 @@
             </table>
           </div>
         </section>
-        <section class="panel" data-src="reqguard">
-          <header><h2>Abandoned requests</h2><span class="cap" id="zg-cap">…</span></header>
-          <p id="zg-verdict" class="muted">…</p>
-          <dl class="facts" style="margin-top:var(--s-3)">
-            <dt>Proxy running</dt><dd id="zg-ver">…</dd>
-            <dt>Request id override</dt><dd id="zg-override">…</dd>
-            <dt>What the proxy did</dt><dd class="wrap" id="zg-acted">…</dd>
-            <dt>Orphan log lines</dt><dd id="zg-flood">…</dd>
-          </dl>
-          <p class="help warn-t" id="zg-note" hidden style="margin-top:var(--s-3)"></p>
-          <table class="tbl dense" id="zg-table" hidden style="margin-top:var(--s-3)">
-            <thead><tr><th>Request</th><th class="r">Lines</th><th class="r">For</th></tr></thead><tbody></tbody>
-          </table>
-        </section>
+        <div class="stack">
+          <section class="panel" data-src="metrics">
+            <header><h2>Last 5 minutes</h2><span class="aside" id="wm-note"></span><span class="cap" id="wm-cap">…</span></header>
+            <p id="wm-verdict" class="muted">…</p>
+            <dl class="facts" id="wm-facts" style="margin-top:var(--s-3)"></dl>
+          </section>
+          <section class="panel" data-src="reqguard">
+            <header><h2>Abandoned requests</h2><span class="cap" id="zg-cap">…</span></header>
+            <p id="zg-verdict" class="muted">…</p>
+            <dl class="facts" style="margin-top:var(--s-3)">
+              <dt>Proxy running</dt><dd id="zg-ver">…</dd>
+              <dt>Request id override</dt><dd id="zg-override">…</dd>
+              <dt>What the proxy did</dt><dd class="wrap" id="zg-acted">…</dd>
+              <dt>Orphan log lines</dt><dd id="zg-flood">…</dd>
+            </dl>
+            <p class="help warn-t" id="zg-note" hidden style="margin-top:var(--s-3)"></p>
+            <table class="tbl dense" id="zg-table" hidden style="margin-top:var(--s-3)">
+              <thead><tr><th>Request</th><th class="r">Lines</th><th class="r">For</th></tr></thead><tbody></tbody>
+            </table>
+          </section>
+        </div>
       </div>
     </section>
 

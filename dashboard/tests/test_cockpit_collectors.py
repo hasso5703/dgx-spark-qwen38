@@ -1163,5 +1163,134 @@ esac
         self.assertIsNone(self.cp.scheduler_alive("gone"))
 
 
+class TheLastFiveMinutesAreTheEnginesOwnCounters(Base):
+    """The Traffic view's last 5 minutes read SGLang's /metrics, where each request is counted
+    once and a speed holds no idle time (engine_metrics.py). The collector follows the text
+    engine that serves, starts again with a new one, never turns a missing read into an
+    error, and takes the cockpit's own canary out: SGLang counts it like any request."""
+
+    FLASH = "qwen38-flash.service"
+
+    def setUp(self):
+        import http.server
+        import threading
+        self.count = {"requests": 0}
+        count = self.count
+
+        def page():
+            n = count["requests"]
+            return (f'sglang:num_requests_total{{model_name="m",is_streaming="false"}} {n}\n'
+                    f'sglang:prompt_tokens_total{{model_name="m",is_streaming="false"}} {14 * n}\n'
+                    f'sglang:generation_tokens_total{{model_name="m",is_streaming="false"}} {2 * n}\n'
+                    f'sglang:time_to_first_token_seconds_count{{model_name="m"}} {n}\n'
+                    f'sglang:time_to_first_token_seconds_sum{{model_name="m"}} {0.05 * n}\n'
+                    f'sglang:inter_token_latency_seconds_count{{model_name="m"}} {n}\n'
+                    f'sglang:inter_token_latency_seconds_sum{{model_name="m"}} {0.02 * n}\n')
+
+        class Engine(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def reply(self, code, out):
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def do_GET(self):
+                self.reply(200, page().encode()) if self.path == "/metrics" else self.reply(404, b"")
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                count["requests"] += 1          # SGLang counts the canary like any request
+                self.reply(200, b'{"choices":[{"message":{"content":"OK"}}],'
+                                b'"usage":{"prompt_tokens":14,"completion_tokens":2}}')
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Engine)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.base = f"http://127.0.0.1:{srv.server_address[1]}"
+        saved = (self.cp.ENGINE_BASE, self.cp.DRY_RUN, self.cp.METRICS, dict(self.cp.CANARY),
+                 dict(self.cp.LAST_PROGRESS))
+        with self.cp.LIFE_LOCK:
+            saved_life = {k: dict(v) for k, v in self.cp.LIFE.items()}
+            self.cp.LIFE["states"] = {self.FLASH: "ready"}
+            self.cp.LIFE["enter"] = {self.FLASH: "1000"}
+        with self.cp.STATE_LOCK:
+            saved_fast = self.cp.STATE.get("engine_fast")
+            self.cp.STATE["engine_fast"] = {"data": {"load": [{"num_reqs": 0, "num_waiting_reqs": 0}]}}
+        self.cp.ENGINE_BASE, self.cp.DRY_RUN = self.base, False
+        self.cp.METRICS = self.cp.em.Window(300.0)
+        self.cp.LAST_PROGRESS["ts"] = None
+
+        def restore():
+            self.cp.ENGINE_BASE, self.cp.DRY_RUN, self.cp.METRICS = saved[0], saved[1], saved[2]
+            self.cp.CANARY.clear(); self.cp.CANARY.update(saved[3])
+            self.cp.LAST_PROGRESS.clear(); self.cp.LAST_PROGRESS.update(saved[4])
+            with self.cp.LIFE_LOCK:
+                self.cp.LIFE.clear(); self.cp.LIFE.update(saved_life)
+            with self.cp.STATE_LOCK:
+                self.cp.STATE["engine_fast"] = saved_fast
+        self.addCleanup(restore)
+
+    def client(self):
+        import urllib.request
+        urllib.request.urlopen(urllib.request.Request(self.base + "/v1/chat/completions", b"{}"), timeout=5).read()
+
+    def test_no_text_engine_no_window(self):
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"] = {self.FLASH: "stopped"}
+        self.assertEqual(self.cp.collect_engine_metrics(), {"node_id": "local", "lane": None})
+
+    def test_a_serving_engine_is_read(self):
+        out = self.cp.collect_engine_metrics()
+        self.assertEqual((out["lane"], out["read"], out["requests"], out["watched_s"]), (self.FLASH, True, 0, 0.0))
+
+    def test_the_canary_is_taken_out_and_a_client_is_not(self):
+        self.cp.collect_engine_metrics()
+        canary = self.cp.collect_canary()
+        self.assertFalse(canary["skipped"], canary)
+        self.assertEqual(self.count["requests"], 1, "the canary reached the engine")
+        out = self.cp.collect_engine_metrics()
+        self.assertEqual((out["requests"], out["prompt_tokens"], out["canaries_out"], out["approximate"]),
+                         (0, 0, 1, False), out)
+        self.assertIsNone(out["ttft_s"])
+        self.client()
+        out = self.cp.collect_engine_metrics()
+        self.assertEqual((out["requests"], out["prompt_tokens"], out["generated_tokens"]), (1, 14, 2), out)
+
+    def test_a_canary_whose_engine_did_not_answer_makes_it_approximate(self):
+        self.cp.collect_engine_metrics()
+        self.cp.ENGINE_BASE = "http://127.0.0.1:9"          # closed: the canary fails at once
+        self.cp.collect_canary()
+        self.cp.ENGINE_BASE = self.base
+        self.assertTrue(self.cp.collect_engine_metrics()["approximate"])
+
+    def test_a_missing_read_is_a_gap_not_an_error(self):
+        self.cp.collect_engine_metrics()
+        self.client()
+        self.cp.collect_engine_metrics()
+        self.cp.ENGINE_BASE = "http://127.0.0.1:9"
+        out = self.cp.collect_engine_metrics()
+        self.assertNotIn("error", out)
+        self.assertEqual((out["read"], out["requests"]), (False, 1), "the last numbers, said as such")
+
+    def test_a_new_engine_starts_the_window_again(self):
+        self.cp.collect_engine_metrics()
+        self.client()
+        self.assertEqual(self.cp.collect_engine_metrics()["requests"], 1)
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["enter"] = {self.FLASH: "2000"}     # the same unit, started again
+        out = self.cp.collect_engine_metrics()
+        self.assertEqual((out["requests"], out["watched_s"]), (0, 0.0))
+
+    def test_a_dry_run_cockpit_reads_but_never_generates(self):
+        self.cp.DRY_RUN = True
+        self.cp.collect_engine_metrics()
+        self.assertTrue(self.cp.collect_canary()["skipped"])
+        self.assertEqual(self.count["requests"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

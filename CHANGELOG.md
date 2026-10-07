@@ -1,5 +1,64 @@
 # Changelog
 
+## v1.22.12 (2026-10-07): the Traffic view says the last 5 minutes from the engine's own counters
+
+The Traffic view gained a **Last 5 minutes** box: the requests that finished, the share
+of their prompt tokens the engine found in its cache, the decode speed of a request, the
+mean time to a request's first token, and the tokens per second all clients got. It reads
+the engine's own counters (`/metrics`): both text lanes start with `--enable-metrics`,
+SGLang serves the endpoint without the API key on the engine's loopback port
+(SECURITY.md), and the cockpit reads it every 5 s and keeps the window itself, so a
+reload of the page loses nothing. Each request is counted once, when it finishes; a
+decode speed holds no idle time (SGLang adds, for every output after a request's first,
+the time since the previous one and the tokens it carried); the /health probe is not
+counted by SGLang (`log_metrics=False`).
+
+The idea and its first version came from PR #40 by @jimkont, which read the rates the
+scheduler prints on its log lines. Those are not used: each is a token count over the
+time since the previous line of its kind, idle time included, and replayed on 21 minutes
+of the reference box's flash journal (2026-10-06) they would have read 0.5 to 109.5K t/s
+of prefill on a lane measured at 2,250, and 0.3 to 43.0 t/s of decode on one measured at
+29 to 47.9.
+
+The cockpit's canary, a real two-token chat request every 90 s while nothing else runs,
+is counted by SGLang like a client's and taken out exactly: the cockpit reads the
+counters just before and just after it, and takes that difference out of the windows that
+hold it. Any read of the window's own that ran while a canary was in flight is dropped,
+so every read kept is wholly before or wholly after each canary. When a client request
+finished inside a canary, the difference is not the canary's alone, and the box says its
+numbers are approximate for as long as that canary lies inside the window. A new engine,
+or counters that went back (the engine started again), start the window again.
+
+Measured on the reference box (2026-10-07), on both text lanes (the flash lane serving
+its flash-uncensored checkpoint): a read of `/metrics` takes 3.4 to 3.5 ms (median of
+100) and costs the engine 3.7 to 3.8 ms of CPU, under 0.1 % of a core at one read every
+5 s. For each of six requests per lane, the counters gave its prompt and generated tokens
+exactly as the answer's usage did; a prompt sent again was found in the cache at 7,296 of
+7,313 and 73,280 of 73,328 tokens; the time to first token agreed with the client's own
+clock within 4 ms (56.103 s against 56.106 s for a 73,328-token prompt on the 27B); the
+decode speed agreed with the client's within 0.05 tok/s (115.35 against 115.3 over 1,000
+tokens on the 27B, 51.99 against 51.97 on the flash). In 100 s with no client, the
+counters moved by the cockpit's canary alone: one request of 14 prompt tokens and 2
+generated on the 27B, nothing on the flash; the /health probe, every 30 s, is not
+counted. The branch's own collector and canary, run against the serving flash lane, took
+a real canary out exactly and counted the client request after it to the token. "First
+token after" is the time to a request's first output: its first token when it streams, as
+agents do. A request that does not stream has its first output when its length lands on a
+multiple of 50 tokens, or at its end, and as both lanes decode several tokens a step
+(speculative decoding), that is often its end (a 200-token request on the flash: 6.96 s
+to its first output and to its end). "Generated, all clients" is the tokens of the
+requests that finished in the window, over its length.
+
+`dashboard/engine_metrics.py` is new, with `dashboard/tests/test_engine_metrics.py` (24
+tests: the reading, against a page captured from the 27B as it came ready, the
+arithmetic, the canary, the restarts, and a replay of random traffic with the box's
+timing that checks the window after every read, over 5,000 windows);
+`test_cockpit_collectors.py` gained the collector and the canary against a stub engine (7
+tests) and `test_page_behaviour.py` the box (7 tests). Eight hand-made mutants of
+`engine_metrics.py` each fail the new tests.
+
+An update restarts the cockpit; the engines and the proxy keep running.
+
 ## v1.22.11 (2026-10-07): a Load that downloads says how far it is and runs to its end, and a switch not restarted yet is said and finished
 
 - **The Load window follows a step to its end.** It gave each step 20 minutes and then

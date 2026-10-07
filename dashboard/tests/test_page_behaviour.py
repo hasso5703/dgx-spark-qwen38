@@ -1201,5 +1201,65 @@ class TheLoadWindowFollowsAStepToItsEnd(unittest.TestCase):
         self.assertEqual(r["after"]["actions"], ["switch"], r["after"])
 
 
+class TheLastFiveMinutesSayTheEnginesCounters(unittest.TestCase):
+    """The Traffic view's last 5 minutes come from the engine's own counters, which the
+    cockpit reads and windows (engine_metrics.py): what each row says, and what the box says
+    when there is nothing to count, a read failed, or a canary could not be taken out."""
+
+    FULL = {"lane": "qwen38-flash.service", "read": True, "watched_s": 300.0, "requests": 4,
+            "prompt_tokens": 200000, "cached_tokens": 190000, "generated_tokens": 1000,
+            "reuse": 0.95, "decode_tps": 49.83, "ttft_s": 1.0, "throughput_tps": 3.333,
+            "canaries_out": 1, "approximate": False}
+
+    def box(self, metrics):
+        return run(self, r"""
+        feed({config: CONFIG, units: UNITS, metrics: %s});
+        const dl = $('wm-facts'), facts = {};
+        [...dl.children].forEach((n, k, a) => { if (n.tagName === 'DT') facts[n.textContent] = a[k + 1].textContent; });
+        report({cap: txt('wm-cap'), note: txt('wm-note'), verdict: txt('wm-verdict'), facts});
+        """ % json.dumps(metrics))
+
+    def test_the_four_numbers_and_the_count(self):
+        r = self.box(self.FULL)
+        self.assertEqual(r["facts"], {"Requests finished": "4",
+                                      "Prompt tokens from the cache": "95.0 % of 200,000",
+                                      "Decode speed": "49.8 tok/s per request",
+                                      "First token after": "1.00 s on average",
+                                      "Generated, all clients": "3.3 tok/s"}, r)
+        self.assertEqual((r["cap"], r["note"]), ("watching", ""), r)
+        self.assertIn("each request counted once, when it finishes", r["verdict"])
+
+    def test_a_young_window_says_how_long_it_watched(self):
+        self.assertEqual(self.box(dict(self.FULL, watched_s=70.0))["note"], "watched 70 s")
+
+    def test_nothing_finished_is_said_not_shown_as_zero_percent(self):
+        r = self.box(dict(self.FULL, requests=0, prompt_tokens=0, reuse=None, decode_tps=None,
+                          ttft_s=None, throughput_tps=0.0))
+        self.assertEqual(r["cap"], "quiet")
+        self.assertEqual(r["facts"]["Prompt tokens from the cache"], "no request finished")
+        self.assertNotIn("Decode speed", r["facts"])
+        self.assertNotIn("First token after", r["facts"])
+
+    def test_no_text_engine(self):
+        r = self.box({"lane": None})
+        self.assertEqual((r["cap"], r["facts"]), ("no text engine", {}), r)
+
+    def test_a_failed_read_and_an_approximate_window_say_so(self):
+        r = self.box(dict(self.FULL, read=False, approximate=True))
+        self.assertEqual(r["cap"], "approximate")
+        self.assertIn("The last read of the engine’s counters failed", r["verdict"])
+        self.assertIn("A canary ran beside a client request", r["verdict"])
+
+    def test_the_first_read_on_its_way(self):
+        r = self.box({"lane": "qwen38-flash.service", "read": True, "watched_s": 0.0, "requests": None})
+        self.assertEqual((r["cap"], r["facts"]), ("first read", {}), r)
+
+    def test_an_engine_that_never_answered_its_counters_says_why_it_may_be(self):
+        r = self.box({"lane": "qwen38-flash.service", "read": False, "watched_s": 0.0, "requests": None})
+        self.assertEqual((r["cap"], r["facts"]), ("no counters", {}), r)
+        self.assertIn("--enable-metrics", r["verdict"])
+        self.assertIn("a busy one answers a later read", r["verdict"])
+
+
 if __name__ == "__main__":
     unittest.main()

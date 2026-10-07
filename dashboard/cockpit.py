@@ -36,6 +36,7 @@ from pathlib import Path
 from collections import deque
 
 import agent_relay as ar
+import engine_metrics as em
 import lifecycle as lc
 import registry as rg
 import recipes as rp
@@ -666,17 +667,78 @@ def collect_canary():
     req = urllib.request.Request(ENGINE_BASE + "/v1/chat/completions", body,
                                  {"Content-Type": "application/json",
                                   "Authorization": f"Bearer {api_key()}"})
-    t0 = time.time()
+    # the engine counts this request like a client's: its counters read on either side of
+    # it are how the Traffic view takes it out (engine_metrics.py), and the window drops any
+    # read of its own that ran while this was in flight
+    key = serving_text_key()
+    if key:
+        with METRICS_LOCK:
+            METRICS.canary_begins(time.time())
+    ok, before = False, None
     try:
-        urllib.request.urlopen(req, timeout=25).read()
-        CANARY.update(fails=0, last_ok=time.time(), last_err="",
-                      latency=round(time.time() - t0, 2))
-    except Exception as e:  # noqa: BLE001
-        CANARY["fails"] += 1
-        CANARY["last_err"] = f"{type(e).__name__}: {str(e)[:80]}"
-        if CANARY["fails"] == 1:
-            add_event("canary", f"generation probe failed: {CANARY['last_err']}")
+        before = engine_metrics_read() if key else None
+        t0 = time.time()
+        try:
+            urllib.request.urlopen(req, timeout=25).read()
+            CANARY.update(fails=0, last_ok=time.time(), last_err="",
+                          latency=round(time.time() - t0, 2))
+            ok = True
+        except Exception as e:  # noqa: BLE001
+            CANARY["fails"] += 1
+            CANARY["last_err"] = f"{type(e).__name__}: {str(e)[:80]}"
+            if CANARY["fails"] == 1:
+                add_event("canary", f"generation probe failed: {CANARY['last_err']}")
+    finally:
+        if key:
+            # a canary that failed may still be counted once it ends: no difference is its own
+            after = engine_metrics_read() if ok else None
+            with METRICS_LOCK:
+                METRICS.canary(time.time(), key, before, after)
     return {"node_id": "local", **CANARY, "skipped": False}
+
+
+# The engine's own counters over the last 5 minutes (engine_metrics.py): the Traffic view's
+# cache reuse, decode speed, time to first token and tokens per second for all clients.
+METRICS = em.Window(300.0)
+METRICS_LOCK = threading.Lock()
+
+
+def engine_metrics_read(timeout: float = 4.0):
+    """One read of the serving engine's counters, or None: no engine, no answer in time, or
+    not an SGLang page. Unauthenticated: SGLang exempts /metrics from the API key."""
+    try:
+        with urllib.request.urlopen(ENGINE_BASE + "/metrics", timeout=timeout) as r:
+            return em.parse(r.read(4_000_000).decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 (a missing read is a gap in the window, never an error)
+        return None
+
+
+def serving_text_key():
+    """(unit, its start) of the text engine serving now, or None. The counters are one
+    engine's: they start again from zero with every start of it."""
+    with LIFE_LOCK:
+        states = dict(LIFE.get("states", {}))
+        enter = dict(LIFE.get("enter", {}))
+    for unit in lc.TEXT_UNITS:
+        if states.get(unit) in ("ready", "degraded", "wedged"):
+            return (unit, enter.get(unit))
+    return None
+
+
+@guard
+def collect_engine_metrics():
+    """5 s tier: the serving engine's counters over the last 5 minutes."""
+    key = serving_text_key()
+    if key is None:
+        return {"node_id": "local", "lane": None}
+    started = time.time()
+    values = engine_metrics_read()
+    now = time.time()
+    with METRICS_LOCK:
+        if values is not None:
+            METRICS.add(now, key, values, started)
+        stats = METRICS.stats(now) if METRICS.key == key else {"watched_s": 0.0, "requests": None}
+    return {"node_id": "local", "lane": key[0], "read": values is not None, **stats}
 
 
 DECODE_RE = re.compile(
@@ -1688,6 +1750,9 @@ TIERS = [
     (3.0, {"gpu": collect_gpu, "decode": collect_decode_telemetry}),
     (5.0, {"units": collect_units, "containers": collect_containers,
            "feed": collect_feed, "agent": collect_agent}),
+    # its own thread: a /metrics read can wait its whole 4 s on an engine slow to answer,
+    # and the units, the feed and the agent must not wait with it
+    (5.0, {"metrics": collect_engine_metrics}),
     (30.0, {"engine_info": collect_engine_info, "repo": collect_repo, "kernel": collect_kernel,
             "opencode": collect_opencode, "reqguard": collect_guard,
             "update": collect_update}),

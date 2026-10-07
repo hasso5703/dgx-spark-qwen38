@@ -1,0 +1,145 @@
+# HELP sglang:time_to_first_token_seconds Histogram of time to first token in seconds.
+# TYPE sglang:time_to_first_token_seconds histogram
+sglang:time_to_first_token_seconds_sum{engine_type="unified",is_streaming="false",model_name="qwen3.8-27b"} 12.01112219899369
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="0.1",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="0.2",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="0.4",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="0.6",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="0.8",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="1.0",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="2.0",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="4.0",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="6.0",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="8.0",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="10.0",model_name="qwen3.8-27b"} 0.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="20.0",model_name="qwen3.8-27b"} 1.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="40.0",model_name="qwen3.8-27b"} 1.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="60.0",model_name="qwen3.8-27b"} 1.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="80.0",model_name="qwen3.8-27b"} 1.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="100.0",model_name="qwen3.8-27b"} 1.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="200.0",model_name="qwen3.8-27b"} 1.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="400.0",model_name="qwen3.8-27b"} 1.0
+sglang:time_to_first_token_seconds_bucket{engine_type="unified",is_streaming="false",le="+Inf",model_name="qwen3.8-27b"} 1.0
+sglang:time_to_first_token_seconds_count{engine_type="unified",is_streaming="false",model_name="qwen3.8-27b"} 1.0
+# HELP sglang:e2e_request_latency_seconds Histogram of End-to-end request latency in seconds
+# TYPE sglang:e2e_request_latency_seconds histogram
+sglang:e2e_request_latency_seconds_sum{engine_type="unified",is_streaming="false",model_name="qwen3.8-27b"} 12.011127238991321
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="0.1",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="0.2",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="0.4",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="0.6",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="0.8",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="1.0",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="2.0",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="4.0",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="6.0",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="8.0",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="10.0",model_name="qwen3.8-27b"} 0.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="20.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="40.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="60.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="80.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="100.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="200.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="400.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="600.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="1200.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="1800.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="2400.0",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_bucket{engine_type="unified",is_streaming="false",le="+Inf",model_name="qwen3.8-27b"} 1.0
+sglang:e2e_request_latency_seconds_count{engine_type="unified",is_streaming="false",model_name="qwen3.8-27b"} 1.0
+# HELP sglang:prompt_tokens_histogram Histogram of prompt token length.
+# TYPE sglang:prompt_tokens_histogram histogram
+sglang:prompt_tokens_histogram_sum{engine_type="unified",model_name="qwen3.8-27b"} 178.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="100.0",model_name="qwen3.8-27b"} 0.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="300.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="500.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="700.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="1000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="1500.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="2000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="3000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="4000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="5000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="6000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="7000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="8000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="9000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="10000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="12500.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="15000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="17500.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="20000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="22500.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="25000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="27500.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="30000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="35000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="40000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="60000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="80000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="100000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="200000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="300000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="400000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="600000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="800000.0",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="1e+06",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="1.1e+06",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_bucket{engine_type="unified",le="+Inf",model_name="qwen3.8-27b"} 1.0
+sglang:prompt_tokens_histogram_count{engine_type="unified",model_name="qwen3.8-27b"} 1.0
+# HELP sglang:generation_tokens_histogram Histogram of generation token length.
+# TYPE sglang:generation_tokens_histogram histogram
+sglang:generation_tokens_histogram_sum{engine_type="unified",model_name="qwen3.8-27b"} 8.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="100.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="300.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="500.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="700.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="1000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="1500.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="2000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="3000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="4000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="5000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="6000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="7000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="8000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="9000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="10000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="12500.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="15000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="17500.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="20000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="22500.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="25000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="27500.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="30000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="35000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="40000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="60000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="80000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="100000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="200000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="300000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="400000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="600000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="800000.0",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="1e+06",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="1.1e+06",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_bucket{engine_type="unified",le="+Inf",model_name="qwen3.8-27b"} 1.0
+sglang:generation_tokens_histogram_count{engine_type="unified",model_name="qwen3.8-27b"} 1.0
+# HELP sglang:num_running_reqs The number of running requests.
+# TYPE sglang:num_running_reqs gauge
+sglang:num_running_reqs{engine_type="unified",model_name="qwen3.8-27b",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.0
+# HELP sglang:cache_hit_rate The prefix cache hit rate.
+# TYPE sglang:cache_hit_rate gauge
+sglang:cache_hit_rate{engine_type="unified",model_name="qwen3.8-27b",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.0
+# HELP sglang:prompt_tokens_total Number of prefill tokens processed.
+# TYPE sglang:prompt_tokens_total counter
+sglang:prompt_tokens_total{engine_type="unified",is_streaming="false",model_name="qwen3.8-27b"} 178.0
+# HELP sglang:generation_tokens_total Number of generation tokens processed.
+# TYPE sglang:generation_tokens_total counter
+sglang:generation_tokens_total{engine_type="unified",is_streaming="false",model_name="qwen3.8-27b"} 8.0
+# HELP sglang:num_requests_total Number of requests processed.
+# TYPE sglang:num_requests_total counter
+sglang:num_requests_total{engine_type="unified",is_streaming="false",model_name="qwen3.8-27b"} 1.0
