@@ -184,6 +184,41 @@ def main() -> None:
         if ceiling:
             assert want[0] <= ceiling - m.CEILING_MARGIN < m.fit(914_573, 0, 1_010_000)[0], want
 
+    # 8. Whose limits get fitted is read from the config. A box that folded both lanes
+    #    into one provider of its own (GB_10 on the reference box, 2026-10-07) was skipped
+    #    entirely: the pair in LANE_MODEL only knew qwen38/flashnext, so the config opencode
+    #    actually reads stopped following the engine while the artifact kept being fitted.
+    import json as _json
+    info = {"max_total_num_tokens": 400_000, "served_model_name": "qwen3.8-flash-next",
+            "context_length": 262_144, "model_path": "x"}
+    m.engine_info = lambda base: info
+    merges = []
+
+    def fake(argv, **kw):
+        argv = [str(a) for a in argv]
+        if argv[:2] == ["systemctl", "show"]:
+            return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+        if any(a.endswith("oc-merge-limits.py") for a in argv):
+            merges.append(argv)
+            return sp.CompletedProcess(argv, 0, stdout="limits: 1/1 -> x/y", stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+    m.subprocess.run, home = fake, os.environ["HOME"]
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            m.CONFIG_DIR, os.environ["HOME"] = P(d), d      # and no look at the real one
+            (P(d) / "opencode.json").write_text(_json.dumps({"provider": {"flashnext": {
+                "options": {"baseURL": "http://127.0.0.1:30001/v1"},
+                "models": {"qwen3.8-flash-next": {}}}}}))
+            (P(d) / ".config" / "opencode").mkdir(parents=True)
+            (P(d) / ".config" / "opencode" / "opencode.json").write_text(_json.dumps(
+                {"provider": {"GB_10": {"options": {"baseURL": "http://127.0.0.1:30001/v1"},
+                                        "models": {"qwen3.8-flash-next": {}, "qwen3.8-27b": {}}}}}))
+            assert m.main([]) == 0
+    finally:
+        m.subprocess.run, os.environ["HOME"] = real_run, home
+    called = [a[3] for a in merges if len(a) > 4 and a[3] != "--compaction"]
+    assert "GB_10" in called and "flashnext" in called, merges
+
     # 9. The pool is read from /server_info; the deprecated /get_server_info only on an
     #    engine that answers 404 to it (SGLang warns on every call of the old route).
     import http.server

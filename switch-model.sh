@@ -728,8 +728,8 @@ SW_OC_SUM_BEFORE="$(oc_configs_sum)"
 if read -r SW_CTX SW_OUT _SW_LABEL \
      <<<"$("$REPO_DIR/oc-limits.sh" "$CHOICE" --from "$INVOCATION")" \
    && [ -n "${SW_CTX:-}" ]; then
-  if [ "$TARGET_LANE" = "flash" ]; then SW_PROV=flashnext; SW_MODEL=qwen3.8-flash-next
-  else SW_PROV=qwen38; SW_MODEL=qwen3.8-27b; fi
+  if [ "$TARGET_LANE" = "flash" ]; then SW_MODEL=qwen3.8-flash-next
+  else SW_MODEL=qwen3.8-27b; fi
   # The compaction block is global, so it is sized from the target's context and
   # rewritten with the limits: a switch that moved the threshold and left the old
   # preserve_recent_tokens behind would compact the new lane against the old
@@ -737,8 +737,17 @@ if read -r SW_CTX SW_OUT _SW_LABEL \
   SW_KEEP="$("$REPO_DIR/oc-limits.sh" --preserve "$SW_CTX")" || SW_KEEP=""
   for OC_JSON in "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json"; do
     [ -f "$OC_JSON" ] || continue
-    python3 "$REPO_DIR/oc-merge-limits.py" "$OC_JSON" "$SW_PROV" "$SW_MODEL" "$SW_CTX" "$SW_OUT" \
-      || echo "NOTE: could not update the limits in $OC_JSON; check them by hand ($SW_CTX/$SW_OUT)"
+    # Which provider declares this lane's model is read from that config: a box that folded
+    # both lanes into one provider of its own (GB_10 on the reference box, 2026-10-07) has
+    # neither qwen38 nor flashnext in it, and its real config stopped being updated.
+    SW_PROVS="$(python3 "$REPO_DIR/oc-merge-limits.py" "$OC_JSON" --lane-providers "$SW_MODEL")"
+    if [ -z "$SW_PROVS" ]; then
+      if [ "$TARGET_LANE" = "flash" ]; then SW_PROVS=flashnext; else SW_PROVS=qwen38; fi
+    fi
+    for SW_PROV in $SW_PROVS; do
+      python3 "$REPO_DIR/oc-merge-limits.py" "$OC_JSON" "$SW_PROV" "$SW_MODEL" "$SW_CTX" "$SW_OUT" \
+        || echo "NOTE: could not update the limits in $OC_JSON; check them by hand ($SW_CTX/$SW_OUT)"
+    done
     [ -n "$SW_KEEP" ] && { python3 "$REPO_DIR/oc-merge-limits.py" "$OC_JSON" --compaction "$SW_KEEP" \
       || echo "NOTE: could not update the compaction block in $OC_JSON; check it by hand ($SW_KEEP)"; }
   done

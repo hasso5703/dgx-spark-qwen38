@@ -7,6 +7,7 @@ Usage: oc-merge-limits.py <target opencode.json> <provider> <model id> <context>
        oc-merge-limits.py <target opencode.json> --autoupdate notify
        oc-merge-limits.py <target opencode.json> --add-providers <generated opencode.json>
        oc-merge-limits.py <target opencode.json> --remove-providers <API key file>
+       oc-merge-limits.py <target opencode.json> --lane-providers <model id>   (names, one per line)
 
 Only the "limit" object of the named provider/model is rewritten, in place,
 by targeted text substitution: comments, ordering and the user's other
@@ -52,6 +53,7 @@ import shutil
 import sys
 import tempfile
 import time
+from urllib.parse import urlparse
 
 
 
@@ -495,6 +497,49 @@ def add_variant(path: str, provider: str, model: str, level: str) -> int:
 OURS = ("qwen38", "flashnext")
 
 
+def _local_host(host: str) -> bool:
+    """Loopback or LAN: this box's engine or proxy, or a client box reaching this box's.
+    A hosted provider that happened to pick the same model id is not this box's lane."""
+    return host in ("127.0.0.1", "localhost", "::1") or host.startswith(("10.", "192.168.", "172."))
+
+
+def lane_providers_in(doc, model: str) -> list:
+    """The same question, on an already parsed document (the cockpit has one open)."""
+    if not isinstance(doc, dict):
+        return []
+    out = []
+    for name, block in (doc.get("provider") or {}).items():
+        if not isinstance(block, dict):
+            continue
+        if model not in (block.get("models") or {}):
+            continue
+        url = str(((block.get("options") or {}).get("baseURL") or ""))
+        host = (urlparse(url).hostname or "").lower()
+        if _local_host(host):
+            out.append(name)
+    return out
+
+
+def lane_providers(path: str, model: str) -> list:
+    """Every provider in this opencode config that can serve `model` here: it declares
+    that model id, and its baseURL is a local endpoint.
+
+    The provider names used to be hardcoded - ("qwen38", "flashnext") - and that broke
+    silently on a box that folded its two lanes into one provider of its own (GB_10 on the
+    reference box, 2026-10-07): oc-fit-limits.py found no entry to fit, oc-point-default.py
+    refused to move the default model off the lane that had stopped serving, and the
+    cockpit reported no fit verdict at all - while the three client boxes kept working,
+    because their provider name comes from clients.conf rather than from this table. The
+    name is therefore read from the config: whoever declares the served model id, locally.
+    Several names can match (the generated artifact and the real config are different
+    shapes), and the order is the order they appear in the file."""
+    try:
+        doc = load(read(path))
+    except (OSError, ValueError):
+        return []
+    return lane_providers_in(doc, model)
+
+
 def _added_ok(text: str, before: dict, blocks: dict) -> str:
     """'' when text is the document `before` plus exactly `blocks` in its provider object."""
     try:
@@ -634,6 +679,11 @@ def main(argv: list[str]) -> int:
         return add_providers(argv[1], argv[3])
     if len(argv) == 4 and argv[2] == "--remove-providers":
         return remove_providers(argv[1], argv[3])
+    if len(argv) == 4 and argv[2] == "--lane-providers":
+        # one name per line, in file order; empty when the config declares the model nowhere
+        for name in lane_providers(argv[1], argv[3]):
+            print(name)
+        return 0
     if len(argv) == 6 and argv[4] == "--add-variant":
         return add_variant(argv[1], argv[2], argv[3], argv[5])
     keep_lower = argv[6:] == ["--keep-lower"]

@@ -10,6 +10,12 @@ artifact and the config opencode actually reads) and switch-model.sh (both
 configs) all call this, so a new target cannot update one spelling and
 forget the other two. A config without the lane's provider is left untouched
 with a NOTE (it predates the target: re-run ./install.sh to regenerate it).
+The PROVIDER name is read from each config (oc-merge-limits.py lane_providers):
+whichever provider declares the served model id on a local endpoint. It used to
+be hardcoded to qwen38/flashnext, and a box that folded its two lanes into one
+provider of its own (GB_10 on the reference box, 2026-10-07) then kept pointing
+opencode at the lane that had stopped serving: the 27B answered requests opencode
+labelled flash, for an hour, with nothing to show it.
 
 The file is edited the way oc-merge-limits.py edits it, whose reader and writer
 this uses: only "model", "small_model" and the served entry's "name" change, by a
@@ -80,8 +86,15 @@ def main() -> None:
         print(__doc__.strip(), file=sys.stderr)
         sys.exit(2)
     path, lane, choice, window = sys.argv[1:5]
-    want = "flashnext/qwen3.8-flash-next" if lane == "flash" else "qwen38/qwen3.8-27b"
-    prov, mid = want.split("/")
+    # The model id is per lane; the provider that declares it is read from the config, so a
+    # box that renamed or folded its providers (GB_10 on the reference box) still gets its
+    # default model moved. The old hardcoded name stays as the fallback, which is what makes
+    # the NOTE below fire for a config that predates the target.
+    mid = "qwen3.8-flash-next" if lane == "flash" else "qwen3.8-27b"
+    found = ocm.lane_providers(path, mid)
+    prov = found[0] if found else ("flashnext" if lane == "flash" else "qwen38")
+    ours = set(found) | set(ocm.OURS)
+    want = f"{prov}/{mid}"
     try:
         text = ocm.read(path)
         cfg = ocm.load(text)
@@ -101,7 +114,7 @@ def main() -> None:
         cur = cfg.get(key)
         if cur == want:
             continue
-        if isinstance(cur, str) and cur.split("/", 1)[0] not in ocm.OURS:
+        if isinstance(cur, str) and cur.split("/", 1)[0] not in ours:
             kept.append((key, cur))
             continue
         if cur is None and key == "small_model" and new.get("model") != want:

@@ -358,7 +358,8 @@ on('agent', d => { const o = $('log-opt-agent'); if (o) o.hidden = !d.enabled; }
 on('opencode', d => {
   const bad = d.real.error ? 'unknown: the config does not parse' : null;
   const lim = l => bad || (l && l.context ? `${fmtN(l.context)} context, ${fmtN(l.output || 0)} out` : 'not declared');
-  setText('oc-lim27', lim(d.real.limits['qwen38/qwen3.8-27b'])); setText('oc-limflash', lim(d.real.limits['flashnext/qwen3.8-flash-next']));
+  const byModel = d.real.by_model || {};   // keyed by model id: the provider name is the box's own
+  setText('oc-lim27', lim(byModel['qwen3.8-27b'])); setText('oc-limflash', lim(byModel['qwen3.8-flash-next']));
   if (!d.enabled){
     cap('oc-cap', 'off', ''); setText('oc-state', 'off (installed with --no-opencode)' + (d.off_note ? `, ${d.off_note}` : ''));
     setText('oc-default', d.real.present ? (bad || d.real.default || 'none') + ' (your own config, never touched)' : 'no opencode config on this box');

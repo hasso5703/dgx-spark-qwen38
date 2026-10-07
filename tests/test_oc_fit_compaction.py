@@ -84,7 +84,10 @@ class NothingFittedIsNotAFit(Base):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(self.m.main([]), 0)
         out = buf.getvalue()
-        self.assertIn("no opencode config here has an entry for qwen38/qwen3.8-27b", out)
+        # the model is named, not a provider: which provider declares it is read from the
+        # config, and this one declares nothing
+        self.assertIn("no opencode config here has an entry for qwen3.8-27b", out)
+        self.assertIn("nothing fitted", out)
         self.assertNotIn("already asks", out)
         self.assertFalse([c for c in self.calls if "--compaction" in c], "a compaction merged with no entry")
 

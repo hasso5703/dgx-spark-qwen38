@@ -953,20 +953,28 @@ def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
 _OCM: dict = {}
 
 
+def ocm_module():
+    """oc-merge-limits.py, loaded once: the cockpit reads and judges the same files the
+    installer edits, so it must parse and query them with the same code. None when the
+    checkout has no such file (an older one), and the callers fall back."""
+    if "mod" not in _OCM:
+        try:
+            spec = importlib.util.spec_from_file_location("ocm_for_cockpit", REPO_DIR / "oc-merge-limits.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _OCM["mod"] = mod
+        except Exception:                               # noqa: BLE001 (an older checkout)
+            _OCM["mod"] = None
+    return _OCM["mod"]
+
+
 def jsonc_load(text: str):
     """A config as opencode reads it, comments and trailing commas allowed: with json.loads a
     commented config read as unreadable, and an unreadable one as empty ("none", "not
     declared") on the Settings tab (found in review, 2026-09-24). The parser is oc-merge-limits',
     the one the installer edits these files with."""
-    if "load" not in _OCM:
-        try:
-            spec = importlib.util.spec_from_file_location("ocm_for_cockpit", REPO_DIR / "oc-merge-limits.py")
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            _OCM["load"] = mod.load
-        except Exception:                               # noqa: BLE001 (an older checkout)
-            _OCM["load"] = json.loads
-    return _OCM["load"](text)
+    mod = ocm_module()
+    return (mod.load if mod is not None else json.loads)(text)
 
 
 @guard
@@ -980,8 +988,11 @@ def collect_opencode():
     out = {"node_id": "local", "enabled": not off.exists(),
            "off_note": off.read_text(errors="replace").strip()[:100] if off.exists() else None,
            "launcher": {"present": launcher.exists(), "ours": False, "cap": None},
-           "real": {"present": real.exists(), "default": None, "limits": {}},
-           "artifact": {"present": art.exists(), "default": None}}
+           "real": {"present": real.exists(), "default": None, "limits": {}, "by_model": {}},
+           "artifact": {"present": art.exists(), "default": None},
+           # model id -> the providers in the real config that declare it (empty dict when
+           # nothing was read; a model mapped to [] means the config has no entry for it)
+           "lane_providers": {}}
     if launcher.exists():
         txt = launcher.read_text(errors="replace")
         out["launcher"]["ours"] = "dgx-spark-qwen38" in txt
@@ -1000,15 +1011,27 @@ def collect_opencode():
             continue
         out[key]["default"] = cfg.get("model")
         if key == "real":
-            for prov, pv in (cfg.get("provider") or {}).items():
-                if prov not in ("qwen38", "flashnext"):
-                    continue
-                for mid, mv in (pv.get("models") or {}).items():
-                    lim = mv.get("limit") or {}
-                    out["real"]["limits"][f"{prov}/{mid}"] = {"context": lim.get("context"), "output": lim.get("output")}
+            # Which provider declares each lane model is read from the config itself: a box
+            # that folded both lanes into one provider of its own (GB_10 on the reference
+            # box, 2026-10-07) named neither qwen38 nor flashnext, and this panel then showed
+            # no limits, no fit verdict, and a default model that did follow the lane as
+            # though it did not.
+            ocm = ocm_module()
+            if ocm is not None:
+                for mid in lc.LANE_MODEL.values():
+                    for prov in ocm.lane_providers_in(cfg, mid):
+                        out["lane_providers"].setdefault(mid, []).append(prov)
+                        mv = (((cfg.get("provider") or {}).get(prov) or {}).get("models") or {}).get(mid) or {}
+                        lim = mv.get("limit") or {}
+                        out["real"]["limits"][f"{prov}/{mid}"] = {"context": lim.get("context"),
+                                                                  "output": lim.get("output")}
+                        # keyed by model id too: the page must show each lane's limits without
+                        # knowing which provider this box happens to call it
+                        out["real"]["by_model"][mid] = {"context": lim.get("context"),
+                                                        "output": lim.get("output")}
     with LIFE_LOCK:
         states = dict(LIFE.get("states", {}))
-    ok, why = lc.opencode_default_follows(out["real"]["default"], states)
+    ok, why = lc.opencode_default_follows(out["real"]["default"], states, out["lane_providers"])
     out["follows"] = ok
     out["why"] = why
     # Do the declared limits fit the pool the engine actually booted with? A limit
@@ -1020,8 +1043,8 @@ def collect_opencode():
     served = info.get("served_model_name") or ""
     out["fit"] = None
     if pool and served:
-        prov = {"qwen3.8-27b": "qwen38", "qwen3.8-flash-next": "flashnext"}.get(served)
-        lim = (out["real"]["limits"] or {}).get(f"{prov}/{served}") if prov else None
+        provs = (out.get("lane_providers") or {}).get(served) or []
+        lim = next(((out["real"]["limits"] or {}).get(f"{p}/{served}") for p in provs), None)
         if lim and lim.get("context"):
             ctx, outp = int(lim["context"]), int(lim.get("output") or 0)
             usable = int(pool * USABLE_FRAC)

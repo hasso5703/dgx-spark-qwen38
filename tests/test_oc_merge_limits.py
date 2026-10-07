@@ -245,6 +245,41 @@ def main() -> None:
         rc, out = remove(p)
         assert rc == 0 and doc_of(p) == {"provider": {"x": {}}, "y": 1}, open(p).read()
 
+    # 12. Which provider declares a model is read from the config (lane_providers). The
+    #     hardcoded pair missed a box that folded both lanes into one provider of its own
+    #     (GB_10 on the reference box, 2026-10-07): oc-fit-limits.py found no entry to fit
+    #     and oc-point-default.py left the default on a lane that had stopped serving.
+    m = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        p = write(tmp, json.dumps({
+            "provider": {
+                "GB_10": {"npm": "@ai-sdk/openai-compatible",
+                          "options": {"baseURL": "http://127.0.0.1:30001/v1"},
+                          "models": {"qwen3.8-flash-next": {}, "qwen3.8-27b": {}}},
+                "RTX_3090": {"options": {"baseURL": "http://10.0.0.51:8013/v1"},
+                             "models": {"qwen3.8-flash-next-iq3_s": {}}}}}))
+        assert m.lane_providers(p, "qwen3.8-flash-next") == ["GB_10"]
+        assert m.lane_providers(p, "qwen3.8-27b") == ["GB_10"]
+        assert m.lane_providers(p, "qwen3.8-flash-next-iq3_s") == ["RTX_3090"]   # a LAN peer
+        assert m.lane_providers(p, "nothing-here") == []
+
+        # a hosted provider that happens to use the same model id is not this box's lane
+        p = write(tmp, json.dumps({"provider": {"theirs": {
+            "options": {"baseURL": "https://api.openai.com/v1"},
+            "models": {"qwen3.8-27b": {}}}}}))
+        assert m.lane_providers(p, "qwen3.8-27b") == []
+
+        # the JSONC the tool reads: comments and a trailing comma do not hide the provider
+        p = write(tmp, '{ // both lanes behind one provider\n  "provider": {"GB_10": {'
+                       '"options": {"baseURL": "http://localhost:30001/v1"},'
+                       '"models": {"qwen3.8-flash-next": {},}},},}\n')
+        assert m.lane_providers(p, "qwen3.8-flash-next") == ["GB_10"], open(p).read()
+
+        # an unreadable or absent file answers "nobody", it does not raise
+        assert m.lane_providers(os.path.join(tmp, "absent.json"), "qwen3.8-27b") == []
+        p = write(tmp, "not json at all")
+        assert m.lane_providers(p, "qwen3.8-27b") == []
+
     print("test_oc_merge_limits: OK")
 
 

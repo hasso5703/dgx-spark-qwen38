@@ -838,17 +838,36 @@ def guard_verdict(zombies: dict, guard: dict, override_env: bool | None) -> tupl
 
 
 # opencode default model vs the lane actually serving (the cockpit panel's verdict).
+# The model id each unit advertises, and the provider names install.sh generates for them.
+LANE_MODEL = {"qwen38-sglang.service": "qwen3.8-27b", "qwen38-flash.service": "qwen3.8-flash-next"}
 LANE_PROVIDER = {"qwen38-sglang.service": "qwen38", "qwen38-flash.service": "flashnext"}
 
 
-def opencode_default_follows(default_model, states: dict) -> tuple:
-    """(True/False/None, reason). None when no engine is serving."""
-    served = [u for u, st in states.items() if u in LANE_PROVIDER and st not in ("stopped", "failed")]
+def opencode_default_follows(default_model, states: dict, providers: dict | None = None) -> tuple:
+    """(True/False/None, reason). None when no engine is serving.
+
+    `providers` maps a served model id to the provider names that declare it in the config
+    opencode actually reads (oc-merge-limits.py lane_providers). The name used to be hardcoded
+    per lane, which reported a healthy box as broken the day it folded both lanes into one
+    provider of its own: the reference box ran GB_10 for both, and the panel insisted the
+    default did not follow the lane while it did (2026-10-07). Without that map - a caller
+    that has not read the config - the generated names are the fallback."""
+    served = [u for u, st in states.items() if u in LANE_MODEL and st not in ("stopped", "failed")]
     if not served:
         return None, "no engine serving right now"
-    want = LANE_PROVIDER[served[0]]
+    unit = served[0]
+    model = LANE_MODEL[unit]
+    found = (providers or {}).get(model)
+    names = sorted(set(found)) if found is not None else [LANE_PROVIDER[unit]]
+    if not names:
+        return False, f"no provider in the opencode config declares {model}: nothing here " \
+                      f"points at the lane that is serving"
+    want = f"{names[0]}/{model}"
     if not default_model:
-        return False, f"no default model set (expected {want}/...)"
-    if default_model.split("/")[0] == want:
+        return False, f"no default model set (expected {want})"
+    prov, _, mid = default_model.partition("/")
+    if prov in names and mid == model:
         return True, "follows the served lane"
-    return False, f"served lane wants {want}/..., default is {default_model}"
+    if prov in names:
+        return False, f"the lane serving here is {model}, the default is {default_model}"
+    return False, f"served lane wants {want}, default is {default_model}"

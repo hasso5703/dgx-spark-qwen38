@@ -20,6 +20,7 @@ It edits only the `limit` object of the served lane's model, in both the
 generated artifact and the config opencode really reads, through
 oc-merge-limits.py, and does nothing at all when the integration is off.
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -27,6 +28,13 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# The same reader the merge tool uses, so "which provider declares this model" is answered
+# one way everywhere (oc-point-default.py imports it the same way).
+_spec = importlib.util.spec_from_file_location(
+    "oc_merge_limits", os.path.join(os.path.dirname(os.path.abspath(__file__)), "oc-merge-limits.py"))
+ocm = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ocm)
 
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", Path.home() / ".config/qwen38"))
 REPO_DIR = Path(__file__).resolve().parent
@@ -66,6 +74,8 @@ WORST_STEP = int(os.environ.get("OC_WORST_STEP") or "43_863")
 _MARGIN_FLOOR = max(0, WORST_STEP - COMPACTION_RESERVE)
 CEILING_MARGIN = int(os.environ.get("OC_CEILING_MARGIN") or
                      -(-_MARGIN_FLOOR // 5000) * 5000)
+# The names install.sh generates, kept as the fallback for a config that predates the
+# discovery (oc-merge-limits.py lane_providers reads the provider from the config itself).
 LANE_MODEL = {"qwen3.8-27b": "qwen38", "qwen3.8-flash-next": "flashnext"}
 AGENT_UNIT = "opencode-web.service"
 # The engine's window is the third bound, and it holds the prompt PLUS the answer:
@@ -214,9 +224,8 @@ def main(argv: list[str]) -> int:
         return 1
     pool = int(info.get("max_total_num_tokens") or 0)
     served = info.get("served_model_name") or ""
-    provider = LANE_MODEL.get(served)
-    if not pool or not provider:
-        print(f"cannot fit: pool={pool}, served model={served!r} is not one of {sorted(LANE_MODEL)}")
+    if not pool or not served:
+        print(f"cannot fit: pool={pool}, served model={served!r}: the engine did not name itself")
         return 1
     env = subprocess.run(["systemctl", "show", "qwen38-keepalive.service", "-p", "Environment"],
                          capture_output=True, text=True).stdout
@@ -247,23 +256,34 @@ def main(argv: list[str]) -> int:
     # new threshold instead of a quarter (found in review, 2026-09-24).
     keep = subprocess.run([str(REPO_DIR / "oc-limits.sh"), "--preserve", str(context)],
                           capture_output=True, text=True).stdout.strip()
-    rc, changed, merged = 0, False, False
+    rc, changed, merged, seen = 0, False, False, []
     for target in (CONFIG_DIR / "opencode.json", Path.home() / ".config/opencode/opencode.json"):
         if not target.exists():
             continue
-        out = subprocess.run([sys.executable, str(REPO_DIR / "oc-merge-limits.py"), str(target),
-                              provider, served, str(context), str(output)],
-                             capture_output=True, text=True)
-        said = (out.stdout or out.stderr).strip()
-        print(f"  {target}: {said.splitlines()[-1] if said else 'no output'}")
-        if out.returncode not in (0, 3):
-            rc = out.returncode
-            continue
-        if out.returncode == 3:
-            continue                              # this config has no entry for the lane
-        merged = True
-        changed = changed or "unchanged" not in said
-        if keep.isdigit() and int(keep) > 0:
+        # Which provider declares this lane's model is read from the config itself: the
+        # hardcoded pair below missed a box that folded both lanes into one provider of its
+        # own (GB_10 on the reference box, 2026-10-07), so the limits of the config opencode
+        # actually reads stopped following the engine while the client boxes kept working.
+        providers = ocm.lane_providers(str(target), served)
+        if not providers and served in LANE_MODEL:
+            providers = [LANE_MODEL[served]]            # a config that predates the discovery
+        did = False
+        for provider in providers:
+            seen.append(f"{provider}/{served}")
+            out = subprocess.run([sys.executable, str(REPO_DIR / "oc-merge-limits.py"), str(target),
+                                  provider, served, str(context), str(output)],
+                                 capture_output=True, text=True)
+            said = (out.stdout or out.stderr).strip()
+            print(f"  {target}: {said.splitlines()[-1] if said else 'no output'}")
+            if out.returncode not in (0, 3):
+                rc = out.returncode
+                continue
+            if out.returncode == 3:
+                continue                            # this config has no entry for the lane
+            merged = True
+            did = True
+            changed = changed or "unchanged" not in said
+        if did and keep.isdigit() and int(keep) > 0:
             out = subprocess.run([sys.executable, str(REPO_DIR / "oc-merge-limits.py"), str(target),
                                   "--compaction", keep], capture_output=True, text=True)
             said = (out.stdout or out.stderr).strip()
@@ -275,7 +295,8 @@ def main(argv: list[str]) -> int:
     if rc == 0 and not merged:
         # nothing was compared, so nothing can be said about what opencode asks for
         # (it used to say "already asks for no more" here, found in review, 2026-09-24)
-        print(f"no opencode config here has an entry for {provider}/{served}: nothing fitted")
+        print(f"no opencode config here has an entry for {served}"
+              + (f" (looked at {', '.join(seen)})" if seen else "") + ": nothing fitted")
     elif rc == 0 and not changed:
         print("opencode already asks for no more than this engine can serve: nothing to restart")
     elif rc == 0 and restart:

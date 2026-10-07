@@ -20,7 +20,24 @@ COMMENTED = """{
   // the lane the installer points at
   "model": "qwen38/qwen3.8-27b",
   "provider": {
-    "qwen38": {"models": {"qwen3.8-27b": {"limit": {"context": 559000, "output": 186000},},},},
+    "qwen38": {"npm": "@ai-sdk/openai-compatible",
+               "options": {"baseURL": "http://127.0.0.1:30001/v1"},
+               "models": {"qwen3.8-27b": {"limit": {"context": 559000, "output": 186000},},},},
+  },
+}
+"""
+
+FOLDED = """{
+  // both lanes behind one provider of the operator's own naming, plus a peer box
+  "model": "GB_10/qwen3.8-flash-next",
+  "provider": {
+    "GB_10": {"npm": "@ai-sdk/openai-compatible",
+              "options": {"baseURL": "http://127.0.0.1:30001/v1"},
+              "models": {
+                "qwen3.8-flash-next": {"limit": {"context": 205000, "input": 205000, "output": 32000}},
+                "qwen3.8-27b": {"limit": {"context": 1010000, "input": 1010000, "output": 151000}}}},
+    "RTX_3090": {"options": {"baseURL": "http://10.0.0.51:8013/v1"},
+                 "models": {"qwen3.8-flash-next-iq3_s": {"limit": {"context": 262144}}}},
   },
 }
 """
@@ -63,6 +80,22 @@ class TheConfigAsOpencodeReadsIt(unittest.TestCase):
     def test_a_config_that_is_not_an_object_says_so(self):
         real = self.collect("[1, 2]")
         self.assertIn("not a JSON object", real["error"])
+
+    def test_a_box_that_folded_both_lanes_into_one_provider(self):
+        # GB_10 on the reference box, 2026-10-07: neither qwen38 nor flashnext is in its
+        # config, and the panel showed no limits, no fit verdict, and a default model that
+        # did follow the lane as though it did not.
+        self.real.write_text(FOLDED)
+        out = self.cp.collect_opencode()
+        out = out.get("data", out)
+        self.assertEqual(out["real"]["by_model"]["qwen3.8-flash-next"],
+                         {"context": 205000, "output": 32000})
+        self.assertEqual(out["real"]["by_model"]["qwen3.8-27b"],
+                         {"context": 1010000, "output": 151000})
+        self.assertEqual(out["lane_providers"].get("qwen3.8-flash-next"), ["GB_10"])
+        self.assertEqual(out["lane_providers"].get("qwen3.8-27b"), ["GB_10"])
+        # a provider pointing at another box is not one of this box's lanes
+        self.assertNotIn("RTX_3090", out["real"]["limits"])
 
 
 if __name__ == "__main__":

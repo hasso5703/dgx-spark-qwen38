@@ -131,6 +131,34 @@ def main() -> None:
     assert rc == 0
     assert open(p, "rb").read() == once
 
+    # 6b. A box that folded both lanes into one provider of its own (GB_10 on the
+    #     reference box, 2026-10-07): the provider name is read from the config, so the
+    #     default follows the lane there too - it used to be hardcoded to qwen38/flashnext,
+    #     which left that box pointing at a lane that had stopped serving.
+    with tempfile.TemporaryDirectory() as tmp:
+        providers = {"GB_10": {"options": {"baseURL": "http://127.0.0.1:30001/v1"},
+                               "models": {"qwen3.8-27b": {"name": "old"},
+                                          "qwen3.8-flash-next": {"name": "old"}}},
+                     "RTX_3090": {"options": {"baseURL": "http://127.0.0.1:8013/v1"},
+                                  "models": {"qwen3.8-flash-next-iq3_s": {}}}}
+        p = write(tmp, {"model": "GB_10/qwen3.8-27b", "small_model": "GB_10/qwen3.8-27b",
+                        "provider": providers})
+        rc, out = run(p, "flash", "flash", "262144")
+        assert rc == 0, out
+        doc = read(p)
+        assert doc["model"] == "GB_10/qwen3.8-flash-next", doc
+        assert doc["small_model"] == "GB_10/qwen3.8-flash-next", doc
+        assert doc["provider"]["GB_10"]["models"]["qwen3.8-flash-next"]["name"] == \
+            "Qwen3.8-Flash-Next NVFP4 + MTP (local, 262K)", doc
+        assert doc["provider"]["GB_10"]["models"]["qwen3.8-27b"]["name"] == "old", doc
+
+        # a default the user pointed at another provider of this box stays theirs
+        p = write(tmp, {"model": "RTX_3090/qwen3.8-flash-next-iq3_s", "provider": providers})
+        rc, out = run(p, "flash", "flash", "262144")
+        assert rc == 0, out
+        assert read(p)["model"] == "RTX_3090/qwen3.8-flash-next-iq3_s", read(p)
+        assert "left as it is" in out, out
+
     # 7. Usage: exit 2, no traceback.
     r = subprocess.run([sys.executable, SCRIPT], capture_output=True, text=True)
     assert r.returncode == 2, r.returncode
