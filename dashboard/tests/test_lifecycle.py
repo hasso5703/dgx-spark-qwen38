@@ -461,6 +461,9 @@ class FeedOutcomes(unittest.TestCase):
         # refusing (sglang#40076, #31597). A client bug, like the oversize refusal.
         "400 logprob width over ceiling": "fail",
         "400 sampling field out of range": "fail",
+        # v6.33: the request named a model this engine does not serve. SGLang would have
+        # answered it with the loaded model and nothing would have shown the swap.
+        "400 model not served": "fail",
         # v6.19, POST /v1/systemone: the answer was delivered; the request was
         # refused with the field named (a client bug, not the box's); the engine
         # answered a branch with something that is not a one-token distribution.
@@ -1598,6 +1601,28 @@ class OpencodeDefault(unittest.TestCase):
     def test_nothing_serving(self):
         ok, why = lc.opencode_default_follows("qwen38/qwen3.8-27b", {"qwen38-sglang.service": "stopped", "qwen38-flash.service": "failed"})
         self.assertIsNone(ok); self.assertIn("no engine", why)
+
+    def test_a_folded_provider_is_not_reported_as_stranded(self):
+        # GB_10 on the reference box, 2026-10-07: both lanes under one provider of the
+        # operator's own naming. Judging by the generated names alone, the panel insisted a
+        # default that did follow the lane did not.
+        prov = {"qwen3.8-flash-next": ["GB_10"], "qwen3.8-27b": ["GB_10"]}
+        ok, why = lc.opencode_default_follows("GB_10/qwen3.8-flash-next",
+                                              {"qwen38-flash.service": "ready"}, prov)
+        self.assertTrue(ok); self.assertIn("follows", why)
+        ok, why = lc.opencode_default_follows("GB_10/qwen3.8-27b",
+                                              {"qwen38-flash.service": "ready"}, prov)
+        self.assertFalse(ok); self.assertIn("qwen3.8-flash-next", why)
+
+    def test_a_config_with_no_entry_for_the_served_model_says_so(self):
+        ok, why = lc.opencode_default_follows("GB_10/qwen3.8-flash-next",
+                                              {"qwen38-flash.service": "ready"},
+                                              {"qwen3.8-flash-next": []})
+        self.assertFalse(ok); self.assertIn("no provider", why)
+
+    def test_the_generated_names_are_the_fallback(self):
+        ok, _why = lc.opencode_default_follows("flashnext/qwen3.8-flash-next", {"qwen38-flash.service": "ready"})
+        self.assertTrue(ok)
 
 
 class PoolHistory(unittest.TestCase):

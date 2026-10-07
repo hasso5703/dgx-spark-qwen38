@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.33). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.34). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -46,6 +46,22 @@ two of each on every relayed answer, which RFC 9110 (5.3) does not allow. aiohtt
 such an answer by default in 3.13.4, and in its strict mode (python -X dev) since then, so a
 LiteLLM gateway in front of the proxy answered "Duplicate 'Server' header found." (issue #39,
 2026-10-06). The engine's two are no longer relayed, as the cockpit's agent relay already did.
+
+v6.34: a request naming a model this engine does not serve is refused, not answered by
+whichever model happens to be loaded. SGLang routes on what it loaded, not on what the
+request asks for: on the reference box a request for qwen3.8-27b while the flash lane held
+:30000 came back from the flash model, with no error and nothing for the client to notice
+(2026-10-07, found while reconciling the opencode config: the box had been switched to the
+27B at 19:44 and the default model still named flash, so every request of that hour was
+answered by a model nobody had asked for). A lane switch costs 6-11 minutes, so a config
+naming the previous lane is not a rare mistake, it is what every switch leaves behind until
+the tooling catches up. The names accepted are the engine's own /v1/models list, never a
+table kept here, so a lane that advertises an alias answers to it too; a miss re-reads that
+list once before refusing, because the cache is up to 600 s old and a switch is exactly the
+moment a correct request must not be refused; an engine that names nobody, or does not
+answer, is not refused here - the relay path's 503 with Retry-After is the honest answer
+while a lane boots. MODEL_IDENTITY_GUARD=0 turns it off, EXTRA_SERVED_ALIASES admits names
+the engine does not list.
 
 v6.32: /server_info no longer carries the engine's key anywhere. v6.24 took SGLang's key
 fields out of the answer, at the top and in every internal state, but the answer also
@@ -1371,6 +1387,60 @@ def _is_prompt_route(route):
     # 1 MB body was relayed with no estimate. The prefix stays, and these are added.
     return route.startswith("/v1/") or route in (
         "/generate", "/invocations", "/vertex_generate", "/api/chat", "/api/generate")
+
+
+# ---- the model identity guard (v6.33) --------------------------------------------------
+# The engine answers with the model it loaded, whatever the request names. Refusing is the
+# proxy's call to make because it already reads /v1/models (for the ceiling), so it is the
+# one thing on the path that knows which lane holds the port; the client does not, and the
+# answer it would get is indistinguishable from the one it asked for.
+IDENTITY_GUARD = os.environ.get("MODEL_IDENTITY_GUARD", "1").strip().lower() not in (
+    "0", "off", "no", "false", "")
+# Names a client may send that the engine does not list itself: a harness pinning a request
+# to one lane by path, a proxy in front of a router. Space or comma separated.
+IDENTITY_EXTRA = frozenset(x for x in re.split(r"[,\s]+", os.environ.get("EXTRA_SERVED_ALIASES", "")) if x)
+
+
+def model_named(body):
+    """The model a body names, when it names one: a non-empty string. No body, no JSON
+    object, no `model` field, a null or a number: that is not a claim about which model
+    should answer, so it is not this guard's business and it is relayed as it always was."""
+    try:
+        j = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(j, dict):
+        return None
+    m = j.get("model")
+    return m.strip() if isinstance(m, str) and m.strip() else None
+
+
+def identity_refusal(requested):
+    """None when the request may go to the engine; the names the engine does serve when it
+    must not. Never refuses on an engine that named nobody or did not answer: an unknown
+    truth is the relay path's 503 with a Retry-After, not a 400. The cache is up to 600 s
+    old, and a miss is exactly what a lane switch produces for the model that has just
+    booted, so one miss re-reads /v1/models once before it is held against the client."""
+    if requested in IDENTITY_EXTRA:
+        return None
+    base = requested.split("@", 1)[0].split(":", 1)[0]      # a client's own :tag or @digest
+
+    def asked():
+        try:
+            return set(served_models())
+        except EngineUnreachable:
+            return set()
+
+    served = asked()
+    if not served or requested in served or base in served:
+        return None
+    _SERVED["names"], _SERVED["ts"] = (), 0.0               # the cache may predate a switch
+    served = asked()
+    if not served or requested in served or base in served:
+        return None
+    return tuple(sorted(served))
+
+
 # ---- System One endpoint (v6.19) ------------------------------------------------
 # POST /v1/systemone speaks the wire contract of TypeSafe's Jev (docs.typesafe.ai/api):
 # one `state`, a map of typed `questions` (choice, score, noul), and one typed answer
@@ -3351,6 +3421,22 @@ class H(BaseHTTPRequestHandler):
                                 json.dumps({"error": {"type": "invalid_request",
                                                       "message": refusal}}).encode())
                     self._done("400 sampling field out of range"); return
+        if IDENTITY_GUARD and body and self.path.split("?", 1)[0] != SYSTEMONE_PATH \
+                and _is_prompt_route(self.path.split("?", 1)[0]):
+            asked_for = model_named(body)
+            if asked_for:
+                served = identity_refusal(asked_for)
+                if served is not None:
+                    names = ", ".join(served)
+                    log(f"{self._peer} REFUSED model {asked_for!r}: this engine serves {names}")
+                    self._plain(400, {"Content-Type": "application/json"},
+                                json.dumps({"error": {"type": "invalid_request", "message":
+                                    f"keepalive-proxy: this engine serves {names}, and the request names "
+                                    f"{asked_for!r}. SGLang answers with the model it has loaded whatever "
+                                    f"the request says, so relaying it would hand back an answer from the "
+                                    f"wrong model. Ask for {names}, or switch the lane (switch-model.sh, "
+                                    f"or the cockpit) and wait for it to boot."}}).encode())
+                    self._done("400 model not served"); return
         body, dropped = sanitize_tool_schemas(body, self.path)
         body, moved_effort, dropped_effort = route_reasoning_effort(body, self.path)
         if moved_effort and _effort_move_logged.first(moved_effort):   # once per level, not per request

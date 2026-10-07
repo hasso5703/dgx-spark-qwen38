@@ -18,6 +18,25 @@ whole arrangement in one line: one door, and it is the one with the lock.
 a box that wants it, and a box that already had it there keeps it across
 updates.
 
+**One lane answers `:30001`, and since v1.22.7 (proxy v6.33) the proxy says when you asked
+for the other one.** SGLang routes on the model it loaded, not on the model a request names:
+ask it for `qwen3.8-27b` while the flash lane holds the port and the flash model answers, with
+a `200`, a normal body, and nothing anywhere to notice the swap by. A lane switch takes 6-11
+minutes, so a client config naming the previous lane is not a rare mistake - it is what every
+switch leaves behind until that client's own tooling catches up. The proxy already reads the
+engine's `/v1/models` for the prompt ceiling, so it is the one thing on the path that knows
+which lane is up, and it refuses the mismatch with a `400` naming what the engine does serve
+and how to switch. The accepted names are the engine's own list, never a table kept in the
+proxy, so a lane that advertises an alias answers to it; a client's own `:tag` or `@digest`
+suffix is tolerated on a served name; a miss re-reads `/v1/models` once before it is held
+against the client, because the cache is up to 600 s old and a switch is exactly when a
+correct request must not be refused; and an engine that names nobody, or does not answer, is
+not refused here - that stays the `503` with a `Retry-After` while a lane boots.
+`MODEL_IDENTITY_GUARD=0` turns the guard off, and `EXTRA_SERVED_ALIASES="lane-a lane-b"`
+admits names the engine does not list itself (a harness pinning a request to one lane by
+path). `POST /v1/systemone` is exempt: the proxy answers it itself, and its `jev-*` names are
+its own.
+
 **The proxy also refuses the requests that take the engine down instead of being
 refused by it.** One is a prompt past the KV pool ([sglang#36333](https://github.com/sgl-project/sglang/issues/36333)),
 which is why sending a monster straight to `:30000` wedges the scheduler and sending it
