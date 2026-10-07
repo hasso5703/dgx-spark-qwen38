@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.22.13 (2026-10-08): a request for the lane that is not up is refused, and whose provider is read from the config
+
+Proxy v6.34. SGLang routes on the model it loaded, not on the model a request asks for. On
+the reference box the 27B lane was loaded at 19:44 while opencode's default model still
+named flash, and every request of that hour was answered by the flash model: a `200`, a
+normal body, and nothing anywhere to notice the swap by. A lane switch costs 6-11 minutes,
+so a config naming the previous lane is not a rare mistake, it is what every switch leaves
+behind until that client's own tooling catches up - and a client on another box is not
+reachable from here at all. The proxy already reads the engine's `/v1/models` for the
+one-prompt ceiling, so it is the one thing on the path that knows which lane holds the port,
+and it now refuses the mismatch with a `400` naming what it does serve and how to switch.
+The accepted names are the engine's own list, never a table kept in the proxy, so a lane
+that advertises an alias answers to it too; a client's own `:tag` or `@digest` suffix is
+tolerated on a served name; a miss re-reads `/v1/models` once before it is held against the
+client, because the cache is up to 600 s old and a switch is exactly the moment a correct
+request must not be refused; an engine that names nobody, or does not answer, is not refused
+here - that stays the relay path's `503` with a `Retry-After` while a lane boots.
+`POST /v1/systemone` is exempt, and `MODEL_IDENTITY_GUARD=0` / `EXTRA_SERVED_ALIASES` are
+the escape hatches.
+
+The opencode tools and the cockpit learned to ask the config whose provider it is. The names
+were hardcoded - `("qwen38", "flashnext")` - and a box that folded both lanes into one
+provider of its own (the reference box runs `GB_10` for both) became silently its own special
+case: `oc-fit-limits.py` found no entry to fit, `oc-point-default.py` left the default model
+on the lane that had stopped serving, `switch-model.sh` wrote limits to a provider that file
+does not have, and the cockpit's Settings tab showed no limits, no fit verdict, and a default
+model that did follow the lane as though it did not. The three client boxes kept working
+throughout, because their provider name comes from `clients.conf` rather than from this
+table - which is the shape the fix follows. `oc-merge-limits.py` gains `lane_providers()`:
+the providers of a config that declare a model id on a local endpoint. `oc-fit-limits.py`
+fits every one of them in every config it touches, `oc-point-default.py` moves the default
+model inside the one that declares it, `switch-model.sh` asks the same helper through
+`--lane-providers`, and the cockpit judges and displays the lane by model id instead of by
+the generated name. The generated pair stays as the fallback for a config that predates the
+discovery, and a provider pointing at another box is not this box's lane.
+
 ## v1.22.12 (2026-10-07): the Traffic view says the last 5 minutes from the engine's own counters
 
 The Traffic view gained a **Last 5 minutes** box: the requests that finished, the share
