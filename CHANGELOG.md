@@ -1,7 +1,70 @@
 # Changelog
 
-## v1.22.13 (2026-10-07): a CI run stopped midway leaves nothing running and nothing in /tmp
+## v1.22.13 (2026-10-08): the proxy checks the key before it reads a body, counts the prompts that could wedge the 27B, and refuses token_ids_logprob
 
+Proxy v6.34. Found while checking an OpenVuln (GLM) report on this repository: every point was
+measured again on the reference box, and these are the changes that came of it.
+
+**The key is checked before a body is read.** The README says the API key is the proxy port's
+one gate, and the proxy listens on every interface by default. A request without the key, or
+with a wrong one, still had its body read whole (up to `MAX_BODY_BYTES`, 256 MiB) and, when that
+body was large, counted by the engine on the proxy's own key, before the engine's 401 came back.
+Without the identity wall, the proxy now applies the engine's own key check itself, before it
+reads a byte: SGLang's rule (`srt/utils/auth.py`, the same in both pinned images), `bearer` in
+any case, one space, the key exactly, the whitespace around the header ignored. A request it
+refuses gets the engine's own answer, `401 {"error":"Unauthorized"}` (on `/v1/systemone`, that
+route's envelope, as before), with no engine work behind it, and a client that asks first
+(`Expect: 100-continue`) is refused before it sends. Paths under `/health` and `/metrics` stay
+open, as the engine keeps them (docs/operations.md has a scraper on another machine read
+`/metrics` through `:30001`). Measured through this proxy and through v6.33, side by side in
+front of the live engine: the same header shapes on a model list and on a chat request got the
+same verdict, 28 out of 28 on the flash lane and 24 out of 24 on the 27B, the 401 bodies byte for
+byte. A client that holds the key sees no change; one without it gets the 401 it always got,
+sooner. With the identity wall on, the wall decides, as before.
+
+**The size guard counts every prompt that could wedge the lane.** A prompt the engine accepts
+but cannot admit is queued and never runs, and the engine then generates nothing for anyone
+until a restart (measured 2026-08-29). That is the zone between the share of the pool this guard
+lets through and the longest prompt the engine accepts: on the 27B lane, 794,552 to 863,638
+tokens on a pool of 863,644 (measured 2026-10-08). The guard asked the engine to count a body
+only past 200 kB and when its length divided by 2.5 passed the lane's limit, but 2.5 bytes a
+token is an average (prose runs 3.4 to 4.6 on the served tokenizer), not a bound: digits are
+one token each. Where that zone exists, a body now counts as its length in bytes, the most
+tokens it can be, until the engine's count says otherwise, whatever its size: on the 27B, an
+830,000-digit prompt, which v6.33's estimate puts at 332,035 tokens and so would have relayed,
+is counted at 830,108 and refused. Where the engine accepts nothing past that share (the flash lane: 262,138
+for 428,823 usable of 466,112), it refuses past its window itself, and the average nominates
+as before: counting there by the bound was measured at 115 ms more for a lone 300 kB prompt and
+1.65 s more for eight at once, and with it kept to the 27B the flash lane measured as v6.33 did
+(378 ms against 380 ms, 2.54 s against 2.56 s). A body the engine cannot count is judged as it
+was, by the old average.
+
+**`token_ids_logprob` is refused where the engine reads it**: the top of a `/generate` body
+and the `parameters` of `/vertex_generate`. On a batch that mixes a request asking for it with
+one that does not, the served 27B build (`v0.5.19`) fills a bare list for the one that did not
+ask and calls `.tolist()` on every entry, so its scheduler dies on the first such batch and the
+lane is down for everyone until a restart (sglang#34719, open; read in both pinned images, the
+flash build fixes one of its two producers). It joins the fields of that kind the proxy already
+refuses, with a 400 that says why. A value the engine itself treats as absent (an empty list,
+0, false) passes, and the OpenAI routes, which have no such field, are not touched.
+
+**The proxy has a memory ceiling of its own**: `MemoryMax=1G` and `MemorySwapMax=0` in its unit.
+Its highest peak over two weeks of real traffic on the reference box was 101 MB; past the
+ceiling the kernel stops the proxy alone and systemd starts it again 3 s later, instead of a
+growing proxy eating the memory the engine lives in. Both lines are needed: with swap on, a unit
+capped by `MemoryMax` alone keeps going in swap (measured: a unit capped at 100M held 300M; with
+`MemorySwapMax=0` the kernel stopped it at 100M, in its own cgroup).
+
+`SECURITY.md` and `docs/clients.md` gave sglang#36333 as the reason a prompt past the pool wedges
+the scheduler. That issue is about a request left running after its client disconnects; the
+wedge is this box's own measurement, and both now say so.
+
+A System One call gives its admission slot back to the door it took it from. It gave it back to
+whichever door `_systemone_calls` named by then, which only a test rebinds, and this release's
+changes made the race visible: the admission-cap test failed about one run in five. A
+deterministic test now fails on every run without the fix.
+
+**A CI run stopped midway leaves nothing running and nothing in /tmp.**
 The four browser checks that start a cockpit of their own (`touch-check.mjs`,
 `monkey-check.mjs`, `resilience-check.mjs`, `update-banner-check.mjs`) start it in a
 session of its own, so they can stop its whole process group, and stop it from their
@@ -22,7 +85,17 @@ stayed; after, the cockpit is gone and the directory removed in all four. A `ci-
 run stopped the same way during the cockpit unit tests left the step's HOME and the stubs
 before, and nothing after. The four checks pass as before.
 
-An update restarts the cockpit; the engines and the proxy keep running.
+Tests: every test of the new behaviour fails on v1.22.12's proxy and passes on this one, and
+every test of what must not change passes on both; the test harnesses decide which key their
+proxy holds, whatever HOME holds (the CI's offline step gives HOME one): those that give it one
+present it, as every real client does, and those whose clients send none give it none; every
+change was mutated, 33 mutants, all killed.
+Measured live on both lanes, through a v6.34 proxy beside the production one and through v6.33
+as the witness: Claude Code, opencode, Hermes and pi read a file with a tool and answered, and
+the OpenAI and Anthropic SDKs, LiteLLM, and fetch under Node and Bun answered the same way
+through both.
+
+An update restarts the proxy once (v6.34) and the cockpit; the engines keep running.
 
 ## v1.22.12 (2026-10-07): the Traffic view says the last 5 minutes from the engine's own counters
 
