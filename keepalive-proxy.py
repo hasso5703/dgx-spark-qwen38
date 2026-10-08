@@ -3518,7 +3518,11 @@ class H(BaseHTTPRequestHandler):
         SYSTEMONE_MAX_CALLS in progress the door answers 529 with Retry-After. Design
         and receipts in the "System One endpoint" section."""
         json_hdr = {"Content-Type": "application/json"}
-        if not _systemone_calls.acquire(blocking=False):
+        # The slot goes back to the door it was taken from, whatever _systemone_calls names by
+        # then: rebound while a call was in flight (tests do it), the new door was credited
+        # with a slot it never gave, and served a call it had to refuse (2026-10-08).
+        door = _systemone_calls
+        if not door.acquire(blocking=False):
             log(f"{self._peer} systemone OVERLOADED: {SYSTEMONE_MAX_CALLS} calls already in progress")
             self._plain(529, {**json_hdr, "Retry-After": "2"},
                         json.dumps({"detail": {"error_type": "overloaded_error",
@@ -3529,7 +3533,7 @@ class H(BaseHTTPRequestHandler):
         try:
             self._systemone_inner(body, json_hdr)
         finally:
-            _systemone_calls.release()
+            door.release()
 
     def _systemone_watch(self, cancel, live, auth):
         """Watch the caller's socket while its branches are in flight. At EOF the fan-out

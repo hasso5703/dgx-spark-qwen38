@@ -1436,6 +1436,47 @@ class SystemOne(unittest.TestCase):
         status, _, _ = self.post(self.quickstart())          # every slot given back: served again
         self.assertEqual(status, 200)
 
+    def test_a_call_gives_its_slot_back_to_the_door_it_took_it_from(self):
+        """A call in flight while the door is rebound gives its slot back to the door it took
+        it from, never to the new one: credited with a slot it never gave, the new door served
+        a call it had to refuse (the test above flaked about one run in five, 2026-10-08)."""
+        class Door:
+            def __init__(self):
+                self.sem, self.taken, self.given_back = threading.BoundedSemaphore(1), threading.Event(), 0
+
+            def acquire(self, blocking=True):
+                ok = self.sem.acquire(blocking)
+                if ok:
+                    self.taken.set()
+                return ok
+
+            def release(self):
+                self.given_back += 1
+                self.sem.release()
+
+        real = self.mod._systemone_calls
+        old, new = Door(), Door()
+        self.mod._systemone_calls = old
+        Engine.delay = 1.0                                     # keeps the call in flight
+        done = []
+        t = threading.Thread(target=lambda: done.append(self.post(self.quickstart())))
+        try:
+            t.start()
+            self.assertTrue(old.taken.wait(10), "the call never took its slot")
+            new.acquire()                                      # the new door is full
+            self.mod._systemone_calls = new
+            t.join(60)
+        finally:
+            self.mod._systemone_calls = real
+            Engine.delay = 0.0
+        self.assertEqual(done and done[0][0], 200)
+        deadline = time.time() + 10
+        while old.given_back + new.given_back == 0 and time.time() < deadline:
+            time.sleep(0.01)            # the slot is given back just after the answer is written
+        self.assertEqual(old.given_back, 1, "the slot went back to the door it came from")
+        self.assertEqual(new.given_back, 0, "and not to a door it never took one from")
+        self.drain()
+
     def test_the_slot_is_returned_after_a_refusal_too(self):
         for _ in range(self.mod.SYSTEMONE_MAX_CALLS + 3):
             status, _, _ = self.post({"state": "s", "model": "jev-latest", "questions": {}})   # 422 each time
