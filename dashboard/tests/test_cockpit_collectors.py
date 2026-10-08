@@ -1185,7 +1185,17 @@ class TheLastFiveMinutesAreTheEnginesOwnCounters(Base):
                     f'sglang:time_to_first_token_seconds_count{{model_name="m"}} {n}\n'
                     f'sglang:time_to_first_token_seconds_sum{{model_name="m"}} {0.05 * n}\n'
                     f'sglang:inter_token_latency_seconds_count{{model_name="m"}} {n}\n'
-                    f'sglang:inter_token_latency_seconds_sum{{model_name="m"}} {0.02 * n}\n')
+                    f'sglang:inter_token_latency_seconds_sum{{model_name="m"}} {0.02 * n}\n'
+                    f'sglang:realtime_tokens_total{{model_name="m",mode="prefill_compute"}} {14 * n}\n'
+                    f'sglang:realtime_tokens_total{{model_name="m",mode="prefill_cache"}} 999999\n'
+                    f'sglang:per_stage_req_latency_seconds_sum{{model_name="m",stage="prefill_forward"}} {0.007 * n}\n'
+                    f'sglang:queue_time_seconds_sum{{model_name="m"}} {0.05 * n}\n'
+                    f'sglang:queue_time_seconds_count{{model_name="m"}} {n}\n'
+                    f'sglang:scheduler_idle_seconds_total{{model_name="m"}} {2 * n}\n'
+                    f'sglang:num_aborted_requests_total{{model_name="m"}} 0\n'
+                    f'sglang:spec_verify_calls_total{{model_name="unified"}} {n}\n'
+                    f'sglang:num_running_reqs{{model_name="m"}} 2.0\n'
+                    f'sglang:full_token_usage{{model_name="m"}} 0.5\n')
 
         class Engine(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -1256,9 +1266,13 @@ class TheLastFiveMinutesAreTheEnginesOwnCounters(Base):
         self.assertEqual((out["requests"], out["prompt_tokens"], out["canaries_out"], out["approximate"]),
                          (0, 0, 1, False), out)
         self.assertIsNone(out["ttft_s"])
+        self.assertEqual((out["prefill_tps"], out["queue_s"], out["acc_len"]), (None, None, None),
+                         "the canary's prefill, queue and verification are its own too")
         self.client()
         out = self.cp.collect_engine_metrics()
         self.assertEqual((out["requests"], out["prompt_tokens"], out["generated_tokens"]), (1, 14, 2), out)
+        self.assertEqual((out["prefill_tps"], out["queue_s"], out["acc_len"]), (2000.0, 0.05, 2.0), out)
+        self.assertEqual((out["running_max"], out["pool_max"], out["aborted"]), (2, 0.5, 0), out)
 
     def test_a_canary_whose_engine_did_not_answer_makes_it_approximate(self):
         self.cp.collect_engine_metrics()

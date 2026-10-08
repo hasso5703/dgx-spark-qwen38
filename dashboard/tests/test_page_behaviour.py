@@ -1208,7 +1208,9 @@ class TheLastFiveMinutesSayTheEnginesCounters(unittest.TestCase):
 
     FULL = {"lane": "qwen38-flash.service", "read": True, "watched_s": 300.0, "requests": 4,
             "prompt_tokens": 200000, "cached_tokens": 190000, "generated_tokens": 1000,
-            "reuse": 0.95, "decode_tps": 49.83, "ttft_s": 1.0, "throughput_tps": 3.333,
+            "reuse": 0.95, "prefill_tps": 1998.4, "queue_s": 0.42, "decode_tps": 49.83, "ttft_s": 1.0,
+            "acc_len": 3.6082, "throughput_tps": 3.333, "idle_share": 0.4, "aborted": 2,
+            "pool_max": 0.62, "running_max": 8, "queued_max": 3,
             "canaries_out": 1, "approximate": False}
 
     def box(self, metrics):
@@ -1219,13 +1221,19 @@ class TheLastFiveMinutesSayTheEnginesCounters(unittest.TestCase):
         report({cap: txt('wm-cap'), note: txt('wm-note'), verdict: txt('wm-verdict'), facts});
         """ % json.dumps(metrics))
 
-    def test_the_four_numbers_and_the_count(self):
+    def test_the_numbers_and_the_count(self):
         r = self.box(self.FULL)
         self.assertEqual(r["facts"], {"Requests finished": "4",
                                       "Prompt tokens from the cache": "95.0 % of 200,000",
-                                      "Decode speed": "49.8 tok/s per request",
+                                      "Queued before starting": "0.42 s on average",
+                                      "Prefill speed": "1,998 tok/s computed",
                                       "First token after": "1.00 s on average",
-                                      "Generated, all clients": "3.3 tok/s"}, r)
+                                      "Decode speed": "49.8 tok/s per request",
+                                      "Accepted per draft step": "3.61 tokens per verify step",
+                                      "Generated, all clients": "3.3 tok/s, 1,000 tokens",
+                                      "Busiest moment": "62 % of the pool, 8 requests at once, 3 waiting",
+                                      "Idle in the window": "40 % of the time",
+                                      "Abandons the engine accepted": "2"}, r)
         self.assertEqual((r["cap"], r["note"]), ("watching", ""), r)
         self.assertIn("each request counted once, when it finishes", r["verdict"])
 
@@ -1234,11 +1242,17 @@ class TheLastFiveMinutesSayTheEnginesCounters(unittest.TestCase):
 
     def test_nothing_finished_is_said_not_shown_as_zero_percent(self):
         r = self.box(dict(self.FULL, requests=0, prompt_tokens=0, reuse=None, decode_tps=None,
-                          ttft_s=None, throughput_tps=0.0))
+                          ttft_s=None, throughput_tps=0.0, prefill_tps=None, queue_s=None, acc_len=None,
+                          idle_share=1.0, aborted=0, pool_max=0.0, running_max=0, queued_max=0))
         self.assertEqual(r["cap"], "quiet")
         self.assertEqual(r["facts"]["Prompt tokens from the cache"], "no request finished")
         self.assertNotIn("Decode speed", r["facts"])
         self.assertNotIn("First token after", r["facts"])
+        self.assertNotIn("Accepted per draft step", r["facts"])
+        self.assertNotIn("Queued before starting", r["facts"])
+        self.assertNotIn("Busiest moment", r["facts"], "nothing ran: no peaks to show")
+        self.assertEqual(r["facts"]["Idle in the window"], "100 % of the time")
+        self.assertEqual(r["facts"]["Abandons the engine accepted"], "none")
 
     def test_no_text_engine(self):
         r = self.box({"lane": None})

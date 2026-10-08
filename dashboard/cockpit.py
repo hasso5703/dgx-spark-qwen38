@@ -676,7 +676,7 @@ def collect_canary():
             METRICS.canary_begins(time.time())
     ok, before = False, None
     try:
-        before = engine_metrics_read() if key else None
+        before = (engine_metrics_read() or (None,))[0] if key else None
         t0 = time.time()
         try:
             urllib.request.urlopen(req, timeout=25).read()
@@ -691,24 +691,28 @@ def collect_canary():
     finally:
         if key:
             # a canary that failed may still be counted once it ends: no difference is its own
-            after = engine_metrics_read() if ok else None
+            after = (engine_metrics_read() or (None,))[0] if ok else None
             with METRICS_LOCK:
                 METRICS.canary(time.time(), key, before, after)
     return {"node_id": "local", **CANARY, "skipped": False}
 
 
 # The engine's own counters over the last 5 minutes (engine_metrics.py): the Traffic view's
-# cache reuse, decode speed, time to first token and tokens per second for all clients.
+# cache reuse, prefill and decode speeds, queueing, first token, tokens per second, idleness
+# and aborts, plus its peaks of the levels it showed at the reads.
 METRICS = em.Window(300.0)
 METRICS_LOCK = threading.Lock()
 
 
 def engine_metrics_read(timeout: float = 4.0):
-    """One read of the serving engine's counters, or None: no engine, no answer in time, or
-    not an SGLang page. Unauthenticated: SGLang exempts /metrics from the API key."""
+    """One read of the serving engine's counters and the levels it showed with them, or
+    None: no engine, no answer in time, or not an SGLang page. Unauthenticated: SGLang
+    exempts /metrics from the API key."""
     try:
         with urllib.request.urlopen(ENGINE_BASE + "/metrics", timeout=timeout) as r:
-            return em.parse(r.read(4_000_000).decode("utf-8", "replace"))
+            text = r.read(4_000_000).decode("utf-8", "replace")
+        counters = em.parse(text)
+        return None if counters is None else (counters, em.parse_gauges(text))
     except Exception:  # noqa: BLE001 (a missing read is a gap in the window, never an error)
         return None
 
@@ -732,13 +736,13 @@ def collect_engine_metrics():
     if key is None:
         return {"node_id": "local", "lane": None}
     started = time.time()
-    values = engine_metrics_read()
+    read = engine_metrics_read()
     now = time.time()
     with METRICS_LOCK:
-        if values is not None:
-            METRICS.add(now, key, values, started)
+        if read is not None:
+            METRICS.add(now, key, read[0], started, gauges=read[1])
         stats = METRICS.stats(now) if METRICS.key == key else {"watched_s": 0.0, "requests": None}
-    return {"node_id": "local", "lane": key[0], "read": values is not None, **stats}
+    return {"node_id": "local", "lane": key[0], "read": read is not None, **stats}
 
 
 DECODE_RE = re.compile(
