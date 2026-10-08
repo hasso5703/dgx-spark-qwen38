@@ -111,11 +111,13 @@ class Box:
         (self.t / "bin").mkdir()
         self.state_file, self.jobs_file = self.t / "state", self.t / "jobs"
         self.state(state)
-        # systemctl show A B -p ActiveState --value prints one state per unit; list-jobs prints
-        # the jobs file (none by default); is-active (the image and video lanes' question)
-        # says inactive
+        # systemctl show A B -p ActiveState --value prints one state per unit, and -p
+        # InvocationID one id per unit (v6.35), the same ids all along: no unit starts again
+        # in these tests; list-jobs prints the jobs file (none by default); is-active (the
+        # image and video lanes' question) says inactive
         (self.t / "bin/systemctl").write_text(
             "#!/bin/sh\n"
+            f'case "$*" in *InvocationID*) for u in {units}; do echo "inv-$u"; echo; done; exit 0;; esac\n'
             f'if [ "$1" = show ]; then for u in {units}; do cat "{self.state_file}"; done; exit 0; fi\n'
             f'if [ "$1" = list-jobs ]; then cat "{self.jobs_file}" 2>/dev/null; exit 0; fi\n'
             "exit 3\n")

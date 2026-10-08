@@ -98,6 +98,22 @@ fails the request (it is here, not on its way back; once a hold began, a boot no
 gets the request again 10 times at most, each after a pause). The journal says
 `holding: ...` when a wait begins and `the engine answers again after N s held` when it ends.
 
+## A new engine behind the proxy (proxy v6.35)
+
+The same units tell the proxy that the engine behind it is a new one. What it reads from the
+engine (the KV pool, the longest prompt the engine accepts, the model names it serves) it keeps
+600 s, and until v1.22.14 only a request that found the engine gone dropped them: after a lane
+switch made while no request came, a lane that boots in less than those 600 s served its first
+minutes under the stopped lane's (the 27B boots in about 7 min on the reference box: for up to
+2.5 min it refused every prompt past the flash lane's 250,000-token ceiling, and `/v1/systemone`
+answered as the flash), and a restart of the 27B kept the pool of the boot before. systemd
+gives every start of a unit a new invocation id; the proxy asks for the ids of
+`PROXY_HOLD_UNITS` when it reads those facts, at most every 2 s, and a new one drops them, so a
+switch, a restart or a crash that systemd answered with a start is followed at once. The journal
+says `an engine unit started since the engine's pool and names were read (systemd): they are
+read again`. A proxy run by hand (no `PROXY_HOLD_UNITS`), or a systemd that does not answer,
+keeps them their 600 s.
+
 ## A server left without its scheduler
 
 SGLang v0.5.19 can end up with its server process alive and no scheduler: a SIGQUIT that

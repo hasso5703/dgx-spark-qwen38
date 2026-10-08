@@ -15,7 +15,9 @@ Environment=KEEPALIVE_S=10
 Environment=MAX_SILENCE_S=3600
 # A request that finds the engine not answering while one of these units is on its way
 # back (a crash, a boot, a switch) waits for it instead of failing at once (v6.28, issue
-# #26). Quoted: unquoted, systemd would read the space as two assignments.
+# #26), and a new start of one drops what the proxy read from the engine before it: its
+# pool, window and names (v6.35). Quoted: unquoted, systemd would read the space as two
+# assignments.
 Environment="PROXY_HOLD_UNITS=qwen38-sglang.service qwen38-flash.service"
 Environment=PROXY_HOLD_MAX_S=1200
 Environment=PROXY_BIND=__PROXY_BIND__

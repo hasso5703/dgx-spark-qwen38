@@ -1346,6 +1346,51 @@ def invalidate_pool():
     _INFO_ROUTE["path"] = "/server_info"  # v6.23: a new engine gets the current route first
 
 
+# v6.35: what proves the engine is not the one measured, when no request failed on the way.
+# systemd gives every start of a unit an invocation id of its own (systemd.exec(5),
+# $INVOCATION_ID), and the units that run the engine behind UPSTREAM are the ones the
+# installed proxy names in PROXY_HOLD_UNITS. After a lane switch with no request in between,
+# a lane that boots in less than the 600 s these facts were kept served its first minutes
+# under the stopped lane's pool, window and names: the 27B (about 7 min to boot on the
+# reference box) refused every prompt past the flash lane's 250,000 ceiling and /v1/systemone
+# answered as the flash (found 2026-10-08). The ids are read when those facts are, at most
+# every 2 s, as for a hold: an engine answers minutes after its unit starts, so nothing it
+# serves meets a fact read before it. With no unit named (a proxy run by hand, or by a test)
+# or no answer from systemd, the facts keep their 600 s, as before.
+# The vocabulary keeps its hour: every checkpoint a lane of this repo serves has the same
+# 248,320 tokens (checked 2026-10-08).
+_STARTS = {"ts": -1e9, "ids": None}
+_STARTS_LOCK = threading.Lock()
+
+
+def follow_engine_restarts():
+    """Drop what was read from the engine (invalidate_pool) once one of its units has started
+    since the last look; True when it did. Dropped under the lock, so a request that waited
+    on this look reads the new engine, not the facts of the one before."""
+    if not HOLD_UNITS:
+        return False
+    with _STARTS_LOCK:
+        now = time.monotonic()
+        if now - _STARTS["ts"] <= 2:
+            return False
+        _STARTS["ts"] = now
+        try:
+            out = subprocess.run(["systemctl", "show", *HOLD_UNITS, "-p", "InvocationID", "--value"],
+                                 capture_output=True, text=True, timeout=3)
+        except Exception:
+            return False
+        if out.returncode != 0:
+            return False
+        ids, seen = tuple(out.stdout.split()), _STARTS["ids"]
+        _STARTS["ids"] = ids
+        if seen is None or ids == seen:
+            return False
+        invalidate_pool()
+    log("an engine unit started since the engine's pool and names were read (systemd): "
+        "they are read again")
+    return True
+
+
 # v6.23: /server_info, and the deprecated /get_server_info only on an engine without it.
 # SGLang logs a deprecation warning for every call of the old route (v0.5.19 and the flash
 # image both: 20 lines in 10 minutes on the reference box from the cockpit, the fit and
@@ -1377,6 +1422,7 @@ POOL_READ_TIMEOUT_S = float(os.environ.get("POOL_READ_TIMEOUT_S", "20"))
 
 
 def pool_tokens():
+    follow_engine_restarts()
     if _POOL["tokens"] and time.time() - _POOL["ts"] < 600:
         return _POOL["tokens"]
     try:
@@ -2252,6 +2298,7 @@ def served_models():
     it: a switch changes the answer and a stale name would be sent to the new lane.
     The whole list, because a lane that advertises an alias next to its path should
     answer to both, and the first one is the name the answers carry."""
+    follow_engine_restarts()
     if _SERVED["names"] and time.time() - _SERVED["ts"] < 600:
         return _SERVED["names"]
     try:
