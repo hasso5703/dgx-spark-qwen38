@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.34). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.35). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -39,6 +39,17 @@ Six roles, nothing else:
    answer and its unit (PROXY_HOLD_UNITS) is on its way back waits for it, at most
    PROXY_HOLD_MAX_S, instead of failing at once. A streamed one hears from the proxy at
    once (200, then the keepalives of role 1); see "Holding a request" below.
+
+v6.35: a lane switch is followed at once, request or not. The pool, the window and the names
+read from the engine were kept 600 s and dropped only by a request that found the engine
+gone, so after a switch made while no request came, a lane that boots in less than 600 s
+served its first minutes under the stopped lane's: the 27B, which boots in about 7 min on the
+reference box, refused every prompt past the flash lane's 250,000 ceiling for up to 2.5 min
+and /v1/systemone answered as the flash (found 2026-10-08), and a restart of the 27B kept the
+pool of the boot before. The units the installed proxy names in PROXY_HOLD_UNITS are now asked
+for their invocation id when those facts are read, at most every 2 s, and a new one, which
+systemd gives every start, drops them. A proxy that names no unit keeps them its 600 s, as
+before.
 
 v6.34: the serving key is checked before a body is read. The README promises that the key is
 this port's one gate, and a caller without it still had its body read whole (up to
@@ -3966,7 +3977,7 @@ if __name__ == "__main__":
     holds = (f"holds requests up to {HOLD_MAX_S:.0f}s while {' or '.join(HOLD_UNITS)} comes back"
              if HOLD_UNITS and HOLD_MAX_S > 0 else "holds nothing")
     # one f-string: the cockpit's tests render this line from the source
-    log(f"v6.34 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
+    log(f"v6.35 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))
