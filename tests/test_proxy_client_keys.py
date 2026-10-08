@@ -37,6 +37,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+
+def _no_key():
+    """The serving key this harness's proxy holds: none, whatever HOME holds. Its clients send
+    no key, as these tests were written, and since v6.34 a proxy that knows a key refuses them
+    at the door (the CI's offline step gives HOME one). The door has its own tests, in
+    tests/test_proxy_door.py."""
+    raise FileNotFoundError("no serving key in this harness")
+
+
 REPO = Path(__file__).resolve().parents[1]
 BODY = json.dumps({"model": "x", "messages": []}).encode()
 
@@ -144,6 +153,7 @@ def fresh_proxy_module(upstream_port, keys_path=None, upstream_key=None):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+    mod._api_key = _no_key    # a scenario's key, when it has one, is QWEN38_UPSTREAM_API_KEY
     return mod
 
 

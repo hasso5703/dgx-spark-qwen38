@@ -266,7 +266,7 @@ before relaying them at once: measured 2026-08-23, median inter-event gap 0 ms
 / max 1307 ms through the proxy vs a steady 118 ms direct. read1() returns as
 soon as bytes are available, so the stream stays token by token.
 """
-import base64, collections, concurrent.futures, hashlib, http.client, json, math, os, queue, re, select, socket, ssl, string, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error, uuid
+import base64, collections, concurrent.futures, hashlib, hmac, http.client, json, math, os, queue, re, select, socket, ssl, string, subprocess, sys, threading, time, urllib.parse, urllib.request, urllib.error, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -573,6 +573,40 @@ def _upstream_auth(handler):
 # /v1/... only, while _upstream_auth attaches the engine's key to everything relayed.
 OPEN_ROUTES = frozenset({"/health"})
 SERVER_INFO_ROUTES = frozenset({"/server_info", "/get_server_info"})
+# Without the identity wall, the engine's key is this port's one gate (README), and since
+# v6.34 the proxy applies it before reading a body. The rule is the engine's own, from
+# SGLang's srt/utils/auth.py (decide_request_auth, _check_bearer_token; the same in both
+# pinned images) and measured on the live engine on 2026-10-08: a path under /health or
+# /metrics needs no key (/health, /health_generate and /metrics answered 200 with no
+# header); any other needs an Authorization header that, without the whitespace around it,
+# is a scheme spelled "bearer" in any case, one space, and the key exactly. "bearer KEY"
+# and "Bearer KEY " were admitted; "Bearer  KEY", "Bearer<TAB>KEY", "Token KEY", the key
+# alone and no header were 401.
+ENGINE_OPEN_PREFIXES = ("/health", "/metrics")
+# The engine's own refusal, byte for byte, so a client gets the answer it always got.
+ENGINE_401_BODY = b'{"error":"Unauthorized"}'
+
+
+def engine_admits(authorization, key):
+    """True when SGLang's own key check would admit this Authorization header value."""
+    if not authorization:
+        return False
+    parts = authorization.strip(" \t").split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return False
+    return hmac.compare_digest(parts[1].encode("utf-8", "replace"), key.encode("utf-8", "replace"))
+
+
+def _door_key():
+    """The key the engine checks, or None when there is none to compare with: the engine's
+    own check then decides, as it always did. It is the file the proxy signs its own engine
+    calls with, so the door and those calls cannot disagree about which key is current."""
+    if UPSTREAM_API_KEY:
+        return UPSTREAM_API_KEY
+    try:
+        return _api_key() or None
+    except Exception:
+        return None
 KEY_FIELDS = ("api_key", "admin_api_key", "ssl_keyfile_password")
 # A secret flag's value, wherever a string of the answer repeats a command line (SGLang's
 # launch_command, v6.32): `--api-key K`, `--api-key=K`, quoted or not.
@@ -2718,8 +2752,9 @@ class H(BaseHTTPRequestHandler):
             pass
 
     def handle_expect_100(self):
-        # A client that asks before it sends (Expect: 100-continue) is told of the cap
-        # before it sends anything, rather than invited to send it all first.
+        # A client that asks before it sends (Expect: 100-continue) is told of the cap, and
+        # of a key the engine would refuse (v6.34), before it sends anything, rather than
+        # invited to send it all first.
         n = parse_body_length(self.headers.get("Content-Length"))
         if n is not None and body_over_cap(n):
             log(f"{self.client_address[0]}:{self.client_address[1]} REFUSED body {n}b over the "
@@ -2727,6 +2762,13 @@ class H(BaseHTTPRequestHandler):
             self._plain(413, {"Content-Type": "application/json"},
                         json.dumps({"error": {"type": "body_too_large",
                                               "message": f"keepalive-proxy: request body {n}b exceeds the {MAX_BODY_BYTES}b cap"}}).encode())
+            return False
+        path, suspect = canonical_path(self.path)
+        route = path.split("?")[0]
+        if not suspect and self._door_shut(route):
+            log(f"{self.client_address[0]}:{self.client_address[1]} REFUSED without the serving key "
+                f"on {route}, before its body was sent")
+            self._door_answer(route)
             return False
         return super().handle_expect_100()
 
@@ -3363,7 +3405,7 @@ class H(BaseHTTPRequestHandler):
             self._done("400 suspect path"); return
         self._label_peer()
         log(f"{self._peer} -> {self.command} {self.path.split('?')[0]} body={n0}b")
-        if self._wall_refused():
+        if self._wall_refused() or self._door_refused():
             return
         n = parse_body_length(self.headers.get("Content-Length"))
         if n is None:
@@ -3765,7 +3807,7 @@ class H(BaseHTTPRequestHandler):
                                               "fragment, an escape left after one decode, or a byte "
                                               "outside printable ASCII, and is refused"}}).encode())
             self._done("400 suspect path"); return
-        if self._wall_refused():
+        if self._wall_refused() or self._door_refused():
             return
         resp, herr, cerr = self._open(None)
         if cerr is not None:
@@ -3818,6 +3860,44 @@ class H(BaseHTTPRequestHandler):
         self._plain(401, {"Content-Type": "application/json"}, json.dumps(err).encode())
         self._done("401 unknown client key")
         return True
+
+    def _door_shut(self, route):
+        """True when this request does not carry the key the engine admits (v6.34). The
+        wall, when on, decides instead; a route the engine leaves open, or a box whose key
+        the proxy cannot read, stays the engine's own business."""
+        if CLIENT_KEYS or route.startswith(ENGINE_OPEN_PREFIXES):
+            return False
+        key = _door_key()
+        return bool(key) and not engine_admits(self.headers.get("Authorization"), key)
+
+    def _door_refused(self):
+        """True when this request was answered 401 because it does not carry the key the
+        engine admits (v6.34): answered before a byte of its body is read, so it costs
+        neither the proxy's memory nor any engine work, where the engine's own 401 came only
+        after the body was read whole and, for a large prompt, counted by the engine on the
+        proxy's key."""
+        route = self.path.split("?")[0]
+        if not self._door_shut(route):
+            return False
+        log(f"{self._peer} REFUSED without the serving key on {route}, before its body")
+        self._door_answer(route)
+        self._done("401 without the serving key")
+        return True
+
+    def _door_answer(self, route):
+        """The engine's own 401, or, on the route that answers in its own envelope, the same
+        status and error_type a refused key came back with before the door."""
+        if self.command == "POST" and route == SYSTEMONE_PATH:
+            # This route answers in its own envelope, and a key the engine refuses came back
+            # in it before the door: same status, same error_type, an honest message.
+            body = json.dumps({"detail": {"error_type": "engine_error", "message":
+                                          "keepalive-proxy: the engine's key check refuses this "
+                                          "request (HTTP 401: " + ENGINE_401_BODY.decode() + "): it "
+                                          "carries no Authorization: Bearer key the engine admits, "
+                                          "so nothing was sent to it"}}).encode()
+        else:
+            body = ENGINE_401_BODY
+        self._plain(401, {"Content-Type": "application/json"}, body)
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 30001

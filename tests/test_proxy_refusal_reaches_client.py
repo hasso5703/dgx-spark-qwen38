@@ -5,7 +5,11 @@ The 413 for a body past MAX_BODY_BYTES went out without the body being read, and
 socket closed at once: the kernel answered the rest of the upload with a reset, and the
 reset destroyed the 413 on its way, so a client sending 20 MB past a 1 MB cap saw a broken
 pipe five times in five (found in review, 2026-09-24). And a client that asks first
-(Expect: 100-continue) was invited to send it all before being refused."""
+(Expect: 100-continue) was invited to send it all before being refused.
+
+The same holds for the 401 the proxy answers since v6.34 when a request does not carry the
+key the engine admits: it is sent before the body is read, so it must arrive whole too, and
+a client that asks first must be refused before it sends."""
 import http.client
 import os
 import pathlib
@@ -19,6 +23,7 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CAP = 1024 * 1024
+KEY = "k-test"                                   # the key this harness gives the proxy
 
 
 class TheRefusalArrives(unittest.TestCase):
@@ -26,7 +31,7 @@ class TheRefusalArrives(unittest.TestCase):
     def setUpClass(cls):
         cls.home = pathlib.Path(tempfile.mkdtemp(prefix="kp-413-"))
         (cls.home / ".config" / "qwen38").mkdir(parents=True)
-        (cls.home / ".config" / "qwen38" / "api-key").write_text("k-test\n")
+        (cls.home / ".config" / "qwen38" / "api-key").write_text(KEY + "\n")
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             cls.port = s.getsockname()[1]
@@ -53,7 +58,8 @@ class TheRefusalArrives(unittest.TestCase):
         for _ in range(5):
             c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
             try:
-                c.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
+                c.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json",
+                                                                 "Authorization": f"Bearer {KEY}"})
                 r = c.getresponse()
                 self.assertEqual(r.status, 413)
                 self.assertIn(b"body_too_large", r.read())
@@ -64,6 +70,7 @@ class TheRefusalArrives(unittest.TestCase):
         s = socket.create_connection(("127.0.0.1", self.port), timeout=10)
         try:
             s.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                      b"Authorization: Bearer " + KEY.encode() + b"\r\n"
                       b"Expect: 100-continue\r\nContent-Length: %d\r\n\r\n" % (20 * CAP))
             head = b""
             while b"\r\n\r\n" not in head:
@@ -74,6 +81,36 @@ class TheRefusalArrives(unittest.TestCase):
         finally:
             s.close()
         self.assertTrue(head.startswith(b"HTTP/1.1 413"), head[:80])
+
+    def test_a_client_without_the_key_that_just_sends_reads_the_401(self):
+        """Under the cap, so only the key decides: the refusal goes out before the body is
+        read, and the client, still sending, reads it whole, five times in five."""
+        body = b"x" * (CAP - 1)
+        for _ in range(5):
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
+            try:
+                c.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
+                r = c.getresponse()
+                self.assertEqual(r.status, 401)
+                self.assertEqual(r.read(), b'{"error":"Unauthorized"}')
+            finally:
+                c.close()
+
+    def test_a_client_without_the_key_that_asks_first_is_refused_before_sending(self):
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        try:
+            s.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                      b"Authorization: Bearer wrong\r\n"
+                      b"Expect: 100-continue\r\nContent-Length: %d\r\n\r\n" % (CAP - 1))
+            head = b""
+            while b"\r\n\r\n" not in head:
+                piece = s.recv(4096)
+                if not piece:
+                    break
+                head += piece
+        finally:
+            s.close()
+        self.assertTrue(head.startswith(b"HTTP/1.1 401"), head[:80])
 
 
 if __name__ == "__main__":

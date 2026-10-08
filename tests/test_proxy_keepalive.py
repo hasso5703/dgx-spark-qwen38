@@ -27,6 +27,14 @@ import unittest
 from pathlib import Path
 
 
+def _no_key():
+    """The serving key this harness's proxy holds: none, whatever HOME holds. Its clients send
+    no key, as these tests were written, and since v6.34 a proxy that knows a key refuses them
+    at the door (the CI's offline step gives HOME one). The door has its own tests, in
+    tests/test_proxy_door.py."""
+    raise FileNotFoundError("no serving key in this harness")
+
+
 def _keep_env(cls):
     """Put os.environ back as this class found it, once it is done: the variables set for
     the proxy under test (UPSTREAM and the rest) stayed set for every module after this
@@ -140,6 +148,7 @@ class Base(unittest.TestCase):
         cls.mod = importlib.util.module_from_spec(spec)
         sys.argv = ["keepalive-proxy.py"]
         spec.loader.exec_module(cls.mod)
+        cls.mod._api_key = _no_key
         cls.proxy = cls.mod.Server(("127.0.0.1", 0), cls.mod.H)
         threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
         cls.port = cls.proxy.server_address[1]

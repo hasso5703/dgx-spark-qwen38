@@ -42,6 +42,23 @@ def key_home():
     return home
 
 
+# Since v6.34 the proxy applies the engine's key check before it reads a body, so a client of
+# these harnesses presents the key the harness gave the proxy, as every real client does.
+KEY_HEADER = {"Authorization": "Bearer test-key"}
+
+
+def no_key_home():
+    """A throwaway HOME with no engine key, for a proxy run as a process whose clients send
+    none: the ambient HOME may hold one (the CI's offline step gives it one)."""
+    return Path(tempfile.mkdtemp(prefix="proxy-nokey-home-"))
+
+
+def _no_key():
+    """The serving key of an in-process proxy whose clients send none: none, whatever HOME
+    holds. The door that compares a bearer with that key has its own tests."""
+    raise FileNotFoundError("no serving key in this harness")
+
+
 class FakeTokenize(http.server.BaseHTTPRequestHandler):
     seen = []
 
@@ -409,7 +426,7 @@ class ProxyInFrontOfLoadingEngine(unittest.TestCase):
 
     def _post(self, body):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
-                                     headers={"Content-Type": "application/json"}, method="POST")
+                                     headers={"Content-Type": "application/json", **KEY_HEADER}, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, dict(r.headers), r.read()
@@ -450,7 +467,10 @@ class ProxyOnABoxSwitchedToImages(unittest.TestCase):
             sk.bind(("127.0.0.1", 0)); dead = sk.getsockname()[1]
         with socket.socket() as sk:
             sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
-        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{dead}", PATH=f"{fake}:{os.environ.get('PATH', '')}")
+        home = no_key_home()
+        self.addCleanup(shutil.rmtree, home, True)
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{dead}", PATH=f"{fake}:{os.environ.get('PATH', '')}",
+                   HOME=str(home))
         proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(port)],
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(lambda: (proc.terminate(), proc.wait(timeout=5)))
@@ -587,7 +607,7 @@ class RefusalIsRecognisableAsOverflow(unittest.TestCase):
         body = json.dumps({"model": "m", "messages": [
             {"role": "user", "content": "word " * 120000}]}).encode()
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
-                                     headers={"Content-Type": "application/json"}, method="POST")
+                                     headers={"Content-Type": "application/json", **KEY_HEADER}, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 self.fail(f"an oversize body was relayed: {r.status}")
@@ -840,8 +860,9 @@ class CorruptionTripwireEndToEnd(unittest.TestCase):
         threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
         with socket.socket() as sk:
             sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        cls.home = no_key_home()
         env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}",
-                   CORRUPTION_RUN="48", PROMPT_CEILING_TOKENS="0")
+                   CORRUPTION_RUN="48", PROMPT_CEILING_TOKENS="0", HOME=str(cls.home))
         cls.proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
@@ -854,6 +875,7 @@ class CorruptionTripwireEndToEnd(unittest.TestCase):
     def tearDownClass(cls):
         cls.proc.terminate(); cls.proc.wait(timeout=10)
         cls.eng.shutdown(); cls.eng.server_close()
+        shutil.rmtree(cls.home, ignore_errors=True)
 
     def test_the_stream_is_cut_and_the_client_is_told_why(self):
         import time
@@ -923,9 +945,10 @@ class HardeningV615(unittest.TestCase):
         threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
         with socket.socket() as sk:
             sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        cls.home = no_key_home()
         env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}",
                    PROMPT_CEILING_TOKENS="200000", UPSTREAM_GET_TIMEOUT_S="1",
-                   MAX_BODY_BYTES="1000000")
+                   MAX_BODY_BYTES="1000000", HOME=str(cls.home))
         cls.proc = subprocess.Popen([sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
@@ -940,6 +963,7 @@ class HardeningV615(unittest.TestCase):
     def tearDownClass(cls):
         cls.proc.terminate(); cls.proc.wait(timeout=10)
         cls.eng.shutdown(); cls.eng.server_close()
+        shutil.rmtree(cls.home, ignore_errors=True)
 
     def _raw(self, head, body=b""):
         import socket
@@ -1610,6 +1634,7 @@ class ClientStringsAreNotKept(unittest.TestCase):
         cls.m = importlib.util.module_from_spec(spec)
         sys.argv = ["keepalive-proxy.py"]
         spec.loader.exec_module(cls.m)
+        cls.m._api_key = _no_key
         cls.proxy = cls.m.Server(("127.0.0.1", 0), cls.m.H)
         threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.proxy.server_port}"
@@ -1696,7 +1721,7 @@ class TopLogprobsCeilingEndToEnd(unittest.TestCase):
     def post(self, obj, path="/v1/chat/completions"):
         req = urllib.request.Request(
             self.base + path, data=json.dumps(obj).encode(), method="POST",
-            headers={"Content-Type": "application/json", "Authorization": "Bearer t"})
+            headers={"Content-Type": "application/json", "Authorization": "Bearer test-key"})
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.status, r.read()
@@ -1763,7 +1788,7 @@ class TopLogprobsCeilingEndToEnd(unittest.TestCase):
     def raw_post(self, path, raw):
         req = urllib.request.Request(
             self.base + path, data=raw, method="POST",
-            headers={"Content-Type": "application/json", "Authorization": "Bearer t"})
+            headers={"Content-Type": "application/json", "Authorization": "Bearer test-key"})
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.status, r.read()
@@ -1828,7 +1853,7 @@ class TheOversizeGuardReachesTheNonV1Routes(unittest.TestCase):
     def _post(self, path, obj):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}",
                                      data=json.dumps(obj).encode(), method="POST",
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json", **KEY_HEADER})
         try:
             with urllib.request.urlopen(req, timeout=15) as r:
                 return r.status, r.read()
@@ -1886,7 +1911,7 @@ class TheGuardNominatesByItsBound(unittest.TestCase):
         body = json.dumps({"model": model, "messages": [{"role": "user", "content": content}]}).encode()
         SmallPoolEngine.seen_post_paths = []
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
-                                     method="POST", headers={"Content-Type": "application/json"})
+                                     method="POST", headers={"Content-Type": "application/json", **KEY_HEADER})
         try:
             with urllib.request.urlopen(req, timeout=15) as r:
                 status, raw = r.status, r.read()

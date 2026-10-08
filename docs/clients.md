@@ -14,6 +14,9 @@ act on, and aborts decodes that emit the corruption marker. The engine
 port (`:30000`) speaks the same APIs without that protection, and **since
 v1.17 it binds `127.0.0.1`, so it answers on the box only**. That is the
 whole arrangement in one line: one door, and it is the one with the lock.
+Since v1.22.13 the proxy checks that lock itself, with the engine's own rule, before it
+reads a request's body: a request without the key gets the engine's own 401 at once, and
+`/health` and `/metrics` stay open, as the engine keeps them.
 `ENGINE_BIND=0.0.0.0 ./install.sh` puts the engine back on the network for
 a box that wants it, and a box that already had it there keeps it across
 updates.

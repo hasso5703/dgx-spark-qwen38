@@ -18,6 +18,15 @@ import time
 import unittest
 from pathlib import Path
 
+
+def _no_key():
+    """The serving key this harness's proxy holds: none, whatever HOME holds. Its clients send
+    no key, as these tests were written, and since v6.34 a proxy that knows a key refuses them
+    at the door (the CI's offline step gives HOME one). The door has its own tests, in
+    tests/test_proxy_door.py."""
+    raise FileNotFoundError("no serving key in this harness")
+
+
 PROXY = Path(__file__).resolve().parents[1] / "keepalive-proxy.py"
 
 
@@ -53,6 +62,7 @@ class ABodyThatNeverArrivedWhole(unittest.TestCase):
         self.addCleanup(setattr, sys, "argv", argv)
         sys.argv = ["keepalive-proxy.py"]
         spec.loader.exec_module(self.mod)
+        self.mod._api_key = _no_key
         self.lines = []
         self.mod.log = self.lines.append
         self.proxy = self.mod.Server(("127.0.0.1", 0), self.mod.H)

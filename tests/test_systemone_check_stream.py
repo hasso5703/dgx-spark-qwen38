@@ -19,6 +19,15 @@ import time
 import unittest
 from pathlib import Path
 
+
+def _no_key():
+    """The serving key this harness's proxy holds: none, whatever HOME holds. Its clients send
+    no key, as these tests were written, and since v6.34 a proxy that knows a key refuses them
+    at the door (the CI's offline step gives HOME one). The door has its own tests, in
+    tests/test_proxy_door.py."""
+    raise FileNotFoundError("no serving key in this harness")
+
+
 REPO = Path(__file__).resolve().parents[1]
 KEEPALIVE_S = 0.3
 MAX_SILENCE_S = 1.5
@@ -102,6 +111,7 @@ class TheMixedLoadGrade(unittest.TestCase):
         argv, sys.argv = sys.argv, ["keepalive-proxy.py"]
         try:
             spec.loader.exec_module(cls.proxy_mod)
+            cls.proxy_mod._api_key = _no_key
         finally:
             sys.argv = argv
         cls.proxy = cls.proxy_mod.Server(("127.0.0.1", 0), cls.proxy_mod.H)

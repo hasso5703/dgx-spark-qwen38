@@ -211,8 +211,9 @@ class SystemOne(unittest.TestCase):
         spec.loader.exec_module(cls.mod)
         # Handed its key rather than given ~/.config/qwen38/api-key: the file this wrote
         # when it was missing outlived an interrupted run, and install.sh keeps the key it
-        # finds (found in review, 2026-09-24).
-        cls.mod._api_key = lambda: "test-key"
+        # finds (found in review, 2026-09-24). It is the key the client below presents:
+        # since v6.34 the proxy applies the engine's key check before it reads a body.
+        cls.mod._api_key = lambda: "client-token"
         cls.proxy = cls.mod.Server(("127.0.0.1", 0), cls.mod.H)
         threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.proxy.server_port}"
