@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.22.13 (2026-10-08): the Traffic view says the prefill speed too, the queue, the idleness, and the peaks
+
+The **Last 5 minutes** box fills in what was missing, from the same reads of the engine's
+own counters: the **prefill speed**, the computed prompt tokens over the engine's own
+per-request prefill stopwatch (`realtime_tokens_total` of `mode="prefill_compute"` over the
+`prefill_forward` and `chunked_prefill` stage times), so cache-served prompts do not
+inflate it and no idle time sits in it, the same rule the decode speed follows; the mean
+time a request **waited in the queue** before the engine started on it
+(`queue_time_seconds`), which splits a client's wait into the wait for a seat and the wait
+for the work; the share of the window the scheduler had **nothing runnable** for
+(`scheduler_idle_seconds_total`), which lets a low "tokens per second for all clients" be
+read without mistaking it for a slow engine; the **aborts the engine accepted**
+(`num_aborted_requests_total`), the proxy's abandonment as it landed, beside the Abandoned
+requests panel; and the **accepted per draft step**, the window's generated tokens over
+`spec_verify_calls_total`, what one drafter step netted (its own token plus the drafts it
+accepted): the gauges on the same page hold only an average since the boot, and the
+scheduler prints its accept length only per a log window of its own choosing. Two totals
+join existing rows (the prompt and generated token counts they
+averaged over), and **Busiest moment** says the cockpit's own peaks of the levels the
+engine showed at its reads (pool fullness, concurrent requests, longest wait): a level
+cannot be differed, so a peak is a lower bound, honest about between reads; a distribution
+is what Grafana is for.
+
+Measured on the reference box (2026-10-08, the flash lane serving with two agents
+decoding): a cold 1,908-token prompt took 0.955 s of the stopwatch, 1,998 tok/s, the scale
+the benchmarks table's ~2,250 prefill says for a saturated lane, and the engine's own
+queue time for it was 0.6 ms of its 1.02 s round trip. A 700-token request spent 194
+drafter verifications, 3.61 tokens a step at 4 drafts, while the `spec_accept_length`
+gauge held 2.7, its average since the boot. A replay of real pages through the branch's
+own module counted the finished requests, one fresh abort, the 62 % pool peak, the two
+running requests, and that same 3.61 across the read that sandwiched the request.
+
+New: label-aware counter names in `engine_metrics.py` (the modes of the realtime tokens,
+the stages of the stopwatch, the drafter's counter), a reader for the levels, and the
+window keeping peaks of them; `cockpit.py` carries the levels with every read and takes
+the canary's own prefill, queue and verification out with the rest of it, with the
+verification count now also holding the isolation gate. Nine new engine_metrics tests,
+the collector stub carries the new counters, and the page fixture carries the new rows
+and what the quiet box says.
+
 ## v1.25.2 (2026-10-10): the serving key stays off every command line, in the scripts and in the commands the docs give
 
 **What was wrong.** Since v1.5.2, `needle.sh` run without `--model` asked `/v1/models` with

@@ -15,6 +15,24 @@ speed. The scheduler's log lines carry "throughput" figures too, and those are n
 here: each is a token count over the time since the previous line of its kind, idle time
 included (the v1.22.12 notes in CHANGELOG.md have the measurements).
 
+The prefill numbers come from the engine's own counters too: `realtime_tokens_total` with
+`mode="prefill_compute"` counts only prompt tokens it actually computed (cache-served ones
+are another mode), and `per_stage_req_latency_seconds` with `stage="prefill_forward"` and
+`stage="chunked_prefill"` is its stopwatch of prefill per request, so a difference of two
+reads holds no idle time either. Measured on the reference box (2026-10-08): a cold 1,908-
+token prompt took 0.955 s of that stopwatch, 1,998 tok/s, the scale the benchmarks table's
+~2,250 prefill says for a saturated lane. `queue_time_seconds` is the waiting before the
+engine starts a request, `scheduler_idle_seconds_total` the time it had nothing runnable,
+and `num_aborted_requests_total` the aborts it accepted (the proxy's abandonment, landed).
+Of the drafter: `spec_verify_calls_total` counts every verification it ran, and the
+window's generated tokens over its difference is that window's accept length, what one
+step netted (its one token plus the drafts it accepted). Measured on the reference box
+(2026-10-08): a 700-token request spent 194 verifications, 3.61 a step at 4 drafts, while
+the `spec_accept_length` gauge sat at 2.7, an average since the boot, and the scheduler
+prints its own only per a log window of its choice.
+The levels (`full_token_usage`, `num_running_reqs`, `num_queue_reqs`) are not counters: no
+delta is possible, so the window keeps its own peaks, honest lower bounds of what peaked.
+
 Two things are not the clients': the cockpit's own canary, a real two-token chat request
 every 90 s while nothing else runs, which SGLang counts like any other, and the /health
 probe, which it does not count (log_metrics=False). The canary is taken out exactly: the
@@ -33,26 +51,56 @@ import re
 from collections import deque
 
 NAMES = {
-    "requests": "sglang:num_requests_total",
-    "prompt": "sglang:prompt_tokens_total",
-    "cached": "sglang:cached_tokens_total",
-    "generated": "sglang:generation_tokens_total",
-    "ttft_sum": "sglang:time_to_first_token_seconds_sum",
-    "ttft_count": "sglang:time_to_first_token_seconds_count",
-    "itl_sum": "sglang:inter_token_latency_seconds_sum",
-    "itl_count": "sglang:inter_token_latency_seconds_count",
+    "requests": ("sglang:num_requests_total", None),
+    "prompt": ("sglang:prompt_tokens_total", None),
+    "cached": ("sglang:cached_tokens_total", None),
+    "generated": ("sglang:generation_tokens_total", None),
+    "ttft_sum": ("sglang:time_to_first_token_seconds_sum", None),
+    "ttft_count": ("sglang:time_to_first_token_seconds_count", None),
+    "itl_sum": ("sglang:inter_token_latency_seconds_sum", None),
+    # the drafter's verifications: generated tokens over them is the accept length
+    "ver": ("sglang:spec_verify_calls_total", None),
+    "itl_count": ("sglang:inter_token_latency_seconds_count", None),
+    # what the engine computed (not read from its cache) across every prompt, and the
+    # scheduler's own stopwatch of prefill: per-request stage times, so prefill speed holds
+    # no idle time and no cache-served token inflates it
+    "pc": ("sglang:realtime_tokens_total", 'mode="prefill_compute"'),
+    "fwd": ("sglang:per_stage_req_latency_seconds_sum", 'stage="prefill_forward"'),
+    "chk": ("sglang:per_stage_req_latency_seconds_sum", 'stage="chunked_prefill"'),
+    "q_sum": ("sglang:queue_time_seconds_sum", None),
+    "q_count": ("sglang:queue_time_seconds_count", None),
+    "idle": ("sglang:scheduler_idle_seconds_total", None),
+    "aborted": ("sglang:num_aborted_requests_total", None),
 }
-_BY_NAME = {v: k for k, v in NAMES.items()}
+# instantaneous levels, not counters: no delta, the window's own peaks of them
+GAUGES = {
+    "running": ("sglang:num_running_reqs", None),
+    "queued": ("sglang:num_queue_reqs", None),
+    "pool": ("sglang:full_token_usage", None),
+}
+
+
+def _by(spec):
+    out = {}
+    for key, (name, label) in spec.items():
+        out.setdefault(name, []).append((key, label))
+    return out
+
+
+_BY_NAME = _by(NAMES)
+_GA_BY_NAME = _by(GAUGES)
 _SAMPLE = re.compile(r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^\n]*\})?[ \t]+(\S+)(?:[ \t]+\S+)?$')
 
 
-def parse(text: str) -> dict | None:
-    """Each counter summed over its label sets (a model, a cache source, streaming or not).
-    A counter not on the page yet is zero: prometheus_client writes a labelled series only
-    once it was first observed, and an engine just ready lists no cached tokens and no
-    inter-token time (its own warm-up request had neither). None when the page has no
-    SGLang metric at all: not an SGLang engine's /metrics."""
-    out = dict.fromkeys(NAMES, 0.0)
+def _read(text: str, spec_by_name, keys):
+    """Sum the listed families over their label sets (a model, a cache source, streaming
+    or not), taking only the label sets whose filter appears in the line (the modes of the
+    realtime tokens, the stages of the per-request stopwatch). A name not on the page yet
+    maps to None: prometheus_client writes a labelled series only once it was first
+    observed, and an engine just ready lists no cached tokens and no inter-token time (its
+    own warm-up request had neither). None when the page has no SGLang metric at all: not
+    an SGLang engine's /metrics."""
+    out = dict.fromkeys(keys, None)
     sglang = False
     for line in text.splitlines():
         if "sglang:" in line:
@@ -60,15 +108,35 @@ def parse(text: str) -> dict | None:
         if not line or line.startswith("#"):
             continue
         m = _SAMPLE.match(line.strip())
-        if not m or m.group(1) not in _BY_NAME:
+        cands = spec_by_name.get(m.group(1)) if m else None
+        if not cands:
             continue
         try:
             v = float(m.group(3))
         except ValueError:
             continue
-        if math.isfinite(v):
-            out[_BY_NAME[m.group(1)]] += v
-    return out if sglang else None
+        if not math.isfinite(v):
+            continue
+        labels = m.group(2) or ""
+        for key, label in cands:
+            if label is None or label in labels:
+                out[key] = v if out[key] is None else out[key] + v
+    if not sglang:
+        return None
+    return {k: (0.0 if v is None else v) if spec_by_name is _BY_NAME else v
+            for k, v in out.items()}
+
+
+def parse(text: str) -> dict | None:
+    """The counters of a /metrics page, each summed as `_read` says; a counter not on the
+    page yet is zero, so a difference of two reads is the window's own."""
+    return _read(text, _BY_NAME, NAMES)
+
+
+def parse_gauges(text: str) -> dict | None:
+    """The instantaneous levels of a /metrics page, or None when a name is not on it: a
+    peak is only claimed for values the cockpit actually read."""
+    return _read(text, _GA_BY_NAME, GAUGES)
 
 
 def delta(a: dict, b: dict) -> dict:
@@ -77,8 +145,10 @@ def delta(a: dict, b: dict) -> dict:
 
 def isolated(d: dict) -> bool:
     """A difference that holds the canary and nothing else: one finished request, one first
-    token, and at most the one inter-token interval of its two tokens."""
-    return d["requests"] == 1 and d["ttft_count"] == 1 and d["itl_count"] <= 1
+    token, and at most the one inter-token interval and one drafter verification of its
+    two tokens."""
+    return (d["requests"] == 1 and d["ttft_count"] == 1 and d["itl_count"] <= 1
+            and d["ver"] <= 1)
 
 
 class Window:
@@ -87,7 +157,7 @@ class Window:
     def __init__(self, span: float = 300.0):
         self.span = span
         self.key = None
-        self.samples: deque = deque()     # (t, values)
+        self.samples: deque = deque()     # (t, values, gauges) of each kept read
         self.canaries: deque = deque()    # (t, difference) of the cockpit's own canary
         self.started = None               # the first read of this engine's counters
         self.unseparated: deque = deque() # when each canary not taken out exactly ended
@@ -101,9 +171,11 @@ class Window:
         self.spans.clear()
         self.unseparated.clear()
 
-    def add(self, t: float, key, values: dict, started: float | None = None) -> bool:
+    def add(self, t: float, key, values: dict, started: float | None = None,
+            gauges: dict | None = None) -> bool:
         """One read of the counters of the engine `key` (its unit and its start), which began
-        at `started` and ended at `t`. False when it is dropped: it ran across a canary."""
+        at `started` and ended at `t`, with the instantaneous levels it showed alongside (the
+        window keeps their peaks). False when it is dropped: it ran across a canary."""
         started = t if started is None else started
         # a canary that began over a minute ago is over, whatever became of its end (its
         # request gives up at 25 s): never let one lost end blind the window
@@ -113,7 +185,7 @@ class Window:
             return False
         if key != self.key or (self.samples and any(values[k] < self.samples[-1][1][k] for k in NAMES)):
             self.reset(key, t)
-        self.samples.append((t, values))
+        self.samples.append((t, values, gauges))
         # one read at or before the window's start is kept: the difference starts there
         while len(self.samples) > 2 and self.samples[1][0] <= t - self.span:
             self.samples.popleft()
@@ -145,8 +217,8 @@ class Window:
     def stats(self, now: float) -> dict:
         if not self.samples:
             return {"watched_s": 0.0, "requests": None}
-        t0, a = self.samples[0]
-        t1, b = self.samples[-1]
+        t0, a, _ = self.samples[0]
+        t1, b, _ = self.samples[-1]
         d = delta(a, b)
         n_canary = 0
         for tc, dc in self.canaries:
@@ -155,6 +227,14 @@ class Window:
                 for k in NAMES:
                     d[k] -= dc[k]
         covered = t1 - t0
+        gs = [g for _, _, g in self.samples if g]
+
+        def peak(name, whole=False):
+            vs = [g[name] for g in gs if g[name] is not None]
+            if not vs:
+                return None
+            return int(round(max(vs))) if whole else max(vs)
+
         out = {
             "watched_s": round(min(self.span, covered), 1),
             "requests": int(round(d["requests"])),
@@ -162,9 +242,21 @@ class Window:
             "cached_tokens": int(round(d["cached"])),
             "generated_tokens": int(round(d["generated"])),
             "reuse": d["cached"] / d["prompt"] if d["prompt"] > 0 else None,
-            "decode_tps": d["itl_count"] / d["itl_sum"] if d["itl_sum"] > 0 and d["itl_count"] > 0 else None,
+            # computed prompt tokens over the engine's own prefill stopwatch: cache-served
+            # tokens and idle time are both out of it, the same way the decode speed is
+            "prefill_tps": d["pc"] / (d["fwd"] + d["chk"]) if d["pc"] > 0 and d["fwd"] + d["chk"] > 0 else None,
+            "queue_s": d["q_sum"] / d["q_count"] if d["q_count"] > 0 else None,
             "ttft_s": d["ttft_sum"] / d["ttft_count"] if d["ttft_count"] > 0 else None,
+            "decode_tps": d["itl_count"] / d["itl_sum"] if d["itl_sum"] > 0 and d["itl_count"] > 0 else None,
+            # finished tokens over the drafter's verifications: what a step netted, its own
+            # count bearing no idle time; a lane without a drafter calls verify never
+            "acc_len": d["generated"] / d["ver"] if d["ver"] > 0 else None,
             "throughput_tps": d["generated"] / covered if covered > 0 else None,
+            "idle_share": min(1.0, d["idle"] / covered) if covered > 0 else None,
+            "aborted": int(round(d["aborted"])),
+            "pool_max": peak("pool"),
+            "running_max": peak("running", whole=True),
+            "queued_max": peak("queued", whole=True),
             "canaries_out": n_canary,
             # a canary that could not be taken out exactly is counted in this window as a
             # request: said for as long as it lies between the window's two reads

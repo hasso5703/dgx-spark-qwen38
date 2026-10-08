@@ -45,7 +45,10 @@ on('metrics', d => {
       : 'The first read of the engine’s counters is on its way.');
     facts($('wm-facts'), []); return;
   }
-  const w = d.watched_s || 0, any = d.requests > 0 || d.decode_tps != null || d.ttft_s != null;
+  const w = d.watched_s || 0, any = d.requests > 0 || d.decode_tps != null || d.ttft_s != null || d.prefill_tps != null;
+  const peaks = [d.pool_max ? `${Math.round(100 * d.pool_max)} % of the pool` : null,
+                 d.running_max ? `${fmtN(d.running_max)} requests at once` : null,
+                 d.queued_max ? `${fmtN(d.queued_max)} waiting` : null].filter(Boolean);
   setText('wm-note', w > 0 && w < 295 ? `watched ${fmtDur(w)}` : '');
   cap('wm-cap', d.approximate ? 'approximate' : any ? 'watching' : 'quiet', d.approximate ? 'warn' : any ? 'ok' : '');
   setText('wm-verdict', (d.read === false ? 'The last read of the engine’s counters failed: these numbers come from the one before. ' : '')
@@ -54,9 +57,20 @@ on('metrics', d => {
   facts($('wm-facts'), [
     ['Requests finished', fmtN(d.requests)],
     ['Prompt tokens from the cache', d.reuse == null ? 'no request finished' : `${(100 * d.reuse).toFixed(1)} % of ${fmtN(d.prompt_tokens)}`],
-    ['Decode speed', d.decode_tps == null ? null : `${d.decode_tps.toFixed(1)} tok/s per request`],
+    // the queue is what the client waits before the engine starts on it; prefill counts the
+    // tokens the engine computed over its own prefill stopwatch, cache reads not in it
+    ['Queued before starting', d.queue_s == null ? null : `${d.queue_s < 10 ? d.queue_s.toFixed(2) : d.queue_s.toFixed(1)} s on average`],
+    ['Prefill speed', d.prefill_tps == null ? null : `${fmtN(Math.round(d.prefill_tps))} tok/s computed`],
     ['First token after', d.ttft_s == null ? null : `${d.ttft_s < 10 ? d.ttft_s.toFixed(2) : d.ttft_s.toFixed(1)} s on average`],
-    ['Generated, all clients', d.throughput_tps == null ? null : `${d.throughput_tps.toFixed(1)} tok/s`]]);
+    ['Decode speed', d.decode_tps == null ? null : `${d.decode_tps.toFixed(1)} tok/s per request`],
+    // the drafter's yield over its own verification count: not the boot average the
+    // gauge holds, not the scheduler's log window
+    ['Accepted per draft step', d.acc_len == null ? null : `${d.acc_len.toFixed(2)} tokens per verify step`],
+    ['Generated, all clients', d.throughput_tps == null ? null : `${d.throughput_tps.toFixed(1)} tok/s, ${fmtN(d.generated_tokens)} tokens`],
+    // the levels are not counters: these are the cockpit's own peaks of its reads
+    ['Busiest moment', peaks.length ? peaks.join(', ') : null],
+    ['Idle in the window', d.idle_share == null ? null : `${Math.round(100 * d.idle_share)} % of the time`],
+    ['Abandons the engine accepted', d.aborted > 0 ? fmtN(d.aborted) : 'none']]);
 });
 const feedTime = ts => {
   if (!ts || ts.length < 19) return ts || '';
