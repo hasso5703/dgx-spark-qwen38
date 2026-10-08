@@ -1,5 +1,48 @@
 # Changelog
 
+## v1.22.14 (2026-10-08): the proxy follows a lane switch at once, even when no request comes while it is made
+
+Proxy v6.35. The proxy reads three facts from the engine and keeps them 600 s: its KV pool, the
+longest prompt it accepts, and the model names it serves. Until now only a request that found
+the engine gone dropped them, so after a lane switch made while no request came (the cockpit's
+Load, or the stop and start commands `switch-model.sh` prints), a lane that boots in less than
+those 600 s served its first minutes under the stopped lane's facts. Found on the reference box
+on 2026-10-08: the 27B, which boots there in about 7 minutes, refused every prompt past the flash
+lane's 250,000-token ceiling for up to two and a half minutes after a switch from the flash lane,
+and `/v1/systemone` answered as the flash. A restart of the 27B kept the pool of the boot before
+the same way (it differs by a few percent from one boot to the next). The flash lane boots there
+in about 11 minutes, past the 600 s, so a switch to it was not caught; on a box where it boots
+faster, it would have gone without its 250,000-token ceiling, which keeps a long flash prefill
+off the memory edge.
+
+systemd gives every start of a unit a new invocation id. The proxy now asks for the ids of the
+units its unit names in `PROXY_HOLD_UNITS` (`qwen38-sglang` and `qwen38-flash`, the units that run
+the engine behind it) when it reads those facts, at most every 2 s, and a new id drops them: a
+switch, a restart, or a crash that systemd answered with a start is followed at once. The
+question takes 4.7 ms (measured on the reference box), at most once every 2 s. A proxy run by
+hand, which names no unit, or a systemd that does not answer, keeps the facts their 600 s, as
+before. The vocabulary, which the proxy keeps an hour, stays as it is: every checkpoint a lane of
+this repo serves has the same 248,320 tokens (checked 2026-10-08). `docs/engine-restarts.md`
+says it next to the hold, whose units these are.
+
+Tests: every test of the new behaviour fails on v1.22.13's proxy and passes on this one, and the
+tests of what must not change pass on both (the 47 of the hold among them); the change was
+mutated, 15 mutants, all killed. Measured live on the reference box, through a v6.35 proxy beside
+the production one and v6.34 as the witness, both with the production unit's environment. With
+the flash lane's facts read, the flash was stopped and the 27B started with no request in
+between, and the 27B answered 458 s later. v6.34 then answered `/v1/systemone` as the flash and
+refused a 270,108-token prompt as past "250000 prompt tokens (KV pool 477824 tokens, one-prompt
+ceiling 250000)", the flash lane's pool and ceiling, and it still named the flash 497 s after its
+read; v6.35 named the 27B at once, its journal said an engine unit had started, and the same
+prompt fit the 27B's own pool (806,216 usable of 876,322). Back to the flash, which answered
+656 s after the 27B's facts were read, past the 600 s: v6.35 named the flash and refused that
+prompt at the flash ceiling at once, and so did v6.34, whose facts had expired by then.
+Through both, on the flash lane, Claude Code, opencode, Hermes and pi read a file with a tool and
+answered, and the OpenAI and Anthropic SDKs, LiteLLM, and fetch under Node and Bun answered the
+same way.
+
+An update restarts the proxy once (v6.35) and the cockpit; the engines keep running.
+
 ## v1.22.13 (2026-10-08): the proxy checks the key before it reads a body, counts the prompts that could wedge the 27B, and refuses token_ids_logprob
 
 Proxy v6.34. Found while checking an OpenVuln (GLM) report on this repository: every point was
