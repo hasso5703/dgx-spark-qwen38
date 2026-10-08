@@ -22,7 +22,8 @@ a box that wants it, and a box that already had it there keeps it across
 updates.
 
 **The proxy also refuses the requests that take the engine down instead of being
-refused by it.** One is a prompt past the KV pool ([sglang#36333](https://github.com/sgl-project/sglang/issues/36333)),
+refused by it.** One is a prompt past the KV pool (measured here on 2026-08-29: queued, never
+admitted, and nothing generated for anyone until a restart),
 which is why sending a monster straight to `:30000` wedges the scheduler and sending it
 through `:30001` gets a clean 400. Since v6.20 the other is an oversized logprob request:
 OpenAI documents `top_logprobs` as "an integer between 0 and 20" and SGLang declares it

@@ -56,8 +56,9 @@ worth a private report.
 
 Several of those guards exist because the engine behind it does not survive
 the request, and a denial of service that costs one HTTP call is worth naming
-as such. A prompt past the KV pool wedges the scheduler rather than being
-refused (sglang#36333). A logprob request past the vocabulary raises
+as such. A prompt past the KV pool is queued and never admitted, and from then on
+the engine generates nothing for anyone until it is restarted (measured on this
+box, 2026-08-29). A logprob request past the vocabulary raises
 `selected index k out of range` inside the scheduler and the server is gone
 for every client until it is restarted, about nine minutes here
 (sglang#40076, open). A `stop_token_ids` or `input_ids` entry past the

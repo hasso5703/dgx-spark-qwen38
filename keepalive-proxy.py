@@ -805,7 +805,7 @@ def route_reasoning_effort(body, path):
 # here rather than on the production lane).
 #
 # This proxy already refuses the other request that wedges this build, a prompt past the
-# pool (sglang#36333), so it refuses this one on the same grounds. The ceiling is
+# pool (measured on the reference box, 2026-08-29), so it refuses this one on the same grounds. The ceiling is
 # deliberately not the vocabulary, which the engine does not publish anywhere
 # (/get_model_info has no vocab field): no vocabulary in use is smaller than 32k, the
 # System One readout asks 261 with its shipped caps and 594 with the widest an operator
