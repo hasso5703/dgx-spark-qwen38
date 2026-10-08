@@ -1089,6 +1089,18 @@ class HardeningUnits(unittest.TestCase):
         self.assertFalse(self.m.warmup_hold(200000, None))
 
 
+
+class TheProxyUnitHasAMemoryCeiling(unittest.TestCase):
+    """v1.22.13: the proxy's unit caps its memory, swap included. On a box with swap,
+    MemoryMax alone moves the excess to swap instead (measured 2026-10-08: a unit capped at
+    100M held 300M; with MemorySwapMax=0 the kernel stopped it at 100M, in its own cgroup)."""
+
+    def test_both_lines_are_in_the_service_section(self):
+        text = (HERE.parents[1] / "qwen38-keepalive.service.template").read_text()
+        service = text.split("[Service]", 1)[1].split("[Install]", 1)[0]
+        self.assertIn("\nMemoryMax=1G\n", service)
+        self.assertIn("\nMemorySwapMax=0\n", service)
+
 class TheProxyAgreesWithItselfAboutItsVersion(unittest.TestCase):
     """Three places in this file say which version the proxy IS, and a running box shows
     two of them: the startup line in its journal, and the history block the cockpit reads

@@ -19,6 +19,14 @@ Environment=MAX_SILENCE_S=3600
 Environment="PROXY_HOLD_UNITS=qwen38-sglang.service qwen38-flash.service"
 Environment=PROXY_HOLD_MAX_S=1200
 Environment=PROXY_BIND=__PROXY_BIND__
+# A ceiling on the proxy's own memory, so a proxy that grows past any real use is stopped
+# alone and started again 3 s later (Restart=always), and never eats the memory the engine
+# lives in. Its highest peak over two weeks of real traffic on the reference box was 101 MB
+# (systemd's own accounting, 2026-09-24 to 10-07). Both lines are needed: with swap on the
+# box, MemoryMax alone moves the excess to swap instead (measured 2026-10-08: a unit capped
+# at 100M held 300M; with MemorySwapMax=0 the kernel stopped it at 100M, in its own cgroup).
+MemoryMax=1G
+MemorySwapMax=0
 ExecStart=/usr/bin/python3 __HOME__/.config/qwen38/keepalive-proxy.py __PROXY_PORT__
 Restart=always
 RestartSec=3
