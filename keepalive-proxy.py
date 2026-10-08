@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keepalive proxy in front of SGLang (v6.33). No content logging, and the only
+"""Keepalive proxy in front of SGLang (v6.34). No content logging, and the only
 rewriting is the tool-schema guard (role 4); one route, POST /v1/systemone, is answered
 here instead of relayed (role 5).
 
@@ -39,6 +39,21 @@ Six roles, nothing else:
    answer and its unit (PROXY_HOLD_UNITS) is on its way back waits for it, at most
    PROXY_HOLD_MAX_S, instead of failing at once. A streamed one hears from the proxy at
    once (200, then the keepalives of role 1); see "Holding a request" below.
+
+v6.34: the serving key is checked before a body is read. The README promises that the key is
+this port's one gate, and a caller without it still had its body read whole (up to
+MAX_BODY_BYTES) and, past the size guard's nomination line, counted by the engine on the
+proxy's own key, before the engine's 401. Without the identity wall, a request now has to
+carry what the engine's own check admits (the same rule, measured on the live engine), or it
+gets the engine's own 401 at once; /health and /metrics stay open, as the engine keeps them.
+Where the engine would accept a prompt past the share of its pool the size guard lets through
+(the 27B lane: 863,638 tokens accepted, 794,552 usable), the guard nominates a body by a bound,
+not an average: a token is at least one byte, so a body counts as its length in bytes until the
+engine's count says otherwise (2.5 bytes a token let digit-heavy text through uncounted, and a
+prompt in that zone wedges the scheduler); where the engine's window is under that share, it
+refuses past it itself. And
+token_ids_logprob is refused where the engine reads it: on a batch that mixes it with an
+ordinary request, the served build's scheduler dies (sglang#34719).
 
 v6.33: an answer relayed from the engine carries one Server header and one Date. The proxy
 writes its own, and relayed the engine's beside them (uvicorn's `server: uvicorn` and `date`):
@@ -3904,7 +3919,7 @@ if __name__ == "__main__":
     holds = (f"holds requests up to {HOLD_MAX_S:.0f}s while {' or '.join(HOLD_UNITS)} comes back"
              if HOLD_UNITS and HOLD_MAX_S > 0 else "holds nothing")
     # one f-string: the cockpit's tests render this line from the source
-    log(f"v6.33 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
+    log(f"v6.34 on {BIND}:{port} -> {UPSTREAM} (keepalive {KEEPALIVE_S:.0f}s, max silence {MAX_SILENCE_S:.0f}s, {holds})")
     if FLASH_PROMPT_CEILING_TOKENS > 0:
         log(f"one-prompt ceiling {FLASH_PROMPT_CEILING_TOKENS} tokens while the flash lane serves"
             + (f", {PROMPT_CEILING_TOKENS} on any lane" if PROMPT_CEILING_TOKENS > 0 else ""))
