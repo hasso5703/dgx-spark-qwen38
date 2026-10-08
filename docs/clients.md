@@ -58,6 +58,15 @@ to be refused, so it never reaches the scheduler; it matched this checkpoint's o
 `config.json` to the digit. **A negative id is refused whatever happens, and when the probe
 cannot run the rest of the guard stands down rather than refuse traffic it cannot judge.**
 
+One more is reachable from `/generate`, and from the `parameters` of `/vertex_generate`:
+`token_ids_logprob`. On a batch that mixes a request asking for it with one that does not,
+the served 27B build (`v0.5.19`) fills a bare list for the one that did not ask and then
+calls `.tolist()` on every entry, so the scheduler dies on the first mixed batch
+([sglang#34719](https://github.com/sgl-project/sglang/issues/34719), open; the flash build
+fixes one of its two producers). Since v1.22.13 the proxy refuses any value the engine would
+act on; an empty one, which the engine itself treats as absent, passes. `top_logprobs` is
+still relayed.
+
 | | path | dialect |
 |---|---|---|
 | chat | `POST /v1/chat/completions` | OpenAI |

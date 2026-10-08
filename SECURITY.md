@@ -66,7 +66,10 @@ CUDA is a device-side assert with the same blast radius, and `n` expands a
 list before scheduling with no bound at all (sglang#31597, whose two fixes
 were closed without being merged). Every one of those fields is declared
 unconstrained in the served release, checked in the image, and all of them
-are reachable from an ordinary chat request.
+are reachable from an ordinary chat request. One more is reachable from
+`/generate`: on a batch that mixes a request asking for `token_ids_logprob` with
+one that does not, the served 27B build fills a bare list for the one that did
+not ask and its scheduler dies on it (sglang#34719, open; refused since v1.22.13).
 
 The proxy refuses all of them with a 400. **That protects the clients that go
 through it, and nothing else.** Whatever reaches the engine's own port with the

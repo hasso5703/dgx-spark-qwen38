@@ -893,7 +893,8 @@ def _sampling_prealert(body, route):
     needs_vocab = any(b'"' + f.encode() + b'"' in body for f in TOKEN_ID_FIELDS)
     has_prompt_ids = (route == "/v1/completions"
                       and re.search(rb'"prompt"\s*:\s*\[', body) is not None)
-    might = needs_vocab or has_prompt_ids or b'"n"' in body
+    might = (needs_vocab or has_prompt_ids or b'"n"' in body
+             or (route in TOKEN_IDS_LOGPROB_ROUTES and b'"token_ids_logprob"' in body))
     return might, (needs_vocab or has_prompt_ids)
 
 
@@ -913,6 +914,12 @@ def sampling_field_refusal(body, path, vocab):
     if not isinstance(j, dict):
         return None
     route = path.split("?")[0]
+    if _token_ids_logprob_asked(j, route):
+        return ("keepalive-proxy: token_ids_logprob is refused on this lane. On a batch that "
+                "mixes a request asking for it with one that does not, the served SGLang build "
+                "kills its scheduler (sglang#34719, open), which takes the lane down for every "
+                "client until a restart, so it is refused here instead. top_logprobs, the "
+                "likeliest tokens' logprobs, is relayed.")
     for holder in _sampling_holders(j, route):
         for field in TOKEN_ID_FIELDS:
             ids = holder.get(field)
@@ -1365,6 +1372,26 @@ MAX_PARALLEL_SAMPLES = int(os.environ.get("MAX_PARALLEL_SAMPLES", "128") or 128)
 SAMPLE_GUARD_ROUTES = frozenset({
     "/v1/chat/completions", "/v1/completions", "/generate",
     "/v1/responses", "/invocations", "/vertex_generate"})
+# token_ids_logprob (v6.34): a field of the engine's native request only (GenerateReqInput),
+# read at the top of a /generate body and from the `parameters` that /vertex_generate spreads
+# into one; the OpenAI routes, /invocations included, have no such field and ignore it
+# (checked in both pinned images, 2026-10-08). The served 27B build (v0.5.19) fills a bare
+# list for every co-batched request that did not ask, then calls .tolist() on each entry, so
+# the first mixed batch kills the scheduler (sglang#34719, open); the flash build fixes one of
+# the two producers and keeps the consumer as it is. The engine itself treats an empty or
+# false value as absent (`if not self.token_ids_logprob`), and only those pass here.
+TOKEN_IDS_LOGPROB_ROUTES = frozenset({"/generate", "/vertex_generate"})
+
+
+def _token_ids_logprob_asked(j, route):
+    """True when this body asks the engine for token_ids_logprob where the engine reads it."""
+    if route == "/generate":
+        holder = j
+    elif route == "/vertex_generate":
+        holder = j.get("parameters")
+    else:
+        return False
+    return isinstance(holder, dict) and bool(holder.get("token_ids_logprob"))
 def _is_prompt_route(route):
     # S5: the oversize guard keyed on the /v1/ prefix, so /generate and the other
     # non-/v1 generation aliases (Vertex, SageMaker, ollama) skipped it entirely and a

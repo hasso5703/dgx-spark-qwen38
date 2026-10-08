@@ -1532,6 +1532,59 @@ class SamplingFieldsTheEngineDiesOn(unittest.TestCase):
             self.m._VOCAB.update(size=0, ts=0.0)
 
 
+
+class TokenIdsLogprob(unittest.TestCase):
+    """v6.34: token_ids_logprob is refused where the engine reads it, the top of a /generate
+    body and the `parameters` /vertex_generate spreads into one, because the served 27B
+    build kills its scheduler on the first batch that mixes it with an ordinary request
+    (sglang#34719). What the engine itself treats as absent (`if not
+    self.token_ids_logprob`) passes, and the OpenAI routes, which have no such field and
+    ignore it, are left alone (both read in the pinned images, 2026-10-08)."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "kproxy_tilp", HERE.parents[1] / "keepalive-proxy.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+        self.m._api_key = lambda: "test-key"
+
+    def refusal(self, obj, path="/generate", vocab=248320):
+        return self.m.sampling_field_refusal(json.dumps(obj).encode(), path, vocab)
+
+    def test_any_value_the_engine_acts_on_is_refused_on_generate(self):
+        for value in ([1, 2], [[1], [2]], [[]], [0], [None], 5, "5"):
+            with self.subTest(value=value):
+                self.assertIn("token_ids_logprob",
+                              self.refusal({"text": "x", "token_ids_logprob": value}) or "")
+
+    def test_what_the_engine_treats_as_absent_passes(self):
+        for value in ([], None, 0, False, ""):
+            with self.subTest(value=value):
+                self.assertIsNone(self.refusal({"text": "x", "token_ids_logprob": value}))
+
+    def test_vertex_parameters_are_judged_and_its_instances_are_not(self):
+        self.assertIsNotNone(self.refusal({"instances": [{"text": "x"}],
+                                           "parameters": {"token_ids_logprob": [1]}},
+                                          path="/vertex_generate"))
+        self.assertIsNone(self.refusal({"instances": [{"text": "x", "token_ids_logprob": [1]}]},
+                                       path="/vertex_generate"))
+
+    def test_the_openai_routes_ignore_the_field_and_so_does_the_guard(self):
+        for path in ("/v1/chat/completions", "/v1/completions", "/invocations", "/v1/responses"):
+            with self.subTest(path=path):
+                self.assertIsNone(self.refusal({"messages": [], "token_ids_logprob": [1]}, path=path))
+
+    def test_an_escaped_key_is_refused_too(self):
+        raw = b'{"text": "x", "token\\u005fids_logprob": [1]}'
+        self.assertIsNotNone(self.m.sampling_field_refusal(raw, "/generate", 248320))
+
+    def test_no_vocabulary_is_needed(self):
+        self.assertIsNotNone(self.refusal({"text": "x", "token_ids_logprob": [1]}, vocab=0))
+        might, needs_vocab = self.m._sampling_prealert(b'{"text": "x", "token_ids_logprob": [1]}',
+                                                       "/generate")
+        self.assertTrue(might)
+        self.assertFalse(needs_vocab, "it must not cost a vocabulary probe")
+
 class ClientStringsAreNotKept(unittest.TestCase):
     """The proxy logs a dropped tool pattern and a moved reasoning_effort once per distinct
     value. It remembered the values themselves, for the life of the process, and printed
@@ -1651,6 +1704,20 @@ class TopLogprobsCeilingEndToEnd(unittest.TestCase):
         self.assertIn("top_logprobs=1000000", message)
         self.assertIn("sglang#40076", message)
         self.assertEqual(FakeTokenize.seen, [], "nothing reached the upstream")
+
+    def test_token_ids_logprob_is_refused_on_the_wire_and_never_reaches_the_engine(self):
+        FakeTokenize.seen = []
+        status, body = self.post({"text": "x", "sampling_params": {"max_new_tokens": 8},
+                                  "return_logprob": True, "token_ids_logprob": [0]}, path="/generate")
+        self.assertEqual(status, 400)
+        self.assertIn("sglang#34719", json.loads(body)["error"]["message"])
+        self.assertNotIn("/generate", [p for p, _ in FakeTokenize.seen])
+
+    def test_an_empty_token_ids_logprob_is_relayed(self):
+        FakeTokenize.seen = []
+        self.post({"text": "x", "sampling_params": {"max_new_tokens": 8},
+                   "token_ids_logprob": []}, path="/generate")
+        self.assertIn("/generate", [p for p, _ in FakeTokenize.seen])
 
     def test_a_negative_stop_token_id_is_refused_on_the_wire_too(self):
         """The one of the family that needs no vocabulary, so it holds even when the probe
