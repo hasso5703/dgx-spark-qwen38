@@ -398,8 +398,21 @@ TLS_HANDSHAKE_S = float(os.environ.get("QWEN38_TLS_HANDSHAKE_S", "10"))
 # Oversize guard (v6.7): a prompt longer than the engine's KV pool is not rejected by
 # this SGLang build, it wedges the scheduler (measured 29/08). The proxy learns the
 # pool size from /get_server_info once the upstream is healthy and refuses, with a
-# clear 400, bodies whose most optimistic token estimate still exceeds it.
-CHARS_PER_TOKEN_MIN = float(os.environ.get("CHARS_PER_TOKEN_MIN", "2.5"))
+# clear 400, a body the engine's own count puts past it.
+# Where the engine would accept a prompt that can wedge it (see wedge_possible), which bodies
+# get counted is decided by a bound (v6.34): a token is at least one byte, so no body can be
+# more tokens than it has bytes, and one that fits by its byte length fits. It was 2.5, an
+# average: prose runs 3.4 to 4.6 bytes a token on the served tokenizer, but digits are one
+# token each, so a body of numbers went through uncounted at well over twice its estimate.
+# A value at or under 0 would divide by nothing.
+CHARS_PER_TOKEN_MIN = float(os.environ.get("CHARS_PER_TOKEN_MIN", "1.0"))
+if CHARS_PER_TOKEN_MIN <= 0:
+    CHARS_PER_TOKEN_MIN = 1.0
+# The average this guard used before v6.34. It still nominates where no wedge is possible
+# (the engine refuses past its own window), and it judges a body the engine cannot count (a
+# shape its tokenizer refuses), so those paths decide as they did. It is not a bound, which
+# is why it never refuses a body the engine has counted.
+NOCOUNT_CHARS_PER_TOKEN = 2.5
 # Usable share of the pool for one prompt: the rest is room for the answer and the
 # scheduler's own buffers. The 92 percent comes from the flash lane as it was in v1.5:
 # with a 178,560-token pool a single prompt topped out near 165K (CHANGELOG v1.5.x).
@@ -418,7 +431,7 @@ PROMPT_CEILING_TOKENS = int(os.environ.get("PROMPT_CEILING_TOKENS", "0") or 0)
 FLASH_PROMPT_CEILING_TOKENS = int(os.environ.get("FLASH_PROMPT_CEILING_TOKENS", "0") or 0)
 FLASH_SERVED_NAMES = frozenset({"qwen3.8-flash-next"})
 # Hard ceiling on one request body, in bytes (0 = none). The oversize guard
-# below only inspects bodies above 200 kB; without a cap a lying or broken
+# below measures prompt bodies once they are read; without a cap a lying or broken
 # Content-Length in the gigabytes is allocated before anything is counted,
 # and a non-numeric one kills the handler thread with a ValueError (measured:
 # the client gets zero bytes back and the journal only says "no outcome").
@@ -446,6 +459,25 @@ def lane_ceiling():
         if not served or served & FLASH_SERVED_NAMES:
             ceiling = FLASH_PROMPT_CEILING_TOKENS if ceiling <= 0 else min(ceiling, FLASH_PROMPT_CEILING_TOKENS)
     return ceiling
+
+
+def wedge_possible(pool):
+    """True when the engine would accept a prompt past the share of its pool this guard lets
+    through, the zone where a prompt is queued and never admitted (a wedge): its window
+    (max_req_input_len) is larger than that share, or not known. On the 27B lane the engine
+    accepts up to 863,638 tokens on a pool of 863,644, past the 794,552 usable here (measured
+    2026-10-08). Only there is a body nominated by its bound, at a measured cost of one more
+    count (115 ms on a lone 300 kB prompt, 1.65 s on a burst of eight). Where the window is
+    under that share (the flash lane: 262,138 for 428,823 usable of 466,112), the engine
+    refuses past it itself, and the average nominates as it always did."""
+    window = _POOL.get("window")
+    return pool is None or not window or window > int(pool * (1.0 - OVERSIZE_MARGIN_FRAC))
+
+
+def nomination_estimate(n_bytes, pool):
+    """The token estimate that decides whether a body is counted: its bound where a wedge is
+    possible, the pre-v6.34 average elsewhere."""
+    return n_bytes / (CHARS_PER_TOKEN_MIN if wedge_possible(pool) else NOCOUNT_CHARS_PER_TOKEN)
 
 
 def prompt_limit(pool):
@@ -1185,10 +1217,11 @@ COUNT_ONLY_PATHS = frozenset({"/v1/messages/count_tokens"})
 
 
 def warmup_hold(est, pool):
-    """True when the pool is unknown and even the most optimistic token estimate
-    exceeds what any lane serves: the request must wait for a measurable engine
-    (503), never relay into a restart (scheduler wedge, restart-only cure). est
-    is a lower bound, so holding here can never delay a fittable request."""
+    """True when the pool is unknown and the body's bound (the most tokens it can be,
+    see CHARS_PER_TOKEN_MIN) exceeds what any lane serves: the request waits for a
+    measurable engine (503, "try again"), never relays into a restart (scheduler wedge,
+    restart-only cure). The bound can hold a body that would have fitted, until the pool
+    is read; that wait is the safe side of not knowing."""
     return pool is None and est > (PROMPT_CEILING_TOKENS or 262144)
 
 
@@ -1197,7 +1230,8 @@ def tokenize_count(body, path):
     the Anthropic dialect (see _anthropic_for_count), /tokenize for the others (chat
     template applied to messages and tools), media priced from their headers on both.
     None when nothing exact is possible for THIS body (malformed, unknown shape,
-    rejected by the engine with a 4xx): the caller then refuses on size. Raises
+    rejected by the engine with a 4xx): the caller then judges it by its size
+    (NOCOUNT_CHARS_PER_TOKEN). Raises
     EngineUnreachable when the engine itself does not answer (connection refused,
     reset, timeout, 5xx): that is not a size problem and the caller must say so
     instead of refusing."""
@@ -1243,7 +1277,7 @@ def tokenize_count(body, path):
     return n + media[0] if n >= 0 else None
 
 
-_POOL = {"tokens": None, "ts": 0.0}
+_POOL = {"tokens": None, "window": None, "ts": 0.0}
 
 
 def invalidate_pool():
@@ -1258,7 +1292,7 @@ def invalidate_pool():
     exists to prevent. Anything proving the engine is not the one we measured
     drops the cache.
     """
-    _POOL.update(tokens=None, ts=0.0)
+    _POOL.update(tokens=None, window=None, ts=0.0)
     _SERVED.update(names=(), ts=0.0)      # v6.19: the served model names are the same kind of fact
     _INFO_ROUTE["path"] = "/server_info"  # v6.23: a new engine gets the current route first
 
@@ -1300,7 +1334,9 @@ def pool_tokens():
         info = _server_info(_api_key(), POOL_READ_TIMEOUT_S)
         n = int(info.get("max_total_num_tokens") or 0)
         if n > 0:
-            _POOL.update(tokens=n, ts=time.time())
+            # The longest prompt the engine itself accepts, read with the pool (v6.34).
+            w = int(info.get("max_req_input_len") or info.get("context_length") or 0)
+            _POOL.update(tokens=n, window=w if w > 0 else None, ts=time.time())
     except Exception:
         # A read that fails is itself evidence the engine moved: never keep
         # serving a limit measured on an engine that no longer answers.
@@ -2215,16 +2251,14 @@ def systemone_model(requested):
 def systemone_guard(plan):
     """The oversize guard of the relay path, applied to the longest branch: a prompt
     beyond the pool wedges this build's scheduler instead of being refused, so the
-    size estimate nominates and the engine's tokenizer decides, exactly as for a chat
-    request. Small requests never touch the network here."""
+    size bound nominates and the engine's tokenizer decides, exactly as for a chat
+    request. A request that fits by its bound never asks the engine for a count."""
     prefix = plan["prefix"]
     tail = max((t for _, t, _, _, _ in plan["branches"]), key=len)
     body_len = len(prefix.encode()) + len(tail.encode()) + len(SYSTEMONE_SYSTEM)
-    if body_len <= 200_000:
-        return
     longest = prefix + tail
-    est = body_len / CHARS_PER_TOKEN_MIN
     pool = pool_tokens()
+    est = nomination_estimate(body_len, pool)
     if pool is None:
         if warmup_hold(est, pool):
             raise SystemOneHold()
@@ -2235,7 +2269,10 @@ def systemone_guard(plan):
     probe = json.dumps(systemone_engine_body("default", longest, 1)).encode()
     count = tokenize_count(probe, "/v1/chat/completions")     # may raise EngineUnreachable
     if count is None:
-        reason = f"at least ~{int(est)} tokens by size"
+        guess = body_len / NOCOUNT_CHARS_PER_TOKEN                # as before v6.34, see the relay path
+        if guess <= limit:
+            return
+        reason = f"about ~{int(guess)} tokens by size"
     elif count > limit:
         reason = f"{count} prompt tokens (counted by the engine)"
     else:
@@ -3427,9 +3464,10 @@ class H(BaseHTTPRequestHandler):
         # S5: the prefix test alone let /generate and the Vertex and SageMaker aliases
         # slip through unmeasured; _is_prompt_route adds them without changing the
         # /v1/ behavior that was already correct.
-        if body and _is_prompt_route(self.path.split("?", 1)[0]) and len(body) > 200_000 and not count_only:
+        # v6.34: every prompt body is measured: by its bound where a wedge is possible.
+        if body and _is_prompt_route(self.path.split("?", 1)[0]) and not count_only:
             pool = pool_tokens()
-            est = len(body) / CHARS_PER_TOKEN_MIN     # optimistic: fewest tokens the body could be
+            est = nomination_estimate(len(body), pool)
             if pool is None:
                 # The engine just (re)started and its pool is unmeasured: relaying
                 # a monster now is exactly how the scheduler wedges (only a restart
@@ -3441,8 +3479,8 @@ class H(BaseHTTPRequestHandler):
                     return ("warming", "the engine restarted and its KV pool is not measured yet", int(est))
             elif est > prompt_limit(pool):
                 # v6.8: the size estimate only nominates; the engine's tokenizer decides
-                # (a 140k-token English prompt is 479 KB, which the 2.5 chars/token bound
-                # called 192k tokens and refused although the pool served it).
+                # (a 140k-token English prompt is 479 KB, which the 2.5 chars/token
+                # estimate called 192k tokens and refused although the pool served it).
                 limit = prompt_limit(pool)
                 try:
                     count = tokenize_count(body, self.path)
@@ -3450,8 +3488,12 @@ class H(BaseHTTPRequestHandler):
                     invalidate_pool()   # this engine is restarting; its pool is not ours
                     return ("unreachable", str(e), None)
                 if count is None:
-                    reason = (f"at least ~{int(est)} tokens by size (a shape the engine's tokenizer "
-                              f"cannot count, so the size decides)")
+                    # No count for this shape: the pre-v6.34 average decides, as it did past
+                    # the old 200 kB line (on every lane whose limit is over 80k tokens, the
+                    # same bodies; below that, a small pool is no longer skipped under it).
+                    guess = len(body) / NOCOUNT_CHARS_PER_TOKEN
+                    reason = (f"about ~{int(guess)} tokens by size (a shape the engine's tokenizer "
+                              f"cannot count, so the size decides)") if guess > limit else None
                 elif count > limit:
                     reason = f"{count} prompt tokens (counted by the engine)"
                 else:

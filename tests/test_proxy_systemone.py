@@ -69,12 +69,14 @@ class Engine(http.server.BaseHTTPRequestHandler):
     cached_tokens = None
     model = "qwen3.8-test"
     pool = 100000            # what /get_server_info reports as max_total_num_tokens
+    window = None            # what it reports as max_req_input_len, when set
     server_info_fail = False # when True, /get_server_info answers 503 (an engine still loading)
     models_fail = False      # when True, /v1/models answers 503
     garbage = None           # when set, every chat completion answers this raw body with status 200
     thought = "the state says so"   # what a thinking request (no logprobs asked) answers with
     thought_truncated = False       # when True the thinking answer ends by length, not at </think>
     tokenized = 0             # how many times the oversize guard asked the engine to count
+    tokenize_fail = False     # when True, /tokenize answers 400 (a shape the engine cannot count)
     aborted = []              # the bodies POSTed to /abort_request
     poison = None             # token -> raw logprob spliced into top_logprobs (NaN, Infinity)
     wide = None               # needle -> the distribution a WIDE top_logprobs ask answers with
@@ -102,7 +104,10 @@ class Engine(http.server.BaseHTTPRequestHandler):
             if Engine.server_info_fail:
                 self._send(503, {})
             else:
-                self._send(200, {"max_total_num_tokens": Engine.pool})
+                info = {"max_total_num_tokens": Engine.pool}
+                if Engine.window is not None:
+                    info["max_req_input_len"] = Engine.window
+                self._send(200, info)
         elif self.path == "/health":
             self._send(200, {})
         else:
@@ -118,6 +123,9 @@ class Engine(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(n) or b"{}")
         if self.path == "/tokenize":
             Engine.tokenized += 1
+            if Engine.tokenize_fail:                       # a shape the engine cannot count
+                self._send(400, {"error": "cannot count this"})
+                return
             text = " ".join(str(m.get("content", "")) for m in body.get("messages", []))
             self._send(200, {"tokens": [], "count": len(text.split())})
             return
@@ -229,12 +237,14 @@ class SystemOne(unittest.TestCase):
         Engine.cached_tokens = None
         Engine.model = "qwen3.8-test"
         Engine.pool = 100000
+        Engine.window = None
         Engine.server_info_fail = False
         Engine.models_fail = False
         Engine.garbage = None
         Engine.thought = "the state says so"
         Engine.thought_truncated = False
         Engine.tokenized = 0
+        Engine.tokenize_fail = False
         Engine.poison = None
         Engine.wide = None
         Engine.aborted = []
@@ -1136,30 +1146,75 @@ class SystemOne(unittest.TestCase):
         self.assertTrue([line for line in lines if "landed on a label" in line], lines)
 
     # ---- the oversize guard, on the longest branch ----------------------------
-    def test_the_guard_wakes_at_its_byte_and_not_before(self):
-        """The cheap path of the relay guard, kept here: 200,000 bytes of branch cost no
-        /tokenize round trip and go to the engine, 200,001 wake the guard, which asks the
-        engine to count and refuses against this (tiny) pool. Both sides of one byte."""
-        Engine.pool = 5000                                   # usable 4,600 tokens
+    def test_the_guard_wakes_at_its_bound_and_not_before(self):
+        """The cheap path of the relay guard, kept here at its bound (v6.34): a branch is
+        at most as many tokens as it has bytes, so one that fits the lane's limit by its
+        bytes costs no /tokenize round trip and goes to the engine, and one byte more wakes
+        the guard, which asks the engine to count. Both sides of one byte, then a branch the
+        count puts past the limit. Until v6.34 the line sat at 200,000 bytes whatever the
+        pool, and on this pool a 200,000-byte branch the engine counts at ~100,000 tokens,
+        twenty times the limit, went to the engine uncounted."""
+        Engine.pool = 5000
+        limit = self.mod.prompt_limit(Engine.pool)             # 4,600 usable tokens here
         q = {"q": {"type": "noul", "instructions": "i"}}
         probe = self.mod.systemone_plan(self.mod.systemone_parse(
             json.dumps({"state": "", "model": "jev-latest", "questions": q}).encode()))
         overhead = (len(probe["prefix"].encode())
                     + len(max((t for _, t, _, _, _ in probe["branches"]), key=len).encode())
                     + len(self.mod.SYSTEMONE_SYSTEM))
-        room = 200_000 - overhead
+        room = limit - overhead
+        self.assertGreater(room, 0)
         words = ("w " * (room // 2 + 2))[:room]              # many words, exactly `room` bytes
         self.assertEqual(len(words), room)
         status, _, out = self.post({"state": words, "model": "jev-latest", "questions": q})
         self.assertEqual(status, 200, str(out)[:200])
-        self.assertEqual(Engine.tokenized, 0, "under the threshold the guard costs no round trip")
+        self.assertEqual(Engine.tokenized, 0, "fitting by its bytes, the guard costs no round trip")
         status, _, out = self.post({"state": words + "w", "model": "jev-latest", "questions": q})
+        self.assertEqual(status, 200, str(out)[:200])
+        self.assertEqual(Engine.tokenized, 1, "one byte past its bound, the engine is asked to count")
+        status, _, out = self.post({"state": "w " * limit, "model": "jev-latest", "questions": q})
         self.assertEqual(status, 400, str(out)[:200])
-        self.assertEqual(Engine.tokenized, 1, "one byte over, the engine is asked to count")
+        self.assertEqual(Engine.tokenized, 2)
         self.assertIn("counted by the engine", out["detail"]["message"])
 
+    def test_a_200kb_branch_past_a_small_pool_is_counted_and_refused(self):
+        """The case the 200,000-byte line let through until v6.34, on its own."""
+        Engine.pool = 5000                                     # 4,600 usable tokens
+        state = ("w " * 100_000)[:199_000]                     # under the old line, ~99,500 words
+        status, _, out = self.post({"state": state, "model": "jev-latest",
+                                    "questions": {"q": {"type": "noul", "instructions": "i"}}})
+        self.assertEqual(status, 400, str(out)[:200])
+        self.assertEqual(Engine.tokenized, 1)
+        self.assertIn("counted by the engine", out["detail"]["message"])
+        self.assertEqual(Engine.seen, [], "no branch reached the engine")
+
+    def test_where_the_window_fits_in_the_pool_the_average_nominates(self):
+        """No wedge is possible when the engine refuses past a window under the share of its
+        pool the guard lets through: a branch past its bound but under the average is not
+        counted, as before v6.34."""
+        Engine.pool = 5000                                     # 4,600 usable tokens
+        Engine.window = 4000
+        q = {"q": {"type": "noul", "instructions": "i"}}
+        status, _, out = self.post({"state": "w " * 3000, "model": "jev-latest", "questions": q})
+        self.assertEqual(status, 200, str(out)[:200])
+        self.assertEqual(Engine.tokenized, 0, "past its bound, under the average: not counted")
+
+    def test_a_branch_the_engine_cannot_count_is_judged_by_the_old_average(self):
+        """As on the relay path: past its bound and with no count, the pre-v6.34 average
+        (2.5 bytes a token) decides, so what it let through still goes and what it refused
+        is still refused."""
+        Engine.pool = 50000                                   # 46,000 usable tokens
+        Engine.tokenize_fail = True
+        q = {"q": {"type": "noul", "instructions": "i"}}
+        status, _, out = self.post({"state": "w " * 40000, "model": "jev-latest", "questions": q})
+        self.assertEqual(status, 200, str(out)[:200])          # ~80 kB: past 46,000, under 115,000
+        self.assertEqual(Engine.tokenized, 1)
+        status, _, out = self.post({"state": "w " * 70000, "model": "jev-latest", "questions": q})
+        self.assertEqual(status, 400, str(out)[:200])          # ~140 kB: past 115,000 bytes
+        self.assertIn("by size", out["detail"]["message"])
+
     def test_a_large_state_that_fits_is_counted_by_the_engine_and_answered(self):
-        state = "word " * 60000                                # ~300 kB, past the 200 kB nomination line
+        state = "word " * 60000                                # ~300 kB, past its bound on this pool
         status, _, out = self.post({"state": state, "model": "jev-latest", "questions": {"q": {"type": "noul", "instructions": "i"}}})
         self.assertEqual(status, 200, str(out)[:200])
         paths = [r["body"] for r in Engine.seen]

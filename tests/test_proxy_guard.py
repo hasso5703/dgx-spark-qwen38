@@ -495,9 +495,14 @@ class SmallPoolEngine(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    window = None             # the engine's max_req_input_len, when it reports one
+
     def do_GET(self):
         if self.path in ("/server_info", "/get_server_info"):
-            out = json.dumps({"max_total_num_tokens": 20000}).encode()
+            info = {"max_total_num_tokens": 20000}
+            if type(self).window is not None:
+                info["max_req_input_len"] = type(self).window
+            out = json.dumps(info).encode()
             self.send_response(200); self.send_header("Content-Length", str(len(out)))
             self.end_headers(); self.wfile.write(out); return
         self.send_response(404); self.end_headers()
@@ -508,6 +513,9 @@ class SmallPoolEngine(http.server.BaseHTTPRequestHandler):
         type(self).seen_post_paths.append(self.path.split("?")[0])
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
         if self.path == "/tokenize":
+            if body.get("model") == "__400__":                  # a shape the engine cannot count
+                self.send_response(400); self.send_header("Content-Length", "0"); self.end_headers()
+                return
             # the proxy forwards text-or-prompt as `prompt`; count its words
             if isinstance(body.get("prompt"), str):
                 text = body["prompt"]
@@ -1839,6 +1847,221 @@ class TheOversizeGuardReachesTheNonV1Routes(unittest.TestCase):
         status, _body = self._post("/generate", {"text": "hello"})
         self.assertEqual(status, 200)
 
+
+
+class TheGuardNominatesByItsBound(unittest.TestCase):
+    """v6.34: where a wedge is possible (this engine does not say its window), a token is at
+    least one byte, so a body is counted by the engine as soon as its bytes pass the lane's
+    limit, and never before. Until then the line was 2.5 bytes a token and nothing under 200 kB
+    at all, so a digit-heavy body (one token per digit) twice past the limit went to the
+    engine uncounted. A body the engine cannot count is judged as it was. This engine's pool
+    is 20,000 tokens: 18,400 usable."""
+
+    @classmethod
+    def setUpClass(cls):
+        import socket, subprocess
+        cls.eng = http.server.HTTPServer(("127.0.0.1", 0), SmallPoolEngine)
+        threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        cls.home = key_home()
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}",
+                   HOME=str(cls.home))
+        cls.proc = subprocess.Popen(
+            [sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", cls.port), timeout=0.2).close(); break
+            except OSError:
+                time.sleep(0.05)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate(); cls.proc.wait(timeout=5)
+        cls.eng.shutdown(); cls.eng.server_close()
+        shutil.rmtree(cls.home, ignore_errors=True)
+
+    def _post(self, content, model="m"):
+        body = json.dumps({"model": model, "messages": [{"role": "user", "content": content}]}).encode()
+        SmallPoolEngine.seen_post_paths = []
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
+                                     method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                status, raw = r.status, r.read()
+        except urllib.error.HTTPError as e:
+            status, raw = e.code, e.read()
+        return len(body), status, raw, list(SmallPoolEngine.seen_post_paths)
+
+    def test_a_body_that_fits_by_its_bytes_is_never_counted(self):
+        n, _status, _raw, seen = self._post("word " * 3000)
+        self.assertLess(n, 18_400)
+        self.assertNotIn("/tokenize", seen)
+        self.assertIn("/v1/chat/completions", seen)
+
+    def test_digits_past_the_limit_are_counted_and_refused(self):
+        n, status, raw, seen = self._post("1 " * 20_000)          # 20,000 tokens in ~40 kB
+        self.assertLess(n / 2.5, 18_400, "the old estimate would have let it through")
+        self.assertEqual(status, 400, raw[:200])
+        self.assertIn("counted by the engine", json.loads(raw)["error"]["message"])
+        self.assertIn("/tokenize", seen)
+        self.assertNotIn("/v1/chat/completions", seen, "an oversize prompt reached the engine")
+
+    def test_a_body_past_its_bound_that_counts_under_the_limit_is_relayed(self):
+        n, _status, _raw, seen = self._post("word " * 4000)       # 20 kB, 4,000 tokens
+        self.assertGreater(n, 18_400)
+        self.assertEqual(seen, ["/tokenize", "/v1/chat/completions"])
+
+    def test_a_body_the_engine_cannot_count_is_judged_by_the_old_average(self):
+        n, _status, _raw, seen = self._post("word " * 8000, model="__400__")    # 40 kB
+        self.assertLessEqual(n / 2.5, 18_400)
+        self.assertEqual(seen, ["/tokenize", "/v1/chat/completions"], "under the average: relayed")
+        n, status, raw, seen = self._post("word " * 12000, model="__400__")     # 60 kB
+        self.assertGreater(n / 2.5, 18_400)
+        self.assertEqual(status, 400, raw[:200])
+        self.assertIn("by size", json.loads(raw)["error"]["message"])
+        self.assertEqual(seen, ["/tokenize"])
+
+
+class WindowInPoolEngine(SmallPoolEngine):
+    """The same engine, saying that it accepts no prompt past 15,000 tokens, under the 18,400
+    of its pool the guard lets through: the flash lane's shape (262,138 for 428,823)."""
+    window = 15000
+
+
+class WindowPastTheShareEngine(SmallPoolEngine):
+    """The same engine, accepting up to 19,994 tokens on its 20,000: the 27B lane's shape
+    (863,638 accepted on a pool of 863,644, measured 2026-10-08)."""
+    window = 19994
+
+
+class WhereNoWedgeIsPossibleTheAverageNominates(unittest.TestCase):
+    """An engine whose window is under the share of its pool the guard lets through refuses
+    past the window itself, so the bound, and its count, buys nothing there (measured on the
+    flash lane: 115 ms more for a lone 300 kB prompt, 1.65 s more for eight at once). The
+    pre-v6.34 average nominates, as before."""
+
+    @classmethod
+    def setUpClass(cls):
+        import socket, subprocess
+        cls.eng = http.server.HTTPServer(("127.0.0.1", 0), cls.ENGINE)
+        threading.Thread(target=cls.eng.serve_forever, daemon=True).start()
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); cls.port = sk.getsockname()[1]
+        cls.home = key_home()
+        env = dict(os.environ, UPSTREAM=f"http://127.0.0.1:{cls.eng.server_address[1]}",
+                   HOME=str(cls.home))
+        cls.proc = subprocess.Popen(
+            [sys.executable, str(HERE.parents[1] / "keepalive-proxy.py"), str(cls.port)],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", cls.port), timeout=0.2).close(); break
+            except OSError:
+                time.sleep(0.05)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate(); cls.proc.wait(timeout=5)
+        cls.eng.shutdown(); cls.eng.server_close()
+        shutil.rmtree(cls.home, ignore_errors=True)
+
+    ENGINE = WindowInPoolEngine
+    _post = TheGuardNominatesByItsBound._post
+
+    def test_digits_under_the_average_go_uncounted_as_before(self):
+        n, _status, _raw, seen = self._post("1 " * 20_000)          # ~40 kB
+        self.assertLess(n / 2.5, 18_400)
+        self.assertEqual(seen, ["/v1/chat/completions"], "no count where no wedge is possible")
+
+    def test_a_body_past_the_average_is_still_counted(self):
+        n, status, raw, seen = self._post("word " * 12_000)       # ~60 kB, 12,000 tokens
+        self.assertGreater(n / 2.5, 18_400)
+        self.assertEqual(seen, ["/tokenize", "/v1/chat/completions"])
+
+
+class WhereTheEngineAcceptsPastTheShareTheBoundNominates(unittest.TestCase):
+    """The 27B lane's shape: the engine accepts a prompt past the share the guard lets
+    through, so a digit-heavy body under the average is counted, and refused."""
+
+    setUpClass = classmethod(WhereNoWedgeIsPossibleTheAverageNominates.setUpClass.__func__)
+    tearDownClass = classmethod(WhereNoWedgeIsPossibleTheAverageNominates.tearDownClass.__func__)
+    ENGINE = WindowPastTheShareEngine
+    _post = TheGuardNominatesByItsBound._post
+
+    def test_digits_under_the_average_are_counted_and_refused(self):
+        n, status, raw, seen = self._post("1 " * 20_000)          # ~40 kB, 20,000 tokens
+        self.assertLess(n / 2.5, 18_400, "the old estimate would have let it through")
+        self.assertEqual(status, 400, raw[:200])
+        self.assertIn("counted by the engine", json.loads(raw)["error"]["message"])
+        self.assertEqual(seen, ["/tokenize"], "an oversize prompt reached the engine")
+
+
+class WedgePossibleUnits(unittest.TestCase):
+    """The condition itself, in process."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("kproxy_wedge", HERE.parents[1] / "keepalive-proxy.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    def window(self, w):
+        self.m._POOL["window"] = w
+
+    def test_the_bound_wherever_the_engine_accepts_past_the_share(self):
+        self.window(None)
+        self.assertTrue(self.m.wedge_possible(None), "pool unknown")
+        self.assertTrue(self.m.wedge_possible(20000), "window unknown")
+        self.window(863_638)
+        self.assertTrue(self.m.wedge_possible(863_644), "the 27B lane, measured 2026-10-08")
+        self.assertEqual(self.m.nomination_estimate(1000, 863_644), 1000)
+
+    def test_the_average_where_the_window_is_under_the_share(self):
+        self.window(262_138)
+        self.assertFalse(self.m.wedge_possible(466_112), "the flash lane, measured 2026-10-08")
+        self.assertEqual(self.m.nomination_estimate(1000, 466_112), 400)
+
+    def test_the_line_is_the_share_itself(self):
+        self.window(18_400)                                      # pool 20,000: 18,400 usable
+        self.assertFalse(self.m.wedge_possible(20_000))
+        self.window(18_401)
+        self.assertTrue(self.m.wedge_possible(20_000))
+
+    def test_a_pool_read_keeps_the_window_and_invalidation_forgets_it(self):
+        self.m._POOL.update(tokens=20000, window=15000, ts=self.m.time.time())
+        self.m.invalidate_pool()
+        self.assertIsNone(self.m._POOL["window"])
+
+
+class TheBoundCannotBeUnset(unittest.TestCase):
+    """CHARS_PER_TOKEN_MIN at or under zero would divide by nothing on every prompt."""
+
+    def load(self, value):
+        """The constant as a proxy started with this value (None: unset) computes it."""
+        old = os.environ.get("CHARS_PER_TOKEN_MIN")
+        if value is None:
+            os.environ.pop("CHARS_PER_TOKEN_MIN", None)
+        else:
+            os.environ["CHARS_PER_TOKEN_MIN"] = value
+        try:
+            spec = importlib.util.spec_from_file_location("kproxy_bound", HERE.parents[1] / "keepalive-proxy.py")
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            return m.CHARS_PER_TOKEN_MIN
+        finally:
+            if old is None:
+                os.environ.pop("CHARS_PER_TOKEN_MIN", None)
+            else:
+                os.environ["CHARS_PER_TOKEN_MIN"] = old
+
+    def test_zero_and_below_fall_back_to_the_bound(self):
+        self.assertEqual(self.load("0"), 1.0)
+        self.assertEqual(self.load("-3"), 1.0)
+
+    def test_the_default_is_the_bound_and_a_set_value_is_kept(self):
+        self.assertEqual(self.load(None), 1.0)
+        self.assertEqual(self.load("2.5"), 2.5)
 
 if __name__ == "__main__":
     unittest.main()
