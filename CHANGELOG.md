@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.25.1 (2026-10-10): an image shows in its own shape and opens at full size, a video shows in its own shape
+
+**The Image view's result in its own shape.** The result screen kept a 16:9 box when the image
+arrived: a portrait sat small in its middle, and a gallery of several images was cut at its
+bottom (Hasan, 2026-10-10). The screen now takes the image's proportions, from the size asked
+for and then the one the image says once decoded, as wide as the column allows and no taller
+than 78 % of the window, centred; a gallery sets its own height. Measured in Chrome on a
+1600x1000 window: 1024x1024 in a 780x780 box, 2752x1536 across the whole 788-pixel column
+(788x440), a 1456x1920 portrait at 591x780; on a 393x852 phone, 361x476 and 361x201. The
+session's thumbnails show each image whole instead of cutting it to the square tile.
+
+**And at full size.** A click on the image, or the new **Enlarge** button, opens it over the
+whole window, fitted to it (the portrait at 704x928 in that window, a 2048x2048 at 928x928);
+**100 %** draws it at its own pixels, one image pixel per screen pixel whatever the display's
+density (a 2048 image is 1024 CSS pixels wide at density 2), and scrolls when it is larger than
+the window; Escape, Close or a click beside the picture closes it and gives the focus back.
+Its Download saves the image the lane sent.
+
+**The Video view the same way.** Its screen takes the shape of the size asked for, then the
+video's own once its metadata loads (the lane answers 1280x704 for a 1280x720 ask), so a 9:16
+video is no longer a narrow strip in a wide box. The stylesheet's unused `.screen.portrait`
+rule is gone, and a link styled as a button (the video's Download MP4) is no longer underlined.
+
+**The Turbo's time, as measured since.** Two Turbo videos made from the Video view after the
+reference box's update to v1.25.0, new prompts, took 136.5 and 137.9 s on the server (peaks of
+17.6 and 20.2 GiB): the view's cost basis now says 2:06 to 2:18, where it said 2:17; the
+estimate it gives, 2:19, already covered both.
+
+**Tests.** The screen's shape from the size asked for and from the decoded image, during the
+work and after it, a gallery's free height, the column's width and centring; the click and the
+button that open the viewer, its focus, Escape and the click beside it, the 100 % width at a
+density of 2, each gallery image opening its own, whole thumbnails, the viewer's layout rules;
+the video's shape asked, then measured, then reset (15 tests, every one failing on v1.25.0's
+page; the density and the decoded-size correction each fail their test when taken out). The
+layout itself was measured in a real browser on a throwaway cockpit with the images the lane
+made on the reference box.
+
+**What an update does.** The cockpit restarts for its new page. The engines, the proxy and the
+lanes keep running.
+
 ## v1.25.0 (2026-10-10): the video lane moves to SGLang v0.5.21 and gains a Turbo switch, a 4 s video in about 2 minutes; opencode 1.18.35
 
 **A Turbo switch in the Video view.** The view's new Speed choice puts the cookbook's

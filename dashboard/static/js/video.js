@@ -111,7 +111,7 @@ function vidSync(){
   // the cost, measured, before anything is asked
   const est = vidEtaSecs(secs, VS.size, steps, turbo);
   setText('vid-cost-v', 'about ' + fmtMin(est)); setText('vid-cost-k', `for ${secs} s at ${VS.size === '864x480' ? '480p' : '720p'}, ${steps} steps${turbo ? ' with the Turbo' : ''}${VS.mode === 'fl2v' ? ', from keyframes' : ''}`);
-  setText('vid-cost-b', turbo ? 'Timed from runs on this box the same day: 4 s at 480p took 2:06 to 2:17 with the Turbo, 10:23 to 10:32 for the base.'
+  setText('vid-cost-b', turbo ? 'Timed from runs on this box the same day: 4 s at 480p took 2:06 to 2:18 with the Turbo, 10:23 to 10:32 for the base.'
     : 'Timed from runs on this box: 4 s at 480p took 9:52 to 12:40 depending on how hot the NVMe runs.');
   const bud = $('vid-budget'); const pct = Math.min(100, 100 * est * 1.1 / VID_BUDGET_S);
   bud.firstChild.style.width = pct.toFixed(1) + '%'; bud.className = 'meter' + (pct > 100 ? ' err' : pct > 70 ? ' warn' : '');
@@ -186,7 +186,7 @@ function vidRenderLane(){
 
 // ── the stage: empty, working, or the video ───────────────────────────────────
 function vidScreenEmpty(){
-  const sc = $('vid-screen'); if (sc.dataset.mode === 'empty') return; sc.dataset.mode = 'empty'; clear(sc);
+  const sc = $('vid-screen'); if (sc.dataset.mode === 'empty') return; sc.dataset.mode = 'empty'; clear(sc); fitScreen(sc);
   const d = el('div', 'empty'); d.append(el('b', null, 'Your video appears here'), el('span', null, 'A 4 s clip at 480p takes about ten minutes on this box.')); sc.append(d);
 }
 // While the lane works, the screen shows where it is: a ring filled to the step, the
@@ -211,12 +211,15 @@ function ringSet(sc, pct, big, small, label){
 }
 function vidScreenWorking(label, pct, big, small){
   const sc = $('vid-screen');
-  if (sc.dataset.mode !== 'work'){ sc.dataset.mode = 'work'; clear(sc); ringInto(sc); }
+  if (sc.dataset.mode !== 'work'){ sc.dataset.mode = 'work'; clear(sc); ringInto(sc); fitScreen(sc, ...String(VS.size).split('x').map(Number)); }
   ringSet(sc, pct, big != null ? big : '…', small || '', label);
 }
 function vidScreenPlay(id){
   const sc = $('vid-screen'); sc.dataset.mode = 'play:' + id; clear(sc);
   const v = document.createElement('video'); v.controls = true; v.preload = 'metadata'; v.playsInline = true;
+  // the size asked for, until the video says its own (the lane rounds 720 to 704)
+  fitScreen(sc, ...String(VS.size).split('x').map(Number));
+  v.addEventListener('loadedmetadata', () => { if (v.videoWidth && v.videoHeight) fitScreen(sc, v.videoWidth, v.videoHeight); });
   v.src = '/api/video/content?id=' + encodeURIComponent(id); sc.append(v); VS.shown = id;
   return v;
 }

@@ -59,7 +59,7 @@ class TheTurboSwitch(unittest.TestCase):
         self.assertTrue(r["slider"])
         self.assertIn("fixed at 9", r["hint"])
         self.assertIn("9 steps with the Turbo", r["cost"])
-        self.assertIn("2:06 to 2:17", r["basis"])
+        self.assertIn("2:06 to 2:18", r["basis"])
         self.assertAlmostEqual(r["est"], 3.85 * 9 * 4)
         # from a terminal the adapter goes on before the call and off after it
         self.assertLess(r["curl"].index("/v1/set_lora"), r["curl"].index("/v1/videos"))

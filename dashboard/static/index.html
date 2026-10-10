@@ -647,6 +647,17 @@
   </div>
 </div>
 
+<!-- ── the image viewer: a result at full size ── -->
+<div class="scrim viewer" id="viewer" role="dialog" aria-modal="true" aria-label="The image at full size" hidden>
+  <div class="viewer-pane" id="viewer-pane"><img id="viewer-img" alt=""></div>
+  <div class="viewer-bar">
+    <span class="aside" id="viewer-size"></span>
+    <button class="btn sm ghost" id="viewer-actual" type="button" aria-pressed="false">100 %</button>
+    <a class="btn sm ghost" id="viewer-dl" download="qwen-image.png">Download</a>
+    <button class="btn sm" id="viewer-close" type="button">Close</button>
+  </div>
+</div>
+
 <!-- ── the dock: the job running now, from every view ── -->
 <aside class="dock" id="dock" hidden aria-label="The action running now">
   <div class="row">

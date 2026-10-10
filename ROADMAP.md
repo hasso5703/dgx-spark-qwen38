@@ -12,6 +12,8 @@ have a reason they are not yet planned, stated here or in an issue).
   against 623 s, the base's next video unchanged byte for byte), admitted at 480P and 4 s,
   the sizes measured with it; the lane runs the v0.5.21 release, its videos unchanged byte
   for byte. opencode 1.18.35, which masks the keys `opencode debug config` prints.
+- **Results in their own shape** (v1.25.1): the Image and Video views show a result in its own
+  proportions, and an image opens at full size, fitted or at its own pixels.
 
 ## Shipped, v1.24
 

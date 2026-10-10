@@ -325,6 +325,16 @@ nothing else; the lane's own Load and Stop stay on that card. A request cut this
 the lane's Stop, or by a restart from its card, reads as **cancelled** in the view rather
 than as a lane that failed to answer.
 
+The result shows in its own shape. The screen takes the image's proportions, as wide as the
+column allows and no taller than most of the window, so a portrait or a wide image is shown
+whole and as large as the page allows; until v1.25.1 the screen kept a 16:9 box, a portrait sat
+small in its middle and a gallery of several images was cut at its bottom. A click on the
+image, or **Enlarge**, opens it over the whole window, fitted to it; **100 %** draws it at its
+own pixels, one image pixel per screen pixel whatever the display's density, and scrolls when
+it is larger than the window; Escape, Close or a click beside the picture closes it. The
+session's thumbnails show each image whole. The Video view's screen takes its video's shape the
+same way, and a video goes full screen from its own controls.
+
 ## Three refusals worth knowing before a client hits them
 
 **Width and height must be multiples of 32.** `1328x1328` comes back `HTTP 500` with an

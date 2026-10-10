@@ -273,7 +273,8 @@ img,svg,video,canvas{display:block; max-width:100%}
 /* ── buttons: the verb says what happens ── */
 .btn{display:inline-flex; align-items:center; justify-content:center; gap:var(--s-2); min-height:40px; padding:0 var(--s-4);
   border-radius:var(--r-ctl); border:1px solid var(--rule-2); background:var(--ink-2); color:var(--fg-1);
-  font-size:var(--t-14); font-weight:580; white-space:nowrap; transition:background .15s, border-color .15s, transform .08s, box-shadow .15s}
+  font-size:var(--t-14); font-weight:580; white-space:nowrap; text-decoration:none;
+  transition:background .15s, border-color .15s, transform .08s, box-shadow .15s}
 .btn:hover:not(:disabled){background:var(--ink-3); border-color:var(--rule-3)}
 .btn:active:not(:disabled){transform:translateY(1px)}
 .btn:disabled{opacity:.45}
@@ -527,6 +528,19 @@ button.bay:hover{border-color:var(--rule-3); transform:translateY(-1px)}
   display:flex; align-items:center; justify-content:center;
   padding:max(var(--s-4), var(--sa-t)) max(var(--s-4), var(--sa-r)) max(var(--s-4), var(--sa-b)) max(var(--s-4), var(--sa-l)); animation:fade .2s ease both}
 @keyframes fade{from{opacity:0}}
+/* the image viewer: the picture over the whole window, fitted or at its own pixels */
+.scrim.viewer{padding:0; background:rgba(2,2,3,.94); display:block}
+/* one track the size of the pane's box, so that the picture's 100 % caps resolve against it
+   (an auto track takes the picture's own size, and a portrait ran off the window) */
+.viewer-pane{position:absolute; inset:0; overflow:auto; display:grid; grid-template:minmax(0, 1fr) / minmax(0, 1fr); place-items:center;
+  padding:max(var(--s-9), var(--sa-t)) max(var(--s-4), var(--sa-r)) max(var(--s-4), var(--sa-b)) max(var(--s-4), var(--sa-l))}
+.viewer-pane img{max-width:100%; max-height:100%; object-fit:contain}
+/* at its own pixels: centred while it fits, scrollable to every edge when it does not */
+.viewer-pane.actual{place-items:safe center}
+.viewer-pane.actual img{max-width:none; max-height:none}
+.viewer-bar{position:absolute; top:max(var(--s-3), var(--sa-t)); right:max(var(--s-3), var(--sa-r)); display:flex;
+  gap:var(--s-2); align-items:center; padding:var(--s-2); border-radius:var(--r-chip); background:rgba(0,0,0,.6)}
+.viewer-bar .aside{padding:0 var(--s-2); color:var(--fg-2); font-variant-numeric:tabular-nums}
 .sheet{width:min(640px, 100%); max-height:calc(100dvh - 32px - var(--sa-t) - var(--sa-b)); overflow:auto; border-radius:var(--r-hero); border:1px solid var(--rule-2);
   background:linear-gradient(180deg, var(--ink-2), var(--ink-1)); box-shadow:0 40px 120px -30px rgba(0,0,0,.95), var(--shadow-1);
   padding:var(--s-6); display:flex; flex-direction:column; gap:var(--s-4); animation:pop .28s var(--ease) both}
@@ -587,8 +601,11 @@ button.bay:hover{border-color:var(--rule-3); transform:translateY(-1px)}
 .stagebox{display:flex; flex-direction:column; gap:var(--s-5)}
 .screen{position:relative; border-radius:var(--r-hero); overflow:hidden; border:1px solid var(--rule-2); background:#060607;
   aspect-ratio:16 / 9; display:grid; place-items:center; box-shadow:var(--shadow-2)}
-.screen.portrait{aspect-ratio:9 / 16; max-height:72vh; justify-self:center; width:auto}
 .screen video, .screen img{width:100%; height:100%; object-fit:contain; background:#000}
+/* a result in its own shape (image.js imgFit): the column's width at most, most of the window's
+   height at most through the max-width the script derives from the ratio, centred */
+.screen.fit{width:100%; align-self:center}
+.screen.fit img{cursor:zoom-in}
 .screen .empty{display:flex; flex-direction:column; align-items:center; gap:var(--s-3); color:var(--fg-3); text-align:center; padding:var(--s-6)}
 .screen .empty svg{width:56px; height:56px; stroke:var(--rule-3); fill:none; stroke-width:1.2}
 .screen .empty b{color:var(--fg-2); font-weight:560; font-size:var(--t-17)}

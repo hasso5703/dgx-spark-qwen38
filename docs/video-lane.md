@@ -217,7 +217,9 @@ at night in the rain):
 - Text encoding runs once per new prompt and is reused after: the base's two longer times
   include it, and the Turbo's prompts had been encoded by the base runs. The adapter holds
   DiT weights only, so a new prompt costs the Turbo the same 9.3 s. The same prompt, both
-  encoded already: 127.3 and 127.9 s against 622.8 s.
+  encoded already: 127.3 and 127.9 s against 622.8 s. Two more, made from the Video view after
+  the box's update to v1.25.0 with new prompts: 136.5 and 137.9 s on the server, peaks of 17.6
+  and 20.2 GiB.
 - On in 5.1 s the first time (the adapter read from the cache) and 0.02 s after; off in
   0.01 s.
 - The base's next video, after an adapter went on and off, is identical to the byte to one

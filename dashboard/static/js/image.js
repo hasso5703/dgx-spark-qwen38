@@ -176,17 +176,29 @@ function imgDrawRefs(){
 function imgShow(out, fmt){
   const sc = $('img-screen'); clear(sc); sc.dataset.mode = 'show';
   const imgs = out.data || [];
-  const {w, h} = imgSize(); sc.style.aspectRatio = imgs.length ? '' : `${w} / ${h}`;
-  if (imgs.length === 1){ const im = el('img'); im.src = 'data:image/' + (fmt === 'webp' ? 'webp' : 'png') + ';base64,' + imgs[0].b64_json; im.alt = 'The generated image'; sc.append(im); }
-  else { const g = el('div', 'gallery'); g.style.cssText = 'width:100%; padding:12px; align-self:start';
-    imgs.forEach((d, i) => { const im = el('img'); im.src = 'data:image/' + (fmt === 'webp' ? 'webp' : 'png') + ';base64,' + d.b64_json; im.alt = 'Image ' + (i + 1); im.style.cssText = 'width:100%; border-radius:10px'; g.append(im); });
+  const {w, h} = imgSize(), kind = fmt === 'webp' ? 'webp' : 'png', stamp = Date.now();
+  const name = i => `qwen-image-${stamp}${imgs.length > 1 ? '-' + (i + 1) : ''}.${fmt}`;
+  // each image opens at full size, the size it says once decoded or the one asked for
+  const zoomable = (im, i) => { im.addEventListener('click', () => openViewer(im.src, im.naturalWidth || w, im.naturalHeight || h, name(i))); return im; };
+  if (imgs.length === 1){ const im = zoomable(el('img'), 0); im.src = `data:image/${kind};base64,${imgs[0].b64_json}`;
+    im.alt = 'The generated image: click to see it at full size';
+    fitScreen(sc, w, h);   // the size asked for, until the image says its own
+    im.addEventListener('load', () => { if (im.naturalWidth && im.naturalHeight) fitScreen(sc, im.naturalWidth, im.naturalHeight); });
+    sc.append(im); }
+  else if (imgs.length){ fitScreen(sc, 0, 0); const g = el('div', 'gallery'); g.style.cssText = 'width:100%; padding:12px; align-self:start';
+    imgs.forEach((d, i) => { const im = zoomable(el('img'), i); im.src = `data:image/${kind};base64,${d.b64_json}`; im.alt = `Image ${i + 1}: click to see it at full size`;
+      im.style.cssText = 'width:100%; border-radius:10px; cursor:zoom-in'; g.append(im); });
     sc.append(g); }
+  else fitScreen(sc, w, h);
   const meta = $('img-meta'); clear(meta);
   const bytes = imgs.reduce((a, d) => a + (d.b64_json || '').length * 0.75, 0);
   const dl = el('button', 'btn primary', imgs.length > 1 ? `Download ${imgs.length} images` : 'Download'); dl.type = 'button';
   dl.addEventListener('click', () => imgs.forEach((d, i) => { const a = document.createElement('a'); a.href = 'data:application/octet-stream;base64,' + d.b64_json;
-    a.download = `qwen-image-${Date.now()}${imgs.length > 1 ? '-' + (i + 1) : ''}.${fmt}`; a.click(); }));
+    a.download = name(i); a.click(); }));
   meta.append(dl);
+  if (imgs.length){ const big = el('button', 'btn', 'Enlarge'); big.type = 'button';
+    big.addEventListener('click', () => { const first = sc.querySelector('img'); if (first) first.click(); });
+    meta.append(big); }
   if (imgs.length){ const again = el('button', 'btn', 'Edit this one'); again.type = 'button';
     again.addEventListener('click', () => { if (IS.refs.length >= 10) return toast('Ten references is the maximum.', 'warn');
       IS.refs.push({name: 'previous-output.png', dataUrl: 'data:image/png;base64,' + imgs[0].b64_json, w: 0, h: 0}); IS.mode = 'edit'; imgDrawRefs();
@@ -199,11 +211,12 @@ function imgShow(out, fmt){
 function imgHistory(){
   const box = $('img-history'); clear(box); $('img-history-box').hidden = !IS.history.length;
   IS.history.forEach(h => { const b = el('button'); b.type = 'button'; b.style.aspectRatio = '1 / 1';
-    const im = el('img'); im.src = 'data:image/' + (h.fmt === 'webp' ? 'webp' : 'png') + ';base64,' + h.b64; im.alt = ''; b.append(im);
+    // whole, not cut to the square tile: a portrait cut to a square hid most of it
+    const im = el('img'); im.src = 'data:image/' + (h.fmt === 'webp' ? 'webp' : 'png') + ';base64,' + h.b64; im.alt = ''; im.style.objectFit = 'contain'; b.append(im);
     b.addEventListener('click', () => imgShow(h.out, h.fmt)); box.append(b); });
 }
 function imgWorking(label, pct){
-  const sc = $('img-screen'); const {w, h} = imgSize(); sc.style.aspectRatio = `${w} / ${h}`;
+  const sc = $('img-screen'); const {w, h} = imgSize(); fitScreen(sc, w, h);
   if (sc.dataset.mode !== 'work'){ sc.dataset.mode = 'work'; clear(sc); ringInto(sc); }
   ringSet(sc, pct == null ? null : pct, pct == null ? '…' : Math.round(pct) + ' %', pct == null ? '' : 'about', label);
 }
@@ -273,6 +286,7 @@ async function imgRun(){
   const editing = imgEditing(), t0 = Date.now();
   IS.inflight = t0; IS.run = imgFormRequest(); IS.stageAt = {stage: '', at: 0};
   const before = [...$('img-screen').childNodes], beforeMode = $('img-screen').dataset.mode;
+  const beforeFit = [$('img-screen').style.aspectRatio, $('img-screen').style.maxWidth, $('img-screen').classList.contains('fit')];
   imgWorking('Sending the request'); imgProgress(null); imgSync(); imgWatch(true);
   try{
     const body = imgPayload(); if (editing) body.images = IS.refs.map(r => r.dataUrl);
@@ -282,7 +296,8 @@ async function imgRun(){
     if (!ok){
       const why = out.error || (out.refused ? JSON.stringify(out.refused).slice(0, 300) : 'HTTP ' + status);
       // a busy lane leaves the last image in place
-      if (status === 409){ const sc = $('img-screen'); clear(sc); sc.append(...before); sc.dataset.mode = beforeMode || ''; toast(why, 'warn', 7000); return; }
+      if (status === 409){ const sc = $('img-screen'); clear(sc); sc.append(...before); sc.dataset.mode = beforeMode || '';
+        sc.style.aspectRatio = beforeFit[0]; sc.style.maxWidth = beforeFit[1]; sc.classList.toggle('fit', beforeFit[2]); toast(why, 'warn', 7000); return; }
       toast((status === 504 ? '' : `Refused (${status}): `) + why, status === 504 ? 'warn' : 'err', 8000); return;
     }
     imgShow(out.image || out, body.output_format);
@@ -290,7 +305,8 @@ async function imgRun(){
   }catch(e){ toast('The cockpit could not reach the image lane: ' + e.message, 'err'); }
   finally{
     IS.inflight = null; IS.run = null; $('img-prog').hidden = true;
-    if ($('img-screen').dataset.mode === 'work'){ const sc = $('img-screen'); clear(sc); sc.dataset.mode = ''; const d = el('div', 'empty'); d.append(el('b', null, 'Your image appears here')); sc.append(d); }
+    if ($('img-screen').dataset.mode === 'work'){ const sc = $('img-screen'); clear(sc); sc.dataset.mode = ''; fitScreen(sc);
+      const d = el('div', 'empty'); d.append(el('b', null, 'Your image appears here')); sc.append(d); }
     imgLane();
   }
 }

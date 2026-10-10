@@ -407,12 +407,38 @@ const argvFor = (name, p) => name === 'unit' ? ['sudo', '-n', '/usr/bin/systemct
 let SHEET = null;   // {mode: 'one'|'journey', ...}
 // A dialog hands the focus back to what opened it: closing one left it on the body, so a
 // keyboard had to start again from the top of the page.
-const OPENER = {sheet: null, menu: null};
+const OPENER = {sheet: null, menu: null, viewer: null};
 const giveBack = k => { const e = OPENER[k]; OPENER[k] = null; if (e && e.isConnected && typeof e.focus === 'function') e.focus(); };
 function openSheet(){
   const a = document.activeElement; OPENER.sheet = a && !a.closest('#scrim') ? a : OPENER.sheet;
   $('scrim').hidden = false; setTimeout(() => $('sh-go').focus(), 0);
 }
+// A result's screen takes the shape of what it shows: its own proportions, as wide as the
+// column allows and no taller than most of the window (78vh, through a max-width derived
+// from the ratio), centred. Both result screens went back to their 16:9 box when the result
+// arrived, so a portrait sat small in the middle of it and a gallery of images was cut at
+// its bottom (Hasan, 2026-10-10). A size of 0 lets the box follow what it holds (a gallery);
+// no size at all gives the screen its default back.
+function fitScreen(sc, w, h){
+  if (w > 0 && h > 0){ sc.style.aspectRatio = `${w} / ${h}`; sc.style.maxWidth = `calc(78vh * ${(w / h).toFixed(4)})`; sc.classList.add('fit'); return; }
+  sc.style.aspectRatio = w === 0 ? 'auto' : ''; sc.style.maxWidth = ''; sc.classList.remove('fit');
+}
+// The image viewer: a result over the whole window, fitted to it or drawn at its own pixels
+// (one image pixel to one screen pixel, whatever the display's density), closed by Escape,
+// its Close button or a click beside the picture; the focus goes back where it was.
+function openViewer(src, w, h, name){
+  const a = document.activeElement; OPENER.viewer = a && !a.closest('#viewer') ? a : OPENER.viewer;
+  const v = $('viewer-img'); v.src = src; v.alt = `The image at full size, ${w} by ${h}`; v.style.width = '';
+  $('viewer-pane').classList.remove('actual'); $('viewer-actual').setAttribute('aria-pressed', 'false');
+  setText('viewer-size', `${w} × ${h}`); $('viewer-dl').href = src; $('viewer-dl').setAttribute('download', name);
+  $('viewer').hidden = false; setTimeout(() => { if (!$('viewer').hidden) $('viewer-close').focus(); }, 0);
+}
+function viewerActual(){
+  const pane = $('viewer-pane'), v = $('viewer-img'), on = !pane.classList.contains('actual');
+  pane.classList.toggle('actual', on); $('viewer-actual').setAttribute('aria-pressed', String(on));
+  v.style.width = on && v.naturalWidth ? `${Math.round(v.naturalWidth / (window.devicePixelRatio || 1))}px` : '';
+}
+function closeViewer(){ $('viewer').hidden = true; giveBack('viewer'); }
 function closeSheet(){ if (SHEET && SHEET.running) return; $('scrim').hidden = true; const s = SHEET; SHEET = null; if (s && s.onClose) s.onClose(); giveBack('sheet'); }
 function askAction(name, params, warns, opts = {}){
   if (offline) return toast('The cockpit is unreachable right now: nothing can be started.', 'err');
@@ -822,7 +848,23 @@ function wireShell(){
   $('sh-cancel').addEventListener('click', () => closeSheet());
   $('sh-go').addEventListener('click', sheetGo);
   $('scrim').addEventListener('click', e => { if (e.target === $('scrim')) closeSheet(); });
+  $('viewer-close').addEventListener('click', closeViewer);
+  $('viewer-actual').addEventListener('click', viewerActual);
+  // the picture says its own size once decoded: the label, and the 100 % width, follow it
+  $('viewer-img').addEventListener('load', () => { const v = $('viewer-img'); if (!v.naturalWidth) return;
+    setText('viewer-size', `${v.naturalWidth} × ${v.naturalHeight}`);
+    if ($('viewer-pane').classList.contains('actual')) v.style.width = `${Math.round(v.naturalWidth / (window.devicePixelRatio || 1))}px`; });
+  $('viewer').addEventListener('click', e => { if (e.target === $('viewer') || e.target === $('viewer-pane')) closeViewer(); });
   document.addEventListener('keydown', e => {
+    if (!$('viewer').hidden){
+      if (e.key === 'Escape') closeViewer();
+      if (e.key === 'Tab'){   // focus stays on the viewer's own controls
+        const f = [...$('viewer').querySelectorAll('button, a[href]')];
+        const i = f.indexOf(document.activeElement);
+        e.preventDefault(); f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+      }
+      return;
+    }
     if (!$('scrim').hidden){
       if (e.key === 'Escape') closeSheet();
       if (e.key === 'Tab'){   // focus stays inside the sheet
