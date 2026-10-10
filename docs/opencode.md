@@ -31,12 +31,19 @@ behaviour: the compaction threshold `oc-fit-limits.py` sizes the limits for, the
 32,000-token output cap the `oc` launcher lifts, the overflow phrases the proxy answers
 with so that a refusal makes opencode compact instead of failing, and `--yolo` /
 `OPENCODE_PERMISSION` for the Agent view. So `install.sh` pins the opencode it runs:
-**1.18.32** (`OPENCODE_VERSION`, with the sha256 GitHub publishes for
-`opencode-linux-arm64.tar.gz` in `OPENCODE_SHA256`). It was checked against the 1.18.27
-the repo was measured on, on 2026-09-23: the same 21 overflow phrases and 3 exclusions
-verbatim, `max_tokens` 182,000 with the launcher's variable and 32,000 without it on
-both (recorded on a fake endpoint), the same compaction and permission code once the
+**1.18.35** (`OPENCODE_VERSION`, with the sha256 GitHub publishes for
+`opencode-linux-arm64.tar.gz` in `OPENCODE_SHA256`). 1.18.32 was checked against the
+1.18.27 the repo was measured on, on 2026-09-23: the same 21 overflow phrases and 3
+exclusions verbatim, `max_tokens` 182,000 with the launcher's variable and 32,000 without
+it on both (recorded on a fake endpoint), the same compaction and permission code once the
 bundler's chunk names are set aside, `serve --hostname` and the hidden `--yolo` on both.
+1.18.35 was checked against 1.18.32 the same way on 2026-10-10: the list of phrases and
+exclusions is the same block of the binary byte for byte, `max_tokens` 32,000 and 182,000
+on the fake endpoint again, `serve --hostname` and `--yolo` there, and the release diff
+touches neither the compaction nor the permission code. What changed for this box: its
+model requests carry one more header, `x-opencode-session-id`, with the session id
+`x-session-id` already carried (the proxy and the engine pass it by), and `opencode debug
+config` prints a provider's key as `***`, where 1.18.32 printed this box's key in clear.
 
 What a run does with the opencode it finds:
 

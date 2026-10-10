@@ -22,7 +22,7 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 INSTALL = REPO / "install.sh"
-PINNED = "1.18.32"
+PINNED = "1.18.35"
 
 FAKE_OC = """#!/bin/sh
 here="$(cd "$(dirname "$0")" && pwd)"

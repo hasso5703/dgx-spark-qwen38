@@ -417,14 +417,16 @@ FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-$FLASH_IMAGE}"
 # launcher lifts (182,000 sent with the variable, 32,000 without, measured on a fake
 # endpoint), the overflow phrases the proxy answers with so a refusal triggers a
 # compaction (21 of 21 present), and --yolo / OPENCODE_PERMISSION for the Agent tab.
-# 1.18.32 passed all of it against the 1.18.27 the repo was measured on (2026-09-23).
+# 1.18.32 passed all of it against the 1.18.27 the repo was measured on (2026-09-23), and
+# 1.18.35 against 1.18.32 (2026-10-10), which also masks the provider keys `opencode debug
+# config` prints, where 1.18.32 printed this box's key in clear.
 # Left alone, opencode installs its own patch releases, so two boxes installed a
 # week apart run two versions. The sha256 is GitHub's own digest of the release asset
 # opencode-linux-arm64.tar.gz. OPENCODE_PIN=0 keeps whatever opencode you have.
 _ENV_OPENCODE_VERSION="${OPENCODE_VERSION:-}"
 _ENV_OPENCODE_SHA256="${OPENCODE_SHA256:-}"
-OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.32}"
-OPENCODE_SHA256="${OPENCODE_SHA256:-568461b7d4d8c19865c97e9a1102e613049c6039d01fe772154de873c1865840}"
+OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.35}"
+OPENCODE_SHA256="${OPENCODE_SHA256:-f7f2ba59ee8aa94d388f9696575a32d20e71c2ee48def9f80fc693a60fec6c72}"
 OPENCODE_PIN="${OPENCODE_PIN:-1}"
 PORT="${PORT:-30000}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
