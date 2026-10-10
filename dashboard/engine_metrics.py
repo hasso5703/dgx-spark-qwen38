@@ -23,8 +23,8 @@ chunk, so a difference of two reads holds no idle time either. The `chunked_pref
 times the same chunks from the same start, inside `prefill_forward`, so it is not summed
 in: on a 27B lane an 80,400-token prompt in ten 8,192-token chunks ran 61.8 s of
 prefill_forward, 1,301 tok/s, which counting the chunks as well would have halved to 651.
-Measured on the reference box (2026-10-08): a cold 1,908-token prompt took 0.955 s of the
-stopwatch, 1,998 tok/s, the scale the benchmarks table's ~2,250 prefill says for a
+Measured by this view's author (2026-10-08, a flash lane): a cold 1,908-token prompt took
+0.955 s of the stopwatch, 1,998 tok/s, the scale the benchmarks table's ~2,250 prefill says for a
 saturated lane. `queue_time_seconds` is the waiting before the engine starts a request,
 `scheduler_idle_seconds_total` the time it had nothing runnable, and
 `num_aborted_requests_total` the aborts it accepted (the proxy's abandonment, landed).
@@ -34,8 +34,8 @@ counter still prints its HELP line), and a missing counter would read as a fully
 engine.
 Of the drafter: `spec_verify_calls_total` counts a request's verifications when it
 finishes, and the window's generated tokens over its difference is that window's accept
-length, what one step netted (its one token plus the drafts it accepted). Measured on the
-reference box (2026-10-08): a 700-token request spent 194 verifications, 3.61 a step at
+length, what one step netted (its one token plus the drafts it accepted). Measured by this
+view's author (2026-10-08): a 700-token request spent 194 verifications, 3.61 a step at
 4 drafts, while the `spec_accept_length` gauge sat at 2.7, an average since the boot, and
 the scheduler prints its own only per a log window of its choice.
 The levels (`full_token_usage`, `num_running_reqs`, `num_queue_reqs`) are not counters: no

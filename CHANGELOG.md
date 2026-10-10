@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.22.13 (2026-10-08): the Traffic view says the prefill speed too, the queue, the idleness, and the peaks
+## v1.26.0 (2026-10-11): the Traffic view says the prefill speed too, the queue, the idleness, and the peaks
 
 The **Last 5 minutes** box fills in what was missing, from the same reads of the engine's
 own counters: the **prefill speed**, the computed prompt tokens over the engine's own
@@ -26,7 +26,7 @@ engine showed at its reads (pool fullness, concurrent requests, longest wait): a
 cannot be differed, so a peak is a lower bound, honest about between reads; a distribution
 is what Grafana is for.
 
-Measured on the reference box (2026-10-08, the flash lane serving with two agents
+Measured by the change's author (2026-10-08, a flash lane serving with two agents
 decoding): a cold 1,908-token prompt took 0.955 s of the stopwatch, 1,998 tok/s, the scale
 the benchmarks table's ~2,250 prefill says for a saturated lane, and the engine's own
 queue time for it was 0.6 ms of its 1.02 s round trip. A 700-token request spent 194
@@ -39,9 +39,20 @@ New: label-aware counter names in `engine_metrics.py` (the modes of the realtime
 the stages of the stopwatch, the drafter's counter), a reader for the levels, and the
 window keeping peaks of them; `cockpit.py` carries the levels with every read and takes
 the canary's own prefill, queue and verification out with the rest of it. Fourteen new
-engine_metrics tests,
-the collector stub carries the new counters, and the page fixture carries the new rows
-and what the quiet box says.
+engine_metrics tests, the collector stub carries the new counters, and the page fixture
+carries the new rows and what the quiet box says.
+
+Checked on the reference box (2026-10-11, the 27B lane on SGLang v0.5.21), with a cockpit
+built from this change beside the live engine: a cold 77,887-token prompt, ten chunks of
+8,192, read 1,348 tok/s of prefill where its client timed 1,342 (58.0 s to its first token),
+so a chunked prompt is counted once; a 700-token generation took 158 verifications, 4.43
+tokens a step by the engine's own count, and the window, which also held three two-token
+canaries of the other cockpit on the box, read 4.39 (706 tokens over 161 verifications);
+the one abort it counted was that other cockpit's canary, timed out behind the long prompt.
+The Busiest moment row now says "1 request at once" in the singular (it said "1 requests").
+
+**What an update does.** The cockpit restarts for its new page. The engines, the proxy and
+the lanes keep running.
 
 ## v1.25.2 (2026-10-10): the serving key stays off every command line, in the scripts and in the commands the docs give
 
