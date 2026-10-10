@@ -136,8 +136,8 @@ class TheMirrorPins(unittest.TestCase):
         rc, out = self.run_mirror()
         self.assertEqual(rc, 0, out)
         models = re.findall(r"^\s+mirror: (\S+) @ upstream-", out, re.M)
-        self.assertEqual(len(models), 11, out)       # nine text checkpoints and the two diffusion lanes'
-        self.assertEqual(len(set(models)), 11, models)
+        self.assertEqual(len(models), 12, out)       # nine text checkpoints and the diffusion lanes' three
+        self.assertEqual(len(set(models)), 12, models)
         # every checkpoint has its license row, and every row names a checkpoint the script copies
         labels = re.findall(r"^  model\s+(\S+)$", out, re.M)
         rows = [r for r in re.findall(r"^\| ([a-z0-9-]+) \| [^|]+ \| [^|]+ \|$", self.mirror_md.read_text(), re.M)

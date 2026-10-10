@@ -46,7 +46,7 @@ eval "$pins"
 # or a commit removed upstream went unseen (found in review, 2026-09-24).
 more="$(grep -E '^(OPENCODE_VERSION|OPENCODE_SHA256)=' "$REPO_DIR/install.sh")"
 eval "$more"
-lane="$(grep -E '^(IMAGE_MODEL_PIN|IMAGE_MODEL_PIN_REV|PIN|WHEEL)=' "$REPO_DIR/install-image.sh")"
+lane="$(grep -E '^(IMAGE_MODEL_PIN|IMAGE_MODEL_PIN_REV|IMAGE_TURBO_PIN|IMAGE_TURBO_PIN_REV|PIN|WHEEL)=' "$REPO_DIR/install-image.sh")"
 eval "$lane"
 IMAGE_PIN="$PIN"; IMAGE_WHEEL="$WHEEL"
 vline="$(grep -E '^(VIDEO_MODEL_PIN|VIDEO_MODEL_PIN_REV|PIN|WHEEL)=' "$REPO_DIR/install-video.sh")"
@@ -212,6 +212,7 @@ check_model dspark-draft   "$DRAFT_REPO"      "$DRAFT_REV"
 
 echo "Image lane and opencode"
 check_model  qwen-image     "$IMAGE_MODEL_PIN" "$IMAGE_MODEL_PIN_REV" model_index.json
+check_model  qwen-image-turbo "$IMAGE_TURBO_PIN" "$IMAGE_TURBO_PIN_REV" model_index.json
 check_commit sglang-source  sgl-project/sglang "$IMAGE_PIN"
 check_wheel  sglang-wheel   sglang "$IMAGE_WHEEL"
 echo "Video lane"

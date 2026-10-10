@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Surgical target-model switch on a live install, between the five targets:
+# Surgical target-model switch on a live install, between these targets:
 #
 #   ./switch-model.sh stock           # RadixArk/Qwen3.8-27B-NVFP4 (SGLang)
 #   ./switch-model.sh uncensored      # edp1096/Huihui-...-abliterated-NVFP4 (SGLang)
@@ -9,6 +9,7 @@
 #   ./switch-model.sh flash-nvda      # nvidia/Qwen3.8-Flash-Next-NVFP4, ModelOpt mixed precision
 #   ./switch-model.sh flash-uncensored # the abliterated build of the same tree
 #   ./switch-model.sh image           # Qwen/Qwen-Image-2.1 (SGLang Diffusion, own venv)
+#   ./switch-model.sh image-turbo     # Qwen/Qwen-Image-2.1-Turbo, its eight-step distillation
 #   ./switch-model.sh video           # MiniMaxAI/MiniMax-H3 (SGLang Diffusion, own venv)
 #
 # Within the 27B lane (stock, uncensored, fp8, uncensored-fp8) it does what it
@@ -45,7 +46,7 @@ _ENV_HF_CACHE="${HF_CACHE:-}"      # before the pins below give it install.sh's 
 # 27B lane and restarting what follows it, where the usage was all anyone wanted (found
 # in review, 2026-09-24). MODEL_CHOICE= still names one, as install.sh takes it.
 CHOICE="${1:-${MODEL_CHOICE:-}}"
-case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image|video) ;; *) printf 'usage: ./switch-model.sh <stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image|video>\n' >&2; [ -z "$CHOICE" ] && exit 2; die "unknown target: $CHOICE" ;; esac
+case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image|image-turbo|video) ;; *) printf 'usage: ./switch-model.sh <stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image|image-turbo|video>\n' >&2; [ -z "$CHOICE" ] && exit 2; die "unknown target: $CHOICE" ;; esac
 
 
 PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_NVDA_REPO|FLASH_NVDA_REV|FLASH_UNC_REPO|FLASH_UNC_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
@@ -61,6 +62,10 @@ unset _v
 
 IMAGE_UNIT="/etc/systemd/system/qwen38-image.service"
 IMAGE_UNIT_NAME="qwen38-image.service"
+# The image unit is rewritten between its two checkpoints (image, image-turbo) with sudo,
+# so it is staged at a fixed path the cockpit's exact-argv sudoers allowlist names, as the
+# 27B unit is below.
+IMG_STAGE="$CONFIG_DIR/qwen38-image.service.switch-stage"
 VIDEO_UNIT="/etc/systemd/system/qwen38-video.service"
 VIDEO_UNIT_NAME="qwen38-video.service"
 
@@ -88,25 +93,69 @@ disable_rollback_lane(){
 # Same contract as a cross-lane switch: verify the checkpoint, make it the one unit
 # enabled at boot, never start or stop anything, print the exact commands. What it
 # does NOT share with the text lanes is everything that is about text: there is no
-# serving image to inspect (it runs from its own venv), no unit to rewrite (one
-# checkpoint), no prompt ceiling on the proxy (the proxy is a text door and nothing
-# reaches this lane through it), and no opencode default to move (opencode is a text
-# client, and pointing it at an image lane would break every session it opens). So
-# it is handled here, whole, and exits, instead of threading "unless image" through
-# four hundred lines written for SGLang's text server.
-if [ "$CHOICE" = "image" ]; then
+# serving image to inspect (it runs from its own venv), nothing in the unit to rewrite but
+# its --model-path (between the lane's checkpoints), no prompt ceiling on the proxy (the
+# proxy is a text door and nothing reaches this lane through it), and no opencode default
+# to move (opencode is a text client, and pointing it at an image lane would break every
+# session it opens). So it is handled here, whole, and exits, instead of threading
+# "unless image" through four hundred lines written for SGLang's text server.
+if [ "$CHOICE" = "image" ] || [ "$CHOICE" = "image-turbo" ]; then
   [ -f "$IMAGE_UNIT" ] || die "the image lane is not installed on this box (no $IMAGE_UNIT). Install it once: ./install.sh --with-image (40 GB)"
   IMG_WD="$(grep -m1 -E '^WorkingDirectory=' "$IMAGE_UNIT" | cut -d= -f2- || true)"
   IMG_PY="${IMG_WD:-$HOME/.local/share/qwen38-image}/venv/bin/python"
   [ -x "$IMG_PY" ] || die "the image lane's runtime is missing ($IMG_PY): re-run ./install-image.sh, it resumes"
-  IMG_MODEL="$(grep -oE -- '--model-path [^ ]+' "$IMAGE_UNIT" | head -1 | cut -d' ' -f2 || true)"
-  IMG_MODEL="${IMG_MODEL:-Qwen/Qwen-Image-2.1}"
+  # The lane's two checkpoints and their pinned revisions, from install-image.sh, the one
+  # place they are declared.
+  eval "$(grep -E '^(IMAGE_MODEL_PIN|IMAGE_MODEL_PIN_REV|IMAGE_TURBO_PIN|IMAGE_TURBO_PIN_REV)=' "$REPO_DIR/install-image.sh" || true)"
+  for _v in IMAGE_MODEL_PIN IMAGE_MODEL_PIN_REV IMAGE_TURBO_PIN IMAGE_TURBO_PIN_REV; do
+    eval "[ -n \"\${$_v:-}\" ]" || die "install-image.sh no longer defines $_v (repo layout changed?)"
+  done
+  unset _v
+  IMG_CUR="$(grep -oE -- '--model-path [^ ]+' "$IMAGE_UNIT" | head -1 | cut -d' ' -f2 || true)"
+  IMG_CUR="${IMG_CUR:-$IMAGE_MODEL_PIN}"
+  # image-turbo serves the Turbo; image serves the base, or the checkpoint the unit was
+  # installed with (IMAGE_MODEL=) when it is neither, written down on the way to the Turbo
+  # so that the way back finds it.
+  IMG_BEFORE_TURBO="$CONFIG_DIR/image-model-before-turbo"
+  if [ "$CHOICE" = "image-turbo" ]; then
+    IMG_MODEL="$IMAGE_TURBO_PIN"
+  elif [ "$IMG_CUR" = "$IMAGE_TURBO_PIN" ]; then
+    IMG_MODEL="$(cat "$IMG_BEFORE_TURBO" 2>/dev/null || true)"; IMG_MODEL="${IMG_MODEL:-$IMAGE_MODEL_PIN}"
+  else
+    IMG_MODEL="$IMG_CUR"
+  fi
+  # The revision this box serves of that checkpoint, as the video lane reads it: the unit
+  # names the repo with HF_HUB_OFFLINE=1, so its refs/main IS the served commit, and one an
+  # install made with IMAGE_MODEL_REV= stays served. The installer's pin answers when the ref
+  # is missing or holds no commit, and main for a checkpoint of the unit's own.
   IMG_HF="$(grep -m1 -E '^Environment=HF_HOME=' "$IMAGE_UNIT" | cut -d= -f3- || true)"
-  printf '\n\033[1;36m── Verifying %s in the cache (resumable)\033[0m\n' "$IMG_MODEL"
+  IMG_MODEL_DIR="${IMG_HF:-$HF_CACHE}/hub/models--${IMG_MODEL//\//--}"
+  IMG_REV=""
+  if [ -f "$IMG_MODEL_DIR/refs/main" ]; then IMG_REV="$(cat "$IMG_MODEL_DIR/refs/main")"; fi
+  [[ "$IMG_REV" =~ ^[0-9a-f]{40}$ ]] || IMG_REV=""
+  if [ -z "$IMG_REV" ]; then
+    case "$IMG_MODEL" in
+      "$IMAGE_MODEL_PIN") IMG_REV="$IMAGE_MODEL_PIN_REV" ;;
+      "$IMAGE_TURBO_PIN") IMG_REV="$IMAGE_TURBO_PIN_REV" ;;
+      *) IMG_REV=main ;;
+    esac
+  fi
+  if [ "$IMG_MODEL" = "$IMAGE_TURBO_PIN" ]; then
+    # The Turbo samples on the eight-step grid its model_index.json carries, which only a
+    # runtime with sgl-project/sglang#43391 follows; one without it loads the weights and
+    # samples on a uniform schedule instead, answering 200 with worse images.
+    IMG_WHY="$("$IMG_PY" "$REPO_DIR/image-sglang/turbo-grid-check.py" 2>&1)" \
+      || die "the image lane's runtime cannot sample on the Turbo's eight-step grid (${IMG_WHY:-no reason given}). Update it first: ./install.sh (or ./install-image.sh), then switch again."
+  fi
+  printf '\n\033[1;36m── Verifying %s @ %s in the cache (resumable)\033[0m\n' "$IMG_MODEL" "$IMG_REV"
   # The same two lessons the text lanes learned: Xet stalls on this box, and an
   # unauthenticated pull gets throttled. local_files_only first, so a complete cache
-  # answers without touching the network at all.
-  HF_HOME="${IMG_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 IMG_MODEL="$IMG_MODEL" \
+  # answers without touching the network at all. A revision is fetched as such and
+  # refs/main pointed at it when it had none, because the unit runs offline by name, which
+  # resolves refs/main: fetched at main, a push upstream would have changed what the lane
+  # serves (the same lesson as install-image.sh, 2026-09-24).
+  HF_HOME="${IMG_HF:-$HF_CACHE}" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 IMG_MODEL="$IMG_MODEL" IMG_REV="$IMG_REV" \
+    IMG_NEED_GB=34 IMG_FREE_GB="$(dl_free_gb "${IMG_HF:-$HF_CACHE}")" \
     HF_HUB_DISABLE_PROGRESS_BARS="$DL_NO_BARS" QWEN38_REPO_DIR="$REPO_DIR" \
     "$IMG_PY" - <<'PYIMG' || die "the image checkpoint could not be verified or fetched (re-run to resume; set HF_TOKEN if it stalls)"
 import contextlib
@@ -127,14 +176,53 @@ def reporting(*args, **kwargs):
         return contextlib.nullcontext()
 
 
-repo = os.environ["IMG_MODEL"]
+repo, rev = os.environ["IMG_MODEL"], os.environ["IMG_REV"]
 try:
-    print(snapshot_download(repo, local_files_only=True))
+    path = snapshot_download(repo, revision=rev, local_files_only=True)
 except Exception:
+    # Both checkpoints of this lane are about 33 GB; refused before the first byte rather
+    # than stopped by a full disk halfway. What the cache already holds of the repo comes
+    # off the need: a fetch that stopped resumes from there.
+    from huggingface_hub import constants
+    blobs = os.path.join(constants.HF_HUB_CACHE, "models--" + repo.replace("/", "--"), "blobs")
+    have = sum(e.stat().st_size for e in os.scandir(blobs) if e.is_file()) if os.path.isdir(blobs) else 0
+    free = int(os.environ.get("IMG_FREE_GB") or 0)
+    need = max(int(os.environ["IMG_NEED_GB"]) - have // 2**30, 1)
+    if free and free < need:
+        raise SystemExit(f"{free} GB free in the cache, and {repo} needs about {need} GB more: free some space first")
     print("not complete in the cache, fetching the rest", flush=True)
-    with reporting(repo):
-        print(snapshot_download(repo))
+    with reporting(repo, revision=rev):
+        path = snapshot_download(repo, revision=rev)
+print(path)
+sha = os.path.basename(path.rstrip("/"))
+if rev != "main" and sha == rev:
+    ref = os.path.join(os.path.dirname(os.path.dirname(path.rstrip("/"))), "refs", "main")
+    os.makedirs(os.path.dirname(ref), exist_ok=True)
+    old = open(ref).read().strip() if os.path.exists(ref) else ""
+    if old != sha:
+        with open(ref, "w") as f:
+            f.write(sha)
+        print(f"refs/main -> {sha[:12]}" + (f" (was {old[:12]})" if old else ""), flush=True)
 PYIMG
+  # The unit names one checkpoint; a switch between the lane's two rewrites that name and
+  # nothing else.
+  IMG_REWRITTEN=""
+  if [ "$IMG_CUR" != "$IMG_MODEL" ]; then
+    IMG_UNIT_TEXT="$(cat "$IMAGE_UNIT")"
+    printf '%s\n' "${IMG_UNIT_TEXT//"--model-path $IMG_CUR "/"--model-path $IMG_MODEL "}" > "$IMG_STAGE"
+    if ! grep -q -- "--model-path $IMG_MODEL " "$IMG_STAGE"; then
+      rm -f "$IMG_STAGE"; die "the image unit's rewrite to $IMG_MODEL failed (hand-edited unit?): re-run ./install-image.sh"
+    fi
+    diff "$IMG_STAGE" "$IMAGE_UNIT" || true   # show exactly what changes
+    sudo install -m 644 "$IMG_STAGE" "$IMAGE_UNIT"
+    rm -f "$IMG_STAGE"
+    IMG_REWRITTEN=1
+    if [ "$IMG_MODEL" = "$IMAGE_TURBO_PIN" ] && [ "$IMG_CUR" != "$IMAGE_MODEL_PIN" ]; then
+      printf '%s\n' "$IMG_CUR" > "$IMG_BEFORE_TURBO"
+    else
+      rm -f "$IMG_BEFORE_TURBO"
+    fi
+  fi
   # Which text lane this box served, written down before it is disabled: install.sh
   # updates that lane on a later run, and enablement cannot tell it once both are off.
   for TEXT_UNIT_NAME in qwen38-flash.service qwen38-sglang.service qwen38-video.service; do
@@ -161,6 +249,12 @@ PYIMG
   printf '\n\033[1;32mSwitch queued: %s (%s)\033[0m\n' "$IMG_MODEL" "$IMAGE_UNIT_NAME"
   if [ -n "$RUNNING" ]; then
     echo "Effective after:  sudo systemctl stop $RUNNING && sudo systemctl start $IMAGE_UNIT_NAME   (or next reboot)"
+  elif systemctl is-active --quiet "$IMAGE_UNIT_NAME" 2>/dev/null; then
+    if [ -n "$IMG_REWRITTEN" ]; then
+      echo "Effective after:  sudo systemctl restart $IMAGE_UNIT_NAME   (it serves the previous checkpoint until then)"
+    else
+      echo "Its unit already named this checkpoint. Started before it did, the lane serves what it loaded: sudo systemctl restart $IMAGE_UNIT_NAME"
+    fi
   else
     echo "Effective after:  sudo systemctl start $IMAGE_UNIT_NAME   (or next reboot; ready in about 70 s)"
   fi

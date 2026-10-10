@@ -137,7 +137,7 @@ function renderRack(){
     if (pool) fact('KV pool', fmtK(pool));
     if (seated && e && e.elapsed && (st === 'ready' || st === 'degraded')) fact('up', fmtDur(e.elapsed));
     if (unit === VIDEO_UNIT) fact('4 s clip', 'about 11 min');
-    if (unit === IMAGE_UNIT) fact('1024 image', 'about 38 s');
+    if (unit === IMAGE_UNIT) fact('1024 image', laneTarget(IMAGE_UNIT) === 'image-turbo' ? 'about 7.5 s' : 'about 34 s');
     const en = (F.units[unit] || {}).enabled;
     setText(b.note, !has ? LANE_INSTALL[unit] : en === 'enabled' ? 'starts at boot' : en === '?' ? '' : 'manual start');
     setText(b.act, !has ? 'Not installed' : seated ? (st === 'ready' || st === 'degraded' ? `Open ${LANE_META[unit].view === 'agent' ? 'the agent' : LANE_META[unit].view}` : 'Details') : 'Load this lane');

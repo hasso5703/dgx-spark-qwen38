@@ -103,13 +103,13 @@ const LANE_META = {
 // median of its own boots replaces these.
 const READY_DEFAULT = {[U27]: 540, [UFLASH]: 780, [IMAGE_UNIT]: 70, [VIDEO_UNIT]: 720};
 const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8', 'uncensored-fp8': 'FP8 uncensored',
-                      flash: '', 'flash-uncensored': 'uncensored', 'flash-nvda': 'NVIDIA export', image: '2.1', video: 'H3'};
-const TARGET_UNIT = t => t === 'image' ? IMAGE_UNIT : t === 'video' ? VIDEO_UNIT : String(t).startsWith('flash') ? UFLASH : U27;
+                      flash: '', 'flash-uncensored': 'uncensored', 'flash-nvda': 'NVIDIA export', image: '2.1', 'image-turbo': 'Turbo', video: 'H3'};
+const TARGET_UNIT = t => t === 'image' || t === 'image-turbo' ? IMAGE_UNIT : t === 'video' ? VIDEO_UNIT : String(t).startsWith('flash') ? UFLASH : U27;
 const LANE_TARGETS = {[U27]: ['stock', 'uncensored', 'fp8', 'uncensored-fp8'], [UFLASH]: ['flash', 'flash-uncensored', 'flash-nvda'],
-                      [IMAGE_UNIT]: ['image'], [VIDEO_UNIT]: ['video']};
+                      [IMAGE_UNIT]: ['image', 'image-turbo'], [VIDEO_UNIT]: ['video']};
 const TARGET_NAME = {stock: '27B stock, NVFP4', uncensored: '27B uncensored, NVFP4', fp8: '27B FP8, Qwen official',
                      'uncensored-fp8': '27B FP8 uncensored', flash: 'flash 176B, NVFP4', 'flash-uncensored': 'flash 176B uncensored',
-                     'flash-nvda': 'flash 176B, NVIDIA export', image: 'Qwen-Image 2.1', video: 'MiniMax-H3'};
+                     'flash-nvda': 'flash 176B, NVIDIA export', image: 'Qwen-Image 2.1', 'image-turbo': 'Qwen-Image 2.1 Turbo', video: 'MiniMax-H3'};
 const TARGET_NOTE = {
   stock: 'The NVFP4 quantization this repo pins by default: smallest and fastest of the 27B targets.',
   uncensored: 'The abliterated NVFP4 checkpoint: same size and speed as stock, refusals removed.',
@@ -119,6 +119,7 @@ const TARGET_NOTE = {
   'flash-uncensored': 'The abliterated build of the same 176B tree, byte-identical in layout, so every serving flag is the same. The first switch downloads about 126 GB.',
   'flash-nvda': 'NVIDIA’s own mixed-precision export of the same model, served with a pinned MoE runner. The first switch downloads about 124 GB.',
   image: 'Text to image, editing with up to ten references, native RGBA. 31 GB of weights that do not fit beside a text lane.',
+  'image-turbo': 'Qwen’s eight-step distillation of the same model, for the same three uses: a 1024 × 1024 image in 7.5 s against 34 s, at the same memory, the eight steps fixed by the checkpoint. The first switch downloads about 33 GB.',
   video: 'Text to video with joint audio, plus first and last frame conditioning. The checkpoint does not fit beside a text lane.'};
 // What installs a lane this box does not have. Since v1.20 a plain ./install.sh installs
 // every lane, so one missing here was left out (--no-<lane>) or did not fit: --with-<lane>
@@ -158,10 +159,13 @@ const readyIn = unit => 'about ' + fmtDur(bootSeconds(unit));
 const ownTarget = unit => F.target && TARGET_UNIT(F.target) === unit ? F.target : null;
 // What the serving engine itself says it serves, only from a read taken after this engine
 // started: the read comes every 30 s and is kept through a restart, so for up to 30 s after
-// one it still names the previous engine's checkpoint. null when there is no such read.
+// one it still names the previous engine's checkpoint. The image engine's answer is read by
+// the cockpit once per life of its unit, so it is never the previous one's. null when there
+// is no such read.
 function servedTarget(unit){
   const s = servingEngine(), age = lastAges.engine_info;
-  if (!s || s[0] !== unit || unit === IMAGE_UNIT || unit === VIDEO_UNIT) return null;
+  if (!s || s[0] !== unit || unit === VIDEO_UNIT) return null;
+  if (unit === IMAGE_UNIT) return s[1].served_target || null;
   return s[1].elapsed != null && age != null && age < s[1].elapsed ? ownTarget(unit) : null;
 }
 function laneTarget(unit){
@@ -385,7 +389,8 @@ const EXPLAIN = {
     return `systemd starts ${lane}: it loads its weights and answers in ${readyIn(p.unit)}. Follow the boot in the dock and on the Now view.`;
   },
   switch: p => (TARGET_NOTE[p.target] ? TARGET_NOTE[p.target] + '\n\n' : '') +
-    'switch-model.sh verifies the checkpoint, makes this lane the one enabled at boot and, for a text target, rewrites its unit, the proxy ceiling and the opencode default model. It never restarts anything.',
+    `switch-model.sh verifies the checkpoint, makes this lane the one enabled at boot and ${TARGET_UNIT(p.target) === VIDEO_UNIT ? 'changes nothing else'
+      : TARGET_UNIT(p.target) === IMAGE_UNIT ? 'points its unit at this checkpoint' : 'rewrites its unit, the proxy ceiling and the opencode default model'}. It never restarts anything.`,
   flush_cache: () => 'Empties the radix cache. Harmless; the engine refuses it while requests run.',
   abort_all: () => 'Every running or queued generation ends now; the clients see their stream end.',
   smoke: () => 'One real 200-token generation through the proxy, the way a client uses it.',
@@ -474,9 +479,14 @@ function laneJourneySteps(target){
   // next start loads, and the restart is still owed. Read against the unit's file alone, the
   // journey had no step left and said "already serving" of a checkpoint that was not
   // (found 2026-10-05: flash served while its unit pointed at flash-uncensored).
-  const owed = !!(servedTarget(unit) && servedTarget(unit) !== target);
-  if (serving && serving[0] === unit && (steps.length || owed))
-    steps.push({name: 'unit', params: {verb: 'restart', unit}, title: `Restart ${LANE_NAME[unit]} on the new checkpoint`, desc: `It answers again in ${readyIn(unit)}.`});
+  const served = servedTarget(unit), owed = !!(served && served !== target);
+  // The image engine says what it serves (cockpit.py, once per life of its unit): a switch
+  // that only points the unit at the checkpoint it already serves owes no restart, which
+  // would end a generation for nothing.
+  const restart = unit === IMAGE_UNIT && served ? owed : steps.length || owed;
+  if (serving && serving[0] === unit && restart)
+    steps.push({name: 'unit', params: {verb: 'restart', unit}, title: `Restart ${LANE_NAME[unit]} on the new checkpoint`,
+      desc: `It answers again in ${readyIn(unit)}.` + (unit === IMAGE_UNIT || unit === VIDEO_UNIT ? ' A generation in flight is lost.' : '')});
   else if (!serving || serving[0] !== unit)
     steps.push({name: 'unit', params: {verb: 'start', unit}, title: `Start ${LANE_NAME[unit]}`, desc: `It loads and answers in ${readyIn(unit)}.`});
   return steps;
@@ -496,7 +506,9 @@ function askJourney(target, opts = {}){
   const warns = [];
   if (serving && serving[0] === UFLASH && TRANSITIONAL.has(serving[1].state)) warns.push('Flash is booting: stopping now throws that boot away, and the next start takes a whole boot again.');
   if (serving && serving[0] !== unit && (serving[0] === U27 || serving[0] === UFLASH)) warns.push('Agent clients on :30001 lose their engine until a text lane answers again.');
-  if (serving && (serving[0] === IMAGE_UNIT || serving[0] === VIDEO_UNIT) && serving[0] !== unit) warns.push('A generation in flight on ' + laneLabel(serving[0]) + ' is lost.');
+  // stopped for another lane, or restarted on its other checkpoint: either ends a generation
+  if (serving && (serving[0] === IMAGE_UNIT || serving[0] === VIDEO_UNIT) && steps.some(s => s.name === 'unit' && s.params.unit === serving[0]))
+    warns.push('A generation in flight on ' + laneLabel(serving[0]) + ' is lost.');
   warns.forEach(x => w.append(el('p', null, x))); w.hidden = !warns.length;
   const j = $('sh-journey'); clear(j); j.hidden = false;
   steps.forEach((s, i) => {
@@ -690,7 +702,7 @@ function renderBanners(state, errors){
   // A switch that is not restarted yet: the unit loads one checkpoint at its next start while
   // the engine serves another, and nothing else on the page said so.
   const sv = servingEngine();
-  if (sv && (sv[0] === U27 || sv[0] === UFLASH) && sv[1].state === 'ready'){
+  if (sv && (sv[0] === U27 || sv[0] === UFLASH || sv[0] === IMAGE_UNIT) && sv[1].state === 'ready'){
     const served = servedTarget(sv[0]), next = sv[1].target;
     if (served && next && served !== next)
       add('info', `${TARGET_NAME[served]} is serving, and the lane's next start loads ${TARGET_NAME[next]}.`,

@@ -15,8 +15,8 @@ to discover, which is the whole reason they are gates rather than documentation:
     needs both), so a tab that offers one without the other offers a dead control.
 
 The rest holds the shape of the install: one engine at a time is a systemd Conflicts=
-rather than a convention, the runtime pin is a full commit because Qwen-Image 2.1 is in
-no SGLang release, and the sizes the cockpit offers are the seven ratios Qwen publishes.
+rather than a convention, the runtime pin is a full commit (the v0.5.21 release's, plus
+local patches), and the sizes the cockpit offers are the seven ratios Qwen publishes.
 """
 import pathlib
 import re
@@ -186,11 +186,23 @@ class TheInstaller(unittest.TestCase):
         self.assertIn("SGLANG_BUILD_RUST_EXTS=none", pip[0])
 
     def test_the_runtime_pin_is_a_full_commit(self):
-        """Qwen-Image 2.1 is in no SGLang release, so the lane runs a source checkout. A
-        branch name would make two boxes install two different runtimes from one command."""
+        """The lane runs a source checkout with local patches over it (no verified image
+        exists for this model). A branch or tag name would make two boxes install two
+        different runtimes from one command."""
         m = re.search(r'PIN="\$\{SGLANG_DIFFUSION_PIN:-([^}]+)\}"', INSTALLER.read_text())
         self.assertIsNotNone(m, "the pin is no longer assigned the way this test reads it")
         self.assertRegex(m.group(1), r"^[0-9a-f]{40}$")
+
+    def test_a_new_wheel_is_taken_by_a_venv_that_has_another(self):
+        """The wheel sets the versions of everything the runtime imports. A venv that only
+        checked whether sglang imported kept the previous release's dependencies under the
+        new source: cache-dit 1.3.0 under v0.5.21, which asks for 1.5.1."""
+        text = INSTALLER.read_text()
+        self.assertRegex(text, r'(?m)^WHEEL_NOTE="\$LANE_DIR/sglang-wheel"')
+        self.assertIn('[ "$(cat "$WHEEL_NOTE" 2>/dev/null)" != "$WHEEL" ]', text)
+        self.assertLess(text.index('pip" install --quiet --pre "sglang[diffusion]==$WHEEL"'),
+                        text.index('printf \'%s\\n\' "$WHEEL" > "$WHEEL_NOTE"'))
+        self.assertIn('rm -rf "$VENV" "$SRC" "$WHEEL_NOTE"', text, "uninstall leaves the note behind")
 
     def test_the_wheel_goes_in_before_the_source(self):
         """Order is not cosmetic: the released wheel carries sglang-kernel built for
@@ -306,6 +318,79 @@ def added_code(patch: pathlib.Path) -> list:
             if ln.startswith("+") and not ln.startswith("+++") and not ln[1:].strip().startswith("#")]
 
 
+TURBO_PATCHES = {name: REPO / "image-sglang" / f"{name}.patch" for name in
+                 ("qwen-image21-turbo-sigma-config", "qwen-image21-turbo-sigma-pipeline",
+                  "qwen-image21-turbo-sigma-stage")}
+
+
+def pre_image(patch: pathlib.Path) -> str:
+    """The text of the patched file as each hunk expects to find it, hunks one after the
+    other: what `git apply` needs to see to apply the patch (it allows the offsets)."""
+    out = []
+    for ln in patch.read_text().splitlines():
+        if ln.startswith(("diff --git", "index ", "--- ", "+++ ", "@@")):
+            continue
+        if ln.startswith((" ", "-")) or ln == "":
+            out.append(ln[1:] if ln else "")
+    return "\n".join(out) + "\n"
+
+
+class TheTurboPatches(unittest.TestCase):
+    """sgl-project/sglang#43391 (merged 2026-10-10, in no release yet), its runtime part
+    backported to the v0.5.21 pin, one file per patch as CI requires: the Turbo's
+    eight-step sigma grid goes from its model_index.json to the sampler. The upstream tests
+    of that PR passed on the backport (58 of 58, 2026-10-10)."""
+
+    def _patched(self, name):
+        return re.findall(r"^\+\+\+ b/(.+)$", TURBO_PATCHES[name].read_text(), re.M)
+
+    def test_one_file_each(self):
+        base = "python/sglang/multimodal_gen/"
+        self.assertEqual(self._patched("qwen-image21-turbo-sigma-config"),
+                         [base + "configs/pipeline_configs/qwen_image21.py"])
+        self.assertEqual(self._patched("qwen-image21-turbo-sigma-pipeline"),
+                         [base + "runtime/pipelines/qwen_image21.py"])
+        self.assertEqual(self._patched("qwen-image21-turbo-sigma-stage"),
+                         [base + "runtime/pipelines_core/stages/model_specific_stages/qwen_image21.py"])
+
+    def test_what_they_change(self):
+        cfg = added_code(TURBO_PATCHES["qwen-image21-turbo-sigma-config"])
+        self.assertIn("sample_sigmas: list[float] | None = None", cfg)
+        self.assertIn("sigmas = self.sample_sigmas", cfg)
+        self.assertIn('hf_model_paths=["Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"],', cfg)
+        pipe = added_code(TURBO_PATCHES["qwen-image21-turbo-sigma-pipeline"])
+        self.assertIn('sample_sigmas = model_index.pop("sample_sigmas", None)', pipe)
+        stage = added_code(TURBO_PATCHES["qwen-image21-turbo-sigma-stage"])
+        self.assertIn("batch.num_inference_steps = len(batch.sigmas)", stage)
+
+    def test_a_turbo_on_a_runtime_without_them_is_refused(self):
+        text = INSTALLER.read_text()
+        self.assertIn('if [ "$MODEL" = "$IMAGE_TURBO_PIN" ]; then', text)
+        # the same check as ./switch-model.sh image-turbo, each part of the fix for what it does
+        self.assertIn('TURBO_WHY="$("$VENV/bin/python" "$HERE/image-sglang/turbo-grid-check.py" 2>&1)"', text)
+        self.assertIn('"$IMG_PY" "$REPO_DIR/image-sglang/turbo-grid-check.py"', (REPO / "switch-model.sh").read_text())
+        self.assertLess(text.index("the runtime does not know Qwen-Image 2.1"),
+                        text.index("cannot sample on its eight-step grid"))
+
+    def test_no_check_rests_on_an_assert(self):
+        """python -O (PYTHONOPTIMIZE in the environment) strips assert statements: a check
+        written as one passes whatever it checks."""
+        text = INSTALLER.read_text()
+        for m in re.finditer(r"<<'PY'.*?\nPY\n", text, re.S):
+            self.assertNotRegex(m.group(0), r"(?m)^\s*assert ", m.group(0)[:120])
+        self.assertNotIn("assert ", (REPO / "image-sglang/turbo-grid-check.py").read_text())
+
+    def test_the_registry_maps_the_id_to_its_own_config(self):
+        text = INSTALLER.read_text()
+        self.assertIn('info.pipeline_config_cls is not QwenImage21PipelineConfig', text)
+
+    def test_the_turbo_pin_is_kept_on_a_box_that_serves_it(self):
+        text = INSTALLER.read_text()
+        self.assertRegex(text, r'(?m)^IMAGE_TURBO_PIN="Qwen/Qwen-Image-2\.1-Turbo"$')
+        self.assertRegex(text, r'(?m)^IMAGE_TURBO_PIN_REV="[0-9a-f]{40}"$')
+        self.assertIn('"$IMAGE_TURBO_PIN") MODEL_REV="${IMAGE_MODEL_REV:-$IMAGE_TURBO_PIN_REV}" ;;', text)
+
+
 class TheLocalPatches(unittest.TestCase):
     """Two local changes to the pinned SGLang source, both measured on the reference box.
     The idle loop: an idle lane held one CPU core at 100% (1.047 cores, against 0.029 for
@@ -349,7 +434,9 @@ class TheLocalPatches(unittest.TestCase):
     def _repo(self, sched=CONTEXT_AT_PIN, http=HTTP_CONTEXT_AT_PIN):
         d = pathlib.Path(tempfile.mkdtemp(prefix="img-src-"))
         self._git(d, "init", "-q")
-        for rel, text in ((PATCHED, sched), (HTTP_PATCHED, http)):
+        turbo = [(re.search(r"^\+\+\+ b/(.+)$", f.read_text(), re.M).group(1), pre_image(f))
+                 for f in TURBO_PATCHES.values()]
+        for rel, text in [(PATCHED, sched), (HTTP_PATCHED, http)] + turbo:
             (d / rel).parent.mkdir(parents=True, exist_ok=True)
             (d / rel).write_text(text)
         self._git(d, "add", "-A")
@@ -370,6 +457,9 @@ class TheLocalPatches(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("scheduler-idle-poll: applied", out)
         self.assertIn("http-graceful-timeout: applied", out)
+        for name in TURBO_PATCHES:
+            self.assertIn(f"{name}: applied", out)
+        self.assertNotIn("NOTE:", out)
         rc, out = self._install(src, pin)
         self.assertEqual(rc, 0, out)
         self.assertIn("scheduler-idle-poll: already applied", out)
@@ -396,6 +486,21 @@ class TheLocalPatches(unittest.TestCase):
         self.assertEqual(self._git(src, "rev-parse", "HEAD"), new)
         self.assertIn("scheduler-idle-poll: applied", out)
         self.assertIn("http-graceful-timeout: applied", out)
+
+    def test_a_fresh_clone_on_a_main_that_carries_a_patch_checks_out_the_pin(self):
+        """A first install clones upstream's main, where a patch merged upstream reverses
+        cleanly too: taking it off there wrote the very edit that then blocked the checkout
+        of the pin (a first install, 2026-10-10, once main carried #43391). Only a file with
+        local edits holds anything of ours to take off."""
+        src = self._repo()
+        pin = self._git(src, "rev-parse", "HEAD")
+        self._git(src, "apply", str(TURBO_PATCHES["qwen-image21-turbo-sigma-stage"]))
+        self._git(src, "commit", "-qam", "upstream merges the patch")      # main moves on
+        self.assertNotEqual(self._git(src, "rev-parse", "HEAD"), pin)
+        rc, out = self._install(src, pin)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._git(src, "rev-parse", "HEAD"), pin)
+        self.assertIn("qwen-image21-turbo-sigma-stage: applied", out)
 
     def test_a_pin_one_no_longer_fits_is_a_note_not_a_failure(self):
         src = self._repo(http=HTTP_CONTEXT_AT_PIN.replace("reload=False", "reload=True"))
@@ -544,7 +649,11 @@ class ThePageNeverShowsAStaleOrRacingState(unittest.TestCase):
     def test_the_text_engines_target_never_labels_the_image_lane(self):
         # the text engine's target, and only when it is one of this unit's (ownTarget); a
         # diffusion lane never takes it (servedTarget, which laneTarget reads first)
-        self.assertIn("unit === IMAGE_UNIT || unit === VIDEO_UNIT) return null", self.js)
+        self.assertIn("unit === VIDEO_UNIT) return null", self.js)
+        # the image lane's served target is its own engine's answer (cockpit.py, /model_info),
+        # returned before the text engine's is ever read
+        image = self.js.index("if (unit === IMAGE_UNIT) return s[1].served_target || null;")
+        self.assertLess(image, self.js.index("? ownTarget(unit) : null;"))
         self.assertIn("return servedTarget(unit) || (engines()[unit] || {}).target || null", self.js)
         self.assertIn("F.target && TARGET_UNIT(F.target) === unit", self.js)
         # every lifecycle snapshot restates the served target, so a text engine's
@@ -605,12 +714,14 @@ class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
     def test_it_is_a_lane_the_switch_can_load(self):
         js = PAGE_JS()
         targets = re.search(r"const LANE_TARGETS = \{(.*?)\};", js, re.S).group(1)
-        self.assertIn("[IMAGE_UNIT]: ['image']", targets)
+        self.assertIn("[IMAGE_UNIT]: ['image', 'image-turbo']", targets)
         # and named apart: it is not one more LLM checkpoint
         names = re.search(r"const TARGET_NAME = \{(.*?)\};", js, re.S).group(1)
         self.assertIn("image: 'Qwen-Image 2.1'", names)
-        # reached through the one journey, never its own start path
-        self.assertIn("askJourney('image')", js)
+        self.assertIn("'image-turbo': 'Qwen-Image 2.1 Turbo'", names)
+        # reached through the one journey, never its own start path, on the checkpoint
+        # the unit names (the base or the Turbo)
+        self.assertIn("askJourney(laneTarget(IMAGE_UNIT) || 'image')", js)
 
     def test_the_journey_keeps_the_order_the_readme_gives(self):
         """Stopped first, the boot still points at the old lane and the card offers a
@@ -651,7 +762,7 @@ class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
         # the one journey, and stopping is the Lanes card's.
         calls = re.findall(r"askAction\('unit', \{verb: '(\w+)'", tab)
         self.assertEqual(calls, ["restart"], "the Image view starts or stops a lane again")
-        self.assertIn("askJourney('image')", tab)
+        self.assertIn("askJourney(laneTarget(IMAGE_UNIT) || 'image')", tab)
         self.assertIn("show('img-cancel', !!(IS.inflight || IS.busy));", tab)
         self.assertNotIn("function imgUnitButton", tab)
 
@@ -665,7 +776,7 @@ class TheImageLaneIsALaneLikeTheOthers(unittest.TestCase):
         """The proxy is a text door and opencode a text client: pointing opencode's default
         model at an image lane would break every session it opened."""
         sw = (REPO / "switch-model.sh").read_text()
-        branch = sw[sw.index('if [ "$CHOICE" = "image" ]; then'):sw.index("exit 0\nfi")]
+        branch = sw[sw.index('if [ "$CHOICE" = "image" ] || [ "$CHOICE" = "image-turbo" ]; then'):sw.index("exit 0\nfi")]
         self.assertNotIn("oc-point-default", branch)
         self.assertNotIn("PROMPT_CEILING_TOKENS", branch)
         # it runs from its own venv: no serving image to inspect, no container to download with

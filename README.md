@@ -10,7 +10,7 @@ curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get
 
 - **Text**: Qwen3.8 27B at 71.4 tok/s with a 1M context by default, and Qwen3.8-Flash-Next
   176B on the same box, seven switchable targets, an OpenAI- and Anthropic-compatible API.
-- **Images**: Qwen-Image 2.1, a 1024×1024 image in about 38 s.
+- **Images**: Qwen-Image 2.1, a 1024×1024 image in about 34 s, or 7.5 s with its eight-step Turbo.
 - **Video with sound**: MiniMax-H3, a 4 s clip at 480p with its audio in 10 to 13 minutes.
 - **Agents**: opencode wired to the local model, in a terminal or in the cockpit's Agent
   view, from a laptop or a phone.
@@ -311,16 +311,21 @@ curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get
 Then it is a third lane, driven like the other two: on the cockpit's Lanes view, pick
 **Qwen-Image 2.1** and press **Load**: one action that switches the boot, stops the serving
 lane and starts this one (about a minute to answer). From a terminal,
-`./switch-model.sh image` does the switch and prints the rest.
+`./switch-model.sh image` does the switch and prints the rest. **Qwen-Image 2.1 Turbo**, Qwen's
+eight-step distillation of the same model, is a second checkpoint of the lane, loaded the same
+way (`./switch-model.sh image-turbo`, 32.5 GB on its first switch): about four and a half times
+faster, close to the base on photographs, portraits, illustrations and short text
+([docs/image-lane.md](docs/image-lane.md#the-turbo-checkpoint) shows where it is not).
 
 31 GB of weights do not fit beside a serving LLM, so the lanes take turns: the cockpit refuses
 to start any engine while another is busy, for all three alike, and the unit's `Conflicts=` is
 a second belt for a `systemctl start` typed at a terminal.
 
-**Measured on a Spark, not copied from the cookbook:** 1024x1024 at 40 steps in **38.2 s**
-(34.8 GB peak), 512x512 in 9.0 s, an edit with one reference in 44.6 s, ten references in 69.6 s,
-and a transparent generation that comes back with 68% of its pixels genuinely transparent. Same
-seed twice is byte-identical.
+**Measured on a Spark, not copied from the cookbook** (SGLang v0.5.21, 2026-10-10):
+1024x1024 at 40 steps in **34.3 s** (35.6 GB peak), **7.5 s with the Turbo**, 512x512 in 7.8 s
+(1.8 s), 2048x2048 in 182.8 s (40.6 s), an edit with one reference in 41.9 s (10.3 s), and a
+transparent generation that comes back with about three quarters of its pixels transparent.
+Same seed twice is byte-identical.
 
 Three things bite before a client does: **width and height must be multiples of 32** (anything
 else is a bare HTTP 500), **an output format must always be sent** (left out, the API falls back

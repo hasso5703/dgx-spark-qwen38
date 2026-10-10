@@ -82,8 +82,8 @@ text_cache(){
 }
 HF_CACHE="${HF_CACHE:-$(installed_env HF_HOME)}"; HF_CACHE="${HF_CACHE:-$(text_cache)}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
-# The SGLang source this lane was developed against: the same pin as the image lane,
-# whose installed runtime already registers MiniMaxH3Pipeline (checked 2026-09-25).
+# The SGLang source this lane was developed against, the image lane's pin until v1.24 (that
+# lane moved to the v0.5.21 release), which registers MiniMaxH3Pipeline (checked 2026-09-25).
 # SGLANG_DIFFUSION_PIN overrides it only for someone deliberately testing another one.
 PIN="${SGLANG_DIFFUSION_PIN:-ddebc52f237a1dbb56533469ab2ec2a7b856c4ab}"
 # The released wheel that carries the prebuilt aarch64 kernels the source tree reuses.
@@ -208,7 +208,7 @@ if [ ! -d "$SRC/.git" ]; then
   git clone --quiet https://github.com/sgl-project/sglang "$SRC" || die "could not clone SGLang."
 fi
 # One local change to the pinned source, the image lane's scheduler-idle-poll (one file
-# in image-sglang/ for both lanes, which serve the same SGLang commit). The diffusion
+# in image-sglang/ for both lanes, which applies to the pin of each). The diffusion
 # scheduler's loop never waits: recv_reqs() polls its socket without blocking and nothing
 # else in the loop sleeps, so a lane with nothing to do held one CPU core at 100%, kept
 # the box's hottest zone near 61 C at rest (43 C with no lane loaded) and its fans
@@ -228,8 +228,13 @@ declare -A PATCH_FIXES=(
 CURRENT="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
 if [ "$CURRENT" != "$PIN" ]; then
   # it is the only local edit in this tree: take it off, or the checkout trips on it
+  # Only from a file that has local edits: a fresh clone stands on upstream's main, where a
+  # patch merged upstream reverses cleanly too, and taking it off there wrote the very edit
+  # that then blocked the checkout (a first install, 2026-10-10, once main carried #43391).
   for P in "${PATCHES[@]}"; do
-    git -C "$SRC" apply --reverse "$HERE/image-sglang/$P.patch" >/dev/null 2>&1 || true
+    PF="$HERE/image-sglang/$P.patch"
+    git -C "$SRC" diff --quiet -- "$(grep -m1 '^+++ b/' "$PF" | cut -c7-)" 2>/dev/null && continue
+    git -C "$SRC" apply --reverse "$PF" >/dev/null 2>&1 || true
   done
   git -C "$SRC" fetch --quiet origin "$PIN" 2>/dev/null || git -C "$SRC" fetch --quiet origin
   git -C "$SRC" checkout --quiet "$PIN" \

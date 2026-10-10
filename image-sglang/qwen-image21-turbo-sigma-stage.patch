@@ -1,0 +1,18 @@
+diff --git a/python/sglang/multimodal_gen/runtime/pipelines_core/stages/model_specific_stages/qwen_image21.py b/python/sglang/multimodal_gen/runtime/pipelines_core/stages/model_specific_stages/qwen_image21.py
+index db178e10fe..c491469f13 100644
+--- a/python/sglang/multimodal_gen/runtime/pipelines_core/stages/model_specific_stages/qwen_image21.py
++++ b/python/sglang/multimodal_gen/runtime/pipelines_core/stages/model_specific_stages/qwen_image21.py
+@@ -55,6 +55,13 @@ class QwenImage21InputValidationStage(InputValidationStage):
+         batch = super().forward(batch, server_args)
+         if batch.height % 32 or batch.width % 32:
+             raise ValueError("Qwen-Image 2.1 height and width must be divisible by 32")
++        batch.sigmas = server_args.pipeline_config.prepare_sigmas(
++            batch.sigmas, batch.num_inference_steps
++        )
++        if not batch.sigmas:
++            raise ValueError("Qwen-Image 2.1 requires a non-empty sigma schedule")
++        # the preset or explicit sigma grid determines the denoising step count
++        batch.num_inference_steps = len(batch.sigmas)
+         return batch
+ 
+ 

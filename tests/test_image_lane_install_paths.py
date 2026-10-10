@@ -103,8 +103,12 @@ class TheSpaceWhereItLands(unittest.TestCase):
 class RemovingTheLaneThatBooted(unittest.TestCase):
     UNINSTALL = block('if [ "$ACTION" = uninstall ]; then', '  exit 0')
 
-    def run_uninstall(self, image_enabled, text_enabled, before="qwen38-sglang.service"):
+    def run_uninstall(self, image_enabled, text_enabled, before="qwen38-sglang.service", cached=(), note=None):
         d = pathlib.Path(tempfile.mkdtemp(prefix="img-uninst-"))
+        if note:
+            (d / "image-model-before-turbo").write_text(note + "\n")
+        for repo in cached:
+            (d / "hf/hub" / ("models--" + repo.replace("/", "--"))).mkdir(parents=True)
         units = d / "etc"
         units.mkdir()
         (units / "qwen38-image.service").write_text("[Service]\n")
@@ -127,9 +131,11 @@ class RemovingTheLaneThatBooted(unittest.TestCase):
         script = ('set -euo pipefail\nstep(){ :; }\nACTION=uninstall; UNIT=qwen38-image.service\n'
                   f'INSTALLED="{units}/qwen38-image.service"; CONFIG_DIR="{d}"; LANE_DIR="{d}/lane"; '
                   f'VENV="{d}/lane/venv"; SRC="{d}/lane/sglang"; HF_CACHE="{d}/hf"; MODEL=Qwen/Qwen-Image-2.1\n'
+                  'IMAGE_MODEL_PIN=Qwen/Qwen-Image-2.1; IMAGE_TURBO_PIN=Qwen/Qwen-Image-2.1-Turbo\n'
                   + text + "\nfi\n")
         rc, out = bash(script, {"HOME": str(d)}, [stub])
         calls = (d / "calls").read_text() if (d / "calls").exists() else ""
+        self.dir = d
         return rc, out, calls
 
     def test_the_lane_before_images_is_enabled_again(self):
@@ -145,6 +151,57 @@ class RemovingTheLaneThatBooted(unittest.TestCase):
     def test_an_image_lane_that_was_not_the_boot_lane_changes_nothing_else(self):
         rc, out, calls = self.run_uninstall(image_enabled=False, text_enabled=True)
         self.assertNotIn("systemctl enable", calls)
+
+    def test_every_checkpoint_of_the_lane_in_the_cache_is_named(self):
+        """A box that tried the Turbo holds both; the message named the unit's alone."""
+        rc, out, calls = self.run_uninstall(image_enabled=False, text_enabled=True,
+                                            cached=("Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"rm -rf {self.dir}/hf/hub/models--Qwen--Qwen-Image-2.1\n", out)
+        self.assertIn(f"rm -rf {self.dir}/hf/hub/models--Qwen--Qwen-Image-2.1-Turbo\n", out)
+        self.assertEqual(out.count("rm -rf "), 2, out)
+
+    def test_the_checkpoint_the_switch_note_names_is_named_too(self):
+        """A unit installed with IMAGE_MODEL= and switched to the Turbo: the note names the
+        checkpoint of the unit's own, 31 GB in the cache the message must not forget."""
+        rc, out, calls = self.run_uninstall(image_enabled=False, text_enabled=True, note="someone/finetune",
+                                            cached=("Qwen/Qwen-Image-2.1-Turbo", "someone/finetune"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"rm -rf {self.dir}/hf/hub/models--someone--finetune\n", out)
+        self.assertIn(f"rm -rf {self.dir}/hf/hub/models--Qwen--Qwen-Image-2.1-Turbo\n", out)
+
+    def test_nothing_in_the_cache_nothing_to_name_and_the_switch_note_goes(self):
+        rc, out, calls = self.run_uninstall(image_enabled=False, text_enabled=True, note="someone/finetune")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("rm -rf", out)
+        self.assertFalse((self.dir / "image-model-before-turbo").exists(), "the switch note outlived the lane")
+
+
+class TheSwitchNoteAndAnInstall(unittest.TestCase):
+    """./switch-model.sh image-turbo writes down the checkpoint of the unit's own it leaves,
+    for `image` to bring back. An install that points the unit at another checkpoint makes
+    that note a stale one: `image` would then bring back a checkpoint from before it."""
+    BLOCK = block("# A unit installed for another checkpoint", 'fi\nif [ -f "$INSTALLED" ] && sudo cmp -s "$RENDER"')
+
+    def run_block(self, installed_model, model):
+        d = pathlib.Path(tempfile.mkdtemp(prefix="img-note-"))
+        (d / "unit").write_text(f"ExecStart=/x/sglang serve --model-path {installed_model} \\\n  --port 30020\n")
+        (d / "image-model-before-turbo").write_text("someone/finetune\n")
+        unit_flag = next(ln for ln in TEXT.splitlines() if ln.startswith("unit_flag(){"))
+        script = (f'set -euo pipefail\nINSTALLED="{d}/unit"; CONFIG_DIR="{d}"; MODEL="{model}"\n'
+                  + unit_flag + "\n" + self.BLOCK)
+        rc, out = bash(script, {"HOME": str(d)})
+        return rc, out, (d / "image-model-before-turbo").exists()
+
+    def test_another_checkpoint_drops_the_note(self):
+        rc, out, kept = self.run_block("Qwen/Qwen-Image-2.1-Turbo", "Qwen/Qwen-Image-2.1")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(kept)
+
+    def test_an_update_of_the_same_checkpoint_keeps_it(self):
+        rc, out, kept = self.run_block("Qwen/Qwen-Image-2.1-Turbo", "Qwen/Qwen-Image-2.1-Turbo")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(kept)
 
 
 if __name__ == "__main__":

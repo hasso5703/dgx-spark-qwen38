@@ -14,9 +14,10 @@
 #
 # WHY IT IS A VENV AND NOT DOCKER. The cookbook is explicit for this model: "This
 # integration currently uses the Python/source command; no published Docker image is
-# verified." Qwen-Image 2.1 is in no SGLang release either, so the runtime is a pinned
-# source checkout. The release wheel goes in first all the same, because it carries the
-# prebuilt aarch64 native kernels that a source tree does not build.
+# verified." So the runtime is a pinned source checkout: the v0.5.21 release, the first
+# that carries Qwen-Image 2.1, with local patches (step 3). The release wheel goes in
+# first all the same, because it carries the prebuilt aarch64 native kernels that a source
+# tree does not build.
 #
 # ONE ENGINE AT A TIME. 31 GB of weights do not fit beside a serving LLM. The unit says
 # so with Conflicts=, so starting this stops the LLM lane and starting an LLM lane stops
@@ -50,6 +51,7 @@ CONFIG_DIR="$HOME/.config/qwen38"
 LANE_DIR="${IMAGE_LANE_DIR:-$(installed WorkingDirectory)}"; LANE_DIR="${LANE_DIR:-$HOME/.local/share/qwen38-image}"
 VENV="$LANE_DIR/venv"
 SRC="$LANE_DIR/sglang"
+WHEEL_NOTE="$LANE_DIR/sglang-wheel"   # the wheel release the venv's dependencies come from (step 3)
 PORT="${IMAGE_PORT:-$(unit_flag --port)}"; PORT="${PORT:-30020}"
 # The checkpoint and its revision, pinned like the rest: the revision this lane was
 # measured with on 2026-09-22 (its main then, and on 2026-09-24). It was fetched at main,
@@ -58,8 +60,17 @@ PORT="${IMAGE_PORT:-$(unit_flag --port)}"; PORT="${PORT:-30020}"
 # IMAGE_MODEL_REV, or main.
 IMAGE_MODEL_PIN="Qwen/Qwen-Image-2.1"
 IMAGE_MODEL_PIN_REV="790c92633540aa0cb11d9abf19eb46d861714758"
+# The Turbo variant (./switch-model.sh image-turbo): Qwen's eight-step distillation of the
+# same model, at the revision measured on the reference box on 2026-10-10. A box that
+# serves it keeps it, like any target of the unit.
+IMAGE_TURBO_PIN="Qwen/Qwen-Image-2.1-Turbo"
+IMAGE_TURBO_PIN_REV="d65dbc9a7e8f6b5479e33dee6030eaab2a906509"
 MODEL="${IMAGE_MODEL:-$(unit_flag --model-path)}"; MODEL="${MODEL:-Qwen/Qwen-Image-2.1}"   # = IMAGE_MODEL_PIN
-if [ "$MODEL" = "$IMAGE_MODEL_PIN" ]; then MODEL_REV="${IMAGE_MODEL_REV:-$IMAGE_MODEL_PIN_REV}"; else MODEL_REV="${IMAGE_MODEL_REV:-main}"; fi
+case "$MODEL" in
+  "$IMAGE_MODEL_PIN") MODEL_REV="${IMAGE_MODEL_REV:-$IMAGE_MODEL_PIN_REV}" ;;
+  "$IMAGE_TURBO_PIN") MODEL_REV="${IMAGE_MODEL_REV:-$IMAGE_TURBO_PIN_REV}" ;;
+  *) MODEL_REV="${IMAGE_MODEL_REV:-main}" ;;
+esac
 # The installed unit's cache, then the one the text lane mounts, then the default: an
 # update that ignored the unit downloaded 31 GB again into ~/.cache and rewrote HF_HOME on
 # a box whose lane lived on another disk, and a first install beside a text lane on a
@@ -73,12 +84,14 @@ text_cache(){
 }
 HF_CACHE="${HF_CACHE:-$(installed_env HF_HOME)}"; HF_CACHE="${HF_CACHE:-$(text_cache)}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
-# Qwen-Image 2.1 is in no SGLang release. This is the commit the lane on the reference
-# box was measured against, end to end, on 2026-09-22. SGLANG_DIFFUSION_PIN overrides it
+# The v0.5.21 release (its tag's commit), the first that carries Qwen-Image 2.1, measured
+# end to end on the reference box on 2026-10-10. From 2026-09-22 until then the lane ran
+# the main commit ddebc52, which no release held yet. SGLANG_DIFFUSION_PIN overrides it
 # only for someone deliberately testing another one.
-PIN="${SGLANG_DIFFUSION_PIN:-ddebc52f237a1dbb56533469ab2ec2a7b856c4ab}"
-# The released wheel that carries the prebuilt aarch64 kernels the source tree reuses.
-WHEEL="${SGLANG_DIFFUSION_WHEEL:-0.5.20}"
+PIN="${SGLANG_DIFFUSION_PIN:-e00930c5489053f26d86b179cee0d087f846acbb}"
+# The released wheel that carries the prebuilt aarch64 kernels the source tree reuses, and
+# the versions of everything else the runtime imports.
+WHEEL="${SGLANG_DIFFUSION_WHEEL:-0.5.21}"
 # Loopback, and not from ENGINE_BIND: that variable belongs to the LLM lane, which has a
 # key. This one has none (the diffusion parser has no --api-key at all), so a non-loopback
 # bind puts an unauthenticated image generator on that interface. IMAGE_BIND overrides it
@@ -124,12 +137,25 @@ if [ "$ACTION" = uninstall ]; then
   # Only what this script put there: LANE_DIR can be a directory shared with other work,
   # and removing it whole took the rest with it (found in review, 2026-09-24).
   if [ -d "$LANE_DIR" ]; then
-    rm -rf "$VENV" "$SRC"
+    rm -rf "$VENV" "$SRC" "$WHEEL_NOTE"
     echo "runtime removed: $VENV and $SRC"
     rmdir "$LANE_DIR" 2>/dev/null || echo "kept $LANE_DIR: it holds files the image lane did not put there"
   fi
-  echo "the 31 GB checkpoint is left in $HF_CACHE; delete it yourself if you want the space:"
-  echo "  rm -rf $HF_CACHE/hub/models--${MODEL//\//--}"
+  # ./switch-model.sh's note of a checkpoint to come back to from the Turbo goes with the
+  # lane, read first: the checkpoint it names is the lane's too
+  BEFORE_TURBO="$(cat "$CONFIG_DIR/image-model-before-turbo" 2>/dev/null || true)"
+  rm -f "$CONFIG_DIR/image-model-before-turbo"
+  # every checkpoint of the lane the cache holds: the unit's, the other one a switch fetched,
+  # and the one the note named
+  KEPT=()
+  for R in "$MODEL" "$IMAGE_MODEL_PIN" "$IMAGE_TURBO_PIN" ${BEFORE_TURBO:+"$BEFORE_TURBO"}; do
+    D="$HF_CACHE/hub/models--${R//\//--}"
+    [ -d "$D" ] && [[ " ${KEPT[*]} " != *" $D "* ]] && KEPT+=("$D")
+  done
+  if [ "${#KEPT[@]}" -gt 0 ]; then
+    echo "the lane's checkpoints are left in $HF_CACHE (about 31 GB each); delete them yourself if you want the space:"
+    for D in "${KEPT[@]}"; do echo "  rm -rf $D"; done
+  fi
   exit 0
 fi
 
@@ -190,16 +216,22 @@ step "3/6 SGLang Diffusion (released wheel first, then the pinned source over it
 # Order matters and is not cosmetic. The wheel resolves the whole dependency tree AND
 # ships sglang-kernel built for aarch64; installing the source tree first leaves the
 # runtime without those kernels and the server dies on the first request.
-if ! "$VENV/bin/python" -c 'import sglang' 2>/dev/null; then
-  echo "installing sglang[diffusion]==$WHEEL (~10 min on this box: torch and the kernels are large)"
+# The wheel is also what sets the versions of everything the runtime imports, so a pin
+# that moves to a new release takes that release's wheel too: a venv that only checked
+# whether sglang imported kept the previous release's dependencies under the new source
+# (cache-dit 1.3.0 under v0.5.21, which asks for 1.5.1). The version installed is written
+# down; a venv from before this has no note and takes the wheel once.
+if ! "$VENV/bin/python" -c 'import sglang' 2>/dev/null || [ "$(cat "$WHEEL_NOTE" 2>/dev/null)" != "$WHEEL" ]; then
+  echo "installing sglang[diffusion]==$WHEEL (~10 min on a new venv: torch and the kernels are large; an existing one only takes what changed)"
   "$VENV/bin/pip" install --quiet --pre "sglang[diffusion]==$WHEEL" \
     || die "the released wheel would not install. Re-run: pip resumes. If it keeps failing, SGLANG_DIFFUSION_WHEEL=<version> picks another."
+  printf '%s\n' "$WHEEL" > "$WHEEL_NOTE"
 fi
 if [ ! -d "$SRC/.git" ]; then
   git clone --quiet https://github.com/sgl-project/sglang "$SRC" || die "could not clone SGLang."
 fi
-# Two local changes to the pinned source, neither about images, both measured on the
-# reference box (docs/image-lane.md, "The local changes to the pinned source"):
+# Local changes to the pinned source, each measured on the reference box (docs/image-lane.md,
+# "The local changes to the pinned source"). The first two are not about images:
 #   scheduler-idle-poll: the diffusion scheduler's loop never waits. recv_reqs() polls its
 #     socket without blocking and nothing else in the loop sleeps, so a lane with nothing
 #     to do held one CPU core at 100% (1.047 cores, against 0.029 for the 27B lane, which
@@ -210,16 +242,30 @@ fi
 #     and a generation holds one for as long as it runs. A Stop during a 2048x2048 request
 #     sat 60 s in "stopping" until systemd killed the lane and marked the unit failed
 #     (2026-09-23). Now 5 s, then the requests in flight are cancelled and it stops clean.
-PATCHES=(scheduler-idle-poll http-graceful-timeout)
+# The other three are sgl-project/sglang#43391, merged upstream on 2026-10-10 and in no
+# release yet, one file each: the Turbo checkpoint's eight-step sigma grid, which its
+# model_index.json carries, reaches the sampler. Without them the Turbo weights load and
+# sample on a uniform schedule from num_inference_steps, which is not how it was trained;
+# with them the base checkpoint, which has no grid, samples exactly as before.
+# One line: CI reads this list with a one-line pattern.
+PATCHES=(scheduler-idle-poll http-graceful-timeout qwen-image21-turbo-sigma-config qwen-image21-turbo-sigma-pipeline qwen-image21-turbo-sigma-stage)
 declare -A PATCH_FIXES=(
   [scheduler-idle-poll]="an idle lane no longer holds a CPU core"
   [http-graceful-timeout]="a stop during a generation takes 5 s instead of timing out"
+  [qwen-image21-turbo-sigma-config]="the Turbo's sigma grid has a place in the pipeline config"
+  [qwen-image21-turbo-sigma-pipeline]="the Turbo's sigma grid is read from its model_index.json"
+  [qwen-image21-turbo-sigma-stage]="a Turbo request samples on that grid, eight steps"
 )
 CURRENT="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
 if [ "$CURRENT" != "$PIN" ]; then
   # they are the only local edits in this tree: take them off, or the checkout trips on them
+  # Only from a file that has local edits: a fresh clone stands on upstream's main, where a
+  # patch merged upstream reverses cleanly too, and taking it off there wrote the very edit
+  # that then blocked the checkout (a first install, 2026-10-10, once main carried #43391).
   for P in "${PATCHES[@]}"; do
-    git -C "$SRC" apply --reverse "$HERE/image-sglang/$P.patch" >/dev/null 2>&1 || true
+    PF="$HERE/image-sglang/$P.patch"
+    git -C "$SRC" diff --quiet -- "$(grep -m1 '^+++ b/' "$PF" | cut -c7-)" 2>/dev/null && continue
+    git -C "$SRC" apply --reverse "$PF" >/dev/null 2>&1 || true
   done
   git -C "$SRC" fetch --quiet origin "$PIN" 2>/dev/null || git -C "$SRC" fetch --quiet origin
   git -C "$SRC" checkout --quiet "$PIN" \
@@ -253,13 +299,29 @@ if ! "$VENV/bin/python" -c 'import sglang, pathlib, sys; sys.exit(0 if str(pathl
   SGLANG_BUILD_RUST_EXTS=none "$VENV/bin/pip" install --quiet --no-deps -e "$SRC/python" \
     || die "the editable overlay failed. The venv still holds the released wheel; re-run to retry."
 fi
+# Asked of the registry itself, not of its source text: v0.5.21 registers the model from its
+# pipeline config module, and the text check that held at ddebc52 failed there although the
+# runtime served it (2026-10-10). The exact id must map to Qwen-Image 2.1's own config; a
+# fuzzy match would also take an unknown "Qwen/Qwen-Image-9.9" for an older Qwen-Image.
 "$VENV/bin/python" - <<'PY' || die "the runtime does not know Qwen-Image 2.1. The pin may be wrong for this checkout."
-import inspect, pathlib, sglang
+import pathlib, sglang
 from sglang.multimodal_gen import registry
+from sglang.multimodal_gen.configs.pipeline_configs.qwen_image21 import QwenImage21PipelineConfig
+getattr(registry, "_ensure_registry_initialized", lambda: None)()
+info = registry._CONFIG_REGISTRY.get(registry._MODEL_HF_PATH_TO_NAME.get("Qwen/Qwen-Image-2.1", ""))
+if info is None or info.pipeline_config_cls is not QwenImage21PipelineConfig:
+    raise SystemExit("Qwen/Qwen-Image-2.1 does not map to Qwen-Image 2.1's own config in the model registry")
 src = pathlib.Path(sglang.__file__).parent
-assert "Qwen/Qwen-Image-2.1" in inspect.getsource(registry), "Qwen-Image-2.1 is not in the model registry"
 print(f"   runtime: {src}")
 PY
+# A Turbo the runtime cannot read the grid of would load, answer 200 and sample on a
+# uniform schedule it was not trained for: refused here rather than served degraded. The
+# three parts are checked one by one (image-sglang/turbo-grid-check.py).
+if [ "$MODEL" = "$IMAGE_TURBO_PIN" ]; then
+  TURBO_WHY="$("$VENV/bin/python" "$HERE/image-sglang/turbo-grid-check.py" 2>&1)" \
+    || die "this lane serves $IMAGE_TURBO_PIN, and the runtime at ${PIN:0:12} cannot sample on its eight-step grid: ${TURBO_WHY:-no reason given} (a qwen-image21-turbo-sigma patch above did not apply?). Serve the base with ./switch-model.sh image, or pin a commit that carries sgl-project/sglang#43391."
+  echo "   the runtime samples on the Turbo's eight-step sigma grid"
+fi
 
 step "4/6 Checkpoint ($MODEL at ${MODEL_REV:0:12}, ~31 GB, one-time, resumable)"
 # The same two lessons the LLM lane learned the hard way: the Hub's Xet backend stalls
@@ -312,6 +374,13 @@ grep -q '__[A-Z][A-Z0-9_]*__' "$RENDER" && die "the unit template still holds an
 # runtime, and the cockpit's reads of the port, the bind and the model all fell back to
 # their defaults, which happened to be right on the reference box and would not have been
 # on one installed with IMAGE_PORT= or IMAGE_BIND=.
+# A unit installed for another checkpoint than it named (IMAGE_MODEL=) is not the one
+# ./switch-model.sh image-turbo left: the note of the way back from the Turbo goes, or a
+# later `./switch-model.sh image` would bring back a checkpoint from before this install.
+INSTALLED_MODEL="$(unit_flag --model-path)"
+if [ -n "$INSTALLED_MODEL" ] && [ "$INSTALLED_MODEL" != "$MODEL" ]; then
+  rm -f "$CONFIG_DIR/image-model-before-turbo"
+fi
 if [ -f "$INSTALLED" ] && sudo cmp -s "$RENDER" "$INSTALLED"; then
   echo "unit unchanged"
   sudo chmod 644 "$INSTALLED"      # a unit installed before this fix is still 0600
@@ -379,9 +448,11 @@ fi
 import base64, json, struct, sys
 d = json.load(open(sys.argv[1]))["data"][0]
 raw = base64.b64decode(d["b64_json"])
-assert raw[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+if raw[:8] != b"\x89PNG\r\n\x1a\n":
+    raise SystemExit("not a PNG")
 w, h = struct.unpack(">II", raw[16:24])
-assert (w, h) == (512, 512), f"got {w}x{h}"
+if (w, h) != (512, 512):
+    raise SystemExit(f"got {w}x{h}")
 print(f"   {w}x{h} {'RGBA' if raw[25] == 6 else raw[25]}, {len(raw)/1e6:.1f} MB")
 PY
 # What the lane costs with nothing to do, from its own cgroup: the CPU time systemd
@@ -400,6 +471,6 @@ fi
 # the trap stops the lane and brings the text lane back, whichever way this ends
 
 step "Done: the image lane is installed and proved it serves on $IMAGE_BIND:$PORT"
-echo "  switch to it : Load on Qwen-Image 2.1 in the cockpit's Lanes view, or ./switch-model.sh image"
+echo "  switch to it : Load on Qwen-Image 2.1 (or its Turbo) in the cockpit's Lanes view, or ./switch-model.sh image (image-turbo)"
 echo "  back to text : Load on a text lane there, or ./switch-model.sh stock"
 echo "  generate     : the cockpit's Image view, or the API on :$PORT (loopback, no key)"

@@ -5,7 +5,35 @@ so that "on the roadmap" means a checkbox with a definition of done, not a
 mood. Statuses: shipped, in progress, planned, considered (considered items
 have a reason they are not yet planned, stated here or in an issue).
 
-## Shipped, current: v1.20
+## Shipped, current: v1.24
+
+- **Qwen-Image 2.1 Turbo, and the image lane on a release** (v1.24.0): Qwen's eight-step
+  distillation as a second checkpoint of the image lane (a 1024x1024 image in 7.5 s against
+  34.3 s), loaded like any target; the lane runs the v0.5.21 release with the Turbo's sigma
+  grid backported, the base's images unchanged byte for byte.
+
+## Shipped, v1.23
+
+- **The 27B lane on SGLang v0.5.21** (v1.23.0), whose prefix cache no longer resumes a
+  conversation from a stale linear state (sgl-project/sglang#37817, fixed by #37818).
+
+## Shipped, v1.22
+
+- **pi and omp configs** (v1.22.0), generated from the opencode artifact.
+- **The proxy hardened** (v1.22.1 to v1.22.14): a stream the engine has not started kept
+  open and its caller watched, the engine key masked in every `/server_info`, the key
+  checked before a body is read, the prompts that could wedge the 27B counted, and the
+  engine's facts dropped at once when a lane switches.
+- **The cockpit says what the engine says** (v1.22.3 to v1.22.12): download progress with
+  bytes, rate and time left, the last 5 minutes of traffic from the engine's own counters.
+- **An idle video lane holds no CPU core** (v1.22.10).
+
+## Shipped, v1.21
+
+- **An engine restart no longer ends a session** (v1.21.0), and no engine starts on memory
+  a dead one still holds.
+
+## Shipped, v1.20
 
 - **Every lane by default** (v1.20.0): the one-liner installs both text lanes (the 27B
   serves, Flash-Next 176B beside it), the image lane and the video lane, each proved

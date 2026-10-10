@@ -267,13 +267,14 @@ class SwitchPhrasesNameTheLane(unittest.TestCase):
 
     def test_every_target_reads_differently(self):
         r = run(self, r"""
-        const ts = ['stock', 'uncensored', 'fp8', 'uncensored-fp8', 'flash', 'flash-uncensored', 'flash-nvda', 'image', 'video'];
+        const ts = ['stock', 'uncensored', 'fp8', 'uncensored-fp8', 'flash', 'flash-uncensored', 'flash-nvda', 'image', 'video', 'image-turbo'];
         report(ts.map(t => actionPhrase('switch', {target: t})));
         """)
         self.assertEqual(len(set(r)), len(r), r)
         self.assertIn("27B", r[1])
         self.assertIn("flash", r[5])
         self.assertIn("MiniMax-H3", r[8])
+        self.assertIn("Turbo", r[9])
 
 
 class GibibytesAreSaidAsSuch(unittest.TestCase):
@@ -510,17 +511,23 @@ class ThePhonesSessionCardIsNotRewrittenForNothing(unittest.TestCase):
 
 class TheEditEstimateCountsItsReferences(unittest.TestCase):
     """U39: an edit cost six seconds more than a generation whatever it carried: ten
-    references at 20 steps were announced at 26 s and measured at 69.6."""
+    references at 20 steps were announced at 26 s and measured at 69.6. Since v1.24.0 the
+    estimate is the v0.5.21 runtime's, for both checkpoints (measured 2026-10-10: the base's
+    edit 41.9 s and generation 34.3 s at 40 steps, the Turbo's 10.3 and 7.5 at its 8; ten
+    references were measured on the runtime before, which was about 5 % slower)."""
 
-    def test_the_two_measured_edits(self):
+    def test_the_measured_edits_and_generations(self):
         r = run(self, r"""
         report([imgEstimate({w: 1024, h: 1024, steps: 40, n: 1, editing: true, refs: 1}),
                 imgEstimate({w: 1024, h: 1024, steps: 20, n: 1, editing: true, refs: 10}),
-                imgEstimate({w: 1024, h: 1024, steps: 40, n: 1, editing: false})]);
+                imgEstimate({w: 1024, h: 1024, steps: 40, n: 1, editing: false}),
+                imgEstimate({w: 1024, h: 1024, steps: 8, n: 1, editing: true, refs: 1}),
+                imgEstimate({w: 1024, h: 1024, steps: 8, n: 1, editing: false}),
+                imgEstimate({w: 2048, h: 2048, steps: 40, n: 1, editing: false}),
+                imgEstimate({w: 512, h: 512, steps: 8, n: 1, editing: false})]);
         """)
-        self.assertAlmostEqual(r[0], 44.6, delta=44.6 * 0.1)
-        self.assertAlmostEqual(r[1], 69.6, delta=69.6 * 0.1)
-        self.assertAlmostEqual(r[2], 38.2, delta=38.2 * 0.1)
+        for got, measured in zip(r, (41.9, 69.6, 34.3, 10.3, 7.5, 182.8, 1.82)):
+            self.assertAlmostEqual(got, measured, delta=measured * 0.1)
 
 
 class TheUpdateCommandsNameThisCheckout(unittest.TestCase):

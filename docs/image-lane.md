@@ -36,8 +36,15 @@ same single Load control, and it obeys the same rule.
 Back to text is the same three moves the other way. From a terminal the switch is
 `./switch-model.sh image` (or `stock`), and it prints the two commands that follow.
 
+**Two checkpoints, one lane.** The Lanes card offers `Qwen-Image 2.1` and `Qwen-Image 2.1
+Turbo`, Qwen's eight-step distillation of the same model (`./switch-model.sh image-turbo` from
+a terminal). The base stays the default. The Turbo is about four and a half times faster for
+the same uses, and its first switch downloads 32.5 GB; switching between the two rewrites the
+unit's `--model-path` and nothing else, then restarts the lane (about 80 s). See
+[The Turbo checkpoint](#the-turbo-checkpoint) below.
+
 **Never two engines at once.** 31 GB of weights do not fit beside a serving LLM, and a
-request takes the lane to 34.8 GB at 1024x1024 (44.7 GB at 2048x2048). The cockpit refuses to start any engine while
+request takes the lane to 35.6 GB at 1024x1024 (46.5 GB at 2048x2048). The cockpit refuses to start any engine while
 another one is busy, and says which one to stop, for all three lanes alike: starting the
 image lane while the 27B serves comes back `409 blocked`, and so does starting the 27B
 while the image lane loads. That gate used to pick "the other engine" with `[0]`, which
@@ -59,16 +66,23 @@ serves: they talk to the text engine on :30000, which is closed then. They used 
 ## Why a venv and not the docker image
 
 The cookbook is explicit for this model: *"This integration currently uses the
-Python/source command; no published Docker image is verified."* Qwen-Image 2.1 is in no
-SGLang release either, so the lane runs a pinned source checkout
-(`ddebc52f237a1dbb56533469ab2ec2a7b856c4ab`). The checkpoint is pinned too, at the revision
-the lane was measured with (`790c92633540aa0cb11d9abf19eb46d861714758`, `IMAGE_MODEL_REV`
-overrides it), and `./check-pins.sh` asks upstream daily whether the checkpoint, the commit
-and the `0.5.20` wheel still resolve.
+Python/source command; no published Docker image is verified."* So the lane runs a pinned
+source checkout: the `v0.5.21` release (its tag's commit,
+`e00930c5489053f26d86b179cee0d087f846acbb`), the first that carries Qwen-Image 2.1, with the
+local patches below. From 2026-09-22 to 2026-10-10 it ran the `main` commit `ddebc52f237a`,
+which no release held yet. The checkpoints are pinned too, at the revisions the lane was
+measured with (`790c92633540aa0cb11d9abf19eb46d861714758` for the base, `d65dbc9a7e8f` for the
+Turbo; `IMAGE_MODEL_REV` overrides them), and `./check-pins.sh` asks upstream daily whether
+both checkpoints, the commit and the `0.5.21` wheel still resolve.
 
 The released wheel still goes in **first**, and the order is not cosmetic: it carries
 `sglang-kernel` built for aarch64, which a source tree does not build. Source first
-leaves a runtime with no native kernels that dies on the first request. The editable
+leaves a runtime with no native kernels that dies on the first request. The wheel also sets
+the versions of everything the runtime imports, so a pin that moves to a new release takes
+that release's wheel too: the installer writes down the wheel a venv came from
+(`sglang-wheel` in the lane's folder) and installs the new one over a venv that has another,
+or no note at all. Until v1.24.0 it only checked that `sglang` imported, which would have
+left a v0.5.20 venv's `cache-dit` 1.3.0 under v0.5.21, which asks for 1.5.1. The editable
 overlay then goes on with `--no-deps`, because letting the source tree resolve again
 pulls a `transformers` that breaks the encoder this model needs.
 
@@ -78,9 +92,13 @@ pulls a `transformers` that breaks the encoder this model needs.
 
 ### The local changes to the pinned source
 
-Two, neither about images, both applied by `install-image.sh` from `image-sglang/`, both
-checked against the real upstream files at the pin by a CI step, and both skipped with a
-note if a future pin no longer fits them (the lane serves either way).
+Five, all applied by `install-image.sh` from `image-sglang/`, all checked against the real
+upstream files at the pin by a CI step, and all skipped with a note if a future pin no longer
+fits them. The first two are not about images, and the lane serves either way. The other
+three are [sgl-project/sglang#43391](https://github.com/sgl-project/sglang/pull/43391), merged
+upstream on 2026-10-10 and in no release yet, one file each, which the Turbo cannot do
+without (the installer refuses to serve it on a runtime they did not reach); the next pin
+that carries #43391 drops them.
 
 #### An idle lane no longer holds a CPU core
 
@@ -143,7 +161,7 @@ how a verified recipe quietly stops being one.
 The unit adds `--output-path ""` with `--input-save-path ""`. By default this server
 writes every image it makes **and every reference anyone uploads** under its working
 directory, forever: 103 MB accumulated in one afternoon of testing. Empty string is read
-back as `None` (`server_args.py:828`), the cockpit and the API take their pixels from the
+back as `None` (`runtime/server_args/server_args.py:851` at the pin), the cockpit and the API take their pixels from the
 response, and nothing needs the copy. Point them at a directory if you want an archive,
 and watch it grow.
 
@@ -165,32 +183,85 @@ authenticated door in front of it. That bind does not follow `ENGINE_BIND`, whic
 to the lane that does have a key; `IMAGE_BIND=<addr>` overrides it, and the installer says
 out loud what that costs.
 
+## The Turbo checkpoint
+
+[`Qwen/Qwen-Image-2.1-Turbo`](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo), published by
+Qwen on 2026-10-09 under the same Qwen Research licence as the base, is an eight-step
+distillation of the same model. Compared file by file with the base: the transformer is the
+distilled one (14.2 GB, same architecture and same index), the text encoder is the base's saved
+again as one file (17.5 GB; only its `transformers_version` and a `pad_token_id: null` differ in
+its config), the VAE comes in bf16 (0.7 GB against 1.35), and `model_index.json` carries an
+eight-value `sample_sigmas` grid with `use_dynamic_shifting` off in the scheduler's config.
+
+That grid is the whole point. A request runs on it whatever `num_inference_steps` says: on the
+reference box `num_inference_steps: 2` gave the same PNG as leaving the field out. Without
+sgl-project/sglang#43391 the runtime loads the Turbo's weights all the same and samples them on
+a uniform schedule built from `num_inference_steps`, which is not what they were trained for;
+with it (the three patches above) the grid reaches the sampler, and the base, which has no grid,
+samples exactly as before.
+
+**Measured on the reference box on 2026-10-10**, both checkpoints on the same runtime (v0.5.21
+and the five patches), seed 42, CPU generator: see the table below. Same seed twice gave the
+same bytes. The quality was looked at on eight prompts with one seed each, the Turbo against the
+base at its 40 steps and at eight: a photograph, a portrait, a shop sign with French text and
+prices, a counting prompt (three apples, two pears), a landscape, a watercolour, an interior
+and an infographic. The Turbo is close to the base at 40 steps on the photographs, the portrait,
+the illustrations and the short text (`Boulangerie Margot`, `Croissant 2,10 €` and
+`Baguette 1,30 €` exact in both); both miscount the fruit (two apples and two pears for the
+Turbo, four and three for the base); both garble the infographic's body text, the Turbo with
+invented English words under unnumbered panels, the base with invented Chinese-looking
+characters under its four numbered steps. The base at eight steps, for comparison, is visibly
+unfinished on every prompt: what the distillation buys. A sample to look at, not a benchmark.
+
+Transparency works the same way, asked for by the prompt: 70.9 % of the Turbo's pixels came
+back under alpha 16 for a perfume bottle, 74.3 % of the base's for the same prompt and seed.
+An edit with one reference takes 10.3 s.
+
+The cockpit knows which checkpoint the unit names. Under the Turbo the Image view's step slider
+shows 8 and is disabled, the request leaves `num_inference_steps` out (as the cookbook says),
+and the estimate counts eight steps. Loading it from the Lanes card is the same journey as any
+lane's: the switch rewrites `--model-path`, then the lane restarts (about 80 s).
+
 ## What it costs, measured here
 
-Every number is a request made against this lane on a DGX Spark on 2026-09-22, not a
-figure from the cookbook. Peak memory is what the server reports for itself.
+Every number is a request made against this lane on a DGX Spark, not a figure from the
+cookbook: the server's own time and peak memory, on the v0.5.21 runtime and its five patches,
+2026-10-10, the median of the calibration runs: three for each size of the base, four of the
+Turbo, five at 2048x2048, where one Turbo run took 52.0 s with a slow VAE decode against 38.9
+to 41.0 s for the others. All fifteen requests of the base at 1024x1024 that day give 34.4 s,
+all eighteen of the Turbo 7.5 s. The transparent and edit rows are one request each, the base
+at 8 steps eight.
 
-| request | time | peak |
-|---|---:|---:|
-| 512x512, 40 steps | 9.0 s | 31.9 GB |
-| 768x768, 40 steps | 22.6 s | 31.9 GB |
-| **1024x1024, 40 steps (the defaults)** | **38.2 s** | 34.8 GB |
-| 1664x928, 40 steps | 60.4 s | 34.8 GB |
-| 2048x2048, 40 steps (the model card's own size) | 190.9 s | 44.7 GB |
-| 1024x1024 at 8 / 20 / 60 steps | 8.4 / 19.8 / 57.3 s | 31.9 GB |
-| transparent 1024x1024 | 39.8 s | 34.8 GB |
-| edit, one reference, 40 steps | 44.6 s | 34.8 GB |
-| edit, ten references, 20 steps | 69.6 s | 34.8 GB |
-| two images in one call, 8 steps | 16.8 s | 31.9 GB |
+| request | base, 40 steps (the defaults) | Turbo, its 8 steps | peak, either |
+|---|---:|---:|---:|
+| 512x512 | 7.8 s | 1.8 s | 32.8 GB |
+| 768x768 | 19.5 s | 4.3 s | 34.1 GB |
+| **1024x1024** | **34.3 s** | **7.5 s** | 35.6 GB |
+| 1664x928 | 54.6 s | 11.9 s | 37.4 GB |
+| 2048x2048 (the model card's own size) | 182.8 s | 40.6 s | 46.5 GB |
+| 2752x1536 (the largest call admitted) | 185.2 s | 40.5 s | 46.6 GB |
+| transparent 1024x1024 | 34.9 s | 7.6 s | 35.6 GB |
+| edit, one reference | 41.9 s | 10.3 s | 35.7 GB |
+| the base at 8 steps, 1024x1024 | 7.5 s | | 35.6 GB |
 
-The cookbook publishes 35.36 s for this machine at 1024x1024/40; 38.2 s here. Cost is
-linear in steps, and a little worse than linear in pixels: four times the 1024x1024
-time would be 153 s at 2048x2048, and it takes 190.9 s. The cockpit's estimate is
-`1 + steps x 0.97 x (pixels / 1024^2)^1.14` seconds, within 6.5 % of all nine measured
-requests. Startup is 60 to 72 s from a warm page cache. At rest the lane costs about
-0.05 CPU cores (see the idle-loop fix above).
+The cookbook publishes 35.36 s for this machine at 1024x1024/40; 34.3 s here. Cost is linear
+in steps and worse than linear in pixels: four times the 1024x1024 pixels cost about five and
+a third times the time (5.3 for the base, 5.4 for the Turbo). The cockpit's estimate is `0.42 + 0.25 x px^2.08 + steps x 0.883 x px^1.16`
+seconds with `px` the pixels over 1024^2, a part per image (the text encoding and the VAE
+decode) and a part per step (the denoiser), within 4.9 % of all twelve medians of both
+checkpoints; an edit adds about `1.6 + 0.15 x steps` seconds per reference (one reference
+measured, at 8 and at 40 steps). The GPU throttles itself on heat (`SW thermal slowdown`, seen
+at 86 °C during the 40-step runs at 2048x2048), which is part of the spread between runs.
+Startup is 60 to 90 s from a warm page cache, its one warm-up request included.
 
-Same seed, twice: byte-identical. 8 steps is visibly unfinished and not worth the 8.4 s.
+On the runtime before (the `main` commit `ddebc52f237a`, 2026-09-22), 1024x1024 at 40 steps
+took 38.2 s; measured again the morning of 2026-10-10 beside the new one, 36.08 s against
+34.40 s (median of three on each), the same twelve requests giving the same bytes on both, for
+0.8 GB more at the peak on the new one. Also measured on that runtime only: ten references at
+20 steps in 69.6 s, two images in one call at 8 steps in 16.8 s.
+
+Same seed, twice: byte-identical. The base at 8 steps is visibly unfinished and not worth its
+7.5 s; the Turbo's 8 steps are finished (see above).
 
 ## One image at a time, and what happens if you ignore that
 
@@ -227,7 +298,8 @@ denoising step on 2026-09-23, where one image takes 4.6: the pipeline runs them 
 and the memory that needs grows with them. Where it ends for a call that size has not been
 measured, and on this box running out of unified memory hangs the machine instead of
 failing the request. So the cockpit refuses a call whose images add up to more pixels than
-the largest call measured here: one 2752x1536 image (4.2 megapixels, 44.8 GB at its peak).
+the largest call measured here: one 2752x1536 image (4.2 megapixels, 46.6 GB at its peak on
+the v0.5.21 runtime with either checkpoint; 44.8 GB on the commit before).
 Four 1024x1024 images fit under it, ten 512x512 too; two 2048x2048 do not. The Image view
 says so before sending, and the server refuses the same with the numbers.
 

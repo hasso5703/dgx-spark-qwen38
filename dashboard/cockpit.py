@@ -1273,11 +1273,12 @@ UNIT_TARGET_CACHE: dict = {}
 def unit_target(unit: str) -> dict:
     """{model, target} the unit is configured for, from its own file. Cached on mtime."""
     if unit == "qwen38-image.service":
-        # one checkpoint, one target: the model is read from the unit so a lane
-        # installed with IMAGE_MODEL= reports what it really serves
+        # the model is read from the unit, so a lane installed with IMAGE_MODEL= reports
+        # what it really serves; the Turbo is its own target (./switch-model.sh image-turbo)
         model = _image_unit_flag("--model-path", "Qwen/Qwen-Image-2.1") \
             if IMAGE_UNIT_PATH.exists() else None
-        return {"model": model, "target": "image" if model else None}
+        target = ("image-turbo" if model == IMAGE_TURBO_MODEL else "image") if model else None
+        return {"model": model, "target": target}
     if unit == "qwen38-video.service":
         # one checkpoint, one target, same rule as the image lane
         model = _video_unit_flag("--model-path", "MiniMaxAI/MiniMax-H3") \
@@ -1641,8 +1642,12 @@ def collect_lifecycle():
         eta = lc.eta_for(history, unit)
         overdue = bool(eta and elapsed and st["state"] in lc.TRANSITIONAL
                        and elapsed > 2 * eta)
+        # the image engine's own answer to which checkpoint it serves (the unit's file says
+        # what the NEXT start loads), read once per life of the unit
+        served = image_served_model(enter_key) if is_image and st["state"] in ("ready", "degraded") else None
         engines[unit] = {"state": st["state"],
                          **unit_target(unit),
+                         "served_target": ("image-turbo" if served == IMAGE_TURBO_MODEL else "image") if served else None,
                          "stage_done": boot.get("done", []),
                          # which stage list this engine walks, and what it is loading
                          # now: the UI draws each from here rather than assuming
@@ -1819,7 +1824,8 @@ ACTIONS = {
     "switch": {
         "danger": "medium",
         "params": {"target": ["stock", "uncensored", "fp8", "uncensored-fp8",
-                              "flash", "flash-nvda", "flash-uncensored", "image", "video"]},
+                              "flash", "flash-nvda", "flash-uncensored", "image", "image-turbo",
+                              "video"]},
         "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"]],
         # A switch can download a whole checkpoint: 124 GB for flash take about 23 min at
         # the 89 MB/s the reference box gets, so 30 min failed it on any slower link, and
@@ -2164,6 +2170,9 @@ def systemone_call(payload: dict) -> tuple[int, dict]:
 # to the lane: it sends a description of the call and this process makes it.
 IMAGE_UNIT = "qwen38-image.service"
 IMAGE_UNIT_PATH = Path("/etc/systemd/system/qwen38-image.service")
+# The lane's second checkpoint (install-image.sh IMAGE_TURBO_PIN): eight steps fixed by
+# the sigma grid in its model_index.json, whatever num_inference_steps a request sends.
+IMAGE_TURBO_MODEL = "Qwen/Qwen-Image-2.1-Turbo"
 # Ten references at the size the browser caps them to, base64 and JSON-escaped, plus the
 # fields. Everything else on this server stays at the 64 KiB cap.
 IMAGE_MAX_POST = 40 * 1024 * 1024
@@ -2181,7 +2190,8 @@ IMAGE_LOCK = threading.Lock()
 # 42 s per denoising step on 2026-09-23 where one takes 4.6, and the memory a batch needs
 # grows with it. On this box's unified memory running out hangs the machine rather than
 # failing the request, so a call may not ask for more pixels, all its images together,
-# than the largest call measured here: one 2752x1536 image, 44.8 GB at its peak.
+# than the largest call measured here: one 2752x1536 image, 46.6 GB at its peak (on the
+# v0.5.21 runtime and both checkpoints, 2026-10-10; 44.8 GB on the commit before it).
 IMAGE_MAX_PIXELS = 2752 * 1536
 # How often a call this process gave up on is looked for in the lane's journal (M5 below).
 IMAGE_END_POLL_S = 5.0
@@ -2231,6 +2241,31 @@ def image_port() -> int:
 def image_base() -> str:
     host = _image_unit_flag("--host", "127.0.0.1")
     return os.environ.get("COCKPIT_IMAGE", f"http://{host}:{image_port()}")
+
+
+# What the image engine says it serves, from its own /model_info: ./switch-model.sh run from
+# a terminal rewrites the unit under a serving engine, which goes on serving the checkpoint
+# it loaded, and the page then sent a Turbo's request to the base and offered no restart
+# (found in review, 2026-10-10). Read once per life of the unit (systemd's
+# ActiveEnterTimestampMonotonic), retried every 10 s until it answers.
+IMAGE_SERVED = {"life": None, "model": None, "asked": 0.0}
+
+
+def image_served_model(life: str):
+    """The --model-path this life of the image engine was started with, or None until it says."""
+    if IMAGE_SERVED["life"] != life:
+        IMAGE_SERVED.update(life=life, model=None, asked=0.0)
+    if IMAGE_SERVED["model"] or time.monotonic() - IMAGE_SERVED["asked"] < 10:
+        return IMAGE_SERVED["model"]
+    IMAGE_SERVED["asked"] = time.monotonic()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(image_base() + "/model_info"), timeout=1) as r:
+            model = json.loads(r.read(65536) or b"{}").get("model_path")
+    except Exception:  # noqa: BLE001 (an engine still loading answers nothing useful)
+        return None
+    if isinstance(model, str) and model:
+        IMAGE_SERVED["model"] = model
+    return IMAGE_SERVED["model"]
 
 
 IMAGE_JOURNAL_LINES = 300
@@ -2543,7 +2578,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
     if n * w * h > IMAGE_MAX_PIXELS:
         return 400, {"error": f"{n} image{'s' if n > 1 else ''} of {w}x{h} in one call is "
                               f"{n * w * h / 1e6:.1f} megapixels, and the largest call measured on this "
-                              f"box is {IMAGE_MAX_PIXELS / 1e6:.1f}: one 2752x1536 image, 44.8 GB at its "
+                              f"box is {IMAGE_MAX_PIXELS / 1e6:.1f}: one 2752x1536 image, 46.6 GB at its "
                               f"peak. The images of a call are generated as one batch, so its memory grows "
                               f"with their total size, and on unified memory running out hangs the machine "
                               f"instead of failing the request. Ask for fewer or smaller images, or make "

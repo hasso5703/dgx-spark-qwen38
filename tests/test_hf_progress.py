@@ -278,7 +278,7 @@ class SwitchModelWiresIt(unittest.TestCase):
     their bytes, and each keeps its download if the count cannot load."""
 
     def test_each_fetch_runs_inside_the_count(self):
-        self.assertRegex(heredoc("PYIMG"), r"with reporting\(repo\):\n\s+print\(snapshot_download\(repo\)\)")
+        self.assertRegex(heredoc("PYIMG"), r"with reporting\(repo, revision=rev\):\n\s+path = snapshot_download\(repo, revision=rev\)")
         self.assertRegex(heredoc("PYVID"), r"with reporting\(repo, revision=rev, allow_patterns=allow\):\n"
                                            r"\s+path = snapshot_download\(repo, revision=rev, allow_patterns=allow\)")
         text = heredoc("PYEOF")

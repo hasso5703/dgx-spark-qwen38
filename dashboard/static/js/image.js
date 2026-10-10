@@ -21,8 +21,15 @@ const IMG_EXAMPLES = {
   'Local edit': {mode: 'edit', prompt: 'Change the red teapot to blue, keeping its shape, table, window, and lighting unchanged.'},
   'Combine two': {mode: 'edit', prompt: 'Combine the subjects from Picture 1 and Picture 2 into one coherent scene, preserving their appearance.'}};
 // The most pixels one call may ask for, its images together: the largest call measured
-// on this box (one 2752x1536 image, 44.8 GB at its peak). cockpit.py refuses the same.
+// on this box (one 2752x1536 image, 46.6 GB at its peak). cockpit.py refuses the same.
 const IMG_MAX_PIXELS = 2752 * 1536;
+// The Turbo checkpoint (./switch-model.sh image-turbo) samples on the eight-step sigma grid
+// its model_index.json carries, whatever num_inference_steps a request says, so the field is
+// left out of its requests (as the cookbook says) and the slider stops offering a choice.
+const IMG_TURBO_STEPS = 8;
+// what the engine serves when it says so, what its unit's next start loads otherwise
+const imgTurbo = () => laneTarget(IMAGE_UNIT) === 'image-turbo';
+const imgSteps = () => imgTurbo() ? IMG_TURBO_STEPS : Number($('img-steps').value);
 const IS = {mode: 't2i', refs: [], inflight: null, run: null, busy: false, available: false, busyLabel: '', stageAt: {stage: '', at: 0}, watching: null, history: [], port: 30020, host: '127.0.0.1'};
 const imgVal = id => ($(id) ? $(id).value.trim() : '');
 function imgSize(){
@@ -36,9 +43,9 @@ function imgProblem(){
   const {w, h} = imgSize();
   if (!w || !h) return 'Set a width and a height.';
   if (w % 32 || h % 32) return `${w} × ${h} is not a multiple of 32, which the engine refuses. Nearest: ${Math.max(32, Math.round(w / 32) * 32)} × ${Math.max(32, Math.round(h / 32) * 32)}.`;
-  const steps = Number($('img-steps').value); if (!(steps >= 1 && steps <= 100)) return 'Steps run from 1 to 100; the model default is 40.';
+  const steps = imgSteps(); if (!(steps >= 1 && steps <= 100)) return 'Steps run from 1 to 100; the model default is 40.';
   const n = Number($('img-n').value); if (!(n >= 1 && n <= 10)) return 'Between 1 and 10 images per call.';
-  if (n * w * h > IMG_MAX_PIXELS) return `${n} image${n > 1 ? 's' : ''} of ${w} × ${h} is ${(n * w * h / 1e6).toFixed(1)} megapixels in one call; the largest measured here is ${(IMG_MAX_PIXELS / 1e6).toFixed(1)} (44.8 GB at its peak). The images of a call run as one batch, and running out of memory hangs this machine. Ask for fewer or smaller images.`;
+  if (n * w * h > IMG_MAX_PIXELS) return `${n} image${n > 1 ? 's' : ''} of ${w} × ${h} is ${(n * w * h / 1e6).toFixed(1)} megapixels in one call; the largest measured here is ${(IMG_MAX_PIXELS / 1e6).toFixed(1)} (46.6 GB at its peak). The images of a call run as one batch, and running out of memory hangs this machine. Ask for fewer or smaller images.`;
   const cfg = Number(imgVal('img-cfg') || 1);
   if (cfg > 1 && !imgVal('img-neg')) return 'A CFG scale above 1 does nothing without a negative prompt: the engine needs both.';
   if (imgVal('img-neg') && cfg <= 1) return 'A negative prompt does nothing without a CFG scale above 1: the engine needs both.';
@@ -46,21 +53,24 @@ function imgProblem(){
   const seed = imgVal('img-seed'); if (seed && !/^\d+$/.test(seed)) return 'The seed is a whole number, or empty for a random one.';
   return '';
 }
-// Fitted to this box on six measured sizes at 40 steps (512 9.0 s to 2752x1536 193 s):
-// t = 1 + steps x 0.97 x (pixels / 1024^2)^1.14, linear in steps; an edit adds about
-// 4.8 s per reference.
+// Fitted to this box on the v0.5.21 runtime (2026-10-10), to the medians of both checkpoints
+// at six sizes, 8 and 40 steps (512x512 at 8 steps in 1.8 s to 2752x1536 at 40 in 185 s),
+// within 4.9 % of all twelve: a part per image (the text encoding, the VAE decode) and a part
+// per step (the denoiser), px = pixels / 1024^2. An edit adds about 1.6 s per reference and
+// 0.15 s per reference and step (one reference measured at 8 and at 40 steps).
 function imgEstimate(q){
   q = q || imgFormRequest(); if (!q.w || !q.h || !q.steps) return null;
-  const px = (q.w * q.h) / (1024 * 1024);
-  return (1 + q.steps * 0.97 * Math.pow(px, 1.14) + (q.editing ? 4.8 * Math.max(1, q.refs || 0) : 0)) * (q.n || 1);
+  const px = (q.w * q.h) / (1024 * 1024), refs = q.editing ? Math.max(1, q.refs || 0) : 0;
+  return (0.42 + 0.25 * Math.pow(px, 2.08) + q.steps * 0.883 * Math.pow(px, 1.16) + refs * (1.6 + 0.15 * q.steps)) * (q.n || 1);
 }
-function imgFormRequest(){ const {w, h} = imgSize(); return {w, h, steps: Number($('img-steps').value) || 0, n: Number($('img-n').value) || 1, editing: imgEditing(), refs: IS.refs.length}; }
+function imgFormRequest(){ const {w, h} = imgSize(); return {w, h, steps: imgSteps() || 0, n: Number($('img-n').value) || 1, editing: imgEditing(), refs: IS.refs.length}; }
 function imgPayload(){
   const {w, h} = imgSize();
   // output_format is always explicit: left out, the engine falls back to JPEG, this model
   // returns RGBA, and the request 500s
   const p = {prompt: imgVal('img-prompt'), width: w, height: h, num_inference_steps: Number($('img-steps').value), n: Number($('img-n').value),
              output_format: $('img-fmt').value, response_format: 'b64_json', generator_device: $('img-dev').value};
+  if (imgTurbo()) delete p.num_inference_steps;
   if ($('img-bg').value !== 'auto') p.background = $('img-bg').value;
   if (imgVal('img-seed') !== '') p.seed = Number(imgVal('img-seed'));
   if (imgVal('img-cfg') !== '') p.true_cfg_scale = Number(imgVal('img-cfg'));
@@ -91,8 +101,12 @@ function imgSync(){
   document.querySelectorAll('#img-mode button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === IS.mode)));
   show('img-refbox', imgEditing());
   setText('img-run', imgEditing() ? 'Edit' : 'Generate');
-  setText('img-steps-o', $('img-steps').value); setText('img-n-o', $('img-n').value);
-  [['img-steps', 1, 100], ['img-n', 1, 10]].forEach(([id, a, b]) => { const e = $(id); e.style.setProperty('--pct', (100 * (Number(e.value) - a) / (b - a)).toFixed(1) + '%'); });
+  // Under the Turbo the slider keeps the base's setting for when it comes back, and shows
+  // the eight steps the checkpoint runs.
+  const turbo = imgTurbo(); $('img-steps').disabled = turbo;
+  setText('img-steps-hint', turbo ? 'fixed at 8 by the Turbo checkpoint' : 'model default 40');
+  setText('img-steps-o', String(imgSteps())); setText('img-n-o', $('img-n').value);
+  [['img-steps', 1, 100], ['img-n', 1, 10]].forEach(([id, a, b]) => { const v = id === 'img-steps' ? imgSteps() : Number($(id).value); $(id).style.setProperty('--pct', (100 * (v - a) / (b - a)).toFixed(1) + '%'); });
   const problem = imgProblem();
   show('img-problem', !!problem && (IS.touched || !!imgVal('img-prompt'))); setText('img-problem', problem);
   const why = !IS.available ? imgLaneWhy() : IS.inflight ? 'Your image is being made.' : IS.busy ? 'Someone else’s image is being made: one at a time on this lane.' : !imgVal('img-prompt') ? 'Write a prompt first.' : problem;
@@ -102,7 +116,7 @@ function imgSync(){
   const secs = imgEstimate(), {w, h} = imgSize();
   setText('img-cost-v', secs ? 'about ' + fmtDur(secs) : '…');
   setText('img-cost-k', w && h ? `${(w * h / 1e6).toFixed(2)} megapixels${Number($('img-n').value) > 1 ? ' each' : ''}` : '');
-  setText('img-cost-b', w * h >= 3.5e6 ? 'Peaks at 44.8 GB instead of 34: four times the pixels cost five times the time.' : 'Fitted to six sizes measured on this box.');
+  setText('img-cost-b', w * h >= 3.5e6 ? 'Peaks at 46.6 GB instead of 35.6: four times the pixels cost five times the time.' : 'Fitted to six sizes of both checkpoints measured on this box.');
   const cnt = imgVal('img-prompt').length; setText('img-count', cnt ? cnt + ' characters' : '');
   imgCurl();
 }
@@ -239,7 +253,7 @@ function imgRenderLane(){
     if (sig.startsWith('down')){ const card = el('div', 'banner info'); card.style.alignItems = 'center'; card.append(el('span', 'lamp' + (e.state === 'failed' ? ' err' : '')));
       const d = el('div'); d.style.cssText = 'display:flex; flex-wrap:wrap; align-items:center; gap:var(--s-3)';
       const t = el('span', null, e.state === 'failed' ? 'The image lane failed. Its journal is in Logs.' : s ? `${laneLabel(s[0])} holds the box. Loading the image lane stops it first.` : 'The image lane is stopped.'); t.style.cssText = 'flex:1; min-width:240px';
-      const b = el('button', 'btn primary', 'Load Qwen-Image'); b.type = 'button'; b.addEventListener('click', () => askJourney('image'));
+      const b = el('button', 'btn primary', 'Load Qwen-Image'); b.type = 'button'; b.addEventListener('click', () => askJourney(laneTarget(IMAGE_UNIT) || 'image'));
       d.append(t, b); card.append(d); box.append(card); }
   }
   if (sig === 'boot'){ const card = box.firstChild, eta = e.eta || READY_DEFAULT[IMAGE_UNIT], pct = eta && e.elapsed ? Math.min(97, 100 * e.elapsed / eta) : 6;
@@ -285,11 +299,13 @@ function imgCancel(){
 async function imgSample(){
   if (IS.refs.length >= 10) return toast('Ten references is the maximum.', 'warn');
   if (IS.inflight || IS.busy) return toast('The lane is already making an image; one at a time.', 'warn');
-  const t0 = Date.now(); IS.inflight = t0; IS.run = {w: 1024, h: 1024, steps: 20, n: 1, editing: false};
+  const t0 = Date.now(); IS.inflight = t0; IS.run = {w: 1024, h: 1024, steps: imgTurbo() ? IMG_TURBO_STEPS : 20, n: 1, editing: false};
   imgWorking('Making a sample reference: a red teapot'); imgSync(); imgWatch(true);
   try{
-    const {status, ok, out} = await postJSON('/api/image/generate', {prompt: 'A bright daylight photograph of a red teapot on a wooden table next to a window, even natural light',
-      width: 1024, height: 1024, num_inference_steps: 20, n: 1, output_format: 'png', response_format: 'b64_json', generator_device: 'cpu', seed: 42});
+    const body = {prompt: 'A bright daylight photograph of a red teapot on a wooden table next to a window, even natural light',
+      width: 1024, height: 1024, num_inference_steps: 20, n: 1, output_format: 'png', response_format: 'b64_json', generator_device: 'cpu', seed: 42};
+    if (imgTurbo()) delete body.num_inference_steps;   // its grid sets the steps, as for any request
+    const {status, ok, out} = await postJSON('/api/image/generate', body);
     if (!ok) return toast(status === 409 ? out.error : 'Could not make a sample: ' + (out.error || status), status === 409 ? 'warn' : 'err', 7000);
     const first = ((out.image || out).data || [])[0]; if (!first || !first.b64_json) return toast('The lane answered with no image in it.', 'err');
     imgShow(out.image || out, 'png');
@@ -305,7 +321,7 @@ function wireImage(){
   ['img-size', 'img-w', 'img-h', 'img-steps', 'img-n', 'img-bg', 'img-fmt', 'img-dev', 'img-seed', 'img-cfg', 'img-shift', 'img-neg', 'img-prompt'].forEach(id => {
     const e = $(id); e.addEventListener('input', () => { if (id !== 'img-prompt') IS.touched = true; imgSync(); }); e.addEventListener('change', imgSync); });
   document.querySelectorAll('#img-mode button').forEach(b => b.addEventListener('click', () => { IS.mode = b.dataset.mode; imgSync(); }));
-  $('img-reset').addEventListener('click', () => { IS.refs = []; imgDrawRefs(); imgReset(); toast('Back to the model’s defaults: 1024 × 1024, 40 steps, one image, CFG off.', 'ok', 2600); });
+  $('img-reset').addEventListener('click', () => { IS.refs = []; imgDrawRefs(); imgReset(); toast(`Back to the model’s defaults: 1024 × 1024, ${imgTurbo() ? 'the Turbo’s 8 steps' : '40 steps'}, one image, CFG off.`, 'ok', 2600); });
   $('img-reffile').addEventListener('change', e => { imgAddFiles(e.target.files); e.target.value = ''; });
   $('img-refsample').addEventListener('click', imgSample);
   $('img-run').addEventListener('click', imgRun);

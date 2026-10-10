@@ -79,8 +79,8 @@ class Sent:
         outer = self
 
         class R:
-            def read(self_inner):
-                return outer.payload
+            def read(self_inner, n=-1):
+                return outer.payload if n < 0 else outer.payload[:n]
 
             def __enter__(self_inner):
                 return self_inner
@@ -245,6 +245,89 @@ class TheEditingPath(Base):
         self.assertNotIn("Authorization", self.spy.headers)
 
 
+class WhichCheckpointTheLaneServes(Base):
+    """The lane has two checkpoints (./switch-model.sh image, image-turbo), and the page's
+    Load, its Turbo controls and the Lanes card all read which one from the unit's own
+    --model-path, through unit_target."""
+
+    def _unit(self, model):
+        unit = self.tmp / f"qwen38-image-{model.replace('/', '_')}.service"
+        unit.write_text(f"[Service]\nExecStart=/x/sglang serve --model-path {model} \\\n"
+                        "  --host 127.0.0.1 --port 30020\n")
+        self.ck.IMAGE_UNIT_PATH = unit
+
+    def test_the_turbo_is_its_own_target(self):
+        self._unit("Qwen/Qwen-Image-2.1-Turbo")
+        self.assertEqual(self.ck.unit_target("qwen38-image.service"),
+                         {"model": "Qwen/Qwen-Image-2.1-Turbo", "target": "image-turbo"})
+
+    def test_the_base_and_any_other_checkpoint_are_image(self):
+        for model in ("Qwen/Qwen-Image-2.1", "someone/finetune"):
+            self._unit(model)
+            self.assertEqual(self.ck.unit_target("qwen38-image.service"), {"model": model, "target": "image"})
+
+    def test_no_unit_no_target(self):
+        self.ck.IMAGE_UNIT_PATH = Path("/nonexistent/qwen38-image.service")
+        self.assertEqual(self.ck.unit_target("qwen38-image.service"), {"model": None, "target": None})
+
+
+class WhatTheEngineSaysItServes(Base):
+    """GET /model_info of the image engine, once per life of its unit: the unit's file says
+    what the next start loads, and ./switch-model.sh from a terminal rewrites it under a
+    serving engine, which goes on serving what it loaded."""
+
+    def setUp(self):
+        super().setUp()
+        self.ck.IMAGE_SERVED.update(life=None, model=None, asked=0.0)
+        self.spy.payload = b'{"model_path": "Qwen/Qwen-Image-2.1-Turbo", "model_type": "diffusion"}'
+
+    def test_it_asks_the_engine_once_per_life(self):
+        self.assertEqual(self.ck.image_served_model("100"), "Qwen/Qwen-Image-2.1-Turbo")
+        self.assertEqual(self.spy.url, "http://127.0.0.1:30020/model_info")
+        self.spy.url = ""
+        self.assertEqual(self.ck.image_served_model("100"), "Qwen/Qwen-Image-2.1-Turbo")
+        self.assertEqual(self.spy.url, "", "asked again within the same life")
+        self.spy.payload = b'{"model_path": "Qwen/Qwen-Image-2.1"}'
+        self.assertEqual(self.ck.image_served_model("200"), "Qwen/Qwen-Image-2.1")
+
+    def test_an_engine_that_does_not_answer_is_asked_again_later_not_every_tick(self):
+        calls = []
+
+        def down(req, timeout=None):
+            calls.append(req.full_url)
+            raise ConnectionRefusedError("still loading")
+        self.ck.urllib.request.urlopen = down
+        self.assertIsNone(self.ck.image_served_model("300"))
+        self.assertIsNone(self.ck.image_served_model("300"))
+        self.assertEqual(len(calls), 1)
+        self.ck.IMAGE_SERVED["asked"] -= 11
+        self.ck.urllib.request.urlopen = self.spy.urlopen
+        self.assertEqual(self.ck.image_served_model("300"), "Qwen/Qwen-Image-2.1-Turbo")
+
+    def test_an_answer_without_a_model_is_no_answer(self):
+        self.spy.payload = b'{"detail": "Not Found"}'
+        self.assertIsNone(self.ck.image_served_model("400"))
+
+    def test_the_lanes_entry_carries_it_beside_the_units_target(self):
+        unit = self.tmp / "qwen38-image-served.service"
+        unit.write_text("[Service]\nExecStart=/x/sglang serve --model-path Qwen/Qwen-Image-2.1 \\\n"
+                        "  --host 127.0.0.1 --port 30020\n")
+        saved = (self.ck.IMAGE_UNIT_PATH, self.ck.image_engine_state, self.ck.run)
+        self.ck.IMAGE_UNIT_PATH = unit
+        self.ck.image_engine_state = lambda u, **kw: ({"state": "ready"}, {"stage": None, "fired_up": True, "done": []}, True)
+        self.ck.run = lambda argv, timeout=5.0, merge_err=False: (
+            "ActiveState=active\nSubState=running\nActiveEnterTimestampMonotonic=4242\n"
+            if argv[:3] == ["systemctl", "show", "qwen38-image.service"] else "")
+        try:
+            out = self.ck.collect_lifecycle()
+        finally:
+            self.ck.IMAGE_UNIT_PATH, self.ck.image_engine_state, self.ck.run = saved
+        e = out.get("data", out)["engines"]["qwen38-image.service"]
+        self.assertEqual(e["target"], "image")
+        self.assertEqual(e["served_target"], "image-turbo")
+        self.assertEqual(self.spy.url, "http://127.0.0.1:30020/model_info")
+
+
 class WhatTheTabIsTold(Base):
     def test_a_lane_that_is_not_installed_says_so_rather_than_stopped(self):
         """"Stopped" invites a start button for a unit that does not exist."""
@@ -397,7 +480,7 @@ class ThePixelBudget(Base):
     2026-09-23, ten times one image's 4.6, and nobody has measured where that batch's
     memory ends. On unified memory running out hangs the machine, so a call may not ask
     for more pixels, all its images together, than the largest call measured here: one
-    2752x1536 image, 44.8 GB at its peak. Nothing past it reaches the lane."""
+    2752x1536 image, 46.6 GB at its peak. Nothing past it reaches the lane."""
 
     def ask(self, **fields):
         return self.call({"prompt": "p", "output_format": "png", **fields})
@@ -406,7 +489,7 @@ class ThePixelBudget(Base):
         code, out = self.ask(width=2048, height=2048, n=10, num_inference_steps=60)
         self.assertEqual(code, 400)
         self.assertIn("41.9 megapixels", out["error"])
-        self.assertIn("one 2752x1536 image, 44.8 GB", out["error"])
+        self.assertIn("one 2752x1536 image, 46.6 GB", out["error"])
         self.assertIsNone(self.spy.body, "a refused call reached the lane")
 
     def test_the_largest_measured_call_still_goes_through(self):

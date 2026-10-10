@@ -759,13 +759,14 @@ jobs:
 
           # Two kinds of target since the image lane. The TEXT targets are what
           # install.sh can serve as its LLM (MODEL_CHOICE) and what the Models tab
-          # builds a recipe for. The SWITCH targets are those plus the lanes a flag
-          # installs, which today is two: `image`, installed by --with-image, and
-          # `video`, installed by --with-video, each switched to like any other,
-          # and neither an LLM checkpoint (neither has a recipe, a KV pool
-          # nor an opencode default). Both sets are asserted, so a lane added to the
-          # switcher and forgotten in the cockpit's enum is still caught.
-          FLAG_LANES = ["image", "video"]
+          # builds a recipe for. The SWITCH targets are those plus the targets of the
+          # lanes a flag installs: `image` and its Turbo `image-turbo`, the lane
+          # --with-image installs, and `video`, installed by --with-video, each
+          # switched to like any other, and none an LLM checkpoint (none has a
+          # recipe, a KV pool nor an opencode default). Both sets are asserted, so a
+          # target added to the switcher and forgotten in the cockpit's enum is
+          # still caught.
+          FLAG_LANES = ["image", "image-turbo", "video"]
           ref = choices
           switch_ref = sorted(ref + FLAG_LANES)
           text_lists = {"install.sh MODEL_CHOICE": choices, "recipes BUILTIN_IDS": sorted(builtins)}
@@ -1295,7 +1296,7 @@ jobs:
           script = pathlib.Path("switch-model.sh").read_text()
           alw = pathlib.Path("dashboard/sudoers-cockpit.template").read_text()
           allowed = {m.strip() for m in re.findall(r"NOPASSWD:\s*(.+)$", alw, re.M)}
-          stage = dict(re.findall(r'^(STAGE_UNIT|STAGE_CEIL)="\$CONFIG_DIR/([^"]+)"', script, re.M))
+          stage = dict(re.findall(r'^(STAGE_UNIT|STAGE_CEIL|IMG_STAGE)="\$CONFIG_DIR/([^"]+)"', script, re.M))
           units = {"qwen38-sglang.service", "qwen38-flash.service"}
           engines = units | {"qwen38-image.service", "qwen38-video.service"}
           values = {
@@ -1303,8 +1304,10 @@ jobs:
               "IMAGE_UNIT_NAME": {"qwen38-image.service"},
               "VIDEO_UNIT_NAME": {"qwen38-video.service"},
               "TARGET_UNIT": {re.search(r'^SGL_UNIT="([^"]+)"', script, re.M).group(1)},
+              "IMAGE_UNIT": {re.search(r'^IMAGE_UNIT="([^"]+)"', script, re.M).group(1)},
               "STAGE_UNIT": {"__HOME__/.config/qwen38/" + stage["STAGE_UNIT"]},
               "STAGE_CEIL": {"__HOME__/.config/qwen38/" + stage["STAGE_CEIL"]},
+              "IMG_STAGE": {"__HOME__/.config/qwen38/" + stage["IMG_STAGE"]},
           }
           seen, bad = 0, []
           for raw in script.splitlines():
@@ -1357,7 +1360,8 @@ jobs:
               print("\n".join("  " + b for b in bad)); sys.exit(1)
           sw = pathlib.Path("switch-model.sh").read_text()
           for var, tail in (("STAGE_UNIT", "qwen38-sglang.service.switch-stage"),
-                            ("STAGE_CEIL", "keepalive-ceiling.conf.switch-stage")):
+                            ("STAGE_CEIL", "keepalive-ceiling.conf.switch-stage"),
+                            ("IMG_STAGE", "qwen38-image.service.switch-stage")):
               m = re.search(rf'^{var}="\$CONFIG_DIR/([^"]+)"', sw, re.M)
               if not m or not m.group(1).endswith(tail):
                   print(f"{var} staging path changed or missing in switch-model.sh"); sys.exit(1)
@@ -1435,6 +1439,10 @@ jobs:
           m = re.search(r'\bMODEL="\$\{MODEL:-([^}]+)\}"', pathlib.Path("install-video.sh").read_text())
           if not m or m.group(1) not in un.split('HF_REPOS="', 1)[-1].split('"', 1)[0].split():
               bad.append("install-video.sh MODEL")
+          # and the image lane's second checkpoint, the Turbo of ./switch-model.sh image-turbo
+          m = re.search(r'^IMAGE_TURBO_PIN="([^"]+)"', pathlib.Path("install-image.sh").read_text(), re.M)
+          if not m or m.group(1) not in un.split('HF_REPOS="', 1)[-1].split('"', 1)[0].split():
+              bad.append("install-image.sh IMAGE_TURBO_PIN")
           if bad:
               print("install.sh pins missing from uninstall.sh inventory:")
               print("\n".join("  " + b for b in bad)); sys.exit(1)

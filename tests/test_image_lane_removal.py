@@ -33,6 +33,8 @@ def lane_dir(extra=True):
     for sub in ("venv/bin", "sglang/python"):
         (d / sub).mkdir(parents=True)
         (d / sub / "f").write_text("x")
+    # the wheel note install-image.sh writes beside them since v1.24
+    (d / "sglang-wheel").write_text("0.5.21\n")
     if extra:
         (d / "my-other-project").mkdir()
         (d / "my-other-project/thesis.tex").write_text("years of work")
@@ -52,7 +54,7 @@ class BothPathsRemoveOnlyTheLane(unittest.TestCase):
         ("uninstall.sh", lambda: removal(UNINSTALL, 'if [ -d "$IMAGE_LANE_DIR" ] && '),
          lambda d: {"IMAGE_LANE_DIR": d, "PRIV": "0", "PRIV_DONE": "0"}),
         ("install-image.sh --uninstall", lambda: removal(INSTALL_IMAGE, 'if [ -d "$LANE_DIR" ]; then'),
-         lambda d: {"LANE_DIR": d, "VENV": f"{d}/venv", "SRC": f"{d}/sglang"}),
+         lambda d: {"LANE_DIR": d, "VENV": f"{d}/venv", "SRC": f"{d}/sglang", "WHEEL_NOTE": f"{d}/sglang-wheel"}),
     )
 
     def test_a_shared_directory_keeps_everything_else(self):
@@ -63,6 +65,7 @@ class BothPathsRemoveOnlyTheLane(unittest.TestCase):
                 self.assertEqual(rc, 0, out)
                 self.assertFalse((d / "venv").exists())
                 self.assertFalse((d / "sglang").exists())
+                self.assertFalse((d / "sglang-wheel").exists())
                 self.assertEqual((d / "my-other-project/thesis.tex").read_text(), "years of work")
                 self.assertIn("did not put there", out)
 

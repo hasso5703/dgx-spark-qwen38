@@ -120,7 +120,7 @@ class TheCheckPins(PinsBase):
         rc, out = self.run_pins(None, "hf_secretvalue123")
         self.assertEqual(rc, 0, out)
         hf = [c for c in self.calls() if c["url"].startswith("https://huggingface.co/")]
-        self.assertEqual(len(hf), 11, hf)          # nine checkpoints and the two diffusion lanes'
+        self.assertEqual(len(hf), 12, hf)          # nine checkpoints and the diffusion lanes' three
         for c in hf:
             self.assertIn("Authorization: Bearer hf_secretvalue123", c["stdin"], c)
             self.assertFalse(any("hf_secretvalue123" in a for a in c["argv"]), c["argv"])
@@ -179,10 +179,12 @@ class ThePinsOutsideThePinBlock(PinsBase):
     def test_they_are_all_checked(self):
         rc, out = self.run_pins()
         self.assertEqual(rc, 0, out)
-        for label in ("qwen-image", "sglang-source", "sglang-wheel", "opencode"):
+        for label in ("qwen-image", "qwen-image-turbo", "sglang-source", "sglang-wheel", "opencode"):
             self.assertIn("ok", self.line(out, label), out)
         self.assertTrue(any("Qwen/Qwen-Image-2.1/raw/790c9263" in c["url"] and c["url"].endswith("/model_index.json")
                             for c in self.calls()), "the image checkpoint is asked for at its pinned revision")
+        self.assertTrue(any("Qwen/Qwen-Image-2.1-Turbo/raw/d65dbc9a" in c["url"] and c["url"].endswith("/model_index.json")
+                            for c in self.calls()), "the Turbo checkpoint is asked for at its pinned revision")
 
     def test_a_removed_source_commit_fails(self):
         rc, out = self.run_pins({"api.github.com/repos/sgl-project/sglang/commits/": [422, ""]})
@@ -192,7 +194,7 @@ class ThePinsOutsideThePinBlock(PinsBase):
     def test_a_wheel_gone_or_yanked_fails(self):
         rc, out = self.run_pins({"bodies": {"pypi.org": '{"message": "Not Found"}'}})
         self.assertIn("FAIL", self.line(out, "sglang-wheel"), out)
-        rc, out = self.run_pins({"bodies": {"pypi.org": json.dumps({"info": {"version": "0.5.20"},
+        rc, out = self.run_pins({"bodies": {"pypi.org": json.dumps({"info": {"version": "0.5.21"},
                                                                      "urls": [{"yanked": True}]})}})
         self.assertIn("every file yanked", self.line(out, "sglang-wheel"), out)
 
@@ -231,7 +233,7 @@ class TheEndpointsThatDoNotAnswer(PinsBase):
         for label in self.GITHUB:
             self.assertIn("HTTP 504 from the GitHub API, so not checked", self.line(out, label), out)
             self.assertNotIn("no such", self.line(out, label), out)
-        self.assertIn("3 of 18 pins could not be asked about", out)
+        self.assertIn("3 of 19 pins could not be asked about", out)
         self.assertIn("run it again before re-pinning anything", out)
         self.assertNotIn("A removed upstream revision", out)
 

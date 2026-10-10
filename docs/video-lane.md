@@ -66,8 +66,8 @@ not dubbed afterwards, so the two stay in sync.
 
 This lane serves the cookbook's MiniMax-H3 recipe as upstream wrote it at the pinned
 commit, with **one local source patch**: the image lane's idle-loop wait
-(`image-sglang/scheduler-idle-poll.patch`, one file for both lanes, which serve the same
-SGLang commit). The diffusion scheduler's loop never waits, so a lane with nothing to do
+(`image-sglang/scheduler-idle-poll.patch`, one file for both lanes: the loop it patches is
+the same at both lanes' pinned commits, which CI checks against the real files). The diffusion scheduler's loop never waits, so a lane with nothing to do
 held one CPU core at 100%, which kept the box's hottest zone near 61 °C at rest (43 °C
 with no lane loaded) and its fans loud. Measured on the reference box (2026-10-06), 3 min
 after the lane was ready: 1.05 cores without the patch, 0.05 with it, the hottest zone 67

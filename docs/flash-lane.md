@@ -81,7 +81,7 @@ silently caps `--max-running-requests` to what the mamba pool admits while
 Both speculative tiers are the cookbook's own verified single-Spark cells, which
 score **GSM8K 97.1-97.3% on the full 1,319-question set** upstream. `concurrency`
 became the default on 2026-09-30 with `--mamba-max-states-per-path 2` added,
-after the campaign measured it on this box (memory flash_palier8_nightly_2026_09_29:
+after the campaign measured it on this box (2026-09-29, on the nightly it was pinned to:
 canaries 4/4, needle 120k/200k 2/2, prefix cache 99.5 to 99.9% on repeated
 prefixes, the pool never saturated, mamba peaked at 22 of 40). The per-path cap
 halves the state each speculative path holds, which is what makes 8 requests fit

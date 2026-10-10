@@ -49,7 +49,7 @@ img="$(grep -E '^(IMAGE|FLASH_IMAGE)=' "$REPO_DIR/install.sh")"
 eval "$img"
 # the image lane's checkpoint, pinned in install-image.sh like the rest (check-pins.sh
 # reads the same lines)
-lane="$(grep -E '^(IMAGE_MODEL_PIN|IMAGE_MODEL_PIN_REV)=' "$REPO_DIR/install-image.sh")"
+lane="$(grep -E '^(IMAGE_MODEL_PIN|IMAGE_MODEL_PIN_REV|IMAGE_TURBO_PIN|IMAGE_TURBO_PIN_REV)=' "$REPO_DIR/install-image.sh")"
 eval "$lane"
 # the video lane's checkpoint, pinned in install-video.sh like the rest
 vline="$(grep -E '^(VIDEO_MODEL_PIN|VIDEO_MODEL_PIN_REV)=' "$REPO_DIR/install-video.sh")"
@@ -170,6 +170,7 @@ if [ "$MODE" != "--images" ]; then
   mirror_model "draft"      "$DRAFT_REPO"      "$DRAFT_REV"
   mirror_model "draft2"     "$DRAFT2_REPO"     "$DRAFT2_REV"
   mirror_model "qwen-image" "$IMAGE_MODEL_PIN" "$IMAGE_MODEL_PIN_REV"
+  mirror_model "qwen-image-turbo" "$IMAGE_TURBO_PIN" "$IMAGE_TURBO_PIN_REV"
   mirror_model "minimax-h3" "$VIDEO_MODEL_PIN" "$VIDEO_MODEL_PIN_REV"
 fi
 if [ "$MODE" != "--models" ]; then

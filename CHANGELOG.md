@@ -1,5 +1,175 @@
 # Changelog
 
+## v1.24.0 (2026-10-10): the image lane moves to SGLang v0.5.21 and gains Qwen-Image 2.1 Turbo, a 1024x1024 image in 7.5 s
+
+**Qwen-Image 2.1 Turbo, a second checkpoint of the image lane.** Qwen published
+[Qwen-Image-2.1-Turbo](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo) on 2026-10-09, an
+eight-step distillation of the lane's model under the same Qwen Research licence, and SGLang
+merged its support on 2026-10-10
+([sgl-project/sglang#43391](https://github.com/sgl-project/sglang/pull/43391)). The Lanes view
+offers it next to the base as `Qwen-Image 2.1 Turbo`, and `./switch-model.sh image-turbo` from
+a terminal: the switch fetches it at its pinned revision (`d65dbc9a7e8f`, 32.5 GB on the first
+switch), points the unit's `--model-path` at it and changes nothing else, and
+`./switch-model.sh image` goes back. The base stays the default. Under the Turbo the Image view
+shows its eight steps as fixed by the checkpoint, leaves `num_inference_steps` out of the
+request as the cookbook says, and counts eight steps in its estimate.
+
+Measured on the reference box, both checkpoints on the same runtime, seed 42, medians: 1024x1024
+in **7.5 s** against 34.3 s for the base at its 40 steps (the calibration medians, four and
+three runs; all eighteen and fifteen requests of the day at that size give 7.5 and 34.4 s),
+512x512 in 1.8 against 7.8 s, 2048x2048 in 40.6 against 182.8 s, an edit with one reference in 10.3 against
+41.9 s, at the same peak memory (35.6 GB at 1024x1024, 46.6 GB at 2752x1536). Same seed twice
+gives the same bytes, and `num_inference_steps: 2` gives the same PNG as leaving it out: the
+checkpoint's grid sets the steps. On eight prompts with one seed each (a photograph, a portrait,
+a shop sign with French text and prices, a counting prompt, a landscape, a watercolour, an
+interior, an infographic) the Turbo is close to the base at 40 steps on the photographs, the
+portrait, the illustrations and the short text (`Boulangerie Margot`, `Croissant 2,10 €` and
+`Baguette 1,30 €` exact in both); both miscount the fruit, and both garble the infographic's
+body text, the Turbo with invented English words, the base with invented Chinese-looking
+characters under four numbered steps. The base at eight steps is visibly unfinished on every
+prompt. Transparency, asked for by the prompt as for the base: 70.9 % of the Turbo's pixels
+under alpha 16, 74.3 % of the base's, same prompt and seed. Compared file by file, the Turbo's
+transformer is the distilled one, its text encoder is the base's (all 750 tensors identical,
+saved as one file), and its VAE is the base's in bf16.
+
+**The lane moves to the v0.5.21 release.** Qwen-Image 2.1 arrived in a release with `v0.5.21`,
+and the lane now runs that release's commit (`e00930c54890`) with its wheel, instead of the
+`main` commit `ddebc52f237a` and the `0.5.20` wheel it ran since 2026-09-22. The base's images
+do not change: the same twelve requests gave the same bytes on both runtimes, and the new one
+is 4.7 % faster at 1024x1024 (34.40 s against 36.08 s, median of three on each, the same
+morning), for 0.8 GB more at the peak. The Turbo's grid needs #43391, which is in no release
+yet: its runtime part, 19 lines in three files, is backported as three local patches beside the
+lane's two (the idle loop, the 5 s stop), one file each, each checked by CI against the real
+files at the pin; the PR's own 58 upstream tests pass on the backport. `install-image.sh`
+refuses to serve the Turbo on a runtime they did not reach, and `switch-model.sh image-turbo`
+refuses to switch to it. Both ask the same check, `image-sglang/turbo-grid-check.py`, which
+checks the three parts one by one, the config by what it does with a grid and the pipeline and
+the input stage by the code that carries it: a patch that does not apply to a new pin is only a
+note in the installer, and a runtime with the config's field and not the rest would still
+sample on a uniform schedule.
+
+**An existing venv takes the new wheel.** `install-image.sh` installed the wheel only when
+`sglang` did not import, so a pin that moved to a new release would have kept the previous
+release's dependencies under the new source (here `cache-dit` 1.3.0 under v0.5.21, which asks
+for 1.5.1). The installer now writes down the wheel a venv came from (`sglang-wheel` in the
+lane's folder, removed by `--uninstall`) and installs the new one over a venv that has another
+or no note. On the reference box the update from v1.23.0 took the new wheel's changes
+(`cache-dit` 1.5.1, `xgrammar` 0.2.7, `sentencepiece` 0.2.1; torch, the kernels and diffusers
+unchanged), checked out the release and applied the five patches in under a minute.
+
+**The runtime check asks the registry.** The installer's check that the runtime knows
+Qwen-Image 2.1 read the registry's source text, and v0.5.21 registers the model from its
+pipeline config: that first update on the reference box stopped there, on a runtime that serves
+the model. The check now asks the registry whether the exact id maps to Qwen-Image 2.1's own
+config; a fuzzy match would also have taken an unknown `Qwen/Qwen-Image-9.9` for an older
+Qwen-Image. None of the installer's checks is an `assert` any more: `python -O`, or
+`PYTHONOPTIMIZE` in the environment, strips those, and the check then passes whatever it checks.
+
+**A first install does not trip on a patch merged upstream.** Before checking out a new pin,
+the image and video installers take their patches off the source tree by reversing them. A first
+install's clone stands on upstream's main, which carries #43391 since 2026-10-10: two of the
+Turbo's patches reversed cleanly there, wrote edits, and the checkout of the pin refused to go
+over them, so with this version's patches a first install of the image lane died at step 3
+(found before release, by replaying the installer on a fresh venv; v1.23.0's two patches are
+not merged upstream, so its first installs were not affected). A patch is now taken off only
+from a file that has local edits, in both installers.
+
+**The image switch fetches the revision the box serves.** `./switch-model.sh image` fetched a
+checkpoint that was not complete with no revision, which resolves upstream's tip and, since the
+unit runs offline by name, would then have served a push upstream instead of the pin. It now
+reads the revision as the video switch does: the checkpoint's `refs/main`, which the offline
+unit resolves, so one an install made with `IMAGE_MODEL_REV=` stays served; the installer's
+pin when there is no ref, with `refs/main` then pointed at it; never a move of a valid ref.
+Room is checked before the first byte: about 34 GB, less what the cache already holds of that
+checkpoint.
+
+**A checkpoint of the unit's own survives the Turbo.** A unit installed with `IMAGE_MODEL=`
+serves a checkpoint that is neither the base nor the Turbo; `image-turbo` and back gave the base.
+The switch to the Turbo now writes that checkpoint down (`~/.config/qwen38/image-model-before-turbo`)
+and `./switch-model.sh image` brings it back. An install that points the unit at another
+checkpoint drops the note, and `install-image.sh --uninstall` removes it and names every
+checkpoint of the lane the cache holds, the one the note named included, not only the unit's.
+
+**The page follows what the engine serves.** The unit's file says what the lane's next start
+loads, and a switch from a terminal rewrites it under a serving engine, which goes on serving
+what it loaded. The cockpit now asks the image engine itself (`/model_info`, once per life of
+the unit) and the page goes by its answer: the request, the steps and the estimate are those
+of the checkpoint served, Load offers the restart a switch still owes, and the banner the text
+lanes have says so; a Load that only points the unit back at what the engine serves restarts
+nothing. A Load that restarts the image lane on its other checkpoint warns that a generation in
+flight is lost, as a stop did. The Now view's time for a 1024x1024 image follows
+the checkpoint (about 34 s or 7.5 s; it said 38 s), the sample reference leaves the steps to
+the Turbo's grid like any request, Reset names the Turbo's 8 steps, and the switch's
+explanation says what it rewrites for each lane.
+
+**The estimate and the peak follow the new runtime.** The Image view's estimate was fitted on
+the commit before at 40 steps only (`1 + steps x 0.97 x px^1.14`), and on the new runtime it is
+up to 43 % high (the Turbo at 512x512). It is now `0.42 + 0.25 x px^2.08 + steps x 0.883 x
+px^1.16` seconds (`px` the pixels over 1024^2), a part per image (text encoding, VAE decode) and
+a part per step, fitted to the medians of both checkpoints at six sizes from 512x512 to
+2752x1536 and within 4.9 % of all twelve; an edit adds `1.6 + 0.15 x steps` seconds per
+reference. The largest call admitted (one 2752x1536 image) peaks at 46.6 GB on the new runtime
+against 44.8 on the old one, and the page and the refusal say so.
+
+**A comment put right.** Two comments of `install.sh` said that opencode's static 1M pair
+(700,000 + 200,000) can meet a proxy 400 late in a session. The proxy refuses a prompt past 92 %
+of the pool, and the largest prompt opencode sends with that pair, its compaction point plus one
+worst agent step (680,000 + 43,863 = 723,863), stays under it on every pool the lane booted to
+(832,993 the least). What does not fit is that prompt plus a whole answer, one past about
+109,000 tokens at the very end of a full session, and the fit that runs after every boot
+replaces the pair anyway. Behaviour unchanged.
+
+**Said as it is.** `docs/video-lane.md` said the two diffusion lanes serve the same SGLang
+commit; from this version they do not, and it says what holds either way (the idle patch's loop
+is the same at both pins, which CI checks). `ROADMAP.md` stopped at "current: v1.20" and lists
+v1.21 to v1.24 now, and `docs/flash-lane.md` named a maintainer's private note as the source of
+a measurement instead of its date. `docs/image-lane.md`, the README and the unit's comment give
+the peaks, run counts and ratios of the new runtime (35.6 GB at 1024x1024 and 46.5 GB at
+2048x2048, about five and a third times the time for four times the pixels), and `MIRROR.md`
+counts the twelve checkpoint pins at 1,077 GB from the Hub's file sizes (it said ten, 546 GB:
+MiniMax-H3, 498.5 GB whole, and the Turbo were missing from the sum). `install-video.sh` no
+longer says its pin is the image lane's.
+
+**Tests.** The switch's own image block runs in a sandbox (fake unit, cache, hub and runtime;
+sudo and systemctl stubs): the rewrite touches `--model-path` alone, the Turbo is fetched at its
+pin with `refs/main` on it, a runtime without the grid is refused before anything changes, the
+way back leaves no `-Turbo` behind, a custom checkpoint is kept and survives a round trip
+through the Turbo, the served `refs/main` is kept and a ref with no commit repaired, the room
+check counts what the cache holds, the ref is read in the unit's own cache, a runtime missing
+any one of the three parts or with the config's field and not its behaviour is refused, and the
+restart hint is given only for a rewrite (24 tests; mutants taking out the grid check, its
+behavioural part, `refs/main`, the unit's cache, the room check, the note's cleanup, the
+rewrite's flag and the hint's condition, each caught). The
+grid check itself ran on a real runtime with each of the three patches taken off in turn: each
+time refused, with the part that was missing. The page: the target is a variant of the image lane with a name of its own,
+loaded by a switch and a restart from the base or by a switch, a stop and a start from a text
+lane; under the Turbo the request has no step count, the slider shows 8 and is disabled, the
+estimate counts eight; the base keeps its slider; the view's Load loads the checkpoint the unit
+names, the engine's own answer wins over the unit's when they differ and owes no restart when
+it already serves the checkpoint asked for, and the Now view and the switch's explanation say
+what is true of each checkpoint and lane (18 tests); the cockpit asks the engine once per life
+of the unit (4 tests); the uninstall names the noted checkpoint, and an install for another
+checkpoint drops the note (3 tests). And: the three patches touch one file each and add what #43391 adds, the
+replayed patch block applies all five, the cockpit reads the Turbo from the unit, the estimate
+holds the new measurements within 10 %, `check-pins.sh` and `mirror-pins.sh` cover the Turbo,
+and CI's gates know its sudoers line, its staging path and its inventory entry; a fresh clone
+whose main carries one of the patches checks out the pin. Each test of a change fails on
+v1.23.0 or on this branch before its review fixes; the ones that hold what must not change (the
+base's slider, a lane serving what its unit names) pass on both.
+A first install's runtime was replayed on a fresh venv with the installer's own step 3 (the
+whole 0.5.21 wheel, the clone, the pin, the five patches, the registry and Turbo checks): 201 s,
+8.1 GB, the wheel's exact dependencies. On the reference box, with the branch: the update of the prod
+image lane from v1.23.0 (smoke test, 0.05 CPU cores at rest), the switch to the Turbo and back,
+a generation through the branch's cockpit in both modes (7.6 and 34.8 s), and a Stop 6 s into a
+2048x2048 generation, stopped in 5.26 s with `Result=success`.
+
+**What an update does.** `install.sh` updates the image lane in place without starting it (the
+new wheel's changes, the release's checkout and the five patches, under a minute on the
+reference box); its next start runs the new runtime. Nothing is downloaded for the Turbo until a
+switch to it. The cockpit restarts for its new Image view and Lanes card, and its sudoers file
+gains the one line the Turbo's switch needs. The text engines, the proxy and the video lane keep
+running.
+
 ## v1.23.0 (2026-10-10): the 27B lane moves to SGLang v0.5.21, whose prefix cache no longer resumes a conversation from a stale state
 
 The 27B lane serves `lmsysorg/sglang@sha256:b1259f3e...` (`v0.5.21`, 2026-10-01) instead of
