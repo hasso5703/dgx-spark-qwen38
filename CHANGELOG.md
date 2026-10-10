@@ -38,7 +38,7 @@ running requests, and that same 3.61 across the read that sandwiched the request
 New: label-aware counter names in `engine_metrics.py` (the modes of the realtime tokens,
 the stages of the stopwatch, the drafter's counter), a reader for the levels, and the
 window keeping peaks of them; `cockpit.py` carries the levels with every read and takes
-the canary's own prefill, queue and verification out with the rest of it. Nine new
+the canary's own prefill, queue and verification out with the rest of it. Fourteen new
 engine_metrics tests,
 the collector stub carries the new counters, and the page fixture carries the new rows
 and what the quiet box says.
