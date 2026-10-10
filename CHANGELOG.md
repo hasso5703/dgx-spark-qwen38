@@ -51,6 +51,12 @@ canaries of the other cockpit on the box, read 4.39 (706 tokens over 161 verific
 the one abort it counted was that other cockpit's canary, timed out behind the long prompt.
 The Busiest moment row now says "1 request at once" in the singular (it said "1 requests").
 
+**A test that could fail on a slow machine.** `tests/test_hf_progress.py` grew its fake
+download by rewriting the whole file, which truncates it first, so a read in between said
+0 % after 66 %; the GitHub runner hit it on v1.25.2's commit (2026-10-10). A download only
+appends to its `.incomplete` file, and the test appends now: with each write slowed to
+0.15 s, the previous test fails and this one passes.
+
 **What an update does.** The cockpit restarts for its new page. The engines, the proxy and
 the lanes keep running.
 

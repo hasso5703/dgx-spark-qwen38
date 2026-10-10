@@ -192,7 +192,11 @@ class ItReportsAndNeverStandsInTheWay(unittest.TestCase):
                 self.blobs.mkdir(parents=True)
                 part = self.blobs / (SHA_A + ".0a1b2c3d.incomplete")
                 for n in (1, 2, 3):
-                    part.write_bytes(b"\0" * (n * 1_000_000))
+                    # grown by appending, as a download grows its .incomplete file: rewriting
+                    # it whole truncated it to 0 first, and a read in between said 0 % after
+                    # 66 % on a slow CI runner (2026-10-10)
+                    with open(part, "ab") as f:
+                        f.write(b"\0" * 1_000_000)
                     time.sleep(0.12)
                 part.rename(self.blobs / SHA_A)
                 (self.blobs / GIT_C).write_bytes(b"{}" * 250)
