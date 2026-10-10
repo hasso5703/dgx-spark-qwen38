@@ -109,7 +109,20 @@ esac
 # tokens on both (514 s against 493 s, the one point where the release is
 # behind). The KV pool needs the fraction moved from 0.70 to 0.76 to match, for
 # the reason written at CONTEXT_MODE below.
-IMAGE="${IMAGE:-lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9}"  # = lmsysorg/sglang:v0.5.19, 2026-09-04
+# v1.23.0 moved the lane from v0.5.19 to v0.5.21 (2026-10-01), the release the cookbook's
+# DGX Spark recipe now names (lmsysorg/sglang:latest), for sglang#37818: on v0.5.19 a DFlash
+# verify that crosses a 256-token Mamba tracking boundary saved no checkpoint, so a turn
+# that reused a generated answer from the prefix cache resumed from a stale linear state
+# (largest log-probability shift among the first token's five likeliest candidates, against
+# a full recompute: 3.25 nats, median of 16 documents; 0.54 on v0.5.21).
+# Measured on the box, same flags, same probes, 2026-10-09: prefill log-probabilities
+# identical bit for bit (30 texts of 1,024 tokens), GSM8K 248 and 247 of 250, needle exact
+# at 299,901 tokens, conc-check 40/40 and 160/160 on both, pool 872,414 to 878,687 on three
+# boots (854,123 to 888,628 on four v0.5.19 boots). v0.5.21 refuses --cuda-graph-max-bs
+# as ambiguous; the units say --cuda-graph-max-bs-decode, which v0.5.19 resolves to the
+# same settings, so IMAGE= with the v0.5.19 digest still rolls back (booted that way on
+# the box: the 18 production checks pass). cuBLAS and PyTorch are the same in both.
+IMAGE="${IMAGE:-lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469}"  # = lmsysorg/sglang:v0.5.21, 2026-10-01
 # Target model choice: "stock" (validated censored base, default) or "uncensored"
 # (huihui-ai abliteration re-quantized with the identical RadixArk modelopt
 # NVFP4 recipe: same architecture, chat template, MTP + vision, ~22 GB).
@@ -505,9 +518,11 @@ the port, the HF cache location and the opencode on/off choice are read from
 the installed unit or launcher (or the marker file) unless the env var or flag
 is passed explicitly.
 
-Env overrides (defaults are pinned to the versions validated 2026-09-11):
-  IMAGE=lmsysorg/sglang:v0.5.19      the moving tag of the pinned digest, instead
-                                     of the digest itself
+Env overrides (defaults are pinned to the versions validated on the reference
+box, the 27B image on 2026-10-09):
+  IMAGE=lmsysorg/sglang:v0.5.21      the moving tag of the pinned digest, instead
+                                     of the digest itself (this run only: IMAGE
+                                     is not remembered, pass it on every run)
   MODEL_REV=main                     use the latest target revision
   DRAFT2_REV=main                    latest DFlash2 draft revision
   DRAFT2_REPO=z-lab/Qwen3.8-27B-DFlash2 DRAFT2_REV=50307d4c4cde6860d4eee73e2547cd786fe8e8a4 DRAFT2_QUANT=unquant DRAFT2_TOKENS=8
@@ -1205,8 +1220,8 @@ if [ "$LANE" = "flash" ]; then
   docker pull "$PULL_TARGET" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try FLASH_IMAGE=lmsysorg/sglang:dev-qwen38-next-local ./install.sh"
   PULLED_IMAGE="$PULL_TARGET"
 else
-  step "2/10 Pulling the SGLang image (~39 GB, one-time, resumable)"
-  docker pull "$PULL_TARGET" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:v0.5.19 ./install.sh, the moving tag of the same release"
+  step "2/10 Pulling the SGLang image (~15 GB to download, 34 GB on disk, one-time, resumable)"
+  docker pull "$PULL_TARGET" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try IMAGE=lmsysorg/sglang:v0.5.21 ./install.sh, the moving tag of the same release"
   PULLED_IMAGE="$PULL_TARGET"
 fi
 # A digest pull leaves the image with no tag, and to Docker an image with no tag is
@@ -1659,11 +1674,11 @@ fi
 # request whose prompt + max_tokens passes its window, and the prompt opencode
 # sends can reach its compaction threshold plus one worst step (oc-limits.sh):
 #   native: 173000 - 20000 + 43863 + 64000 = 260863 <= 262144
-#   1m:     700000 (compaction at 680000) + 200000 = 880000, against the four
-#           pools measured on the official image at 0.76 (2026-09-17 and 18:
-#           902,398 / 889,131 / 889,722 / 887,797). The margin over the worst of
-#           those is 7,797 tokens, under 1%, and this box has reported 863,398
-#           in an earlier campaign, where the pair does not fit at all. These
+#   1m:     700000 (compaction at 680000) + 200000 = 880000, against pools of
+#           902,398 / 889,131 / 889,722 / 887,797 on v0.5.19 at 0.76 (2026-09-17
+#           and 18), a margin of 7,797 tokens over the worst; but the same image
+#           also booted to 854,123 and 873,429, and v0.5.21 to 872,414, 878,687
+#           and 877,859 (2026-10-09), where the pair does not fit. These
 #           static numbers are the starting point, not the contract: step 9
 #           runs oc-fit-limits.py against the pool the boot actually got and
 #           rewrites them (551,000 + 183,000 there). A box that skips that fit

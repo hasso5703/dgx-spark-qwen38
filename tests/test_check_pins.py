@@ -163,7 +163,7 @@ class TheCheckPins(PinsBase):
         self.assertTrue(all("FAIL" in ln for ln in images), out)
 
     def test_a_deleted_image_fails(self):
-        rc, out = self.run_pins({"registry-1.docker.io/v2/lmsysorg/sglang/manifests/sha256:d6e7": [404, ""]})
+        rc, out = self.run_pins({"registry-1.docker.io/v2/lmsysorg/sglang/manifests/sha256:b125": [404, ""]})
         self.assertEqual(rc, 1, out)
         self.assertIn("HTTP 404", out)
 
@@ -252,7 +252,7 @@ class TheEndpointsThatDoNotAnswer(PinsBase):
         for scen, label, said in (({"huggingface.co/RadixArk/Qwen3.8-27B-NVFP4/": [503, ""]}, "stock", "HTTP 503 from Hugging Face, so not checked"),
                                   ({"huggingface.co/RadixArk/Qwen3.8-27B-NVFP4/": ["000", ""]}, "stock", "no answer from Hugging Face, so not checked"),
                                   ({"bodies": {"pypi.org": "upstream connect error"}}, "sglang-wheel", "no answer from PyPI, so not checked"),
-                                  ({"registry-1.docker.io/v2/lmsysorg/sglang/manifests/sha256:d6e7": [502, ""]}, "27b-base", "HTTP 502 from the registry, so not checked")):
+                                  ({"registry-1.docker.io/v2/lmsysorg/sglang/manifests/sha256:b125": [502, ""]}, "27b-base", "HTTP 502 from the registry, so not checked")):
             with self.subTest(label=label, said=said):
                 rc, out = self.run_pins(scen)
                 self.assertEqual(rc, 1, out)
