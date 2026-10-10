@@ -1683,7 +1683,12 @@ fi
 #           runs oc-fit-limits.py against the pool the boot actually got and
 #           rewrites them (551,000 + 183,000 there). A box that skips that fit
 #           (--no-opencode, or the NOTE path when the engine is not up) keeps
-#           the static pair and can meet a proxy 400 late in a session.
+#           the static pair. The proxy does not refuse it: its guard is 92 % of
+#           the pool, and the largest prompt opencode sends with this pair, the
+#           compaction point plus one worst step (680,000 + 43,863 = 723,863),
+#           stays under it on every pool the lane booted to (832,993 the least). What
+#           does not fit is that prompt plus a whole answer: one that runs past
+#           about 109,000 tokens at the very end of a full session.
 # Service installs point agent clients at the keepalive proxy (step 8): SGLang
 # buffers tool-call arguments at any context length and agent CLIs abort
 # silent streams. --no-service has no proxy: direct server port for ./run.sh.
@@ -2510,12 +2515,13 @@ except Exception as e:
       echo "      (full inventory anytime: ./uninstall.sh --list)"
     fi
     # The 1m limits the generator writes are static, and their worst case
-    # (compaction at about 680,000 plus 200,000 of output) sits ABOVE the
-    # 863,398-token floor this pool has been measured at: on an unlucky boot a
-    # long session meets the proxy's refusal mid-conversation, which is the
-    # field case that produced oc-fit-limits.py in the first place. That was a
-    # documented manual step while 1m was opt-in. It cannot stay one now that
-    # 1m is what a plain install serves.
+    # (compaction at about 680,000, one agent step, and 200,000 of output) sits
+    # ABOVE every pool the lane booted to (832,993 to 922,094): a long session's last
+    # answers can run out of pool. On a smaller pool the proxy refuses the
+    # prompt itself mid-conversation, which is the field case that produced
+    # oc-fit-limits.py in the first place (2026-08-30). That was a documented
+    # manual step while 1m was opt-in. It cannot stay one now that 1m is what a
+    # plain install serves.
     if [ "$CONTEXT_MODE" = "1m" ] && [ "$OPENCODE" -eq 1 ]; then
       echo "fitting the opencode limits to the KV pool this boot actually got:"
       # --restart-agent: opencode-web was restarted above, before this fit rewrote its
