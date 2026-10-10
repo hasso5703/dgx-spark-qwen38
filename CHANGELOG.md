@@ -1,5 +1,96 @@
 # Changelog
 
+## v1.23.0 (2026-10-10): the 27B lane moves to SGLang v0.5.21, whose prefix cache no longer resumes a conversation from a stale state
+
+The 27B lane serves `lmsysorg/sglang@sha256:b1259f3e...` (`v0.5.21`, 2026-10-01) instead of
+`v0.5.19`. The SGLang cookbook's DGX Spark recipe for this model now names
+`lmsysorg/sglang:latest`, which is that release.
+
+**Why.** On `v0.5.19`, with DFlash and `--mamba-radix-cache-strategy extra_buffer` (this
+lane's exact flags), a verify step that crosses a 256-token tracking boundary saves no
+checkpoint of the linear-attention state, and a later turn that reuses a generated answer from
+the prefix cache starts from a stale one ([sglang#37817](https://github.com/sgl-project/sglang/issues/37817),
+fixed by [#37818](https://github.com/sgl-project/sglang/pull/37818) in `v0.5.20`). Every agent
+turn reuses the answer before it. Measured on the reference box, 16 documents: an 800-token
+answer, then a question that reuses it, asked with the cache and again after flushing it, and
+compared on the largest log-probability shift among the first token's five likeliest
+candidates. On `v0.5.19` that shift was 3.25 nats (median, 6.17 at most), and one cached
+answer opened with a stray `</think>`; two uncached runs gave the same log-probabilities to the
+last digit. On `v0.5.21` it is 0.54 (2.61 at most).
+
+**A resume is still not a recompute, on either release, and that is the arithmetic.** With only
+the prompt in the cache, no generated answer, the same measure gives 1.52 nats (median, 4.02 at
+most) on `v0.5.19` and `v0.5.21` alike, identical to the last digit on every document: that part
+is older than the fix above and untouched by it. Two recomputes without any cache, one in a
+single prefill chunk and one in chunks of 1,024 tokens (which carry the linear-attention state
+and the KV cache from chunk to chunk the way a resume does), differ by 1.41 (median, 4.02 at
+most) on the same documents: a resume from the cache lands where any chunked prefill lands, and
+the 0.54 left after the fix is inside that. Neither a float32 state (the same figures, for a KV
+pool of 514,505 tokens instead of about 875,000), nor a bf16 KV cache (1.26), nor SGLang's
+deterministic mode (0.70) closes it, so none of them is proposed.
+
+**One flag is renamed.** `v0.5.21` refuses `--cuda-graph-max-bs` (ambiguous between
+`--cuda-graph-max-bs-decode` and `--cuda-graph-max-bs-prefill`), so the 27B units and `run.sh`
+say `--cuda-graph-max-bs-decode 8`. `v0.5.19` resolves both spellings to the same 488 settings
+(checked with its own argument parser) and already printed a deprecation warning for the old
+one, so a rollback with `IMAGE=` keeps working: `v0.5.19` booted with the new name on the
+reference box, without that warning, and passed the 18 production checks through the proxy,
+the System One answer identical to the last digit. The CI step that compares `run.sh` with the
+unit template matched the old name only and would have stopped comparing this flag without a
+word; it matches the new one, and a mutant (8 changed to 4 in `run.sh`) is caught.
+
+**Measured, same flags, same probes, the same evening on the reference box.** The prefill is
+the same computation, bit for bit: the log-probability of every token of 30 fixed texts of
+1,024 tokens is identical on both releases (30,690 tokens, largest difference 0.0). GSM8K,
+the cookbook's metric, first 250 questions: 248 and 247. Needle retrieval exact at 120,196 and
+299,901 prompt tokens on both (494.8 s and 485.7 s for the long one). conc-check 40/40 serial
+and 160/160 at concurrency 8 on both. Single-stream decode: 105 to 108 ms per drafter step on
+both; acceptance follows the text generated (prose 2.17 and 2.09, code and reasoning 6.24 and
+6.98). The cookbook's serving benchmark (8,192 in, 1,024 out): 36.1 and 36.9 tok/s at
+concurrency 1 (one run each); at concurrency 4, three runs each, 78.0 and 76.9 tok/s
+(medians), with a median time per output token of 39.9 and 38.7 ms and a median first token
+at 4.48 and 4.36 s. KV pool 872,414 to 878,687 tokens on three boots (854,123 to 888,628 on
+four `v0.5.19` boots), with 19.2 to 21.7 GB of GPU memory left free (20.5 to 22.7 before).
+Idle: 2 to 3 % of one core on both.
+
+**A long agent session on `v0.5.21`**, 30 minutes through the proxy with GPU core dumps armed:
+29 requests, 20 of them turns of one conversation that grew from 209,974 to 523,069 prompt
+tokens (13 past 300,000, up to 507,207 of them from the prefix cache), with tool calls,
+sub-agent calls and fresh prompts in between. All answered, with no engine exception, no CUDA or
+cuBLAS error, no restart, no core dump, and no Xid in the kernel log.
+
+**What did not change.** cuBLAS (13.1.1.3), PyTorch (2.13.0+cu130), FlashInfer and Triton are
+the same in both images. The proxy is unchanged, and so are the engine weaknesses it guards
+against in `v0.5.21` (unbounded `top_logprobs`, sglang#40076; `stop_token_ids` and `input_ids`
+past the vocabulary; unbounded `n`), with one exception: a batch that mixes a request for
+`token_ids_logprob` with plain ones (sglang#34719) no longer killed the `v0.5.21` scheduler in
+20 rounds of the issue's own reproduction, in batches that did mix them. The issue is still
+open, so that field stays refused too; `docs/clients.md` and `SECURITY.md` say so. Through the
+proxy on `v0.5.21`: the key rule 24/24 and the engine's own 12/12, Claude Code, opencode,
+Hermes and pi each read a file with a tool and answered, the OpenAI and Anthropic SDKs,
+LiteLLM, and fetch under Node and Bun answered, and the cockpit showed no banner and no script
+error on any of its eleven views or the phone's drawer.
+
+**Said as it is.** `docs/upstream.md` still described the flash lane on its 2026-09-07 image
+and "not moved", while v1.19 had pinned `nightly-cu134-20260928-6caf0ff`. It now says what that
+nightly carries (each fix checked as an ancestor of its commit), and where upstream stands on
+2026-10-09: the cookbook still points DGX Spark at the 2026-09-07 build, and `v0.5.21` contains
+the flash lane's commit plus 49 more but ships a CUDA 13.0 image only, where this lane runs the
+CUDA 13.4 nightlies, so moving the flash lane is a measurement of its own.
+
+**What an update does.** A box that serves the 27B pulls the new image (from a box that has
+`v0.5.19`: 10.5 GB to download, 26.6 GB more on disk, the two share 7.0 GB of layers), rewrites
+the 27B unit and restarts the engine once. A box that serves the flash lane pulls it too, since
+the 27B lane is installed beside it, and rewrites the 27B unit without starting it; the flash
+engine keeps running. Before it pulls, the installer asks for 40 GB free where Docker keeps its
+images, and for about 50 GB when the Hugging Face cache shares that disk, as on the reference
+box; it says so and stops if they are not there. The previous image is untagged at once on a
+box that served the flash lane, so `docker image prune` reclaims it; on a box that served the
+27B it is still in use when the installer looks, and keeps its tag until the next run.
+`uninstall.sh` knows both. To stay on the previous release, pass the previous digest on every
+run (`IMAGE` is not remembered), or check out v1.22.14:
+`IMAGE=lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9 ./install.sh`.
+
 ## v1.22.14 (2026-10-08): the proxy follows a lane switch at once, even when no request comes while it is made
 
 Proxy v6.35. The proxy reads three facts from the engine and keeps them 600 s: its KV pool, the
