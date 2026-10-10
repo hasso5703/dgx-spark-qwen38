@@ -50,7 +50,7 @@ on('metrics', d => {
   // though the Busiest moment row says one request ran
   const w = d.watched_s || 0, any = d.requests > 0 || d.decode_tps != null || d.ttft_s != null || d.prefill_tps != null;
   const peaks = [d.pool_max ? `${Math.round(100 * d.pool_max)} % of the pool` : null,
-                 d.running_max ? `${fmtN(d.running_max)} requests at once` : null,
+                 d.running_max ? `${fmtN(d.running_max)} request${d.running_max > 1 ? 's' : ''} at once` : null,
                  d.queued_max ? `${fmtN(d.queued_max)} waiting` : null].filter(Boolean);
   setText('wm-note', w > 0 && w < 295 ? `watched ${fmtDur(w)}` : '');
   cap('wm-cap', d.approximate ? 'approximate' : any ? 'watching' : 'quiet', d.approximate ? 'warn' : any ? 'ok' : '');
