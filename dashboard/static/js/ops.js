@@ -45,6 +45,9 @@ on('metrics', d => {
       : 'The first read of the engine’s counters is on its way.');
     facts($('wm-facts'), []); return;
   }
+  // the gate counts only finished work, not the peaks: the cockpit's own canary shows up in
+  // num_running_reqs while it runs, and a canary-only window must still read quiet, even
+  // though the Busiest moment row says one request ran
   const w = d.watched_s || 0, any = d.requests > 0 || d.decode_tps != null || d.ttft_s != null || d.prefill_tps != null;
   const peaks = [d.pool_max ? `${Math.round(100 * d.pool_max)} % of the pool` : null,
                  d.running_max ? `${fmtN(d.running_max)} requests at once` : null,
