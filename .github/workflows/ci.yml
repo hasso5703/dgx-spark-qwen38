@@ -1039,7 +1039,7 @@ jobs:
           tpl_flags() { sed 's|__MODEL_REV_ARGS__|--revision X|' qwen38-sglang.service.template | sed -n '/ExecStart=/,/--port/p' | grep -oE -- '--[a-z][a-z-]*' | sort -u; }
           run_flags() { sed -n '/exec docker run/,/--port/p' run.sh | grep -oE -- '--[a-z][a-z-]*' | sort -u; }
           diff <(tpl_flags) <(run_flags)
-          vals() { grep -oE -- '--(memory-swap|memory|shm-size|mem-fraction-static|chunked-prefill-size|cuda-graph-max-bs|max-mamba-cache-size|max-running-requests|torch-compile-max-bs|num-continuous-decode-steps) [^ \\]+' "$1" | sort; }
+          vals() { grep -oE -- '--(memory-swap|memory|shm-size|mem-fraction-static|chunked-prefill-size|cuda-graph-max-bs-decode|max-mamba-cache-size|max-running-requests|torch-compile-max-bs|num-continuous-decode-steps) [^ \\]+' "$1" | sort; }
           diff <(vals qwen38-sglang.service.template) <(vals run.sh)
           # The draft triple is symbolic on both sides (placeholders in the
           # templates, "$VARS" in run.sh), so vals() above cannot compare it:

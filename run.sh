@@ -134,7 +134,7 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
     --served-model-name qwen3.8-27b \
     --mem-fraction-static 0.50 ${KV_CACHE_ARGS} \
     --attention-backend flashinfer --chunked-prefill-size 8192 \
-    --disable-prefill-cuda-graph --cuda-graph-max-bs 8 \
+    --disable-prefill-cuda-graph --cuda-graph-max-bs-decode 8 \
     --disable-flashinfer-autotune \
     --speculative-algorithm DFLASH --speculative-draft-model-path "$DRAFT2_REPO" \
     --speculative-draft-model-revision "$DRAFT2_REV" \
