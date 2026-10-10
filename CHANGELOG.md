@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.25.2 (2026-10-10): the serving key stays off every command line, in the scripts and in the commands the docs give
+
+**What was wrong.** Since v1.5.2, `needle.sh` run without `--model` asked `/v1/models` with
+`curl -H "Authorization: Bearer $KEY"`: for those seconds the key sat in curl's command line,
+which any local process reads in `/proc`. The same shape was in the cockpit's own smoke test
+(`dashboard/tests/smoke-http.sh`, the login's `-d` body), in the command the Decide view
+gives to paste, in the System One and abort examples of the README, `docs/systemone.md` and
+`docs/operations.md`, and in `evals/README.md`, whose `docker run -e OPENAI_API_KEY="$KEY"`
+put it in the docker client's command line (found on the reference box, 2026-10-10). The
+installer and `switch-model.sh` had been fixed for this in v1.18.7, and only they were tested.
+
+**What changes.** The bash scripts give curl the key as a header file, `-H @<(printf
+'Authorization: Bearer %s\n' "$KEY")`, the way the installer sends it (the smoke test's login
+body the same way, `--data-binary @<(...)`). The commands to paste, in the docs and the Decide
+view, pipe it to curl's standard input, `printf 'Authorization: Bearer %s\n' "$(cat
+~/.config/qwen38/api-key)" | curl -H @- ...`, which runs in sh as well as bash. printf is a
+builtin of those shells, so no program is started with the key among its arguments. docker
+gets it by name, `OPENAI_API_KEY="$KEY" docker run -e OPENAI_API_KEY`, and reads the value
+from its own environment.
+
+**Tests.** `needle.sh` run against a stand-in curl that records its arguments and the header
+files it is handed: the key is in the header file and in no argument; the Decide view's command
+run the same way. Every tracked file but the Python tests, their fixtures and this changelog is
+searched for the three shapes the key took (a bearer header, a docker `-e` with a value, a JSON
+body with the key). These three tests fail on v1.25.1, where the search lists nine lines; a
+fourth holds the search's patterns to those old lines, so it cannot go blind. On the reference
+box: `needle.sh` without `--model` finds the served model and its needle, the smoke test passes
+(20 checks) against a throwaway cockpit, and the System One command of the docs, run in dash
+and in bash, keeps the key out of curl's arguments and answers through the proxy.
+
+**What an update does.** The cockpit restarts for its new page. The engines, the proxy and the
+lanes keep running.
+
 ## v1.25.1 (2026-10-10): an image shows in its own shape and opens at full size, a video shows in its own shape
 
 **The Image view's result in its own shape.** The result screen kept a 16:9 box when the image

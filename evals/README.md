@@ -36,8 +36,9 @@ KEY="$(cat ~/.config/qwen38/api-key)"
 IMG="$(docker inspect -f '{{.Config.Image}}' qwen38-flash 2>/dev/null \
        || docker inspect -f '{{.Config.Image}}' qwen38-sglang)"
 
-# MMLU, 500 questions
-docker run --rm --network host -e OPENAI_API_KEY="$KEY" \
+# MMLU, 500 questions. -e names the variable and docker reads its value from its own
+# environment, so the key is on no command line (any local process reads those in /proc).
+OPENAI_API_KEY="$KEY" docker run --rm --network host -e OPENAI_API_KEY \
   -v "$PWD/evals/mmlu.py":/d.py:ro --entrypoint python3 \
   "$IMG" /d.py qwen3.8-flash-next 500 32
 
@@ -46,7 +47,7 @@ docker run --rm --network host -e OPENAI_API_KEY="$KEY" \
 # box goes into that container.
 curl -sL https://github.com/openai/human-eval/archive/6d43fb980f9fee3c892a914eda09951f772ad10d.tar.gz \
   | tar -xz && mv human-eval-6d43fb98* /tmp/human-eval
-docker run --rm --network host -e OPENAI_API_KEY="$KEY" -e PYTHONPATH=/he \
+OPENAI_API_KEY="$KEY" docker run --rm --network host -e OPENAI_API_KEY -e PYTHONPATH=/he \
   -v /tmp/human-eval:/he:ro -v "$PWD/evals/humaneval.py":/d.py:ro \
   --entrypoint python3 "$IMG" /d.py qwen3.8-flash-next 164 32
 ```

@@ -30,7 +30,7 @@ BASE="http://127.0.0.1:${PORT}"
 if [ -z "$MODEL" ]; then
   # || true: under pipefail a curl that cannot connect (exit 7) ended the script right
   # here, with its status and nothing on screen, before the line that explains it
-  MODEL="$(curl -s -m 5 -H "Authorization: Bearer $KEY" "$BASE/v1/models" \
+  MODEL="$(curl -s -m 5 -H @<(printf 'Authorization: Bearer %s\n' "$KEY") "$BASE/v1/models" \
     | python3 -c 'import json,sys
 try: print(json.load(sys.stdin)["data"][0]["id"])
 except Exception: pass' 2>/dev/null || true)"

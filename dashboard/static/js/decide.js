@@ -88,8 +88,11 @@ function s1Payload(){
 }
 function s1Curl(){
   const body = JSON.stringify(s1Payload(), null, 2).split('\n').map((l, i) => i ? '  ' + l : l).join('\n');
-  setText('s1-curl', "curl -s http://127.0.0.1:30001/v1/systemone \\\n  -H \"Authorization: Bearer $(cat ~/.config/qwen38/api-key)\" \\\n"
-    + "  -H 'Content-Type: application/json' -d " + shq(body));
+  // the key reaches curl on its standard input (-H @-), never as an argument: any local
+  // process reads a command line in /proc; printf is a builtin of sh, bash, zsh and fish
+  setText('s1-curl', "printf 'Authorization: Bearer %s\\n' \"$(cat ~/.config/qwen38/api-key)\" | "
+    + "curl -s http://127.0.0.1:30001/v1/systemone \\\n"
+    + "  -H @- -H 'Content-Type: application/json' -d " + shq(body));
   s1Sync();
 }
 function s1Problem(){

@@ -272,8 +272,8 @@ already running on this box. A state and typed questions (choice, score, yes/no)
 probabilities out, with nothing generated, nothing parsed and nothing sent anywhere:
 
 ```bash
-curl -s http://127.0.0.1:30001/v1/systemone \
-  -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)" -H 'Content-Type: application/json' -d '{
+printf 'Authorization: Bearer %s\n' "$(cat ~/.config/qwen38/api-key)" | curl -s http://127.0.0.1:30001/v1/systemone \
+  -H @- -H 'Content-Type: application/json' -d '{
   "state": "Hi, I have been trying to connect my Stripe account for 3 days and it keeps failing.",
   "model": "jev-latest",
   "questions": {

@@ -423,6 +423,29 @@ class TheDecideCommandSurvivesAnApostrophe(unittest.TestCase):
         self.assertEqual(json.loads(body), r["payload"])
 
 
+class TheDecideCommandKeepsTheKeyOffItsCommandLine(unittest.TestCase):
+    """The pasted command spelled the key into curl's arguments, `-H "Authorization: Bearer
+    $(cat ...)"`, where any local process reads it in /proc (found 2026-10-10). printf, a
+    shell builtin, hands it to curl's standard input now (-H @-)."""
+
+    def test_the_key_is_in_a_header_file_and_in_no_argument(self):
+        r = run(self, r"""
+        $('s1-state').value = 'a state'; s1Curl();
+        report({cmd: txt('s1-curl')});
+        """)
+        fake = ("curl(){ for a in \"$@\"; do printf 'ARG %s\\n' \"$a\"; case \"$a\" in @*) "
+                "printf 'FILE %s\\n' \"$(command cat \"${a#@}\")\";; esac; done; }\n"
+                "cat(){ echo SECRET-KEY-VALUE; }\n")
+        with tempfile.TemporaryDirectory() as d:
+            p = subprocess.run(["bash", "-c", fake + r["cmd"]], cwd=d, capture_output=True, text=True, timeout=20)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        args = [line[4:] for line in p.stdout.splitlines() if line.startswith("ARG ")]
+        files = [line[5:] for line in p.stdout.splitlines() if line.startswith("FILE ")]
+        self.assertTrue(args, p.stdout)
+        self.assertFalse([a for a in args if "SECRET-KEY-VALUE" in a], args)
+        self.assertIn("Authorization: Bearer SECRET-KEY-VALUE", files)
+
+
 class DecideQuestionIdsStayUnique(unittest.TestCase):
     """U35: a new question took its type and the list's length plus one as its id, so after
     a removal two questions could share one, and the payload, keyed by id, kept one."""

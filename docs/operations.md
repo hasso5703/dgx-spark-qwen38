@@ -16,7 +16,7 @@ client disconnects. For direct connections (`./run.sh`, curl, custom clients), a
 everything in flight with:
 
 ```bash
-curl -X POST -H "Authorization: Bearer $(cat ~/.config/qwen38/api-key)" \
+printf 'Authorization: Bearer %s\n' "$(cat ~/.config/qwen38/api-key)" | curl -X POST -H @- \
   -H 'Content-Type: application/json' -d '{"abort_all": true}' http://127.0.0.1:30000/abort_request
 ```
 

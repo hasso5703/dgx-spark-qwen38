@@ -19,7 +19,7 @@ ck "action sans session"  401 "$(code -X POST "$BASE/api/action" -H 'Content-Typ
 ck "login mauvaise cle"   403 "$(code -X POST "$BASE/api/login" -H 'Content-Type: application/json' -d '{"key":"wrong"}')"
 
 echo "── session:"
-ck "login bonne cle"      200 "$(code -c "$J" -X POST "$BASE/api/login" -H 'Content-Type: application/json' -d "{\"key\":\"$KEY\"}")"
+ck "login bonne cle"      200 "$(code -c "$J" -X POST "$BASE/api/login" -H 'Content-Type: application/json' --data-binary @<(printf '{"key":"%s"}' "$KEY"))"
 ck "state avec session"   200 "$(code -b "$J" "$BASE/api/state")"
 ck "registry"             200 "$(code -b "$J" "$BASE/api/registry")"
 ck "upstream (cache)"     200 "$(code -b "$J" "$BASE/api/upstream")"
@@ -104,7 +104,7 @@ if [ "$AG_ON" = "1" ] && [ "$AG_LISTEN" = "1" ]; then
   # the session cookie is per host: log in again through the relay's own address
   CB="http://$AG_BIND:${BASE##*:}"; R="http://$AG_BIND:$AG_PORT"; J2="$(mktemp)"
   trap 'rm -f "$J" "$J2"' EXIT   # this jar holds a session cookie too: not left in /tmp
-  if [ "$(code -c "$J2" -X POST "$CB/api/login" -H 'Content-Type: application/json' -d "{\"key\":\"$KEY\"}")" = "200" ]; then
+  if [ "$(code -c "$J2" -X POST "$CB/api/login" -H 'Content-Type: application/json' --data-binary @<(printf '{"key":"%s"}' "$KEY"))" = "200" ]; then
     ck "relais sans session"        401 "$(code "$R/global/health")"
     ck "relais page de connexion"   401 "$(code -H 'Accept: text/html' "$R/")"
     ck "relais origine etrangere"   403 "$(code -b "$J2" -H 'Origin: http://evil.example' "$R/global/health")"
