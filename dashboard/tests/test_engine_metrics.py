@@ -83,8 +83,8 @@ class Reading(unittest.TestCase):
                           pc=900, fwd=0.5, chk=0.25, q_sum=1.5, q_count=5, idle=3.0, aborted=2, ver=9))
         self.assertEqual(v, {"requests": 7.0, "prompt": 1001.0, "cached": 700.0, "generated": 33.0,
                              "ttft_sum": 2.5, "ttft_count": 7.0, "itl_sum": 1.25, "itl_count": 26.0,
-                             "pc": 900.0, "fwd": 0.5, "chk": 0.25, "q_sum": 1.5, "q_count": 5.0,
-                             "idle": 3.0, "aborted": 2.0, "ver": 9.0})
+                             "pc": 900.0, "fwd": 0.5, "q_sum": 1.5, "q_count": 5.0,
+                             "idle": 3.0, "aborted": 2.0, "ver": 9.0, "idle_seen": True})
 
     def test_created_buckets_and_gauges_are_not_counters(self):
         v = em.parse(page(ttft_count=3))
@@ -108,14 +108,14 @@ class Reading(unittest.TestCase):
         self.assertEqual(v, {"requests": 1.0, "prompt": 178.0, "cached": 0.0, "generated": 8.0,
                              "ttft_sum": 12.01112219899369, "ttft_count": 1.0,
                              "itl_sum": 0.0, "itl_count": 0.0,
-                             "pc": 0.0, "fwd": 0.0, "chk": 0.0, "q_sum": 0.0, "q_count": 0.0,
-                             "idle": 0.0, "aborted": 0.0, "ver": 0.0})
+                             "pc": 0.0, "fwd": 0.0, "q_sum": 0.0, "q_count": 0.0,
+                             "idle": 0.0, "aborted": 0.0, "ver": 0.0, "idle_seen": False})
 
     def test_an_engine_page_with_no_request_yet_is_zeros_not_none(self):
         v = em.parse("# HELP sglang:num_requests_total The number of requests.\n"
                      "# TYPE sglang:num_requests_total counter\n"
                      'sglang:num_running_reqs{model_name="m"} 0.0\n')
-        self.assertEqual(v, dict.fromkeys(em.NAMES, 0.0))
+        self.assertEqual(v, {**dict.fromkeys(em.NAMES, 0.0), "idle_seen": False})
 
     def test_a_trailing_timestamp_is_not_the_value(self):
         v = em.parse(f'sglang:num_requests_total{{{L}}} 12 1791322000000\n')
@@ -123,9 +123,11 @@ class Reading(unittest.TestCase):
 
     def test_only_the_label_sets_asked_for_are_summed(self):
         # the page carries the cache and decode modes of the realtime tokens and the decode
-        # stage of the stopwatch: none of them may leak into the prefill numbers
-        v = em.parse(page(pc=800, fwd=0.4))
-        self.assertEqual((v["pc"], v["fwd"], v["chk"]), (800.0, 0.4, 0.0))
+        # and chunked stages of the stopwatch: none of them may leak into the prefill
+        # numbers
+        v = em.parse(page(pc=800, fwd=0.4, chk=0.25))
+        self.assertEqual((v["pc"], v["fwd"]), (800.0, 0.4))
+        self.assertNotIn("chk", v)
 
     def test_the_levels_are_read_apart_and_absence_is_none(self):
         self.assertEqual(em.parse_gauges(page(running=2, queued=1, pool=0.62)),
@@ -133,10 +135,26 @@ class Reading(unittest.TestCase):
         self.assertEqual(em.parse_gauges(page()), {"running": None, "queued": None, "pool": None})
         self.assertIsNone(em.parse_gauges(f'sglang:num_running_reqs{{{L}}} NaN\n')["running"])
         self.assertIsNone(em.parse_gauges("hello"))
+    def test_a_page_without_the_idle_counter_says_so(self):
+        # some SGLang builds do not publish scheduler_idle_seconds_total at all
+        v = em.parse(page().replace("scheduler_idle_seconds_total",
+                                    "scheduler_idle_other_total"))
+        self.assertEqual((v["idle_seen"], v["idle"]), (False, 0.0))
+
+    def test_the_pool_keeps_its_fullest_rank_and_counts_add(self):
+        # multi-rank page: usage is a fraction and keeps its fullest rank; request
+        # counts add across ranks
+        t = ('sglang:full_token_usage{model_name="m",tp_rank="0"} 0.4\n'
+             'sglang:full_token_usage{model_name="m",tp_rank="1"} 0.7\n'
+             'sglang:num_running_reqs{model_name="m",tp_rank="0"} 3.0\n'
+             'sglang:num_running_reqs{model_name="m",tp_rank="1"} 5.0\n')
+        self.assertEqual(em.parse_gauges(t), {"pool": 0.7, "running": 8.0, "queued": None})
 
 
 def vals(**kw):
+    seen = kw.pop("idle_seen", True)
     out = dict.fromkeys(em.NAMES, 0.0)
+    out["idle_seen"] = seen
     out.update({k: float(v) for k, v in kw.items()})
     return out
 
@@ -213,10 +231,10 @@ class TheWindow(unittest.TestCase):
         w = em.Window(300)
         w.add(0, self.KEY, vals(pc=1000, fwd=1.0, q_sum=2.0, q_count=4, idle=20, aborted=1),
               gauges={"running": 3, "queued": 1, "pool": 0.4})
-        w.add(300, self.KEY, vals(pc=3000, fwd=2.5, chk=0.5, q_sum=6.0, q_count=8, idle=170, aborted=3),
+        w.add(300, self.KEY, vals(pc=3000, fwd=2.5, q_sum=6.0, q_count=8, idle=170, aborted=3),
               gauges={"running": 8, "queued": 0, "pool": 0.62})
         s = w.stats(300)
-        self.assertEqual(round(s["prefill_tps"], 3), 1000.0, "chunked prefill counts in its stopwatch")
+        self.assertAlmostEqual(s["prefill_tps"], 2000 / 1.5, 6)
         self.assertAlmostEqual(s["queue_s"], 1.0)
         self.assertAlmostEqual(s["idle_share"], 0.5)
         self.assertEqual(s["aborted"], 2)
@@ -259,15 +277,24 @@ class TheWindow(unittest.TestCase):
         w.add(50, self.KEY, vals(generated=100, itl_sum=2, itl_count=100))
         self.assertIsNone(w.stats(50)["acc_len"], "no verification calls: no accept length")
 
-    def test_a_client_decoding_inside_a_canary_breaks_the_isolation(self):
-        # a client that decodes but does not finish moves no request counter: the
-        # drafter's verification count is what says they were there
+    def test_a_chunked_prompt_counts_its_prefill_once(self):
+        # prefill_forward spans the chunked prompt's whole prefill; the chunked_prefill
+        # stage re-times the chunks from the same start, so summing both would halve the
+        # speed (a 27B lane: 80,400 tokens in ten 8,192-token chunks)
         w = em.Window(300)
-        w.add(0, self.KEY, vals())
-        overlapped = plus(CANARY, vals(generated=300, ver=50))
-        w.canary(50, self.KEY, vals(), overlapped)
-        w.add(60, self.KEY, overlapped)
-        self.assertTrue(w.stats(60)["approximate"])
+        w.add(0, self.KEY, em.parse(page()))
+        w.add(61.8, self.KEY, em.parse(page(pc=80_400, fwd=61.8, chk=61.7)))
+        self.assertAlmostEqual(w.stats(61.8)["prefill_tps"], 80_400 / 61.8, places=1)
+
+    def test_a_missing_idle_counter_says_nothing_about_idle(self):
+        # both ends of the window must have seen the idle counter: a build that never
+        # publishes it must not read as fully busy
+        w = em.Window(300)
+        w.add(0, self.KEY, vals(idle_seen=False))
+        w.add(300, self.KEY, vals(idle=300, idle_seen=False))
+        self.assertIsNone(w.stats(300)["idle_share"])
+        w.add(600, self.KEY, vals(idle=600))
+        self.assertIsNone(w.stats(600)["idle_share"], "one end still lacks the counter")
 
 
 CANARY = vals(requests=1, prompt=14, generated=2, ttft_sum=0.08, ttft_count=1, itl_sum=0.02, itl_count=1,

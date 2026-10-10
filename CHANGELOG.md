@@ -4,14 +4,17 @@
 
 The **Last 5 minutes** box fills in what was missing, from the same reads of the engine's
 own counters: the **prefill speed**, the computed prompt tokens over the engine's own
-per-request prefill stopwatch (`realtime_tokens_total` of `mode="prefill_compute"` over the
-`prefill_forward` and `chunked_prefill` stage times), so cache-served prompts do not
-inflate it and no idle time sits in it, the same rule the decode speed follows; the mean
+per-request prefill stopwatch (`realtime_tokens_total` of `mode="prefill_compute"` over
+the `prefill_forward` stage, which spans a chunked prompt's whole prefill; the
+`chunked_prefill` stage times the same chunks again from the same start, so adding it
+would count them twice), so cache-served prompts do not inflate it and no idle time sits
+in it, the same rule the decode speed follows; the mean
 time a request **waited in the queue** before the engine started on it
 (`queue_time_seconds`), which splits a client's wait into the wait for a seat and the wait
 for the work; the share of the window the scheduler had **nothing runnable** for
-(`scheduler_idle_seconds_total`), which lets a low "tokens per second for all clients" be
-read without mistaking it for a slow engine; the **aborts the engine accepted**
+(`scheduler_idle_seconds_total`), shown only when the engine publishes that counter,
+which lets a low "tokens per second for all clients" be read without mistaking it for a
+slow engine; the **aborts the engine accepted**
 (`num_aborted_requests_total`), the proxy's abandonment as it landed, beside the Abandoned
 requests panel; and the **accepted per draft step**, the window's generated tokens over
 `spec_verify_calls_total`, what one drafter step netted (its own token plus the drafts it
@@ -35,8 +38,8 @@ running requests, and that same 3.61 across the read that sandwiched the request
 New: label-aware counter names in `engine_metrics.py` (the modes of the realtime tokens,
 the stages of the stopwatch, the drafter's counter), a reader for the levels, and the
 window keeping peaks of them; `cockpit.py` carries the levels with every read and takes
-the canary's own prefill, queue and verification out with the rest of it, with the
-verification count now also holding the isolation gate. Nine new engine_metrics tests,
+the canary's own prefill, queue and verification out with the rest of it. Nine new
+engine_metrics tests,
 the collector stub carries the new counters, and the page fixture carries the new rows
 and what the quiet box says.
 
