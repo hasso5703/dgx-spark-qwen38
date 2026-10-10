@@ -69,8 +69,11 @@ were closed without being merged). Every one of those fields is declared
 unconstrained in the served release, checked in the image, and all of them
 are reachable from an ordinary chat request. One more is reachable from
 `/generate`: on a batch that mixes a request asking for `token_ids_logprob` with
-one that does not, the served 27B build fills a bare list for the one that did
-not ask and its scheduler dies on it (sglang#34719, open; refused since v1.22.13).
+one that does not, the 27B build served until v1.22 (`v0.5.19`) fills a bare list
+for the one that did not ask and its scheduler dies on it (sglang#34719, open;
+refused since v1.22.13). `v0.5.21` fills an empty tensor there, and the issue's
+reproduction no longer kills its scheduler (20 rounds on the reference box,
+2026-10-10); while the issue is open the field stays refused.
 
 The proxy refuses all of them with a 400. **That protects the clients that go
 through it, and nothing else.** Whatever reaches the engine's own port with the

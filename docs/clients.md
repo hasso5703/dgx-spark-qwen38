@@ -32,7 +32,7 @@ OpenAI documents `top_logprobs` as "an integer between 0 and 20" and SGLang decl
 out of range` **inside the scheduler**. One request from one client ends the engine for
 everybody, and this box needs about nine minutes to boot again
 ([sglang#40076](https://github.com/sgl-project/sglang/issues/40076), open since
-2026-09-18; the field is still unbounded in the served `v0.5.19`, checked in the image).
+2026-09-18; the field is still unbounded in `v0.5.19` and in `v0.5.21`, checked in both images).
 The proxy refuses anything above `TOP_LOGPROBS_CEILING` (1,024) on the three routes that
 carry the number under three different names: `top_logprobs` on `/v1/chat/completions`,
 `logprobs` on `/v1/completions`, and `top_logprobs_num` on `/generate`, the last one
@@ -64,12 +64,15 @@ cannot run the rest of the guard stands down rather than refuse traffic it canno
 
 One more is reachable from `/generate`, and from the `parameters` of `/vertex_generate`:
 `token_ids_logprob`. On a batch that mixes a request asking for it with one that does not,
-the served 27B build (`v0.5.19`) fills a bare list for the one that did not ask and then
-calls `.tolist()` on every entry, so the scheduler dies on the first mixed batch
-([sglang#34719](https://github.com/sgl-project/sglang/issues/34719), open; the flash build
-fixes one of its two producers). Since v1.22.13 the proxy refuses any value the engine would
-act on; an empty one, which the engine itself treats as absent, passes. `top_logprobs` is
-still relayed.
+the 27B build served until v1.22 (`v0.5.19`) fills a bare list for the one that did not ask
+and then calls `.tolist()` on every entry, so the scheduler dies on the first mixed batch
+([sglang#34719](https://github.com/sgl-project/sglang/issues/34719), still open). `v0.5.21`
+and the flash build fill an empty tensor there instead (their logprob files are identical,
+checked on 2026-10-09), and the issue's two-request reproduction, run 20 times on a `v0.5.21`
+boot in batches that mixed the two kinds of request, no longer killed its scheduler
+(2026-10-10). While the issue is open the proxy keeps refusing the field: since v1.22.13 it
+refuses any value the engine would act on; an empty one, which the engine itself treats as
+absent, passes. `top_logprobs` is still relayed.
 
 | | path | dialect |
 |---|---|---|
