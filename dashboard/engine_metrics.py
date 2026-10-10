@@ -17,19 +17,26 @@ included (the v1.22.12 notes in CHANGELOG.md have the measurements).
 
 The prefill numbers come from the engine's own counters too: `realtime_tokens_total` with
 `mode="prefill_compute"` counts only prompt tokens it actually computed (cache-served ones
-are another mode), and `per_stage_req_latency_seconds` with `stage="prefill_forward"` and
-`stage="chunked_prefill"` is its stopwatch of prefill per request, so a difference of two
-reads holds no idle time either. Measured on the reference box (2026-10-08): a cold 1,908-
-token prompt took 0.955 s of that stopwatch, 1,998 tok/s, the scale the benchmarks table's
-~2,250 prefill says for a saturated lane. `queue_time_seconds` is the waiting before the
-engine starts a request, `scheduler_idle_seconds_total` the time it had nothing runnable,
-and `num_aborted_requests_total` the aborts it accepted (the proxy's abandonment, landed).
-Of the drafter: `spec_verify_calls_total` counts every verification it ran, and the
-window's generated tokens over its difference is that window's accept length, what one
-step netted (its one token plus the drafts it accepted). Measured on the reference box
-(2026-10-08): a 700-token request spent 194 verifications, 3.61 a step at 4 drafts, while
-the `spec_accept_length` gauge sat at 2.7, an average since the boot, and the scheduler
-prints its own only per a log window of its choice.
+are another mode), and `per_stage_req_latency_seconds` with `stage="prefill_forward"` is
+the engine's stopwatch of a request's whole prefill, from its first forward to the last
+chunk, so a difference of two reads holds no idle time either. The `chunked_prefill` stage
+times the same chunks from the same start, inside `prefill_forward`, so it is not summed
+in: on a 27B lane an 80,400-token prompt in ten 8,192-token chunks ran 61.8 s of
+prefill_forward, 1,301 tok/s, which counting the chunks as well would have halved to 651.
+Measured on the reference box (2026-10-08): a cold 1,908-token prompt took 0.955 s of the
+stopwatch, 1,998 tok/s, the scale the benchmarks table's ~2,250 prefill says for a
+saturated lane. `queue_time_seconds` is the waiting before the engine starts a request,
+`scheduler_idle_seconds_total` the time it had nothing runnable, and
+`num_aborted_requests_total` the aborts it accepted (the proxy's abandonment, landed).
+The idle share is only shown when both reads of a window carry
+`scheduler_idle_seconds_total`: some SGLang builds do not publish it, and a missing
+counter would read as a fully busy engine.
+Of the drafter: `spec_verify_calls_total` counts a request's verifications when it
+finishes, and the window's generated tokens over its difference is that window's accept
+length, what one step netted (its one token plus the drafts it accepted). Measured on the
+reference box (2026-10-08): a 700-token request spent 194 verifications, 3.61 a step at
+4 drafts, while the `spec_accept_length` gauge sat at 2.7, an average since the boot, and
+the scheduler prints its own only per a log window of its choice.
 The levels (`full_token_usage`, `num_running_reqs`, `num_queue_reqs`) are not counters: no
 delta is possible, so the window keeps its own peaks, honest lower bounds of what peaked.
 
@@ -66,7 +73,6 @@ NAMES = {
     # no idle time and no cache-served token inflates it
     "pc": ("sglang:realtime_tokens_total", 'mode="prefill_compute"'),
     "fwd": ("sglang:per_stage_req_latency_seconds_sum", 'stage="prefill_forward"'),
-    "chk": ("sglang:per_stage_req_latency_seconds_sum", 'stage="chunked_prefill"'),
     "q_sum": ("sglang:queue_time_seconds_sum", None),
     "q_count": ("sglang:queue_time_seconds_count", None),
     "idle": ("sglang:scheduler_idle_seconds_total", None),
@@ -78,6 +84,9 @@ GAUGES = {
     "queued": ("sglang:num_queue_reqs", None),
     "pool": ("sglang:full_token_usage", None),
 }
+# the pool's fullness is a fraction: a fleet's pool is only as full as its fullest rank,
+# so the ranks never add; the request counts do
+_MAX_LEVELS = {"pool"}
 
 
 def _by(spec):
@@ -92,14 +101,16 @@ _GA_BY_NAME = _by(GAUGES)
 _SAMPLE = re.compile(r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^\n]*\})?[ \t]+(\S+)(?:[ \t]+\S+)?$')
 
 
-def _read(text: str, spec_by_name, keys):
+def _read(text: str, spec_by_name, keys, max_keys=()):
     """Sum the listed families over their label sets (a model, a cache source, streaming
     or not), taking only the label sets whose filter appears in the line (the modes of the
-    realtime tokens, the stages of the per-request stopwatch). A name not on the page yet
-    maps to None: prometheus_client writes a labelled series only once it was first
-    observed, and an engine just ready lists no cached tokens and no inter-token time (its
-    own warm-up request had neither). None when the page has no SGLang metric at all: not
-    an SGLang engine's /metrics."""
+    realtime tokens, the stages of the per-request stopwatch). Keys in `max_keys` keep
+    their highest value across label sets instead of adding: the pool's fullness is a
+    fraction, and a fleet's pool is only as full as its fullest rank. A name not on the
+    page yet maps to None: prometheus_client writes a labelled series only once it was
+    first observed, and an engine just ready lists no cached tokens and no inter-token
+    time (its own warm-up request had neither). None when the page has no SGLang metric at
+    all: not an SGLang engine's /metrics."""
     out = dict.fromkeys(keys, None)
     sglang = False
     for line in text.splitlines():
@@ -120,7 +131,12 @@ def _read(text: str, spec_by_name, keys):
         labels = m.group(2) or ""
         for key, label in cands:
             if label is None or label in labels:
-                out[key] = v if out[key] is None else out[key] + v
+                if out[key] is None:
+                    out[key] = v
+                elif key in max_keys:
+                    out[key] = max(out[key], v)
+                else:
+                    out[key] += v
     if not sglang:
         return None
     return {k: (0.0 if v is None else v) if spec_by_name is _BY_NAME else v
@@ -129,14 +145,20 @@ def _read(text: str, spec_by_name, keys):
 
 def parse(text: str) -> dict | None:
     """The counters of a /metrics page, each summed as `_read` says; a counter not on the
-    page yet is zero, so a difference of two reads is the window's own."""
-    return _read(text, _BY_NAME, NAMES)
+    page yet is zero, so a difference of two reads is the window's own. `idle_seen` says
+    whether the page carried the idle counter at all: some SGLang builds never publish
+    it, and an absent counter must not read as a busy engine."""
+    out = _read(text, _BY_NAME, NAMES)
+    if out is not None:
+        out["idle_seen"] = "sglang:scheduler_idle_seconds_total" in text
+    return out
 
 
 def parse_gauges(text: str) -> dict | None:
     """The instantaneous levels of a /metrics page, or None when a name is not on it: a
-    peak is only claimed for values the cockpit actually read."""
-    return _read(text, _GA_BY_NAME, GAUGES)
+    peak is only claimed for values the cockpit actually read. The pool keeps its fullest
+    rank; the request counts add across ranks."""
+    return _read(text, _GA_BY_NAME, GAUGES, _MAX_LEVELS)
 
 
 def delta(a: dict, b: dict) -> dict:
@@ -145,10 +167,10 @@ def delta(a: dict, b: dict) -> dict:
 
 def isolated(d: dict) -> bool:
     """A difference that holds the canary and nothing else: one finished request, one first
-    token, and at most the one inter-token interval and one drafter verification of its
-    two tokens."""
-    return (d["requests"] == 1 and d["ttft_count"] == 1 and d["itl_count"] <= 1
-            and d["ver"] <= 1)
+    token, and at most the one inter-token interval of its two tokens. The drafter's
+    verification count moves only when a request finishes, where the first two already
+    moved, so it adds nothing to this gate."""
+    return d["requests"] == 1 and d["ttft_count"] == 1 and d["itl_count"] <= 1
 
 
 class Window:
@@ -243,8 +265,10 @@ class Window:
             "generated_tokens": int(round(d["generated"])),
             "reuse": d["cached"] / d["prompt"] if d["prompt"] > 0 else None,
             # computed prompt tokens over the engine's own prefill stopwatch: cache-served
-            # tokens and idle time are both out of it, the same way the decode speed is
-            "prefill_tps": d["pc"] / (d["fwd"] + d["chk"]) if d["pc"] > 0 and d["fwd"] + d["chk"] > 0 else None,
+            # tokens and idle time are both out of it, the same way the decode speed is.
+            # The stopwatch's prefill_forward stage spans a chunked prompt's whole prefill,
+            # so the chunked_prefill stage inside it never counts again
+            "prefill_tps": d["pc"] / d["fwd"] if d["pc"] > 0 and d["fwd"] > 0 else None,
             "queue_s": d["q_sum"] / d["q_count"] if d["q_count"] > 0 else None,
             "ttft_s": d["ttft_sum"] / d["ttft_count"] if d["ttft_count"] > 0 else None,
             "decode_tps": d["itl_count"] / d["itl_sum"] if d["itl_sum"] > 0 and d["itl_count"] > 0 else None,
@@ -252,7 +276,10 @@ class Window:
             # count bearing no idle time; a lane without a drafter calls verify never
             "acc_len": d["generated"] / d["ver"] if d["ver"] > 0 else None,
             "throughput_tps": d["generated"] / covered if covered > 0 else None,
-            "idle_share": min(1.0, d["idle"] / covered) if covered > 0 else None,
+            # the window's idle share of its span, only when both ends saw the idle
+            # counter: an engine that does not publish it must not read as fully busy
+            "idle_share": min(1.0, d["idle"] / covered)
+            if covered > 0 and a.get("idle_seen") and b.get("idle_seen") else None,
             "aborted": int(round(d["aborted"])),
             "pool_max": peak("pool"),
             "running_max": peak("running", whole=True),
