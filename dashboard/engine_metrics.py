@@ -43,9 +43,11 @@ delta is possible, so the window keeps its own peaks, honest lower bounds of wha
 
 Two things are not the clients': the cockpit's own canary, a real two-token chat request
 every 90 s while nothing else runs, which SGLang counts like any other, and the /health
-probe, which it does not count (log_metrics=False). The canary is taken out exactly: the
-cockpit reads the counters just before and just after it, and the difference is its own as
-long as nothing else moved meanwhile; when something did, the window says its numbers are
+probe, which it does not count (log_metrics=False). The canary's request counters are taken
+out exactly: the cockpit reads them just before and just after it, and the difference is
+the canary's own as long as nothing else moved meanwhile (the idle wall clock is the
+engine's, not the canary's, so it is not subtracted); when something did move, the window
+says its numbers are
 approximate for as long as that canary lies inside it. A read of the window's own that ran while a
 canary was in flight may or may not hold it, so it is dropped: every read kept is wholly
 before or wholly after each canary, and the canary is taken out of exactly the windows that
@@ -101,8 +103,22 @@ def _by(spec):
 
 _BY_NAME = _by(NAMES)
 _GA_BY_NAME = _by(GAUGES)
-_IDLE_LINE = re.compile(r'(?m)^sglang:scheduler_idle_seconds_total(\{[^}\n]*\})?[ \t]')
+_IDLE_LINE = re.compile(
+    r'(?m)^sglang:scheduler_idle_seconds_total(?:\{[^}\n]*\})?[ \t]+(\S+)(?:[ \t]+\S+)?$')
 _SAMPLE = re.compile(r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^\n]*\})?[ \t]+(\S+)(?:[ \t]+\S+)?$')
+
+
+def _idle_seen(text: str) -> bool:
+    """Whether a data line of the idle counter carries a value the reader accepts: a
+    counter that was registered but never observed prints only its HELP and TYPE lines,
+    and a NaN is not a value; neither may read as an engine that is fully busy."""
+    for m in _IDLE_LINE.finditer(text):
+        try:
+            if math.isfinite(float(m.group(1))):
+                return True
+        except ValueError:
+            pass
+    return False
 
 
 def _read(text: str, spec_by_name, keys, max_keys=()):
@@ -113,8 +129,10 @@ def _read(text: str, spec_by_name, keys, max_keys=()):
     fraction, and a fleet's pool is only as full as its fullest rank. A name not on the
     page yet maps to None: prometheus_client writes a labelled series only once it was
     first observed, and an engine just ready lists no cached tokens and no inter-token
-    time (its own warm-up request had neither). None when the page has no SGLang metric at
-    all: not an SGLang engine's /metrics."""
+    time (its own warm-up request had neither). Zero-filling of the absent names is tied
+    to the engine's counter names: a caller that passes any other spec keeps its Nones
+    and must not difference them. None when the page has no SGLang metric at all: not an
+    SGLang engine's /metrics."""
     out = dict.fromkeys(keys, None)
     sglang = False
     for line in text.splitlines():
@@ -150,11 +168,12 @@ def _read(text: str, spec_by_name, keys, max_keys=()):
 def parse(text: str) -> dict | None:
     """The counters of a /metrics page, each summed as `_read` says; a counter not on the
     page yet is zero, so a difference of two reads is the window's own. `idle_seen` says
-    whether the page carried a data line for the idle counter: some SGLang builds never
-    publish it, and an absent counter must not read as a busy engine."""
+    whether a data line of the idle counter carried a value the reader accepts: some
+    SGLang builds never publish it, and an absent counter must not read as a busy engine.
+    Its HELP and TYPE lines, and a NaN line, are not values."""
     out = _read(text, _BY_NAME, NAMES)
     if out is not None:
-        out["idle_seen"] = _IDLE_LINE.search(text) is not None
+        out["idle_seen"] = _idle_seen(text)
     return out
 
 
@@ -251,7 +270,10 @@ class Window:
             if t0 < tc <= t1:
                 n_canary += 1
                 for k in NAMES:
-                    d[k] -= dc[k]
+                    # the idle wall clock is the engine's, not the canary's: the idle it
+                    # kept while the canary ran was real idle time, and stays in the share
+                    if k != "idle":
+                        d[k] -= dc[k]
         covered = t1 - t0
         gs = [g for _, _, g in self.samples if g]
 

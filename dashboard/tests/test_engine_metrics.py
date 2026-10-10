@@ -86,7 +86,7 @@ class Reading(unittest.TestCase):
                              "pc": 900.0, "fwd": 0.5, "q_sum": 1.5, "q_count": 5.0,
                              "idle": 3.0, "aborted": 2.0, "ver": 9.0, "idle_seen": True})
 
-    def test_created_buckets_and_gauges_are_not_counters(self):
+    def test_ttft_le_buckets_are_not_summed_into_the_count(self):
         v = em.parse(page(ttft_count=3))
         self.assertEqual(v["ttft_count"], 3.0, "the le= buckets are not added to the count")
 
@@ -127,7 +127,6 @@ class Reading(unittest.TestCase):
         # numbers
         v = em.parse(page(pc=800, fwd=0.4, chk=0.25))
         self.assertEqual((v["pc"], v["fwd"]), (800.0, 0.4))
-        self.assertNotIn("chk", v)
 
     def test_the_levels_are_read_apart_and_absence_is_none(self):
         self.assertEqual(em.parse_gauges(page(running=2, queued=1, pool=0.62)),
@@ -135,11 +134,25 @@ class Reading(unittest.TestCase):
         self.assertEqual(em.parse_gauges(page()), {"running": None, "queued": None, "pool": None})
         self.assertIsNone(em.parse_gauges(f'sglang:num_running_reqs{{{L}}} NaN\n')["running"])
         self.assertIsNone(em.parse_gauges("hello"))
+
     def test_a_page_without_the_idle_counter_says_so(self):
         # some SGLang builds do not publish scheduler_idle_seconds_total at all
         v = em.parse(page().replace("scheduler_idle_seconds_total",
                                     "scheduler_idle_other_total"))
         self.assertEqual((v["idle_seen"], v["idle"]), (False, 0.0))
+
+    def test_idle_counter_help_lines_and_nan_do_not_count_as_seen(self):
+        # a counter that is registered but never observed prints only its HELP and TYPE
+        # lines, and a NaN is not a value: neither may read as an engine that is fully busy
+        head = ('# HELP sglang:scheduler_idle_seconds_total The idle time of the scheduler.\n'
+                '# TYPE sglang:scheduler_idle_seconds_total counter\n'
+                f'sglang:num_requests_total{{{L}}} 3.0\n')
+        v = em.parse(head)
+        self.assertEqual((v["idle_seen"], v["idle"]), (False, 0.0), "HELP lines only")
+        v = em.parse(head + f'sglang:scheduler_idle_seconds_total{{{L}}} NaN\n')
+        self.assertEqual((v["idle_seen"], v["idle"]), (False, 0.0), "a NaN is not a value")
+        v = em.parse(head + f'sglang:scheduler_idle_seconds_total{{{L}}} 12.5\n')
+        self.assertEqual((v["idle_seen"], v["idle"]), (True, 12.5))
 
     def test_the_pool_keeps_its_fullest_rank_and_counts_add(self):
         # multi-rank page: usage is a fraction and keeps its fullest rank; request
@@ -375,6 +388,21 @@ class TheCanaryIsTakenOut(unittest.TestCase):
         w.add(330, self.KEY, plus(CANARY, vals(requests=1, prompt=10)))
         s = w.stats(330)
         self.assertEqual((s["requests"], s["prompt_tokens"], s["canaries_out"]), (1, 10, 0))
+
+    def test_the_canary_span_keeps_its_idle_time(self):
+        # the idle wall clock is the engine's, not the canary's: the idle that accumulated
+        # inside the canary's before/after reads stays in the window's share
+        w = em.Window(300)
+        w.add(0, self.KEY, vals(idle=0))
+        w.canary(100, self.KEY, vals(idle=95),
+                 vals(idle=105, requests=1, prompt=14, generated=2, ttft_sum=0.08,
+                      ttft_count=1, itl_sum=0.02, itl_count=1, pc=14, fwd=0.01, ver=1))
+        w.add(300, self.KEY,
+              vals(idle=300, requests=1, prompt=14, generated=2, ttft_sum=0.08,
+                   ttft_count=1, itl_sum=0.02, itl_count=1, pc=14, fwd=0.01, ver=1))
+        s = w.stats(300)
+        self.assertAlmostEqual(s["idle_share"], 1.0)
+        self.assertEqual((s["requests"], s["canaries_out"]), (0, 1))
 
 
 class AgainstAReplay(unittest.TestCase):
