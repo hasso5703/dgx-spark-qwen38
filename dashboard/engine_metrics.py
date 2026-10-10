@@ -28,9 +28,10 @@ stopwatch, 1,998 tok/s, the scale the benchmarks table's ~2,250 prefill says for
 saturated lane. `queue_time_seconds` is the waiting before the engine starts a request,
 `scheduler_idle_seconds_total` the time it had nothing runnable, and
 `num_aborted_requests_total` the aborts it accepted (the proxy's abandonment, landed).
-The idle share is only shown when both reads of a window carry
-`scheduler_idle_seconds_total`: some SGLang builds do not publish it, and a missing
-counter would read as a fully busy engine.
+The idle share is only shown when both reads of a window carry a data line for
+`scheduler_idle_seconds_total`: some SGLang builds do not publish it (a registered
+counter still prints its HELP line), and a missing counter would read as a fully busy
+engine.
 Of the drafter: `spec_verify_calls_total` counts a request's verifications when it
 finishes, and the window's generated tokens over its difference is that window's accept
 length, what one step netted (its one token plus the drafts it accepted). Measured on the
@@ -84,8 +85,10 @@ GAUGES = {
     "queued": ("sglang:num_queue_reqs", None),
     "pool": ("sglang:full_token_usage", None),
 }
-# the pool's fullness is a fraction: a fleet's pool is only as full as its fullest rank,
-# so the ranks never add; the request counts do
+# each label set is one scheduler: within a DP group the ranks are state-synchronous and
+# only the group leader logs stats, so the sets on a page are independent schedulers and
+# the request counts add; the pool's fullness is a fraction of one pool, and a fleet's
+# pool is only as full as its fullest
 _MAX_LEVELS = {"pool"}
 
 
@@ -98,6 +101,7 @@ def _by(spec):
 
 _BY_NAME = _by(NAMES)
 _GA_BY_NAME = _by(GAUGES)
+_IDLE_LINE = re.compile(r'(?m)^sglang:scheduler_idle_seconds_total(\{[^}\n]*\})?[ \t]')
 _SAMPLE = re.compile(r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^\n]*\})?[ \t]+(\S+)(?:[ \t]+\S+)?$')
 
 
@@ -146,11 +150,11 @@ def _read(text: str, spec_by_name, keys, max_keys=()):
 def parse(text: str) -> dict | None:
     """The counters of a /metrics page, each summed as `_read` says; a counter not on the
     page yet is zero, so a difference of two reads is the window's own. `idle_seen` says
-    whether the page carried the idle counter at all: some SGLang builds never publish
-    it, and an absent counter must not read as a busy engine."""
+    whether the page carried a data line for the idle counter: some SGLang builds never
+    publish it, and an absent counter must not read as a busy engine."""
     out = _read(text, _BY_NAME, NAMES)
     if out is not None:
-        out["idle_seen"] = "sglang:scheduler_idle_seconds_total" in text
+        out["idle_seen"] = _IDLE_LINE.search(text) is not None
     return out
 
 
