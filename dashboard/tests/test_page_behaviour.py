@@ -1237,6 +1237,11 @@ class TheLastFiveMinutesSayTheEnginesCounters(unittest.TestCase):
         self.assertEqual((r["cap"], r["note"]), ("watching", ""), r)
         self.assertIn("each request counted once, when it finishes", r["verdict"])
 
+    def test_one_request_at_once_is_said_in_the_singular(self):
+        # the reference box's 27B, one prompt in the window (2026-10-11): "1 requests at once"
+        r = self.box(dict(self.FULL, pool_max=0.09, running_max=1, queued_max=0))
+        self.assertEqual(r["facts"]["Busiest moment"], "9 % of the pool, 1 request at once")
+
     def test_a_young_window_says_how_long_it_watched(self):
         self.assertEqual(self.box(dict(self.FULL, watched_s=70.0))["note"], "watched 70 s")
 
