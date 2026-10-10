@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/hasso5703/dgx-spark-qwen38/main/get
 - **Text**: Qwen3.8 27B at 71.4 tok/s with a 1M context by default, and Qwen3.8-Flash-Next
   176B on the same box, seven switchable targets, an OpenAI- and Anthropic-compatible API.
 - **Images**: Qwen-Image 2.1, a 1024×1024 image in about 34 s, or 7.5 s with its eight-step Turbo.
-- **Video with sound**: MiniMax-H3, a 4 s clip at 480p with its audio in 10 to 13 minutes.
+- **Video with sound**: MiniMax-H3, a 4 s clip at 480p with its audio in 10 to 13 minutes, or about 2 with its Turbo.
 - **Agents**: opencode wired to the local model, in a terminal or in the cockpit's Agent
   view, from a laptop or a phone.
 - **Typed decisions**: a System One endpoint that answers with calibrated probabilities
@@ -111,7 +111,7 @@ The engine answers `/health` even when it is wedged, so the cockpit runs a real 
 
 ## Quickstart
 
-Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). The image and video lanes also build one package against Python's headers, which DGX OS leaves out: `sudo apt-get install -y python3-dev` first (each lane asks for it before it downloads anything). Free disk for the whole box: about **440 GB**, as the lanes measure on the reference box: the 27B lane 54 GB (21 checkpoint, 1.5 draft, 31 image), the flash lane 203 (126 checkpoint, 29 image, 48 for the PLE table it rewrites at every boot), the image lane 40 (31 checkpoint, 9 runtime) and the video lane 144 (135 checkpoint, 9 runtime). Each lane checks its own room before it downloads anything, and a lane that does not fit is left out and named at the end, with the command that adds it later, while the rest installs. What the text lanes check, in detail: for a 27B target, **45 GB** on the disk of `HF_CACHE` (`~/.cache/huggingface` by default) for the checkpoints and caches, and **40 GB** on Docker's (`/var/lib/docker`) for its 33 GB image; for a flash target, **230 GB** on the disk of `HF_CACHE` (180 for the checkpoint and its caches, 50 for the 47.7 GiB PLE table the lane rewrites at every boot, counted on the disk of `PLE_DIR` instead when that is another one) and **35 GB** on Docker's for its 30 GB image. When both are one disk, as on a stock box, the installer asks for the sum there: **85 GB** for a 27B target, **265 GB** for a flash one. What the cache already holds of a checkpoint comes off its share (a checkpoint that is all there needs 10 GB of working room instead), and an image already pulled needs 5 GB instead of its own size. Caching the other 27B targets adds ~22 GB per NVFP4 target and ~31 GB per FP8 one.
+Requirements: DGX Spark or other GB10 machine (128 GB unified), stock DGX OS (Docker + NVIDIA container toolkit). The image and video lanes also build one package against Python's headers, which DGX OS leaves out: `sudo apt-get install -y python3-dev` first (each lane asks for it before it downloads anything). Free disk for the whole box: about **460 GB**, as the lanes measure on the reference box: the 27B lane 54 GB (21 checkpoint, 1.5 draft, 31 image), the flash lane 203 (126 checkpoint, 29 image, 48 for the PLE table it rewrites at every boot), the image lane 40 (31 checkpoint, 9 runtime) and the video lane 160 (135 checkpoint and its Turbo adapter, 9 runtime, 16 for the runtime's own caches). Each lane checks its own room before it downloads anything, and a lane that does not fit is left out and named at the end, with the command that adds it later, while the rest installs. What the text lanes check, in detail: for a 27B target, **45 GB** on the disk of `HF_CACHE` (`~/.cache/huggingface` by default) for the checkpoints and caches, and **40 GB** on Docker's (`/var/lib/docker`) for its 33 GB image; for a flash target, **230 GB** on the disk of `HF_CACHE` (180 for the checkpoint and its caches, 50 for the 47.7 GiB PLE table the lane rewrites at every boot, counted on the disk of `PLE_DIR` instead when that is another one) and **35 GB** on Docker's for its 30 GB image. When both are one disk, as on a stock box, the installer asks for the sum there: **85 GB** for a 27B target, **265 GB** for a flash one. What the cache already holds of a checkpoint comes off its share (a checkpoint that is all there needs 10 GB of working room instead), and an image already pulled needs 5 GB instead of its own size. Caching the other 27B targets adds ~22 GB per NVFP4 target and ~31 GB per FP8 one.
 
 One command, first install and updates alike. It clones or updates `~/dgx-spark-qwen38`, then runs the pinned installer, which installs **the whole box**: both text lanes (the 27B serves, Flash-Next 176B is installed beside it, ready to load), the image lane, the video lane, the keepalive proxy with its typed-decision endpoint, the opencode wiring, the cockpit and its Agent view. Every lane a run installs for the first time proves it serves before the run ends. On a new box that is a little over an hour of work, plus the downloads (about 440 GB, 75 minutes at 100 MB/s). It ends by printing the cockpit URL, and there is nothing left to run by hand.
 
@@ -168,7 +168,7 @@ Everything below is optional and combinable. Variables ride on the `bash` side o
 | Start now | default, or `--no-start` | starts | install and enable the engine and the proxy without starting them (`sudo systemctl start` later, as the installer prints); that path installs the other text lane too, and skips the smoke test, the fit of the 1M limits, the cockpit with its Agent view, and the image and video lanes |
 | The other text lane | default, or `--no-flash` (on a 27B box), `--no-27b` (on a flash box) | installed beside the serving one, not enabled at boot | since v1.20: the same installer, started again for that lane, with its own target kept across updates; proved once, when it is new. `--with-flash` / `--with-27b` bring it back, and prove it |
 | Image lane | default, or `--no-image` | installed, not serving | Qwen-Image 2.1, 40 GB, proved once when it is new; `--with-image` brings it back after a `--no-image` |
-| Video lane | default, or `--no-video` | installed, not serving | MiniMax-H3, about 150 GB of headroom, proved once when it is new (about 23 min); `--with-video` brings it back |
+| Video lane | default, or `--no-video` | installed, not serving | MiniMax-H3, about 165 GB of headroom, proved once when it is new (about 23 min); `--with-video` brings it back |
 | opencode integration | default, or `--no-opencode` | on | on = ready config + `oc` launcher + default model following every switch; off = none of that, your own opencode config is never touched. `--with-opencode` turns it back on |
 | Ports | `PORT=`, `PROXY_PORT=` | 30000, 30001 | agent clients use the proxy port |
 | Storage | `HF_CACHE=`, `PLE_DIR=` | `~/.cache/huggingface`, `~/flashnext-ple` | checkpoints, and the 48 GB flash PLE backing file |
@@ -322,7 +322,7 @@ to start any engine while another is busy, for all three alike, and the unit's `
 a second belt for a `systemctl start` typed at a terminal.
 
 **Measured on a Spark, not copied from the cookbook** (SGLang v0.5.21, 2026-10-10):
-1024x1024 at 40 steps in **34.3 s** (35.6 GB peak), **7.5 s with the Turbo**, 512x512 in 7.8 s
+1024x1024 at 40 steps in **34.3 s** (34.8 GiB peak), **7.5 s with the Turbo**, 512x512 in 7.8 s
 (1.8 s), 2048x2048 in 182.8 s (40.6 s), an edit with one reference in 41.9 s (10.3 s), and a
 transparent generation that comes back with about three quarters of its pixels transparent.
 Same seed twice is byte-identical.
@@ -352,7 +352,7 @@ Every number, every refusal and how the runtime is pinned: **[docs/image-lane.md
 ## Videos: MiniMax-H3 on the same box
 
 Every plain install includes a video lane beside the other three since v1.20: text to video
-with joint video-and-audio, plus first/last-frame conditioning. It needs about 150 GB of
+with joint video-and-audio, plus first/last-frame conditioning. It needs about 165 GB of
 headroom and proves itself with one 4 s video the first time (about 23 minutes with its boot).
 `--no-video` leaves it out, and later runs remember that; `--with-video` brings it back:
 
@@ -365,10 +365,17 @@ Then it is a fourth lane, driven like the other three: on the cockpit's Lanes vi
 lane and starts this one (about 12 min to answer). From a terminal,
 `./switch-model.sh video` does the switch and prints the rest.
 
-It serves the SGLang cookbook's MiniMax-H3 recipe exactly as upstream wrote it, with no local
-patch: the cookbook verifies about 12.1 s per denoise step, about 40 s of decode and about
+It serves the SGLang cookbook's MiniMax-H3 recipe as upstream wrote it, on the v0.5.21
+release, with one local patch (an idle lane waits on its socket instead of holding a CPU
+core): the cookbook verifies about 12.1 s per denoise step, about 40 s of decode and about
 12 min per warm 4 s 480P request on the DGX Spark, with no flags at all. One request at a
 time; the Video view refuses a second one, and a duration outside the cookbook's 4 to 15 s band.
+
+**A Turbo switch** in the Video view puts the cookbook's recommended speed adapter (larryvrh's
+MiniMax-H3 Turbo LoRA, 9 steps) on for one video and takes it off after: 4 s at 480P in
+**127 s against 623 s** for the base at its 50 steps, the same prompt, measured here, the
+speech intact, and the base's next video identical to the byte to one made before. It is
+admitted at 480P and 4 s for now, the sizes measured with it.
 
 Every number, every refusal and how the runtime is pinned: **[docs/video-lane.md](docs/video-lane.md)**.
 

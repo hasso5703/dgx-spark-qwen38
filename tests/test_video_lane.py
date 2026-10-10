@@ -20,6 +20,7 @@ cancels the generation in flight (measured under a second), TimeoutStopSec is a
 ceiling, because the runtime has no abort.
 """
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -187,6 +188,65 @@ class TheInstaller(unittest.TestCase):
         the server dies on its first request."""
         self.assertLess(self.text.index("sglang[diffusion]=="), self.text.index("pip\" install --quiet --no-deps -e"))
 
+    def test_both_diffusion_lanes_run_the_same_release(self):
+        """The v0.5.21 release's commit and wheel, as the image lane since v1.24: one runtime
+        to measure, patch and update, and one idle patch that CI checks against one file."""
+        pin = re.compile(r'(?m)^PIN="\$\{SGLANG_DIFFUSION_PIN:-([0-9a-f]{40})\}"$')
+        wheel = re.compile(r'(?m)^WHEEL="\$\{SGLANG_DIFFUSION_WHEEL:-([0-9.]+)\}"$')
+        video, image = INSTALLER.read_text(), (REPO / "install-image.sh").read_text()
+        self.assertEqual(pin.search(video).group(1), "e00930c5489053f26d86b179cee0d087f846acbb")
+        self.assertEqual(pin.search(video).group(1), pin.search(image).group(1))
+        self.assertEqual(wheel.search(video).group(1), "0.5.21")
+        self.assertEqual(wheel.search(video).group(1), wheel.search(image).group(1))
+
+    def test_the_turbo_steps_are_counted_the_way_this_pin_counts_them(self):
+        """The Turbo adapter runs eight denoiser evaluations. v0.5.21 counts
+        num_inference_steps as the sigma grid's points, the terminal zero among them, so the
+        cockpit asks for 9; sgl-project/sglang#38671 counts evaluations on main since
+        2026-10-10, where the same eight are 8. A new pin fails here until the cockpit's
+        number is checked against it."""
+        pin = re.search(r'(?m)^PIN="\$\{SGLANG_DIFFUSION_PIN:-([0-9a-f]{40})\}"$', INSTALLER.read_text())
+        steps = re.search(r"(?m)^VIDEO_TURBO_STEPS = (\d+)$", COCKPIT.read_text())
+        self.assertEqual((pin.group(1), int(steps.group(1))), ("e00930c5489053f26d86b179cee0d087f846acbb", 9))
+
+    def test_a_new_wheel_is_taken_by_a_venv_that_has_another(self):
+        """The wheel sets the versions of everything the runtime imports: a venv that only
+        checked whether sglang imported kept ddebc52's 0.5.20 dependencies under v0.5.21."""
+        text = INSTALLER.read_text()
+        self.assertRegex(text, r'(?m)^WHEEL_NOTE="\$LANE_DIR/sglang-wheel"')
+        self.assertIn('[ "$(cat "$WHEEL_NOTE" 2>/dev/null)" != "$WHEEL" ]', text)
+        self.assertLess(text.index('pip" install --quiet --pre "sglang[diffusion]==$WHEEL"'),
+                        text.index('printf \'%s\\n\' "$WHEEL" > "$WHEEL_NOTE"'))
+        self.assertIn('rm -rf "$VENV" "$SRC" "$WHEEL_NOTE" "$SOURCE_NOTE"', text, "uninstall leaves a note behind")
+
+    def test_the_registry_is_asked_not_its_source_text(self):
+        """v0.5.21 names the model lower-cased in a table of non-diffusers pipelines: the text
+        check that held at ddebc52 ("MiniMax-H3" in registry.py) fails there on a runtime that
+        serves it."""
+        text = INSTALLER.read_text()
+        self.assertNotIn("inspect.getsource", text)
+        self.assertIn('registry.get_non_diffusers_pipeline_name("MiniMaxAI/MiniMax-H3")', text)
+        self.assertIn("registry.get_pipeline_class(name) is not MiniMaxH3Pipeline", text)
+
+    def test_no_check_rests_on_an_assert(self):
+        """python -O (PYTHONOPTIMIZE in the environment) strips assert statements."""
+        for m in re.finditer(r"<<'PY'.*?\nPY\n", INSTALLER.read_text(), re.S):
+            self.assertNotRegex(m.group(0), r"(?m)^\s*assert ", m.group(0)[:120])
+
+    def test_the_turbo_adapter_is_one_file_at_its_pin_and_never_a_failure(self):
+        """One file of 0.78 GB at the revision measured, out of a repository of 112 GB (its
+        other versions and experiments): fetched whole, it would fill the disk. Only for the
+        FL2VA weights it was trained on, and a failed fetch is a note, not a failed install:
+        the lane serves without it, and the Video view keeps its switch off."""
+        start = self.text.index("# The Turbo adapter, for the FL2VA weights")
+        block = self.text[start:self.text.index("\nfi\n", start)]
+        self.assertIn('if [ "$VARIANT" = "fl2va" ]; then', block)
+        self.assertIn('"$VIDEO_TURBO_REPO" "$VIDEO_TURBO_REV" "$VIDEO_TURBO_FILE"', block)
+        self.assertIn("hf_hub_download(repo, name, revision=rev)", block)
+        self.assertNotIn("snapshot_download", block)
+        self.assertIn('|| echo "NOTE: the Turbo adapter', block)
+        self.assertNotRegex(block, r"\bdie\b")
+
     def test_the_source_overlay_needs_no_rust_toolchain(self):
         self.assertIn("SGLANG_BUILD_RUST_EXTS=none", self.text)
 
@@ -207,9 +267,62 @@ class TheInstaller(unittest.TestCase):
         self.assertIn("the idle-loop fix is not in effect", smoke)
 
     def test_it_checks_for_room_before_downloading_the_135_gib(self):
-        # GiB, as the room check counts them: 145 read as GiB asked for 10 the lane never takes
+        # GiB, as the room check counts them: 145 read as GiB asked for 10 the lane never takes;
+        # 134.2 for the checkpoint and 0.73 for the Turbo adapter fit in 135, and 136 asked a
+        # box with the checkpoint cached for 1 more (review, 2026-10-10)
         self.assertIn("WEIGHTS_GB=135", self.text)
         self.assertIn("WEIGHTS_NEED=$(( (WEIGHTS_GB * 1073741824 - ${HAVE_B:-0}) / 1073741824 ))", self.text)
+
+    def room(self, free_gb, spill_gib=0, cached_gib=0, cached_bytes=0):
+        """The installer's own room check, run on one throwaway disk with df answering free_gb."""
+        d = pathlib.Path(tempfile.mkdtemp(prefix="vid-room-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        (d / "bin").mkdir()
+        (d / "bin/df").write_text(f"#!/bin/sh\necho Avail; echo {free_gb}G\n")
+        (d / "bin/df").chmod(0o755)
+        if spill_gib:
+            s = d / "home/.cache/sglang/diffusion/host_spill/fp"
+            s.mkdir(parents=True)
+            with open(s / "w.bin", "wb") as f:
+                f.truncate(spill_gib * 2**30)
+        blobs = d / "hf/hub/models--MiniMaxAI--MiniMax-H3/blobs"
+        blobs.mkdir(parents=True)
+        if cached_gib or cached_bytes:
+            with open(blobs / "b", "wb") as f:
+                f.truncate(cached_bytes or cached_gib * 2**30)
+        start = self.text.index("existing(){")
+        end = self.text.index('echo "OK: $(uname -m)')
+        script = ('set -euo pipefail\ndie(){ echo "DIE: $*"; exit 1; }\n'
+                  f'HOME="{d}/home"; HF_CACHE="{d}/hf"; LANE_DIR="{d}/lane"; MODEL=MiniMaxAI/MiniMax-H3\n'
+                  + "\n".join(ln for ln in self.text.splitlines() if ln.startswith(("WEIGHTS_GB=",)))
+                  + "\n" + self.text[start:end] + 'echo "NEED=$WEIGHTS_NEED"; echo ROOM-OK\n')
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
+                           env={"PATH": f"{d}/bin:/usr/bin:/bin"})
+        return r.stdout + r.stderr
+
+    def test_the_runtimes_transformed_weights_are_counted_where_they_land(self):
+        """~/.cache/sglang/diffusion/host_spill (12 GB) and ~/.cache/sgl_diffusion/decode_dtype_store
+        (5), written at the lane's first start on the disk of $HOME, counted nowhere until
+        2026-10-10. A stock box has them on the one disk the checkpoint and the runtime use:
+        135 + 11 + 12 + 5 there."""
+        out = self.room(free_gb=160)
+        self.assertIn("DIE:", out)
+        self.assertIn("needs about 163 GB there", out)
+        self.assertIn("12 for the runtime's transformed weights", out)
+        self.assertIn("5 for the decoder's converted weights", out)
+        self.assertIn("ROOM-OK", self.room(free_gb=163))
+
+    def test_a_box_with_the_checkpoint_cached_has_nothing_to_download(self):
+        """The reference box's 144,028,299,157 bytes of it (2026-10-10): 135 GiB less that is 0
+        whole GiB, and the 0.86 left over is room for the Turbo adapter's 0.73 (136 said 1)."""
+        out = self.room(free_gb=200, cached_bytes=144_028_299_157)
+        self.assertIn("NEED=0", out)
+        self.assertIn("ROOM-OK", out)
+
+    def test_what_is_already_there_comes_off(self):
+        self.assertIn("ROOM-OK", self.room(free_gb=151, spill_gib=12))
+        self.assertIn("DIE:", self.room(free_gb=150, spill_gib=12))
+        self.assertIn("ROOM-OK", self.room(free_gb=17, spill_gib=12, cached_gib=135))
 
     def test_an_unknown_option_is_refused_rather_than_ignored(self):
         self.assertIn('die "unknown option: $a"', self.text)
@@ -291,9 +404,17 @@ class TheIdlePatch(unittest.TestCase):
         self._git(d, "remote", "add", "origin", str(d))
         return d
 
+    def _note(self):
+        """The note of the commit the tree holds, one per test, outside the throwaway repo."""
+        if not hasattr(self, "note"):
+            d = pathlib.Path(tempfile.mkdtemp(prefix="vid-note-"))
+            self.addCleanup(shutil.rmtree, d, True)
+            self.note = d / "sglang-source"
+        return self.note
+
     def _install(self, src, pin):
         script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
-                  f'HERE="{REPO}"; SRC="{src}"; PIN="{pin}"\n' + self._block())
+                  f'HERE="{REPO}"; SRC="{src}"; PIN="{pin}"; SOURCE_NOTE="{self._note()}"\n' + self._block())
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
         return r.returncode, r.stdout + r.stderr
 
@@ -303,10 +424,15 @@ class TheIdlePatch(unittest.TestCase):
         rc, out = self._install(src, pin)
         self.assertEqual(rc, 0, out)
         self.assertIn("scheduler-idle-poll: applied", out)
+        # the commit is noted for the cockpit's Turbo (video_runtime_stale), and a run that
+        # changes nothing leaves the note's date alone: a lane started since keeps its Turbo
+        self.assertEqual(self.note.read_text().strip(), pin)
+        os.utime(self.note, (1_000_000, 1_000_000))
         rc, out = self._install(src, pin)
         self.assertEqual(rc, 0, out)
         self.assertIn("scheduler-idle-poll: already applied", out)
         self.assertEqual((src / PATCHED).read_text().count("self._poller.poll(timeout=1000)"), 1)
+        self.assertEqual(int(self.note.stat().st_mtime), 1_000_000)
 
     def test_a_new_pin_checks_out_over_a_patched_tree(self):
         """The patch is a local edit, and git refuses to check out over a local edit of a
@@ -325,6 +451,7 @@ class TheIdlePatch(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self._git(src, "rev-parse", "HEAD"), new)
         self.assertIn("scheduler-idle-poll: applied", out)
+        self.assertEqual(self.note.read_text().strip(), new, "the note still names the old commit")
 
     def test_a_pin_it_no_longer_fits_is_a_note_not_a_failure(self):
         src = self._repo(sched=CONTEXT_AT_PIN.replace("remaining_ms > 0", "remaining_ms >= 0"))
@@ -584,6 +711,9 @@ class TheUninstallKnowsVideo(unittest.TestCase):
         image lane, so only venv/ and sglang/ go."""
         i = self.text.index('rm -rf "$VIDEO_LANE_DIR/venv"')
         self.assertIn("rmdir", self.text[i:i + 300])
+        # the notes install-video.sh writes beside them, or the folder stays behind
+        self.assertIn('rm -rf "$VIDEO_LANE_DIR/venv" "$VIDEO_LANE_DIR/sglang" "$VIDEO_LANE_DIR/sglang-wheel" '
+                      '"$VIDEO_LANE_DIR/sglang-source"', self.text)
 
 
 if __name__ == "__main__":

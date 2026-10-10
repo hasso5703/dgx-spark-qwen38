@@ -5,7 +5,15 @@ so that "on the roadmap" means a checkbox with a definition of done, not a
 mood. Statuses: shipped, in progress, planned, considered (considered items
 have a reason they are not yet planned, stated here or in an issue).
 
-## Shipped, current: v1.24
+## Shipped, current: v1.25
+
+- **A Turbo switch for videos, and the video lane on a release** (v1.25.0): the cookbook's
+  speed adapter for MiniMax-H3 put on for one video and taken off after (4 s at 480P in 127 s
+  against 623 s, the base's next video unchanged byte for byte), admitted at 480P and 4 s,
+  the sizes measured with it; the lane runs the v0.5.21 release, its videos unchanged byte
+  for byte. opencode 1.18.35, which masks the keys `opencode debug config` prints.
+
+## Shipped, v1.24
 
 - **Qwen-Image 2.1 Turbo, and the image lane on a release** (v1.24.0): Qwen's eight-step
   distillation as a second checkpoint of the image lane (a 1024x1024 image in 7.5 s against

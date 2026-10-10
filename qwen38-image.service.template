@@ -3,7 +3,7 @@ Description=Qwen-Image 2.1 (SGLang Diffusion, native venv), OpenAI images API :_
 Wants=network-online.target
 # One engine at a time on this box, and systemd is where that is said rather than in a
 # wrapper someone can bypass: the image checkpoint is 31 GB of weights and peaks at
-# 35.6 GB during a 1024px request (measured), while the LLM lane holds its pool for the
+# 34.8 GiB during a 1024px request (measured), while the LLM lane holds its pool for the
 # life of the process. Starting this stops the LLM lane; starting an LLM lane stops this.
 Conflicts=qwen38-sglang.service qwen38-flash.service qwen38-video.service qwen38-llamacpp.service
 # Conflicts= alone orders nothing: the old lane's stop and the new lane's start ran side

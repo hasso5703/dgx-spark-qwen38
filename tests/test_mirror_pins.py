@@ -53,7 +53,8 @@ sys.exit(0)
 # (1.14: upload_folder and create_repo keyword-only, create_tag keyword after repo_id).
 FAKE_HUB = r'''import json, os, types
 LOG = os.environ["FAKE_LOG"]
-FILES = [("config.json", 10, None, "b1"), ("model.safetensors", 999, "abc", "b2")]
+FILES = [("config.json", 10, None, "b1"), ("model.safetensors", 999, "abc", "b2"),
+         ("minimax_h3_turbo_v4_step600_ema.safetensors", 779849816, "5f3a", "b3")]
 
 
 def _log(call, **kw):
@@ -61,8 +62,8 @@ def _log(call, **kw):
         f.write(json.dumps({"tool": "hub", "call": call, **kw}) + "\n")
 
 
-def snapshot_download(repo_id, *, revision=None, **kw):
-    _log("snapshot_download", repo_id=repo_id, revision=revision)
+def snapshot_download(repo_id, *, revision=None, allow_patterns=None, **kw):
+    _log("snapshot_download", repo_id=repo_id, revision=revision, **({"allow_patterns": allow_patterns} if allow_patterns else {}))
     return "/tmp/fake-snapshot"
 
 
@@ -82,8 +83,9 @@ class HfApi:
     def create_repo(self, repo_id, *, exist_ok=False, **kw):
         _log("create_repo", repo_id=repo_id)
 
-    def upload_folder(self, *, repo_id, folder_path, commit_message=None, revision=None, **kw):
-        _log("upload_folder", repo_id=repo_id, folder_path=str(folder_path), revision=revision)
+    def upload_folder(self, *, repo_id, folder_path, commit_message=None, revision=None, allow_patterns=None, **kw):
+        _log("upload_folder", repo_id=repo_id, folder_path=str(folder_path), revision=revision,
+             **({"allow_patterns": allow_patterns} if allow_patterns else {}))
         return types.SimpleNamespace(oid="f" * 40)
 
     def create_tag(self, repo_id, *, tag, revision=None, tag_message=None, **kw):
@@ -136,8 +138,8 @@ class TheMirrorPins(unittest.TestCase):
         rc, out = self.run_mirror()
         self.assertEqual(rc, 0, out)
         models = re.findall(r"^\s+mirror: (\S+) @ upstream-", out, re.M)
-        self.assertEqual(len(models), 12, out)       # nine text checkpoints and the diffusion lanes' three
-        self.assertEqual(len(set(models)), 12, models)
+        self.assertEqual(len(models), 13, out)       # nine text checkpoints, the diffusion lanes' three and the video Turbo adapter
+        self.assertEqual(len(set(models)), 13, models)
         # every checkpoint has its license row, and every row names a checkpoint the script copies
         labels = re.findall(r"^  model\s+(\S+)$", out, re.M)
         rows = [r for r in re.findall(r"^\| ([a-z0-9-]+) \| [^|]+ \| [^|]+ \|$", self.mirror_md.read_text(), re.M)
@@ -167,7 +169,21 @@ class TheMirrorPins(unittest.TestCase):
         self.assertEqual([c["repo_id"] for c in up], ["org/RadixArk__Qwen3.8-27B-NVFP4"], out)
         self.assertIn({"tool": "hub", "call": "create_tag", "repo_id": "org/RadixArk__Qwen3.8-27B-NVFP4",
                        "tag": f"upstream-{rev}", "revision": "f" * 40}, hub)
-        self.assertIn("done: 2 files", out)
+        self.assertIn("done: 3 files", out)
+
+    def test_the_video_turbo_adapter_is_mirrored_alone(self):
+        """Its repository is 112 GB; the lane uses one 0.78 GB file of it, and that file alone
+        is downloaded, uploaded and compared."""
+        self.conclude("video-turbo")
+        rc, out = self.run_mirror("--models", HF_MIRROR_ORG="org", HF_TOKEN="hf_x")
+        name = "minimax_h3_turbo_v4_step600_ema.safetensors"
+        hub = self.calls("hub")
+        down = [c for c in hub if c["call"] == "snapshot_download"]
+        self.assertEqual([(c["repo_id"], c.get("allow_patterns")) for c in down],
+                         [("larryvrh/MiniMax-H3-Turbo-Lora", [name])], out)
+        up = [c for c in hub if c["call"] == "upload_folder"]
+        self.assertEqual([c.get("allow_patterns") for c in up], [[name]], out)
+        self.assertIn("done: 1 files", out)
 
     def test_images_are_copied_whole_to_the_mirror_and_checked_there(self):
         rc, out = self.run_mirror("--images", MIRROR_REGISTRY="registry.example.com/team")

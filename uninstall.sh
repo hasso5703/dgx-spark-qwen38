@@ -27,6 +27,12 @@ HF_CACHES="$( { printf '%s\n' "${HF_CACHE:-}"; unit_mount /root/.cache/huggingfa
                { grep -m1 -E '^Environment=HF_HOME=' "$SYSTEMD_DIR/qwen38-video.service" 2>/dev/null || true; } | cut -d= -f3-
                printf '%s\n' "$HOME/.cache/huggingface"; } | awk 'NF && !seen[$0]++')"
 PLE_DIRS="$( { printf '%s\n' "${PLE_DIR:-}"; unit_mount /ple; printf '%s\n' "$HOME/flashnext-ple"; } | awk 'NF && !seen[$0]++')"
+# The diffusion runtime's own caches, written at a lane's first start and reused after,
+# outside every lane's folder: copies of transformed weights (12 GB for the video lane's
+# FL2VA weights) and its cache root (the video decoder's converted weights, 4.6 GB, and the
+# compile caches of both lanes).
+SPILL_DIR="$HOME/.cache/sglang/diffusion/host_spill"
+DIFF_CACHE="$HOME/.cache/sgl_diffusion"
 # opencode reads all three global names, and creates opencode.jsonc itself on its first
 # start: a provider block pasted into any of them reads the key as much as ours does.
 OC_USER_CFGS=("$HOME/.config/opencode/config.json" "$HOME/.config/opencode/opencode.json" "$HOME/.config/opencode/opencode.jsonc")
@@ -50,7 +56,7 @@ done
 # digest: a digest pull leaves no tag behind.
 LOCAL_IMAGE_REPOS="qwen38-dflash2 qwen38-flash qwen38-pinned"  # qwen38-dflash2 is the pre-v1.14 27B overlay, retired but still deletable; qwen38-pinned (v1.18.6) tags the digest pulls
 BASE_IMAGES="lmsysorg/sglang:v0.5.21 lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469 lmsysorg/sglang:v0.5.19 lmsysorg/sglang@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9 lmsysorg/sglang:qwen38-27b lmsysorg/sglang@sha256:febfb971c7352570fc445c466ebd6ffc9d896024958e544a60f2137fd85856b1 lmsysorg/sglang:qwen38flashnext lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1 lmsysorg/sglang@sha256:9d2a843c706c74bc259c0d9abf360551eb2734e1e7d255ab012a6965f10480b6 lmsysorg/sglang@sha256:cb6ed363800a5bea98ac90b4c6447e9ba66cef7db881ac1f108046b6622d22b8 lmsysorg/sglang@sha256:616a3e97f45191af975896cfa644279096cb31bd408a071c2e99ca7209c3cafe vllm/vllm-openai:qwen38-flash-next vllm/vllm-openai@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8"
-HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 Qwen/Qwen3.8-27B-FP8 edp1096/Huihui-Qwen3.8-27B-abliterated-FP8 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal RadixArk/Qwen3.8-Flash-Next-NVFP4 nvidia/Qwen3.8-Flash-Next-NVFP4 dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4 Qwen/Qwen-Image-2.1 Qwen/Qwen-Image-2.1-Turbo MiniMaxAI/MiniMax-H3"
+HF_REPOS="RadixArk/Qwen3.8-27B-NVFP4 edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4 Qwen/Qwen3.8-27B-FP8 edp1096/Huihui-Qwen3.8-27B-abliterated-FP8 RadixArk/Qwen3.8-27B-DSpark z-lab/Qwen3.8-27B-DFlash2 maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal RadixArk/Qwen3.8-Flash-Next-NVFP4 nvidia/Qwen3.8-Flash-Next-NVFP4 dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4 Qwen/Qwen-Image-2.1 Qwen/Qwen-Image-2.1-Turbo MiniMaxAI/MiniMax-H3 larryvrh/MiniMax-H3-Turbo-Lora"
 
 FOUND_IMAGES=()   # "ref|size|every ref", deduplicated by image ID (a tag and its digest are one image)
 # Every reference Docker keeps for one image. A digest-pulled image carries its digest
@@ -153,6 +159,8 @@ done <<< "$HF_CACHES"
 while IFS= read -r p; do
   if [ -n "$p" ] && [ -d "$p" ]; then echo "  ple-file  $p ($(dir_size "$p"), flash mmap backing store)"; fi
 done <<< "$PLE_DIRS"
+if [ -d "$SPILL_DIR" ]; then echo "  spill     $SPILL_DIR ($(dir_size "$SPILL_DIR"), the diffusion runtime's transformed weights)"; fi
+if [ -d "$DIFF_CACHE" ]; then echo "  cache     $DIFF_CACHE ($(dir_size "$DIFF_CACHE"), the diffusion runtime's converted weights and compile caches)"; fi
 echo "──"
 
 if [ "$LIST_ONLY" -eq 1 ]; then
@@ -205,10 +213,10 @@ if [ -d "$IMAGE_LANE_DIR" ] && { [ "$PRIV" -eq 0 ] || [ "$PRIV_DONE" -eq 1 ]; };
   rm -rf "$IMAGE_LANE_DIR/venv" "$IMAGE_LANE_DIR/sglang" "$IMAGE_LANE_DIR/sglang-wheel"
   rmdir "$IMAGE_LANE_DIR" 2>/dev/null || echo "kept $IMAGE_LANE_DIR: it holds files the image lane did not put there"
 fi
-# The video lane's runtime, under the same rule: only venv/ and sglang/, and the
-# directory itself only once it is empty.
+# The video lane's runtime, under the same rule: only venv/, sglang/ and the notes of the wheel
+# and the commit they hold, and the directory itself only once it is empty.
 if [ -d "$VIDEO_LANE_DIR" ] && { [ "$PRIV" -eq 0 ] || [ "$PRIV_DONE" -eq 1 ]; }; then
-  rm -rf "$VIDEO_LANE_DIR/venv" "$VIDEO_LANE_DIR/sglang"
+  rm -rf "$VIDEO_LANE_DIR/venv" "$VIDEO_LANE_DIR/sglang" "$VIDEO_LANE_DIR/sglang-wheel" "$VIDEO_LANE_DIR/sglang-source"
   rmdir "$VIDEO_LANE_DIR" 2>/dev/null || echo "kept $VIDEO_LANE_DIR: it holds files the video lane did not put there"
 fi
 # The oc launcher, only if it is ours (never a foreign oc binary)
@@ -288,3 +296,5 @@ while IFS= read -r p; do
   # uninstall exit 1 on a box without a PLE folder
   if [ -n "$p" ] && [ -d "$p" ]; then echo "  $(rm_cmd "$p") '$p'    # $(dir_size "$p"), flash PLE backing file"; fi
 done <<< "$PLE_DIRS"
+if [ -d "$SPILL_DIR" ]; then echo "  $(rm_cmd "$SPILL_DIR") '$SPILL_DIR'    # $(dir_size "$SPILL_DIR"), the diffusion runtime's transformed weights"; fi
+if [ -d "$DIFF_CACHE" ]; then echo "  $(rm_cmd "$DIFF_CACHE") '$DIFF_CACHE'    # $(dir_size "$DIFF_CACHE"), the diffusion runtime's converted weights and compile caches"; fi

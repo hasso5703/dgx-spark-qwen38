@@ -272,7 +272,7 @@ fi
 # lane through it), and no opencode default to move (opencode is a text client).
 # Handled here, whole, and exits.
 if [ "$CHOICE" = "video" ]; then
-  [ -f "$VIDEO_UNIT" ] || die "the video lane is not installed on this box (no $VIDEO_UNIT). Install it once: ./install.sh --with-video (about 150 GB of headroom)"
+  [ -f "$VIDEO_UNIT" ] || die "the video lane is not installed on this box (no $VIDEO_UNIT). Install it once: ./install.sh --with-video (about 165 GB of headroom)"
   VID_WD="$(grep -m1 -E '^WorkingDirectory=' "$VIDEO_UNIT" | cut -d= -f2- || true)"
   VID_PY="${VID_WD:-$HOME/.local/share/qwen38-video}/venv/bin/python"
   [ -x "$VID_PY" ] || die "the video lane's runtime is missing ($VID_PY): re-run ./install-video.sh, it resumes"

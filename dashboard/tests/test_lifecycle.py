@@ -1732,8 +1732,8 @@ class FourEngines(unittest.TestCase):
 
 class VideoBootLog(unittest.TestCase):
     """The MiniMax-H3 boot lines, captured from journald on the reference box on
-    2026-09-25 (boot 23:08:50): DiT 61.73 GB in 13 shards, text encoder 48.09 GB,
-    audio VAE 0.56 GB, video VAE 5.2 GB, then three warmup requests before ready."""
+    2026-09-25 (boot 23:08:50): DiT 61.73 GiB in 13 shards, text encoder 48.09 GiB,
+    audio VAE 0.56 GiB, video VAE 5.2 GiB, then three warmup requests before ready."""
 
     @classmethod
     def setUpClass(cls):
@@ -1763,12 +1763,12 @@ class VideoBootLog(unittest.TestCase):
                 self.assertFalse(b["fired_up"])
 
     def test_each_component_line_names_what_is_being_loaded(self):
-        """"loading weights" for a minute says less than "the 61.7 GB DiT"."""
+        """"loading weights" for a minute says less than "the 61.7 GiB DiT"."""
         for needle, detail in (
-                ("Loading text_encoder from", "48 GB text encoder"),
-                ("Loading MiniMaxH3DiTModel from", "61.7 GB DiT"),
+                ("Loading text_encoder from", "48 GiB text encoder"),
+                ("Loading MiniMaxH3DiTModel from", "61.7 GiB DiT"),
                 ("Loading audio_vae from", "audio VAE"),
-                ("Loading video_vae from", "5.2 GB video VAE")):
+                ("Loading video_vae from", "5.2 GiB video VAE")):
             with self.subTest(line=needle):
                 b = self.at(needle)
                 self.assertEqual(b["stage"], "loading-weights")

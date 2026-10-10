@@ -1,5 +1,150 @@
 # Changelog
 
+## v1.25.0 (2026-10-10): the video lane moves to SGLang v0.5.21 and gains a Turbo switch, a 4 s video in about 2 minutes; opencode 1.18.35
+
+**A Turbo switch in the Video view.** The view's new Speed choice puts the cookbook's
+recommended speed and quality adapter for MiniMax-H3's FL2VA weights on for one video:
+larryvrh's MiniMax-H3 Turbo LoRA (`minimax_h3_turbo_v4_step600_ema.safetensors`, Apache-2.0,
+0.78 GB), which `install-video.sh` fetches at its pinned revision, the one file of a 112 GB
+repository. It runs eight denoiser evaluations, which the view shows fixed as 9 steps: on this
+lane's v0.5.21 runtime `num_inference_steps` counts the points of the sigma grid, the terminal
+zero among them. SGLang's main counts evaluations since sgl-project/sglang#38671 (2026-10-10),
+which is why the cookbook now asks this adapter for 8; a test holds the pin and the 9
+together, so a new pin fails it until the 9 is checked against it. The cockpit puts the
+adapter on under the lane's lock, in SGLang's dynamic mode, through the lane's own routes
+(`/v1/list_loras`, `/v1/set_lora`, `/v1/unmerge_lora_weights`), sends the video, and takes the
+adapter off after, so its next call meets the base, and a base call does not start while the
+lane cannot say the adapter it put on is off; a browser never names the adapter, and a lane
+running an adapter merged into its weights is left alone. A request sent straight to the lane
+while a Turbo video runs queues behind it and starts before the adapter comes off, so it runs
+with the adapter on: the cockpit is the door that holds the Turbo to 480P and 4 s.
+
+Measured on the reference box on 2026-10-10, 4 s at 480P, three prompts: **126.2 to 127.9 s
+against 622.8 to 632.5 s** for the base at its 50 steps (the server's own times); the same
+prompt, encoded already on both, 127.3 and 127.9 s against 622.8 s. A new prompt adds its
+text encoding, 9.3 s, to either: the adapter holds DiT weights only. 12.8 to 13.0 s per
+denoiser evaluation against 12.2. On in 5.1 s the first time and 0.02 s after, off in
+0.01 s. The base's next video after an adapter went on and off came out identical to the
+byte to one made before, twice (after this adapter, then after LightX2V's); the same Turbo
+request gave the same bytes three times. The woman of the speech prompt says "Good morning,
+the coffee is ready" word for word with both (Whisper large-v3-turbo); the pictures come out
+as sharp as the base's at 50 steps, the same scenes though not the same frames, where the
+base at 8 steps comes out blurred. The adapter costs memory: 20.8 to 25.3 GiB at the peak
+against 8.1 to 9.0 GiB for the base at 4 s, 12 to 17 GiB more, and more as the video grows,
+while the base alone already peaks at 75.4 GiB at 8 s (28.4 GiB of the box left free). So the
+Turbo is admitted at 480P and 4 s, and the view and the cockpit refuse the rest and say why.
+
+**The Turbo waits for a lane started on the new runtime.** An update does not restart a lane
+that is serving, and the runtime this lane ran before (main's `ddebc52`) puts an adapter on a
+model it offloads layer by layer by loading every layer of the DiT, 62 GiB, into memory, where
+v0.5.21 leaves the offload alone. So `install-video.sh` notes beside the runtime the commit
+its source holds and the wheel under it (`sglang-source`, `sglang-wheel`), and the cockpit
+offers the Turbo only on a lane started after both notes and running the commit the Turbo was
+measured on. Anywhere else (a lane that served through the update, another pin, a systemd that
+does not answer) it puts no adapter on and the view says why; one it put on before, on the
+same run of the lane, it still takes off.
+
+Studied and not offered: the same adapter merged at startup (the cookbook's
+`--lora-merge-mode auto`) denoised 9 % faster in the base's memory, but the lane took 27 min
+to answer with a 62 GiB merge cache, switching back would cost a restart, and its videos came
+out softer: a bf16 merge drops 77 to 97 % of this adapter's update in typical layers, as
+upstream measured, and since sgl-project/sglang#43385 (main, 2026-10-10) `auto` keeps such an
+adapter unmerged, which v0.5.21 does not. LightX2V's 4-step adapter took 80.7 to 82.3 s, with a
+more saturated picture and a blurred close-up on one prompt, at 31.7 to 35.8 GiB.
+
+**The lane moves to the v0.5.21 release.** The video lane runs the v0.5.21 release's commit
+and wheel, as the image lane does since v1.24, instead of main's `ddebc52` and the `0.5.20`
+wheel. Measured on the reference box, both runtimes on the same requests one after the other,
+the box otherwise idle: a 4 s 480P video at 8 steps and at the 50-step default came out
+identical to the byte (the MP4 and every decoded frame), the new runtime 2.5 % faster at 50
+steps (622.8 s against 638.8, the server's own times), at the same peak at 50 steps (8.1 GiB;
+9.0 against 9.3 GiB at 8 steps). On both, each of the three warm-up requests of a start takes
+the box's MemAvailable down to 27 to 30 GiB and gives it back after. The installer writes down
+the wheel a venv came from, as the image lane's does, and its runtime check asks the registry
+(`get_non_diffusers_pipeline_name`), whose source text v0.5.21 no longer matches; no check of
+it rests on an `assert`.
+
+**Room for the runtime's own caches.** At its first start the runtime writes copies of 52
+transformed DiT weights under `~/.cache/sglang/diffusion/host_spill` (11.2 GiB) and the video
+decoder's weights in its decode dtype under `~/.cache/sgl_diffusion/decode_dtype_store` (4.5
+GiB), outside the lane's folder: the room check counted neither since the lane arrived in
+v1.19, so a disk with no more than the room it asked for would fill at the first start. The
+check now sums each part on its own disk, less what is already there (about 165 GB of
+headroom on a new box, from 150), and `uninstall.sh` lists both folders and takes the video
+lane's two notes with its runtime.
+
+**opencode 1.18.35.** The pin moves from 1.18.32 to 1.18.35 (`f7f2ba59ee8a...`, GitHub's own
+digest of `opencode-linux-arm64.tar.gz`). 1.18.32 printed the provider keys of its config in
+clear in `opencode debug config`, this box's API key among them; 1.18.35 prints `***`
+(checked with a fake key on both). What the repo relies on was checked again, against
+1.18.32: the overflow phrases and exclusions the proxy's refusals are matched against are the
+same block of the binary, byte for byte; `max_tokens` is 32,000 without the `oc` launcher's
+variable and 182,000 with it, on a fake endpoint, on both; `serve --hostname` and the hidden
+`--yolo` are there; the release diff touches neither the compaction nor the permission code.
+Its model requests carry one more header, `x-opencode-session-id`, with the session id they
+already carried as `x-session-id`; the proxy and the engine pass it by.
+
+**Peak memory said in GiB.** SGLang's "Peak memory usage: N MB" counts mebibytes
+(`peak_reserved_bytes / 1024**2`), and this repo wrote N / 1000 as gigabytes: "35.6 GB" for
+35,648 MiB, which is 34.8 GiB (37.4 GB), compared in the same sentences with the box's 121.6,
+which are GiB. Every peak taken from the engine now says GiB, worked out from its MiB: 34.8
+GiB at 1024x1024 and 45.5 at 2752x1536 for the image lane (v1.24.0's notes said 35.6 and
+46.6), 9.0 to 9.4 GiB for 4 s at 480P, 76.5 for 15 s and 80.0 at 720P for the video lane, in the
+docs, the cockpit's refusals and the units' comments. The sizes the runtime's loader logs are
+GiB as well (`BYTES_PER_GB = 1024**3`), so the Lanes view now says the 61.7 GiB DiT and the 48
+GiB text encoder while the video lane boots, and the box's 121.6 is GiB wherever it is
+written. No limit moves: each was set on a measurement, and the measurements are the same.
+
+**The image view under the Turbo.** Its steps slider kept its thumb on the base's 40 beside
+the 8 it printed (seen on the reference box after v1.24.0); the thumb sits on 8 now, and the
+base's setting comes back when the base does.
+
+**Tests.** The Turbo on the cockpit's side, against a fake lane that keeps the adapter's state
+the way the runtime reports it: a Turbo call puts the adapter on before the video and takes it
+off after, sending nine steps and no turbo field; a base call takes off an adapter another
+left on and switches nothing when there is none; a lane that cannot say serves the base and
+gets no Turbo call, unless this cockpit put the adapter on that run and never saw it come off,
+when a base call waits for it (a lane that restarted since runs the base); an adapter put on
+comes off after its video even when the check no longer passes by then (a note rewritten, a
+systemd that does not answer), a failed set_lora is kept in mind only on a lane still up, and
+a stale lane that restarted is asked nothing; other steps, quality "high", 720P, more than 4 s
+and the ref2va weights are refused before the lane is asked for anything, and an adapter
+missing from the box or merged into the weights before any video is sent; a lane started
+before its runtime changed, whichever note says so, a lane without its notes, one on another
+commit and a systemd that does not answer get no Turbo, and a lane started after gets it; the
+status offers it only when the adapter is there and the lane may take it, with the adapter's
+path; a handed-over call takes the adapter off when it ends; the page and the server count
+its cost and its length alike (25 tests). The page: the switch is offered only when the
+status says so, and says why when it waits; it fixes nine steps, its thumb included, and gives
+the base its setting back; it says what it costs, sends `turbo`, and its copied command, read
+back by a shell, puts the adapter on by its path on the box and off around the call; it
+refuses 720P and more than 4 s; Reset goes back to the base and its default (10 tests). The
+installer: the pin and wheel are v0.5.21's, as the image lane's, and the Turbo's 9 steps are
+held to that pin; a venv with another wheel note takes the new wheel; the registry is asked,
+with no `assert`; the adapter is one file at its pin, for the FL2VA weights only, and a failed
+fetch is a note; the room check sums the checkpoint, the runtime and both caches on one disk,
+less what is there, and tells a box with the checkpoint cached it has nothing to download (9
+tests); the checkout's tests check the commit's note, written when the commit changes, its
+date left alone when it does not. Two video route tests that fed systemd's answers in a
+sequence keep the Turbo's own question off it, which had taken the answer they test. A
+property test of the Agent view's relay told the relay's own Host from a caller's by the pair,
+and failed when hypothesis gave the caller the very value the relay sets (Host "0" with an
+upstream named "0", found by this release's CI): it now checks that the one value left under
+each such name is the relay's, and replays that example on every run. The image view's thumb
+under the Turbo and after a Reset (2 tests). The mirror copies the adapter's one
+file and compares it alone (1 test); `check-pins.sh` asks for it at its pin. The study behind
+the numbers ran on the reference box with the lane's own recipe on a study port, a memory
+watch that kills a study server under 8 GiB (20 for the 8 s run) and a thermal pause at 90 °C,
+which never fired (88 °C at the most).
+
+**What an update does.** `install.sh` updates the video lane in place without starting it: the
+0.5.21 wheel's changes, the release's checkout with its idle patch, and the 0.78 GB adapter;
+its next start runs the new runtime, and a lane serving during the update keeps its old one,
+without the Turbo, until then. opencode 1.18.35 replaces an older one in `~/.opencode/bin` (a
+newer one is kept), and the Agent view's server restarts on it when the update runs with a
+text lane serving. The cockpit restarts for its new Video view. The text engines, the proxy
+and the image lane keep running.
+
 ## v1.24.0 (2026-10-10): the image lane moves to SGLang v0.5.21 and gains Qwen-Image 2.1 Turbo, a 1024x1024 image in 7.5 s
 
 **Qwen-Image 2.1 Turbo, a second checkpoint of the image lane.** Qwen published

@@ -7,10 +7,11 @@
 #   ./install-video.sh --uninstall     remove the unit and the venv (weights kept)
 #
 # install.sh runs this on every plain install since v1.20: a box gets every lane. The
-# checkpoint (the fl2va partition plus the shared components, 135 GiB, WEIGHTS_GB below)
-# and the runtime (another 11) need about 150 GB of headroom; when the disk does not
-# have it, this refuses before downloading anything, install.sh says so and goes on, and
-# ./install.sh --no-video leaves the lane out for good (a marker file remembers it).
+# checkpoint (the fl2va partition plus the shared components and the Turbo adapter, 135
+# GiB, WEIGHTS_GB below), the runtime (another 11) and the runtime's own caches (16)
+# need about 165 GB of headroom; when the disk does not have it, this refuses before
+# downloading anything, install.sh says so and goes on, and ./install.sh --no-video leaves
+# the lane out for good (a marker file remembers it).
 #
 # WHY IT IS A VENV AND NOT DOCKER. Like the image lane, no published Docker image is
 # verified for this model: the cookbook serves it from Python/source. The release wheel
@@ -56,6 +57,8 @@ CONFIG_DIR="$HOME/.config/qwen38"
 LANE_DIR="${VIDEO_LANE_DIR:-$(installed WorkingDirectory)}"; LANE_DIR="${LANE_DIR:-$HOME/.local/share/qwen38-video}"
 VENV="$LANE_DIR/venv"
 SRC="$LANE_DIR/sglang"
+WHEEL_NOTE="$LANE_DIR/sglang-wheel"   # the wheel release the venv's dependencies come from (step 3)
+SOURCE_NOTE="$LANE_DIR/sglang-source" # the SGLang commit the venv runs from (step 3)
 PORT="${VIDEO_PORT:-$(unit_flag --port)}"; PORT="${PORT:-30022}"
 # The checkpoint and its revision, pinned like the rest: refs/main on 2026-09-25.
 # The first smoke on the reference box confirms it; until then the pin-watch alarms
@@ -65,6 +68,13 @@ VIDEO_MODEL_PIN="MiniMaxAI/MiniMax-H3"
 VIDEO_MODEL_PIN_REV="42ed227ee7df40d41602854ae760620d6eb651fe"
 MODEL="${VIDEO_MODEL:-$(unit_flag --model-path)}"; MODEL="${MODEL:-MiniMaxAI/MiniMax-H3}"   # = VIDEO_MODEL_PIN
 if [ "$MODEL" = "$VIDEO_MODEL_PIN" ]; then MODEL_REV="${VIDEO_MODEL_REV:-$VIDEO_MODEL_PIN_REV}"; else MODEL_REV="${VIDEO_MODEL_REV:-main}"; fi
+# The Turbo adapter (the Video view's Turbo switch): the cookbook's recommended
+# speed/quality recipe for the FL2VA weights, larryvrh's eight-evaluation LoRA: one file of
+# 0.78 GB in a repository of 112 GB (its other versions and experimental checkpoints), so it
+# is fetched by name, at the revision measured on the reference box on 2026-10-10.
+VIDEO_TURBO_REPO="larryvrh/MiniMax-H3-Turbo-Lora"
+VIDEO_TURBO_REV="43a74557ac3f6539db8e0f2a959d03feb7a81480"
+VIDEO_TURBO_FILE="minimax_h3_turbo_v4_step600_ema.safetensors"
 # fl2va serves text-only plus first/last-frame conditioning; ref2va serves reference
 # image/audio/video conditioning instead. They are checkpoint partitions: the variant
 # must match the weights fetched. VIDEO_VARIANT overrides it.
@@ -82,12 +92,12 @@ text_cache(){
 }
 HF_CACHE="${HF_CACHE:-$(installed_env HF_HOME)}"; HF_CACHE="${HF_CACHE:-$(text_cache)}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
-# The SGLang source this lane was developed against, the image lane's pin until v1.24 (that
-# lane moved to the v0.5.21 release), which registers MiniMaxH3Pipeline (checked 2026-09-25).
-# SGLANG_DIFFUSION_PIN overrides it only for someone deliberately testing another one.
-PIN="${SGLANG_DIFFUSION_PIN:-ddebc52f237a1dbb56533469ab2ec2a7b856c4ab}"
+# The SGLang source this lane runs: the v0.5.21 release's commit, as the image lane does
+# since v1.24 (the lane ran main's ddebc52 from 2026-09-25 until v1.25). SGLANG_DIFFUSION_PIN
+# overrides it only for someone deliberately testing another one.
+PIN="${SGLANG_DIFFUSION_PIN:-e00930c5489053f26d86b179cee0d087f846acbb}"
 # The released wheel that carries the prebuilt aarch64 kernels the source tree reuses.
-WHEEL="${SGLANG_DIFFUSION_WHEEL:-0.5.20}"
+WHEEL="${SGLANG_DIFFUSION_WHEEL:-0.5.21}"
 # Loopback, and not from ENGINE_BIND: that variable belongs to the LLM lane, which has
 # a key. This one has none (the diffusion parser has no --api-key at all), so a
 # non-loopback bind puts an unauthenticated video generator on that interface.
@@ -106,7 +116,11 @@ esac
 WEIGHTS_GB=135; RUNTIME_GB=11   # the fl2va partition plus the shared components and root
 # metadata, measured 2026-09-25: 144.1 GB cached in 88 files, which is 134.2 GiB, and the
 # room check below counts GiB (it said 145, and a box with the whole checkpoint cached was
-# told "10 GB to download", 2026-10-01); the venv and checkout (7) and the pip build tree
+# told "10 GB to download", 2026-10-01). 135 holds it with the Turbo adapter's 0.73 GiB (134.9
+# in all). The check below measures what is cached of the checkpoint alone, in whole GiB down:
+# a box with the checkpoint cached is told it has nothing to download, and the 0.8 GiB left
+# over is the adapter's room (136 told such a box 1, 2026-10-10). The venv and checkout (7)
+# and the pip build tree (the other 4) make RUNTIME_GB.
 
 if [ "$ACTION" = uninstall ]; then
   step "Removing the video lane"
@@ -136,7 +150,7 @@ if [ "$ACTION" = uninstall ]; then
   fi
   # Only what this script put there: LANE_DIR can be a directory shared with other work.
   if [ -d "$LANE_DIR" ]; then
-    rm -rf "$VENV" "$SRC"
+    rm -rf "$VENV" "$SRC" "$WHEEL_NOTE" "$SOURCE_NOTE"
     echo "runtime removed: $VENV and $SRC"
     rmdir "$LANE_DIR" 2>/dev/null || echo "kept $LANE_DIR: it holds files the video lane did not put there"
   fi
@@ -167,17 +181,29 @@ free_gb(){ { df -BG --output=avail "$(existing "$1")" 2>/dev/null || true; } | t
 HAVE_B="$({ du -s --apparent-size -B1 "$HF_CACHE/hub/models--${MODEL//\//--}/blobs" 2>/dev/null || true; } | cut -f1)"
 # what is left, in whole GB (a complete checkpoint is 0 left, not 1)
 WEIGHTS_NEED=$(( (WEIGHTS_GB * 1073741824 - ${HAVE_B:-0}) / 1073741824 )); [ "$WEIGHTS_NEED" -ge 0 ] || WEIGHTS_NEED=0
-FREE_W="$(free_gb "$HF_CACHE")"; FREE_R="$(free_gb "$LANE_DIR")"
-if [ "$(stat -c %d "$(existing "$HF_CACHE")")" = "$(stat -c %d "$(existing "$LANE_DIR")")" ]; then
-  WANT=$((WEIGHTS_NEED + RUNTIME_GB))
-  [ "${FREE_W:-0}" -ge "$WANT" ] \
-    || die "${FREE_W:-?} GB free on the disk of $HF_CACHE and $LANE_DIR, this needs about $WANT GB ($WEIGHTS_NEED for the checkpoint, $RUNTIME_GB for the runtime and its build). Free some space, or point HF_CACHE or VIDEO_LANE_DIR at a bigger disk."
-else
-  [ "${FREE_W:-0}" -ge "$WEIGHTS_NEED" ] \
-    || die "${FREE_W:-?} GB free under HF_CACHE=$HF_CACHE, the checkpoint needs about $WEIGHTS_NEED GB more. Free some space, or point HF_CACHE at a bigger disk."
-  [ "${FREE_R:-0}" -ge "$RUNTIME_GB" ] \
-    || die "${FREE_R:-?} GB free under $LANE_DIR, the runtime and its build need about $RUNTIME_GB GB. Free some space, or point VIDEO_LANE_DIR at a bigger disk."
-fi
+# Two caches of the runtime's own, written at the lane's first start and reused after, on the
+# disk of $HOME and outside the lane's folder (counted nowhere before this check, 2026-10-10):
+# copies of 52 transformed DiT weights (fused q/k/v, reordered rows) as file mappings, 11.2
+# GiB, and the video decoder's weights converted to its decode dtype, 4.5 GiB (reference
+# box, 2026-09-25). What is already there comes off.
+cache_need(){ local have; have="$({ du -s --apparent-size -B1 "$1" 2>/dev/null || true; } | cut -f1)"
+  local n=$(( ($2 * 1073741824 - ${have:-0}) / 1073741824 )); [ "$n" -ge 0 ] || n=0; echo "$n"; }
+SPILL_DIR="$HOME/.cache/sglang/diffusion/host_spill"; SPILL_NEED="$(cache_need "$SPILL_DIR" 12)"
+DTYPE_DIR="$HOME/.cache/sgl_diffusion/decode_dtype_store"; DTYPE_NEED="$(cache_need "$DTYPE_DIR" 5)"
+# Summed per disk: on a stock box all of it lands on one.
+declare -A NEED_ON=() FREE_ON=() WHAT_ON=()
+for PART in "$HF_CACHE|$WEIGHTS_NEED|the checkpoint" "$LANE_DIR|$RUNTIME_GB|the runtime and its build" \
+            "$SPILL_DIR|$SPILL_NEED|the runtime's transformed weights" "$DTYPE_DIR|$DTYPE_NEED|the decoder's converted weights"; do
+  IFS='|' read -r WHERE GB WHAT <<< "$PART"
+  DEV="$(stat -c %d "$(existing "$WHERE")")"
+  NEED_ON[$DEV]=$(( ${NEED_ON[$DEV]:-0} + GB ))
+  FREE_ON[$DEV]="$(free_gb "$WHERE")"
+  WHAT_ON[$DEV]="${WHAT_ON[$DEV]:+${WHAT_ON[$DEV]}, }$GB for $WHAT ($WHERE)"
+done
+for DEV in "${!NEED_ON[@]}"; do
+  [ "${FREE_ON[$DEV]:-0}" -ge "${NEED_ON[$DEV]}" ] \
+    || die "${FREE_ON[$DEV]:-?} GB free on one disk, and this lane needs about ${NEED_ON[$DEV]} GB there: ${WHAT_ON[$DEV]}. Free some space, or point HF_CACHE or VIDEO_LANE_DIR at a bigger disk."
+done
 echo "OK: $(uname -m), key present, checkpoint $([ "$WEIGHTS_NEED" -eq 0 ] && echo 'already cached' || echo "$WEIGHTS_NEED GB to download") into $HF_CACHE"
 
 step "2/6 Runtime ($LANE_DIR)"
@@ -199,10 +225,15 @@ step "3/6 SGLang Diffusion (released wheel first, then the pinned source over it
 # Order matters and is not cosmetic. The wheel resolves the whole dependency tree AND
 # ships sglang-kernel built for aarch64; installing the source tree first leaves the
 # runtime without those kernels and the server dies on the first request.
-if ! "$VENV/bin/python" -c 'import sglang' 2>/dev/null; then
-  echo "installing sglang[diffusion]==$WHEEL (~10 min on this box: torch and the kernels are large)"
+# The wheel is also what sets the versions of everything the runtime imports, so a pin
+# that moves to a new release takes that release's wheel too, as in install-image.sh: the
+# version installed is written down, and a venv from before this has no note and takes the
+# wheel once.
+if ! "$VENV/bin/python" -c 'import sglang' 2>/dev/null || [ "$(cat "$WHEEL_NOTE" 2>/dev/null)" != "$WHEEL" ]; then
+  echo "installing sglang[diffusion]==$WHEEL (~10 min on a new venv: torch and the kernels are large; an existing one only takes what changed)"
   "$VENV/bin/pip" install --quiet --pre "sglang[diffusion]==$WHEEL" \
     || die "the released wheel would not install. Re-run: pip resumes. If it keeps failing, SGLANG_DIFFUSION_WHEEL=<version> picks another."
+  printf '%s\n' "$WHEEL" > "$WHEEL_NOTE"
 fi
 if [ ! -d "$SRC/.git" ]; then
   git clone --quiet https://github.com/sgl-project/sglang "$SRC" || die "could not clone SGLang."
@@ -243,6 +274,12 @@ if [ "$CURRENT" != "$PIN" ]; then
 else
   echo "source already at ${PIN:0:12}"
 fi
+# The commit the tree holds, noted beside the runtime only when it changes, as the wheel is:
+# the cockpit puts the Turbo adapter on only for the commit it was measured on, and only on a
+# lane started after both notes (dashboard/cockpit.py video_runtime_stale). A lane that runs
+# ddebc52, this lane's runtime before v1.25, loads the whole DiT to put an adapter on.
+HEAD_NOW="$(git -C "$SRC" rev-parse HEAD)"
+[ "$(cat "$SOURCE_NOTE" 2>/dev/null)" = "$HEAD_NOW" ] || printf '%s\n' "$HEAD_NOW" > "$SOURCE_NOTE"
 for P in "${PATCHES[@]}"; do
   PF="$HERE/image-sglang/$P.patch"
   if git -C "$SRC" apply --reverse --check "$PF" >/dev/null 2>&1; then
@@ -266,11 +303,19 @@ if ! "$VENV/bin/python" -c 'import sglang, pathlib, sys; sys.exit(0 if str(pathl
   SGLANG_BUILD_RUST_EXTS=none "$VENV/bin/pip" install --quiet --no-deps -e "$SRC/python" \
     || die "the editable overlay failed. The venv still holds the released wheel; re-run to retry."
 fi
+# Asked of the registry itself, not of its source text: v0.5.21 names the model in a table
+# of non-diffusers pipelines, lower-cased, and the text check that held at ddebc52 failed
+# there although the runtime served it (2026-10-10). The id must resolve to MiniMax-H3's
+# own pipeline, registered under that name.
 "$VENV/bin/python" - <<'PY' || die "the runtime does not know MiniMax-H3. The pin may be wrong for this checkout."
-import inspect, pathlib, sglang
+import pathlib, sglang
 from sglang.multimodal_gen import registry
+from sglang.multimodal_gen.runtime.pipelines.minimax_h3_pipeline import MiniMaxH3Pipeline
+getattr(registry, "_ensure_registry_initialized", lambda: None)()
+name = registry.get_non_diffusers_pipeline_name("MiniMaxAI/MiniMax-H3")
+if name != "MiniMaxH3Pipeline" or registry.get_pipeline_class(name) is not MiniMaxH3Pipeline:
+    raise SystemExit("MiniMaxAI/MiniMax-H3 does not resolve to MiniMax-H3's own pipeline in the model registry")
 src = pathlib.Path(sglang.__file__).parent
-assert "MiniMax-H3" in inspect.getsource(registry), "MiniMax-H3 is not in the model registry"
 print(f"   runtime: {src}")
 PY
 
@@ -319,6 +364,19 @@ if len(sha) == 40 and sha == rev:
             f.write(sha)
         print(f"   refs/main -> {sha[:12]}" + (f" (was {old[:12]})" if old else ""), flush=True)
 PY
+# The Turbo adapter, for the FL2VA weights it was trained on; a ref2va lane has no Turbo.
+# The lane serves without it, so a failed fetch is a note: the Video view keeps its Turbo
+# switch off until a re-run of this script fetches it.
+if [ "$VARIANT" = "fl2va" ]; then
+  HF_HOME="$HF_CACHE" HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_DISABLE_XET=1 \
+    "$VENV/bin/python" - "$VIDEO_TURBO_REPO" "$VIDEO_TURBO_REV" "$VIDEO_TURBO_FILE" <<'PY' \
+    || echo "NOTE: the Turbo adapter ($VIDEO_TURBO_REPO, 0.78 GB) could not be fetched; the lane serves without it, and a re-run fetches it."
+import sys
+from huggingface_hub import hf_hub_download
+repo, rev, name = sys.argv[1:4]
+print("   Turbo adapter: " + hf_hub_download(repo, name, revision=rev), flush=True)
+PY
+fi
 
 step "5/6 Service"
 # The lane's own output directory: the download needs the file to still be there,

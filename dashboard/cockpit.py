@@ -2190,7 +2190,7 @@ IMAGE_LOCK = threading.Lock()
 # 42 s per denoising step on 2026-09-23 where one takes 4.6, and the memory a batch needs
 # grows with it. On this box's unified memory running out hangs the machine rather than
 # failing the request, so a call may not ask for more pixels, all its images together,
-# than the largest call measured here: one 2752x1536 image, 46.6 GB at its peak (on the
+# than the largest call measured here: one 2752x1536 image, 45.5 GiB at its peak (on the
 # v0.5.21 runtime and both checkpoints, 2026-10-10; 44.8 GB on the commit before it).
 IMAGE_MAX_PIXELS = 2752 * 1536
 # How often a call this process gave up on is looked for in the lane's journal (M5 below).
@@ -2578,7 +2578,7 @@ def image_call(payload: dict, editing: bool) -> tuple[int, dict]:
     if n * w * h > IMAGE_MAX_PIXELS:
         return 400, {"error": f"{n} image{'s' if n > 1 else ''} of {w}x{h} in one call is "
                               f"{n * w * h / 1e6:.1f} megapixels, and the largest call measured on this "
-                              f"box is {IMAGE_MAX_PIXELS / 1e6:.1f}: one 2752x1536 image, 46.6 GB at its "
+                              f"box is {IMAGE_MAX_PIXELS / 1e6:.1f}: one 2752x1536 image, 45.5 GiB at its "
                               f"peak. The images of a call are generated as one batch, so its memory grows "
                               f"with their total size, and on unified memory running out hangs the machine "
                               f"instead of failing the request. Ask for fewer or smaller images, or make "
@@ -2702,7 +2702,7 @@ VIDEO_CONTENT_MAX_BYTES = 1 << 30
 VIDEO_TIMEOUT = 3600.0
 # This lane serves ONE request at a time. Measured 2026-09-29: a second call sent to the
 # lane while one runs waits in its queue and starts when the first ends (no overlap, no
-# memory stacked: 9.6 GB then 8.3 GB), so the lock costs nothing the lane would give,
+# memory stacked: 9.4 GiB then 8.1 GiB), so the lock costs nothing the lane would give,
 # and it lets this cockpit refuse at once and say why instead of holding a second call.
 VIDEO_LOCK = threading.Lock()
 # The sizes and lengths measured on this box, past which a call is refused (video_call):
@@ -2748,6 +2748,56 @@ def _video_unit_flag(flag: str, fallback: str) -> str:
             if parts:
                 return parts[0]
     return fallback
+
+
+def _video_unit_env(name: str) -> str:
+    """An Environment= value of the installed unit, '' when it sets none."""
+    for line in _video_unit_text().splitlines():
+        text = line.strip()
+        if text.startswith(f"Environment={name}="):
+            return text.split("=", 2)[2]
+    return ""
+
+
+VIDEO_STALE_RUNTIME = ("the video lane still runs the runtime it started with, from before this box's "
+                       "last update: the Turbo waits for its next start (sudo systemctl restart "
+                       "qwen38-video.service)")
+
+
+def video_runtime_stale() -> str:
+    """Why the video lane now running must not have an adapter put on or taken off, '' when
+    it may. The Turbo was measured on one runtime, the source commit install-video.sh pins
+    (its default PIN), which puts an adapter on a model it offloads layer by layer without
+    touching the offload; main's ddebc52, this lane's runtime before v1.25, loads the whole
+    DiT, 62 GiB, into memory to do it. install-video.sh notes the commit the source tree holds
+    (sglang-source) and the wheel under it (sglang-wheel), in the unit's WorkingDirectory,
+    each rewritten only when it changes, and an update does not restart a serving lane: a
+    lane whose process started before either note changed (ExecMainStartTimestamp: the process
+    that imports the code, whatever the unit's Type) runs what was there before. Whatever
+    cannot be told is refused: a systemd that does not answer, a lane without its notes, a
+    commit the Turbo was not measured on (SGLANG_DIFFUSION_PIN, a rollback)."""
+    raw = run(["systemctl", "show", VIDEO_UNIT, "-p", "ActiveState,ExecMainStartTimestamp",
+               "--timestamp=unix"], timeout=5)
+    if not answered(raw):
+        return "systemd did not say when the video lane started, so the Turbo waits until it does"
+    d = dict(ln.split("=", 1) for ln in raw.splitlines() if "=" in ln)
+    if d.get("ActiveState") != "active":
+        return ""                       # nothing runs: its next start runs what is installed
+    lane = next((ln.strip().split("=", 1)[1] for ln in _video_unit_text().splitlines()
+                 if ln.strip().startswith("WorkingDirectory=")), "")
+    try:
+        notes = [Path(lane) / "sglang-source", Path(lane) / "sglang-wheel"] if lane else []
+        source = notes[0].read_text().strip()
+        changed = max(int(n.stat().st_mtime) for n in notes)
+    except (OSError, IndexError, ValueError):
+        return ("the video lane has no note of the runtime it runs, which install-video.sh writes: "
+                "re-run ./install-video.sh --no-smoke, then restart the lane")
+    measured = video_turbo_runtime()
+    if not measured or source != measured:
+        return (f"the video lane runs SGLang at {source[:12] or 'an unknown commit'}, and the Turbo "
+                f"is measured on {measured[:12] or 'the pinned release'} only")
+    since = re.fullmatch(r"@(\d+)", d.get("ExecMainStartTimestamp", "").strip())
+    return "" if since and int(since.group(1)) >= changed else VIDEO_STALE_RUNTIME
 
 
 def video_port() -> int:
@@ -2891,6 +2941,13 @@ def video_status() -> dict:
            "state": "not installed", "available": False, "llm_lane": "", "progress": {}, "run": {}}
     if not out["installed"]:
         return out
+    # the Turbo switch is offered when its adapter is on this box, for the weights it fits,
+    # and the lane serving runs the runtime it was measured on
+    out["turbo"] = out["variant"] == "fl2va" and bool(video_turbo_path())
+    if out["turbo"]:
+        out["turbo_why"] = video_runtime_stale()
+        out["turbo"] = not out["turbo_why"]
+        out["turbo_path"] = video_turbo_path()        # for the view's copied command
     with LIFE_LOCK:
         states = dict(LIFE.get("states", {}))
     # before the lifecycle's first tick (a cockpit that just started) nothing is known
@@ -2971,6 +3028,144 @@ VIDEO_ALLOWED = {"model", "prompt", "seconds", "size", "task", "target", "qualit
                  "num_outputs_per_prompt", "num_inference_steps", "flow_shift",
                  "audio_flow_shift", "seed"}
 
+# The Video view's Turbo switch: the cookbook's recommended speed/quality adapter for the
+# FL2VA weights, larryvrh's MiniMax-H3 Turbo LoRA, installed by install-video.sh at its pin
+# (VIDEO_TURBO_* there, the one place it is declared) and put on for a call that asks for
+# it, in SGLang's dynamic mode. Measured on this box on 2026-10-10: on in about 5 s, off in
+# 0.01 s, a 4 s 480P video in 127 s against 623 s for the base at its 50 steps (the same
+# prompt, the server's own times), and the base's next video identical to the byte to one
+# made before the adapter went on. Merged into the weights at startup instead (the
+# cookbook's --lora-merge-mode auto), it denoised 9 % faster and in less memory, but the lane
+# took 27 min to answer with a 62 GiB merge cache on disk, its videos came out softer (a bf16
+# merge drops most of this adapter's update, which is why sgl-project/sglang#43385 keeps it
+# unmerged on main since 2026-10-10), and switching back would cost a restart. A browser
+# never names the adapter.
+VIDEO_TURBO_NICKNAME = "larry-v4"
+# Eight evaluations. v0.5.21 counts num_inference_steps as the sigma grid's points, the
+# terminal zero among them, so they are asked as 9; sgl-project/sglang#38671 counts
+# evaluations on main since 2026-10-10, so a pin past it sends 8 (tests/test_video_lane.py
+# holds the pin and this number together).
+VIDEO_TURBO_STEPS = 9
+# The dynamic adapter costs memory the merged weights do not: 4 s at 480P peaked at 21 to
+# 25 GiB against 8 to 9 GiB for the base (2026-10-10), more as the video grows, and the base alone
+# already peaks at 75.4 GiB at 8 s (28.4 GiB of the box left), 76.5 GiB at 15 s and 80 GiB at
+# 720P. So the Turbo is admitted at what was measured, as everything else on this lane: 480P,
+# up to VIDEO_TURBO_MAX_SECONDS.
+VIDEO_TURBO_MAX_SECONDS = 4
+VIDEO_TURBO_PINS: dict = {}
+VIDEO_TURBO_MEASURED: dict = {}
+
+
+def video_turbo_runtime() -> str:
+    """The SGLang commit the Turbo was measured on: install-video.sh's default PIN, '' when
+    it cannot be read. A pin that moves takes the Turbo's numbers through again
+    (tests/test_video_lane.py holds the pin and VIDEO_TURBO_STEPS together)."""
+    if "pin" not in VIDEO_TURBO_MEASURED:
+        try:
+            text = (REPO_DIR / "install-video.sh").read_text(errors="replace")
+        except OSError:
+            return ""
+        m = re.search(r'(?m)^PIN="\$\{SGLANG_DIFFUSION_PIN:-([0-9a-f]{40})\}"$', text)
+        if not m:
+            return ""
+        VIDEO_TURBO_MEASURED["pin"] = m.group(1)
+    return VIDEO_TURBO_MEASURED["pin"]
+
+
+def video_turbo_path() -> str:
+    """The Turbo adapter's file in the video lane's cache, '' when it is not there."""
+    if not VIDEO_TURBO_PINS:
+        try:
+            text = (REPO_DIR / "install-video.sh").read_text(errors="replace")
+        except OSError:
+            return ""
+        for key in ("VIDEO_TURBO_REPO", "VIDEO_TURBO_REV", "VIDEO_TURBO_FILE"):
+            m = re.search(rf'(?m)^{key}="([^"]+)"$', text)
+            if m:
+                VIDEO_TURBO_PINS[key] = m.group(1)
+    if len(VIDEO_TURBO_PINS) != 3:
+        return ""
+    hub = Path(_video_unit_env("HF_HOME") or Path.home() / ".cache/huggingface") / "hub"
+    path = (hub / ("models--" + VIDEO_TURBO_PINS["VIDEO_TURBO_REPO"].replace("/", "--")) / "snapshots"
+            / VIDEO_TURBO_PINS["VIDEO_TURBO_REV"] / VIDEO_TURBO_PINS["VIDEO_TURBO_FILE"])
+    return str(path) if path.is_file() else ""
+
+
+# The run of the lane (_video_life) this cockpit last put the Turbo adapter on, until the lane
+# says it is off: a base call that cannot ask the lane then waits rather than run with it on
+# (the unmerge after a Turbo video waits behind whatever the lane runs next, and gives up after
+# its timeout). A run that ended took the adapter with it: a lane starts on the base.
+VIDEO_TURBO_LEFT = {"run": None}
+
+
+def _video_turbo_left(on: bool):
+    """What VIDEO_TURBO_LEFT holds once the adapter was put on (on) or taken off: the run it
+    is on, None when it is off or its run is not up any more (a lane that stopped or died
+    took the adapter with it). A systemd that does not say is kept as it is, as unknown."""
+    if not on:
+        return None
+    life = _video_life()
+    return life if life == LIFE_UNKNOWN or life[0] == "active" else None
+
+
+def _video_turbo(on: bool) -> str:
+    """Puts the Turbo adapter on or takes it off for the call about to be sent, as the
+    lane itself reports it (/v1/list_loras); '' when done, or why it could not be. A lane
+    that cannot say is taken to run the base, as it starts, unless the call asks for the
+    Turbo or this cockpit put the adapter on that run and never saw it come off
+    (VIDEO_TURBO_LEFT). An adapter merged into the weights is left alone: this cockpit never
+    merges one, and taking one out restores 62 GiB of weights in memory. A lane still running
+    the runtime from before an update is left alone too (video_runtime_stale), except to take
+    off an adapter this cockpit put on: it went on through a runtime the check passed, and a
+    lane that stayed up since is that runtime (the check now fails on a note an update
+    rewrote, or on a systemd that does not answer)."""
+    stale = video_runtime_stale()
+    if stale:
+        left = VIDEO_TURBO_LEFT["run"]
+        if on or left is None:
+            return stale if on else ""
+        if _run_over(_video_life(), left):
+            VIDEO_TURBO_LEFT["run"] = None         # a new run starts on the base, whatever runs it
+            return ""
+        # this cockpit's adapter, on the run that passed the check: taken off below
+    try:
+        with urllib.request.urlopen(urllib.request.Request(video_base() + "/v1/list_loras"), timeout=10) as r:
+            status = json.loads(r.read(1 << 20) or b"{}")
+        active = [a for mods in (status.get("active") or {}).values() for a in (mods or []) if isinstance(a, dict)]
+    except Exception as e:                              # noqa: BLE001 (isolated route)
+        if on:
+            return f"the lane did not say which adapter it runs ({type(e).__name__})"
+        left = VIDEO_TURBO_LEFT["run"]
+        if left is not None and not _run_over(_video_life(), left):
+            return (f"the lane did not say whether the Turbo adapter of an earlier video is off "
+                    f"({type(e).__name__}): try again in a minute")
+        return ""
+    if any(a.get("merged") for a in active):
+        return ("the lane runs an adapter merged into its weights, which this cockpit never does: "
+                "restart the lane to serve the base again")
+    if on and not any(a.get("nickname") == VIDEO_TURBO_NICKNAME for a in active):
+        path = video_turbo_path()
+        if not path:
+            return "the Turbo adapter is not on this box: ./install-video.sh fetches it (0.78 GB)"
+        route, body = "/v1/set_lora", {"lora_nickname": VIDEO_TURBO_NICKNAME, "lora_path": path,
+                                       "target": "all", "strength": 1.0, "merge_mode": "dynamic"}
+    elif not on and active:
+        route, body = "/v1/unmerge_lora_weights", {"target": "all"}
+    else:
+        VIDEO_TURBO_LEFT["run"] = _video_turbo_left(on)
+        return ""
+    try:
+        req = urllib.request.Request(video_base() + route, json.dumps(body).encode(),
+                                     {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            r.read(65536)
+    except Exception as e:                              # noqa: BLE001 (isolated route)
+        if on:
+            VIDEO_TURBO_LEFT["run"] = _video_turbo_left(True)    # it may have gone on in part
+        return f"the lane could not {'put the Turbo adapter on' if on else 'take the Turbo adapter off'} ({type(e).__name__})"
+    VIDEO_TURBO_LEFT["run"] = _video_turbo_left(on)
+    return ""
+
 
 # What counts as finished on the lane's list: anything else found there is a
 # generation in flight, including a status this cockpit has never seen (a new
@@ -3011,7 +3206,7 @@ def _video_list_entry(vid: str) -> tuple:
 
 
 def _release_video_lock_when_done(life0: tuple, vid: str, timeout: float,
-                                 staged: list = ()) -> None:
+                                 staged: list = (), turbo: bool = False) -> None:
     """The lock of a call that timed out here, given back when the lane is done with
     it: the video reached a terminal status, or the lane is no longer the run the call
     went to (a Cancel, a Stop, a crash), or the timeout went by with neither. "missing"
@@ -3042,6 +3237,8 @@ def _release_video_lock_when_done(life0: tuple, vid: str, timeout: float,
                 os.unlink(path)
             except OSError:
                 pass
+        if turbo:
+            _video_turbo(False)
         VIDEO_LAST.clear()
         VIDEO_LOCK.release()
 
@@ -3069,6 +3266,22 @@ def video_call(payload: dict) -> tuple[int, dict]:
         # same bound the image lane enforces: past it a call outlives the timeout
         # and pins the single-flight GPU lane for nothing
         return 400, {"error": "num_inference_steps is a number from 1 to 100"}
+    turbo = payload.get("turbo", False)
+    if not isinstance(turbo, bool):
+        return 400, {"error": "turbo is true or false"}
+    if turbo:
+        # the adapter's own schedule (the cookbook's recipe), which the view shows fixed
+        if steps not in (None, VIDEO_TURBO_STEPS):
+            return 400, {"error": f"the Turbo runs its own {VIDEO_TURBO_STEPS} steps: leave num_inference_steps out"}
+        if fields.get("quality") == "high":
+            # both alter denoising, and the cookbook says the pair is not quality-validated
+            return 400, {"error": "the Turbo does not take quality \"high\" on top: ask for one or the other"}
+        steps = fields["num_inference_steps"] = VIDEO_TURBO_STEPS
+        if _video_unit_flag("--model-variant", "fl2va") != "fl2va":
+            return 400, {"error": "the Turbo adapter is trained for the FL2VA weights, and this lane serves others"}
+        stale = video_runtime_stale()
+        if stale:
+            return 409, {"error": stale}
     if fields.get("num_outputs_per_prompt", 1) != 1:
         # the lane serves one request at a time; parallel variants inside one call are
         # the same working set twice
@@ -3100,16 +3313,16 @@ def video_call(payload: dict) -> tuple[int, dict]:
     if sw * sh > 1280 * 720:
         # The image lane has IMAGE_MAX_PIXELS for the same reason: past what was
         # measured, the cost is a guess and the memory is a certain risk - 1280x704
-        # already peaks at 81.9 GB of this box's 121.6.
+        # already peaks at 80.0 GiB of this box's 121.6.
         return 400, {"error": f"{sw}x{sh} is past the largest canvas measured here "
-                              "(1280x720, which peaks at 81.9 GB of 121.6)"}
+                              "(1280x720, which peaks at 80.0 GiB of 121.6)"}
     # The memory a video takes grows much faster than its length, and only what was
-    # measured is admitted: 480P from 4 to 15 s (4 s peaked at 9.6 GB, 15 s at 78.3 GB,
-    # 2026-09-29) and 720P at 4 s (82 GB at its peak, 2026-09-25). A 720P video of 8 s
-    # was admitted by the time budget alone, and on this box's 121.6 GB it cannot fit:
+    # measured is admitted: 480P from 4 to 15 s (4 s peaked at 9.4 GiB, 15 s at 76.5 GiB,
+    # 2026-09-29) and 720P at 4 s (80 GiB at its peak, 2026-09-25). A 720P video of 8 s
+    # was admitted by the time budget alone, and on this box's 121.6 GiB it cannot fit:
     # running out of unified memory hangs the machine, which is a power cycle by hand.
     if sw * sh > VIDEO_LONG_MAX_PIXELS and secs > VIDEO_LARGE_MAX_SECONDS:
-        return 400, {"error": f"{sw}x{sh} is measured here at {VIDEO_LARGE_MAX_SECONDS} s only (82 GB at its "
+        return 400, {"error": f"{sw}x{sh} is measured here at {VIDEO_LARGE_MAX_SECONDS} s only (80 GiB at its "
                               f"peak, of 121.6): a {secs} s video at this size would outgrow the box's "
                               "memory, which hangs it. Ask for 4 s at this size, or up to 15 s at 480P."}
     fields["target"] = {"short_edge": min(sw, sh),
@@ -3129,7 +3342,18 @@ def video_call(payload: dict) -> tuple[int, dict]:
     # and wedged the engine). So the estimate is refused at the door, not discovered
     # at the 120th minute. The view carries the same numbers (vidEtaSecs,
     # dashboard/static/js/video.js) and dashboard/tests/test_video_routes.py holds them equal.
+    # The Turbo at 480P, 2026-10-10: 4 s at its 9 steps in 126.2 to 127.9 s with the prompt
+    # encoded already, plus 9.3 s for a new prompt's text encoding (3.81 per step-second,
+    # rounded up as above).
     per_step = 3.05 if sw * sh <= 864 * 480 else 7.65
+    if turbo:
+        if sw * sh > 864 * 480:
+            return 400, {"error": "the Turbo is measured at 480P only so far: ask for 864x480 or 480x864, or the base"}
+        if secs > VIDEO_TURBO_MAX_SECONDS:
+            return 400, {"error": f"the Turbo is measured at {VIDEO_TURBO_MAX_SECONDS} s only so far (its adapter "
+                                  "adds to the memory a longer video takes): ask for "
+                                  f"{VIDEO_TURBO_MAX_SECONDS} s, or the base"}
+        per_step = 3.85
     conditioning = bool(payload.get("first_frame") or payload.get("last_frame"))
     est = per_step * (steps or 50) * secs * (1.1 if conditioning else 1.0)
     # 7200 s, not 2 * VIDEO_TIMEOUT: this budget is wall-clock work on the GPU, and
@@ -3241,6 +3465,11 @@ def video_call(payload: dict) -> tuple[int, dict]:
         return 409, {"error": "the lane is already generating a video left behind "
                               "by an earlier call. Wait for it to finish."}
     try:
+        # the adapter as this call needs it, asked of the lane under the lock: on for a
+        # Turbo call, and off for any other, whatever an earlier call or client left
+        why = _video_turbo(turbo)
+        if why:
+            return 502, {"error": why, "seconds": round(time.time() - t0, 2)}
         req = urllib.request.Request(video_base() + "/v1/videos",
                                      json.dumps(fields).encode(),
                                      {"Content-Type": "application/json"})
@@ -3287,7 +3516,7 @@ def video_call(payload: dict) -> tuple[int, dict]:
         # a watcher that gives it back when the lane is done, so a second generation
         # never runs beside the first.
         watcher = threading.Thread(target=_release_video_lock_when_done,
-                                   args=(life0, vid, VIDEO_TIMEOUT, keyframe_paths), daemon=True)
+                                   args=(life0, vid, VIDEO_TIMEOUT, keyframe_paths, turbo), daemon=True)
         # The flag goes up before start(): a lane that dies this second could run the
         # watcher's finally before an assignment placed after start() lands, and a
         # thread that never started must leave the flag down so this call's own
@@ -3328,6 +3557,9 @@ def video_call(payload: dict) -> tuple[int, dict]:
                     os.unlink(path)
                 except (OSError, NameError):
                     pass
+            if turbo:
+                # back to the base the lane starts on, for this cockpit's next call
+                _video_turbo(False)
             VIDEO_LAST.clear()
             VIDEO_LOCK.release()
 

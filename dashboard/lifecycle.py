@@ -62,7 +62,8 @@ IMAGE_MARKERS = [
 # MiniMax-H3 is served by the same SGLang Diffusion server from the same source
 # tree, so its boot prints the shared server lines. The component lines below are the
 # ones this pipeline printed on the reference box on 2026-09-25 (boot 23:08:50, DiT
-# 61.73 GB in 13 shards, text encoder 48.09 GB, audio VAE 0.56 GB, video VAE 5.2 GB):
+# 61.73 GiB in 13 shards, text encoder 48.09 GiB, audio VAE 0.56 GiB, video VAE 5.2 GiB, as
+# SGLang logs them, its "GB" being 1024**3 bytes):
 # a marker for a line never seen is a guess dressed as knowledge, so anything else
 # still falls on the generic "Loading " arm and reads as weights without naming it.
 VIDEO_STAGES = ("init", "loading-weights", "warming-up")
@@ -71,10 +72,10 @@ VIDEO_MARKERS = [
     ("Starting server...", "init", "starting the server"),
     ("Loading ", "loading-weights", "loading a pipeline component"),
     ("Loading pipeline modules...", "loading-weights", "reading the checkpoint layout"),
-    ("Loading text_encoder from", "loading-weights", "the 48 GB text encoder"),
-    ("Loading MiniMaxH3DiTModel from", "loading-weights", "the 61.7 GB DiT"),
+    ("Loading text_encoder from", "loading-weights", "the 48 GiB text encoder"),
+    ("Loading MiniMaxH3DiTModel from", "loading-weights", "the 61.7 GiB DiT"),
     ("Loading audio_vae from", "loading-weights", "the audio VAE"),
-    ("Loading video_vae from", "loading-weights", "the 5.2 GB video VAE"),
+    ("Loading video_vae from", "loading-weights", "the 5.2 GiB video VAE"),
     ("Pipeline instantiated", "loading-weights", "building the pipeline"),
     ("Starting FastAPI server", "warming-up", "three warmup requests"),
     ("fired up and ready to roll", "warming-up", "ready"),
@@ -328,9 +329,9 @@ BUSY_STATES = {"starting", "loading-weights", "loading-draft", "allocating-kv",
 # holds a switch back, which only rewrites files; both stay busy for a second engine.
 TRANSITIONAL = BUSY_STATES - {"ready", "degraded", "orphan", "wedged"}
 # Every unit that holds the GPU pool while it runs. The image lane is one of them:
-# 31 GB of weights, and two engines at once on 121.6 GB of unified memory is the
+# 31 GB of weights, and two engines at once on 121.6 GiB of unified memory is the
 # livelock this whole module exists to prevent. The video lane is one of them too:
-# about 116 GB of weights by measured components (48.09 + 61.73 + 0.56 + 5.2,
+# about 116 GiB of weights by measured components (48.09 + 61.73 + 0.56 + 5.2,
 # docs/video-lane.md), for the same reason.
 ENGINE_UNITS = ("qwen38-sglang.service", "qwen38-flash.service",
                 "qwen38-image.service", "qwen38-video.service")

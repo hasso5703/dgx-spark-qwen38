@@ -33,6 +33,7 @@ happens to exist.
 | qwen-image | Qwen/Qwen-Image-2.1 | not yet checked |
 | qwen-image-turbo | Qwen/Qwen-Image-2.1-Turbo | not yet checked: same Qwen Research licence as the base |
 | minimax-h3 | MiniMaxAI/MiniMax-H3 | not yet checked: own licence, read it before any redistribution |
+| video-turbo | larryvrh/MiniMax-H3-Turbo-Lora | not yet checked: Apache-2.0 on its card |
 | images (2) | lmsysorg/sglang@sha256:... | copied whole by digest: the Apache-2.0 SGLang images carry their license inside; keep it there |
 
 No row is a conclusion until this table says one, with a date.
@@ -78,11 +79,12 @@ so an install pinned to the index digest would not find it on the mirror.
 The script copies the index whole with `docker buildx imagetools create`, then
 asks the mirror for the pinned digest and fails when it does not answer it.
 
-Cost honesty: the twelve checkpoint pins are 1,077 GB at their pinned revisions
+Cost honesty: the thirteen checkpoint pins are 1,078 GB at their pinned revisions
 (the Hub's file sizes, read 2026-10-10: 106 GB for the four 27B checkpoints, 403 GB for
 the three flash ones, 4 GB for the two drafters, 33 GB for Qwen-Image and 32.5 GB for its
 Turbo, 498.5 GB for MiniMax-H3 whole, both partitions and its native layout, where the
-video lane itself fetches only the 144 GB FL2VA one), downloaded and uploaded again
+video lane itself fetches only the 144 GB FL2VA one, and 0.78 GB for the video Turbo
+adapter, the one file of its 112 GB repository that is mirrored), downloaded and uploaded again
 from whatever machine runs this, once to seed and once per re-pin. A cheap
 cloud box with fast egress does the seeding in hours instead of days, and the
 plan above is what you hand it.

@@ -21,7 +21,7 @@ const IMG_EXAMPLES = {
   'Local edit': {mode: 'edit', prompt: 'Change the red teapot to blue, keeping its shape, table, window, and lighting unchanged.'},
   'Combine two': {mode: 'edit', prompt: 'Combine the subjects from Picture 1 and Picture 2 into one coherent scene, preserving their appearance.'}};
 // The most pixels one call may ask for, its images together: the largest call measured
-// on this box (one 2752x1536 image, 46.6 GB at its peak). cockpit.py refuses the same.
+// on this box (one 2752x1536 image, 45.5 GiB at its peak). cockpit.py refuses the same.
 const IMG_MAX_PIXELS = 2752 * 1536;
 // The Turbo checkpoint (./switch-model.sh image-turbo) samples on the eight-step sigma grid
 // its model_index.json carries, whatever num_inference_steps a request says, so the field is
@@ -45,7 +45,7 @@ function imgProblem(){
   if (w % 32 || h % 32) return `${w} × ${h} is not a multiple of 32, which the engine refuses. Nearest: ${Math.max(32, Math.round(w / 32) * 32)} × ${Math.max(32, Math.round(h / 32) * 32)}.`;
   const steps = imgSteps(); if (!(steps >= 1 && steps <= 100)) return 'Steps run from 1 to 100; the model default is 40.';
   const n = Number($('img-n').value); if (!(n >= 1 && n <= 10)) return 'Between 1 and 10 images per call.';
-  if (n * w * h > IMG_MAX_PIXELS) return `${n} image${n > 1 ? 's' : ''} of ${w} × ${h} is ${(n * w * h / 1e6).toFixed(1)} megapixels in one call; the largest measured here is ${(IMG_MAX_PIXELS / 1e6).toFixed(1)} (46.6 GB at its peak). The images of a call run as one batch, and running out of memory hangs this machine. Ask for fewer or smaller images.`;
+  if (n * w * h > IMG_MAX_PIXELS) return `${n} image${n > 1 ? 's' : ''} of ${w} × ${h} is ${(n * w * h / 1e6).toFixed(1)} megapixels in one call; the largest measured here is ${(IMG_MAX_PIXELS / 1e6).toFixed(1)} (45.5 GiB at its peak). The images of a call run as one batch, and running out of memory hangs this machine. Ask for fewer or smaller images.`;
   const cfg = Number(imgVal('img-cfg') || 1);
   if (cfg > 1 && !imgVal('img-neg')) return 'A CFG scale above 1 does nothing without a negative prompt: the engine needs both.';
   if (imgVal('img-neg') && cfg <= 1) return 'A negative prompt does nothing without a CFG scale above 1: the engine needs both.';
@@ -101,9 +101,13 @@ function imgSync(){
   document.querySelectorAll('#img-mode button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === IS.mode)));
   show('img-refbox', imgEditing());
   setText('img-run', imgEditing() ? 'Edit' : 'Generate');
-  // Under the Turbo the slider keeps the base's setting for when it comes back, and shows
-  // the eight steps the checkpoint runs.
-  const turbo = imgTurbo(); $('img-steps').disabled = turbo;
+  // Under the Turbo the slider shows the eight steps the checkpoint runs, its thumb too (it
+  // stayed on the base's 40 beside an 8, seen on the reference box), and keeps the base's
+  // setting aside for when the base comes back.
+  const turbo = imgTurbo(), st = $('img-steps');
+  if (turbo && st.value !== String(IMG_TURBO_STEPS)){ IS.baseSteps = st.value; st.value = String(IMG_TURBO_STEPS); }
+  else if (!turbo && IS.baseSteps != null){ st.value = IS.baseSteps; IS.baseSteps = null; }
+  st.disabled = turbo;
   setText('img-steps-hint', turbo ? 'fixed at 8 by the Turbo checkpoint' : 'model default 40');
   setText('img-steps-o', String(imgSteps())); setText('img-n-o', $('img-n').value);
   [['img-steps', 1, 100], ['img-n', 1, 10]].forEach(([id, a, b]) => { const v = id === 'img-steps' ? imgSteps() : Number($(id).value); $(id).style.setProperty('--pct', (100 * (v - a) / (b - a)).toFixed(1) + '%'); });
@@ -116,7 +120,7 @@ function imgSync(){
   const secs = imgEstimate(), {w, h} = imgSize();
   setText('img-cost-v', secs ? 'about ' + fmtDur(secs) : '…');
   setText('img-cost-k', w && h ? `${(w * h / 1e6).toFixed(2)} megapixels${Number($('img-n').value) > 1 ? ' each' : ''}` : '');
-  setText('img-cost-b', w * h >= 3.5e6 ? 'Peaks at 46.6 GB instead of 35.6: four times the pixels cost five times the time.' : 'Fitted to six sizes of both checkpoints measured on this box.');
+  setText('img-cost-b', w * h >= 3.5e6 ? 'Peaks at 45.5 GiB instead of 34.8: four times the pixels cost five times the time.' : 'Fitted to six sizes of both checkpoints measured on this box.');
   const cnt = imgVal('img-prompt').length; setText('img-count', cnt ? cnt + ' characters' : '');
   imgCurl();
 }

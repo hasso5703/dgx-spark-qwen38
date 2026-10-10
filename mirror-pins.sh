@@ -52,7 +52,7 @@ eval "$img"
 lane="$(grep -E '^(IMAGE_MODEL_PIN|IMAGE_MODEL_PIN_REV|IMAGE_TURBO_PIN|IMAGE_TURBO_PIN_REV)=' "$REPO_DIR/install-image.sh")"
 eval "$lane"
 # the video lane's checkpoint, pinned in install-video.sh like the rest
-vline="$(grep -E '^(VIDEO_MODEL_PIN|VIDEO_MODEL_PIN_REV)=' "$REPO_DIR/install-video.sh")"
+vline="$(grep -E '^(VIDEO_MODEL_PIN|VIDEO_MODEL_PIN_REV|VIDEO_TURBO_REPO|VIDEO_TURBO_REV|VIDEO_TURBO_FILE)=' "$REPO_DIR/install-video.sh")"
 eval "$vline"
 
 # The conclusion MIRROR.md records for a pin, or nothing when its table has no row.
@@ -72,14 +72,14 @@ if [ -z "$MIRROR_PYTHON" ]; then
   [ -x "$REPO_DIR/.venv-mirror/bin/python" ] && MIRROR_PYTHON="$REPO_DIR/.venv-mirror/bin/python"
 fi
 
-mirror_model() {  # $1 label, $2 repo, $3 revision
+mirror_model() {  # $1 label, $2 repo, $3 revision, [$4 the one file the pin uses, when the repo holds more]
   # owner and name both: two owners publish checkpoints under one name
   # (RadixArk/ and nvidia/Qwen3.8-Flash-Next-NVFP4), and a mirror named after the
   # name alone would put both in one repo. "--" is refused in repo ids, "__" is not.
   local dst="${HF_MIRROR_ORG:-<HF_MIRROR_ORG>}/${2%%/*}__${2##*/}" tag="upstream-$3" lic
   lic="$(license_of "$1")"
   printf '%-12s %s\n' "  model" "$1"
-  printf '           source: %s @ %s\n' "$2" "$3"
+  printf '           source: %s @ %s%s\n' "$2" "$3" "${4:+, $4 only}"
   printf '           mirror: %s @ %s\n' "$dst" "$tag"
   printf '           license: %s\n' "${lic:-no row in MIRROR.md}"
   if ! license_concluded "$lic"; then
@@ -88,7 +88,7 @@ mirror_model() {  # $1 label, $2 repo, $3 revision
     return 0
   fi
   if [ "$MODE" = "--dry-run" ]; then
-    echo "           plan: download the pinned revision, upload, tag $tag, compare file for file"
+    echo "           plan: download ${4:-the pinned revision}${4:+ at the pinned revision}, upload, tag $tag, compare file for file"
     return 0
   fi
   [ -n "$HF_MIRROR_ORG" ] || { echo "           refuse: HF_MIRROR_ORG not set"; RC=1; return 0; }
@@ -96,25 +96,31 @@ mirror_model() {  # $1 label, $2 repo, $3 revision
   "$MIRROR_PYTHON" -c 'import huggingface_hub' 2>/dev/null || {
     echo "           refuse: $MIRROR_PYTHON has no huggingface_hub (MIRROR.md: python3 -m venv .venv-mirror && .venv-mirror/bin/pip install huggingface_hub)"
     RC=1; return 0; }
-  "$MIRROR_PYTHON" - "$2" "$3" "$dst" "$tag" <<'PY' || { echo "           FAIL (see above)"; RC=1; }
+  "$MIRROR_PYTHON" - "$2" "$3" "$dst" "$tag" "${4:-}" <<'PY' || { echo "           FAIL (see above)"; RC=1; }
 import sys
 from huggingface_hub import HfApi, snapshot_download
-src, rev, dst, tag = sys.argv[1:5]
+src, rev, dst, tag, only = sys.argv[1:6]
+# one file of a repository that holds more (the video Turbo adapter: 0.78 GB of 112)
+allow = [only] if only else None
 api = HfApi()
 
 
 def files(repo, revision):
     """What must match: every file's name, size and content hash."""
     info = api.model_info(repo, revision=revision, files_metadata=True)
-    return {(s.rfilename, s.size, s.lfs.sha256 if s.lfs else s.blob_id) for s in info.siblings}
+    return {(s.rfilename, s.size, s.lfs.sha256 if s.lfs else s.blob_id) for s in info.siblings
+            if allow is None or s.rfilename in allow}
 
 
 want = files(src, rev)
+if allow and not want:
+    sys.exit(f"           FAIL: {src} @ {rev[:12]} has no {only}")
 refs = {t.name for t in api.list_repo_refs(dst).tags} if api.repo_exists(dst) else set()
 if tag not in refs:
-    path = snapshot_download(src, revision=rev)
+    path = snapshot_download(src, revision=rev, allow_patterns=allow)
     api.create_repo(repo_id=dst, exist_ok=True)
-    commit = api.upload_folder(repo_id=dst, folder_path=path, commit_message=f"mirror of {src}@{rev}")
+    commit = api.upload_folder(repo_id=dst, folder_path=path, allow_patterns=allow,
+                               commit_message=f"mirror of {src}@{rev}")
     api.create_tag(dst, tag=tag, revision=commit.oid, tag_message=f"{src}@{rev}")
     print(f"           uploaded {dst} at {commit.oid[:12]}, tagged {tag}")
 else:
@@ -172,6 +178,7 @@ if [ "$MODE" != "--images" ]; then
   mirror_model "qwen-image" "$IMAGE_MODEL_PIN" "$IMAGE_MODEL_PIN_REV"
   mirror_model "qwen-image-turbo" "$IMAGE_TURBO_PIN" "$IMAGE_TURBO_PIN_REV"
   mirror_model "minimax-h3" "$VIDEO_MODEL_PIN" "$VIDEO_MODEL_PIN_REV"
+  mirror_model "video-turbo" "$VIDEO_TURBO_REPO" "$VIDEO_TURBO_REV" "$VIDEO_TURBO_FILE"
 fi
 if [ "$MODE" != "--models" ]; then
   echo "Images"

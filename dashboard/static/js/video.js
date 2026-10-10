@@ -9,7 +9,7 @@
 
 const VS = {mode: 't2v', frames: {first: null, last: null}, size: '864x480', inflight: null, parked: null, watching: null,
             busy: false, available: false, run: null, progress: {}, port: 30022, host: '127.0.0.1', model: 'MiniMaxAI/MiniMax-H3',
-            variant: 'fl2va', history: [], shown: null, foreign: null, lastRunAt: 0};
+            variant: 'fl2va', history: [], shown: null, foreign: null, lastRunAt: 0, turbo: false, turboOk: false, turboWhy: '', turboPath: '', baseSteps: null};
 // The same admission budget the server runs (cockpit.py video_call): linear in
 // step-seconds at the two measured sizes, 3.05 s each at 480P (4 s in 592 s at the
 // 50-step default, the encode and decode folded in) and 7.65 at 720P (4 s in about
@@ -17,18 +17,25 @@ const VS = {mode: 't2v', frames: {first: null, last: null}, size: '864x480', inf
 // under the lock's two hours is refused here too; dashboard/tests/test_video_routes.py
 // holds these numbers equal to the server's.
 const VID_BUDGET_S = 2 * 3600;
-function vidEtaSecs(secs, size, steps){
+// The Turbo adapter's own schedule, and its cost at 480P: 4 s in 126.2 to 127.9 s at its 9
+// steps with the prompt encoded already, and a new prompt's text encoding adds 9.3 s
+// (2026-10-10): 3.85 per step-second as the server counts it. The cockpit puts the adapter
+// on for a Turbo call and takes it off after (cockpit.py video_call).
+const VID_TURBO_STEPS = 9, VID_TURBO_PER_STEP = 3.85, VID_TURBO_MAX_SECONDS = 4;
+function vidEtaSecs(secs, size, steps, turbo){
   const [sw, sh] = String(size).split('x').map(Number);
   if (!(sw > 0 && sh > 0)) return 0;
-  const perStep = sw * sh <= 864 * 480 ? 3.05 : 7.65;
+  let perStep = sw * sh <= 864 * 480 ? 3.05 : 7.65;
+  if (turbo) perStep = VID_TURBO_PER_STEP;
   return perStep * (steps || 50) * secs * (VS.mode === 'fl2v' ? 1.1 : 1);
 }
 const VID_SEED_MAX = Number.MAX_SAFE_INTEGER;   // past it a browser rounds the number it sends
 // What this box was measured at, and nothing past it (cockpit.py refuses the same): a
-// video's memory grows far faster than its length, 9.6 GB for 4 s at 480p and 78.3 GB
-// for 15 s, and 4 s at 720p already peaks at 82 GB of the box's 121.6.
+// video's memory grows far faster than its length, 9.4 GiB for 4 s at 480p and 76.5 GiB
+// for 15 s, and 4 s at 720p already peaks at 80 GiB of the box's 121.6.
 const VID_LONG_MAX_PIXELS = 864 * 480, VID_LARGE_MAX_SECONDS = 4;
-const vidMaxSecs = size => { const [w, h] = String(size).split('x').map(Number); return w * h > VID_LONG_MAX_PIXELS ? VID_LARGE_MAX_SECONDS : 15; };
+const vidMaxSecs = size => { const [w, h] = String(size).split('x').map(Number); const m = w * h > VID_LONG_MAX_PIXELS ? VID_LARGE_MAX_SECONDS : 15;
+  return VS.turbo && VS.turboOk ? Math.min(m, VID_TURBO_MAX_SECONDS) : m; };
 const VID_EXAMPLES = {
   'Fox at dawn': 'A red fox trots across a snowy forest clearing at dawn, breath steaming, soft golden light through the pines, gentle wind and birdsong.',
   'Harbour aerial': 'A slow aerial shot over a coastal village at golden hour: waves roll onto a pebble beach, gulls circle a small harbour, church bells ring in the distance.',
@@ -36,7 +43,8 @@ const VID_EXAMPLES = {
   'Workshop': 'Close-up of hands turning a brass part on a small lathe, sparks and shavings, the steady hum of the motor, warm workshop light.'};
 const vidVal = id => ($(id) ? $(id).value.trim() : '');
 const vidSecs = () => parseInt(vidVal('vid-secs'), 10) || 4;
-const vidSteps = () => parseInt(vidVal('vid-steps'), 10) || 50;
+const vidTurbo = () => VS.turbo && VS.turboOk;
+const vidSteps = () => vidTurbo() ? VID_TURBO_STEPS : parseInt(vidVal('vid-steps'), 10) || 50;
 // A parked video (the page stopped waiting at the hour, the lane did not) is this
 // person's: its id is kept in the browser, so a reload still says "your video" and shows
 // it when it is done. A convenience only: without storage it is shown as another's.
@@ -49,11 +57,13 @@ function vidProblem(){
   if (!vidVal('vid-prompt')) return 'Write a prompt: what happens, and what it sounds like.';
   if (VS.mode === 'fl2v' && !VS.frames.first && !VS.frames.last) return 'Add a first frame, a last frame, or both.';
   if (!(steps >= 1 && steps <= 100)) return 'Steps run from 1 to 100.';
-  if (s > vidMaxSecs(VS.size)) return `720p is measured here at ${VID_LARGE_MAX_SECONDS} s only (82 GB at its peak, of 121.6): a longer video at this size would outgrow the box's memory, which hangs it. Choose ${VID_LARGE_MAX_SECONDS} s, or 480p for up to 15 s.`;
+  if (s > vidMaxSecs(VS.size)) return `720p is measured here at ${VID_LARGE_MAX_SECONDS} s only (80 GiB at its peak, of 121.6): a longer video at this size would outgrow the box's memory, which hangs it. Choose ${VID_LARGE_MAX_SECONDS} s, or 480p for up to 15 s.`;
+  if (vidTurbo() && VS.size !== '864x480') return 'The Turbo is measured at 480p only so far: choose 480p, or the base.';
+  if (vidTurbo() && s > VID_TURBO_MAX_SECONDS) return `The Turbo is measured at ${VID_TURBO_MAX_SECONDS} s only so far (its adapter adds to the memory a longer video takes): choose ${VID_TURBO_MAX_SECONDS} s, or the base.`;
   const seed = vidVal('vid-seed');
   if (seed && !/^\d+$/.test(seed)) return 'The seed is a whole number, or empty for a random one.';
   if (seed && Number(seed) > VID_SEED_MAX) return `The seed goes up to ${fmtN(VID_SEED_MAX)}: past that a browser rounds the number it sends.`;
-  const est = vidEtaSecs(s, VS.size, steps);
+  const est = vidEtaSecs(s, VS.size, steps, vidTurbo());
   if (est * 1.1 > VID_BUDGET_S) return `About ${fmtMin(est)} at this size: no slack under the two hours the cockpit holds a call, and the next one could start beside it. Ask for fewer steps, a shorter video, or 480p.`;
   return '';
 }
@@ -74,7 +84,15 @@ function vidSync(){
   // 15 s offers what the box cannot hold
   const secsEl = $('vid-secs');
   if (secsEl){ const mx = vidMaxSecs(VS.size); secsEl.max = String(mx); if (Number(secsEl.value) > mx) secsEl.value = String(mx);
-    const ends = secsEl.parentElement.querySelector('.ends'); if (ends && ends.lastChild) setText(ends.lastChild, mx + ' s' + (mx < 15 ? ', the most 720p holds' : '')); }
+    const ends = secsEl.parentElement.querySelector('.ends'); if (ends && ends.lastChild) setText(ends.lastChild, mx + ' s' + (vidTurbo() ? ', the Turbo\u2019s measured length' : mx < 15 ? ', the most 720p holds' : '')); }
+  // Under the Turbo the steps slider shows the nine the adapter runs, its thumb too (as the
+  // image view's, whose thumb stayed on the base's setting beside the 8 it printed), and keeps
+  // the base's setting aside for when the base comes back.
+  const stEl = $('vid-steps');
+  if (stEl){
+    if (vidTurbo() && stEl.value !== String(VID_TURBO_STEPS)){ VS.baseSteps = stEl.value; stEl.value = String(VID_TURBO_STEPS); }
+    else if (!vidTurbo() && VS.baseSteps != null){ stEl.value = VS.baseSteps; VS.baseSteps = null; }
+  }
   // sliders say their value and fill to it
   const secs = vidSecs(), steps = vidSteps();
   setText('vid-secs-o', secs + ' s'); setText('vid-steps-o', String(steps));
@@ -82,10 +100,19 @@ function vidSync(){
   document.querySelectorAll('#vid-size button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.size === VS.size)));
   document.querySelectorAll('#vid-mode button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === VS.mode)));
   show('vid-framebox', VS.mode === 'fl2v');
+  // the Turbo: offered when its adapter is on this box, and then its steps are its own
+  const turbo = vidTurbo();
+  document.querySelectorAll('#vid-turbo button').forEach(b => { b.setAttribute('aria-checked', String((b.dataset.turbo === '1') === turbo));
+    if (b.dataset.turbo === '1') b.disabled = !VS.turboOk; });
+  setText('vid-turbo-hint', VS.turboOk ? 'the Turbo adapter: 9 steps, about five times faster'
+    : VS.turboWhy || 'the Turbo adapter is not on this box: ./install-video.sh fetches it');
+  $('vid-steps').disabled = turbo;
+  setText('vid-steps-hint', turbo ? 'fixed at 9 by the Turbo adapter' : 'denoising steps, 50 is the model default');
   // the cost, measured, before anything is asked
-  const est = vidEtaSecs(secs, VS.size, steps);
-  setText('vid-cost-v', 'about ' + fmtMin(est)); setText('vid-cost-k', `for ${secs} s at ${VS.size === '864x480' ? '480p' : '720p'}, ${steps} steps${VS.mode === 'fl2v' ? ', from keyframes' : ''}`);
-  setText('vid-cost-b', 'Timed from runs on this box: 4 s at 480p took 9:52 to 12:40 depending on how hot the NVMe runs.');
+  const est = vidEtaSecs(secs, VS.size, steps, turbo);
+  setText('vid-cost-v', 'about ' + fmtMin(est)); setText('vid-cost-k', `for ${secs} s at ${VS.size === '864x480' ? '480p' : '720p'}, ${steps} steps${turbo ? ' with the Turbo' : ''}${VS.mode === 'fl2v' ? ', from keyframes' : ''}`);
+  setText('vid-cost-b', turbo ? 'Timed from runs on this box the same day: 4 s at 480p took 2:06 to 2:17 with the Turbo, 10:23 to 10:32 for the base.'
+    : 'Timed from runs on this box: 4 s at 480p took 9:52 to 12:40 depending on how hot the NVMe runs.');
   const bud = $('vid-budget'); const pct = Math.min(100, 100 * est * 1.1 / VID_BUDGET_S);
   bud.firstChild.style.width = pct.toFixed(1) + '%'; bud.className = 'meter' + (pct > 100 ? ' err' : pct > 70 ? ' warn' : '');
   // the problem is said once the person has touched the form, never on an empty page
@@ -98,7 +125,13 @@ function vidSync(){
   $('vid-run').disabled = !!why;
   show('vid-why', !!why && why !== p); setText('vid-why', why);
   setText('vid-curl-note', 'Run it on the box: the lane listens on loopback and checks no key. Keyframes must first be saved at the file:// paths shown.');
-  setText('vid-curl', `curl -s http://127.0.0.1:${VS.port}/v1/videos \\\n  -H 'Content-Type: application/json' \\\n  -d ${shq(JSON.stringify(vidWireBody()))}\n# then poll GET /v1/videos to completed, and download GET /v1/videos/<id>/content`);
+  // the Turbo is the cockpit's doing: from a terminal the adapter goes on and off around the call
+  const base = `http://127.0.0.1:${VS.port}/v1`;
+  const lora = {lora_nickname: 'larry-v4', lora_path: VS.turboPath || 'the adapter file, see docs/video-lane.md',
+                target: 'all', strength: 1.0, merge_mode: 'dynamic'};
+  setText('vid-curl', (turbo ? `curl -s ${base}/set_lora -H 'Content-Type: application/json' \\\n  -d ${shq(JSON.stringify(lora))}\n` : '')
+    + `curl -s ${base}/videos \\\n  -H 'Content-Type: application/json' \\\n  -d ${shq(JSON.stringify(vidWireBody()))}\n# then poll GET /v1/videos to completed, and download GET /v1/videos/<id>/content`
+    + (turbo ? `\ncurl -s ${base}/unmerge_lora_weights -H 'Content-Type: application/json' -d '{"target": "all"}'   # back to the base, once it is done` : ''));
 }
 function vidLaneWhy(){
   const e = engines()[VIDEO_UNIT];
@@ -121,7 +154,7 @@ function vidRenderLane(){
   if (!F.life){ sig = 'wait'; build = () => {}; }
   else if (!e){ sig = 'absent'; build = () => {
     const b = el('div', 'banner info'); b.append(el('span', 'lamp'));
-    const d = el('div'); d.append(el('b', null, 'The video lane is not installed. '), el('span', null, 'On the box: ./install.sh --with-video. It needs about 150 GB of disk and an hour.'));
+    const d = el('div'); d.append(el('b', null, 'The video lane is not installed. '), el('span', null, 'On the box: ./install.sh --with-video. It needs about 165 GB of disk and an hour.'));
     b.append(d); box.append(b); }; }
   else if (ready){ sig = 'ready'; build = () => {}; }
   else if (TRANSITIONAL.has(e.state)){
@@ -231,7 +264,7 @@ function vidDone(id, took, req){
   const a = el('a', 'btn primary', 'Download MP4'); a.href = '/api/video/content?id=' + encodeURIComponent(id); a.download = 'minimax-h3-' + id.slice(0, 8) + '.mp4';
   meta.append(a);
   if (took) meta.append(el('span', 'tag gold', `made in ${fmtDur(took)}`));
-  if (req) meta.append(el('span', 'tag', `${req.seconds} s, ${req.size === '864x480' ? '480p' : '720p'}, ${req.num_inference_steps} steps` + (req.seed != null ? `, seed ${req.seed}` : '')));
+  if (req) meta.append(el('span', 'tag', `${req.seconds} s, ${req.size === '864x480' ? '480p' : '720p'}, ${req.num_inference_steps} steps` + (req.turbo ? ', Turbo' : '') + (req.seed != null ? `, seed ${req.seed}` : '')));
   // a thumbnail for the session's history, taken from the video itself
   const entry = {id, took, req: req || null, thumb: null};
   VS.history = [entry].concat(VS.history.filter(h => h.id !== id)).slice(0, 12);
@@ -263,6 +296,7 @@ async function vidLane(){
     const r = await fetch('/api/video'); if (r.status === 401) return;
     const d = await r.json();
     VS.port = d.port || 30022; VS.host = d.host || '127.0.0.1'; VS.model = d.model || VS.model; VS.variant = d.variant || 'fl2va';
+    VS.turboOk = !!d.turbo; VS.turboWhy = d.turbo_why || ''; VS.turboPath = d.turbo_path || '';
     VID_NOW.port = VS.port;
     const p = d.progress || {};
     VS.progress = p; VS.run = d.run && d.run.phase ? d.run : null; VID_NOW.run = VS.run;
@@ -304,6 +338,7 @@ async function vidRun(){
   const p = vidProblem(); if (p) return toast(p, 'warn');
   if (!VS.available) return toast(vidLaneWhy(), 'warn');
   const payload = {prompt: vidVal('vid-prompt'), seconds: vidSecs(), size: VS.size, num_inference_steps: vidSteps()};
+  if (vidTurbo()) payload.turbo = true;
   const seed = vidVal('vid-seed'); if (seed) payload.seed = Number(seed);
   if (VS.mode === 'fl2v'){ if (VS.frames.first) payload.first_frame = VS.frames.first.dataUrl; if (VS.frames.last) payload.last_frame = VS.frames.last.dataUrl; }
   const t0 = Date.now(); VS.inflight = t0; VS.req = {...payload}; delete VS.req.first_frame; delete VS.req.last_frame;
@@ -360,6 +395,7 @@ function vidDrawFrames(){
 function wireVideo(){
   document.querySelectorAll('#vid-mode button').forEach(b => b.addEventListener('click', () => { VS.mode = b.dataset.mode; vidSync(); }));
   document.querySelectorAll('#vid-size button').forEach(b => b.addEventListener('click', () => { VS.size = b.dataset.size; vidSync(); }));
+  document.querySelectorAll('#vid-turbo button').forEach(b => b.addEventListener('click', () => { VS.turbo = b.dataset.turbo === '1'; VS.touched = true; vidSync(); }));
   Object.entries(VID_EXAMPLES).forEach(([name, text]) => {
     const b = el('button', null, name); b.type = 'button'; b.setAttribute('aria-pressed', 'false');
     b.addEventListener('click', () => { $('vid-prompt').value = text; document.querySelectorAll('#vid-examples button').forEach(x => x.setAttribute('aria-pressed', String(x === b))); vidSync(); });
@@ -378,8 +414,8 @@ function wireVideo(){
   $('vid-run').addEventListener('click', vidRun);
   $('vid-cancel').addEventListener('click', vidCancel);
   $('vid-reset').addEventListener('click', () => {
-    $('vid-secs').value = 4; $('vid-steps').value = 50; $('vid-seed').value = ''; VS.size = '864x480'; VS.frames = {first: null, last: null};
-    vidDrawFrames(); VS.touched = false; vidSync(); toast('Back to the defaults: 4 s, 480p, 50 steps, a random seed.', 'ok', 2600);
+    $('vid-secs').value = 4; $('vid-steps').value = 50; VS.baseSteps = null; $('vid-seed').value = ''; VS.size = '864x480'; VS.frames = {first: null, last: null}; VS.turbo = false;
+    vidDrawFrames(); VS.touched = false; vidSync(); toast('Back to the defaults: the base, 4 s, 480p, 50 steps, a random seed.', 'ok', 2600);
   });
   $('vid-copy').addEventListener('click', () => copyText($('vid-curl').textContent));
   document.addEventListener('visibilitychange', () => { if (!document.hidden && activeView === 'video') vidLane(); });

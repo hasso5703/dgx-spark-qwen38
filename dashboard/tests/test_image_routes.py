@@ -480,7 +480,7 @@ class ThePixelBudget(Base):
     2026-09-23, ten times one image's 4.6, and nobody has measured where that batch's
     memory ends. On unified memory running out hangs the machine, so a call may not ask
     for more pixels, all its images together, than the largest call measured here: one
-    2752x1536 image, 46.6 GB at its peak. Nothing past it reaches the lane."""
+    2752x1536 image, 45.5 GiB at its peak. Nothing past it reaches the lane."""
 
     def ask(self, **fields):
         return self.call({"prompt": "p", "output_format": "png", **fields})
@@ -489,7 +489,7 @@ class ThePixelBudget(Base):
         code, out = self.ask(width=2048, height=2048, n=10, num_inference_steps=60)
         self.assertEqual(code, 400)
         self.assertIn("41.9 megapixels", out["error"])
-        self.assertIn("one 2752x1536 image, 46.6 GB", out["error"])
+        self.assertIn("one 2752x1536 image, 45.5 GiB", out["error"])
         self.assertIsNone(self.spy.body, "a refused call reached the lane")
 
     def test_the_largest_measured_call_still_goes_through(self):

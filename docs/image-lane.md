@@ -44,7 +44,7 @@ unit's `--model-path` and nothing else, then restarts the lane (about 80 s). See
 [The Turbo checkpoint](#the-turbo-checkpoint) below.
 
 **Never two engines at once.** 31 GB of weights do not fit beside a serving LLM, and a
-request takes the lane to 35.6 GB at 1024x1024 (46.5 GB at 2048x2048). The cockpit refuses to start any engine while
+request takes the lane to 34.8 GiB at 1024x1024 (45.4 GiB at 2048x2048). The cockpit refuses to start any engine while
 another one is busy, and says which one to stop, for all three lanes alike: starting the
 image lane while the 27B serves comes back `409 blocked`, and so does starting the 27B
 while the image lane loads. That gate used to pick "the other engine" with `[0]`, which
@@ -234,15 +234,15 @@ at 8 steps eight.
 
 | request | base, 40 steps (the defaults) | Turbo, its 8 steps | peak, either |
 |---|---:|---:|---:|
-| 512x512 | 7.8 s | 1.8 s | 32.8 GB |
-| 768x768 | 19.5 s | 4.3 s | 34.1 GB |
-| **1024x1024** | **34.3 s** | **7.5 s** | 35.6 GB |
-| 1664x928 | 54.6 s | 11.9 s | 37.4 GB |
-| 2048x2048 (the model card's own size) | 182.8 s | 40.6 s | 46.5 GB |
-| 2752x1536 (the largest call admitted) | 185.2 s | 40.5 s | 46.6 GB |
-| transparent 1024x1024 | 34.9 s | 7.6 s | 35.6 GB |
-| edit, one reference | 41.9 s | 10.3 s | 35.7 GB |
-| the base at 8 steps, 1024x1024 | 7.5 s | | 35.6 GB |
+| 512x512 | 7.8 s | 1.8 s | 32.1 GiB |
+| 768x768 | 19.5 s | 4.3 s | 33.3 GiB |
+| **1024x1024** | **34.3 s** | **7.5 s** | 34.8 GiB |
+| 1664x928 | 54.6 s | 11.9 s | 36.6 GiB |
+| 2048x2048 (the model card's own size) | 182.8 s | 40.6 s | 45.4 GiB |
+| 2752x1536 (the largest call admitted) | 185.2 s | 40.5 s | 45.5 GiB |
+| transparent 1024x1024 | 34.9 s | 7.6 s | 34.8 GiB |
+| edit, one reference | 41.9 s | 10.3 s | 34.9 GiB |
+| the base at 8 steps, 1024x1024 | 7.5 s | | 34.8 GiB |
 
 The cookbook publishes 35.36 s for this machine at 1024x1024/40; 34.3 s here. Cost is linear
 in steps and worse than linear in pixels: four times the 1024x1024 pixels cost about five and
@@ -257,7 +257,7 @@ Startup is 60 to 90 s from a warm page cache, its one warm-up request included.
 On the runtime before (the `main` commit `ddebc52f237a`, 2026-09-22), 1024x1024 at 40 steps
 took 38.2 s; measured again the morning of 2026-10-10 beside the new one, 36.08 s against
 34.40 s (median of three on each), the same twelve requests giving the same bytes on both, for
-0.8 GB more at the peak on the new one. Also measured on that runtime only: ten references at
+0.8 GiB more at the peak on the new one. Also measured on that runtime only: ten references at
 20 steps in 69.6 s, two images in one call at 8 steps in 16.8 s.
 
 Same seed, twice: byte-identical. The base at 8 steps is visibly unfinished and not worth its
@@ -277,9 +277,9 @@ set. Measured here on 2026-09-22:
 
 The second row is the important one: this lane does **not** leak. Eight sequential
 1024x1024 generations held exactly the same memory as the first, and the engine reported
-the same 34.0 GB peak for every one of them.
+the same 33.2 GiB peak for every one of them.
 
-The third row is what bites. On a box whose 121.6 GB is shared between the CPU and the
+The third row is what bites. On a box whose 121.6 GiB is shared between the CPU and the
 GPU, two concurrent requests is most of it, and the engine that reached that state stopped
 answering entirely: a direct curl to its port timed out, no request appeared in its log,
 and `systemctl restart` was the only way back. Two browser tabs are enough to do it.
@@ -298,8 +298,8 @@ denoising step on 2026-09-23, where one image takes 4.6: the pipeline runs them 
 and the memory that needs grows with them. Where it ends for a call that size has not been
 measured, and on this box running out of unified memory hangs the machine instead of
 failing the request. So the cockpit refuses a call whose images add up to more pixels than
-the largest call measured here: one 2752x1536 image (4.2 megapixels, 46.6 GB at its peak on
-the v0.5.21 runtime with either checkpoint; 44.8 GB on the commit before).
+the largest call measured here: one 2752x1536 image (4.2 megapixels, 45.5 GiB at its peak on
+the v0.5.21 runtime with either checkpoint; 43.8 GiB on the commit before).
 Four 1024x1024 images fit under it, ten 512x512 too; two 2048x2048 do not. The Image view
 says so before sending, and the server refuses the same with the numbers.
 

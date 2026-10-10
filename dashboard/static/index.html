@@ -440,7 +440,12 @@
                 <button type="button" role="radio" aria-checked="true" data-size="864x480">480p<small>864 × 480</small></button>
                 <button type="button" role="radio" aria-checked="false" data-size="1280x720">720p<small>1280 × 720</small></button>
               </div></div>
-            <div class="field"><span class="lbl">Quality <span class="hint">denoising steps, 50 is the model default</span></span>
+            <div class="field"><span class="lbl">Speed <span class="hint" id="vid-turbo-hint">the Turbo adapter: 9 steps, about five times faster</span></span>
+              <div class="seg block" role="radiogroup" aria-label="Speed" id="vid-turbo">
+                <button type="button" role="radio" aria-checked="true" data-turbo="0">Base<small>the steps below</small></button>
+                <button type="button" role="radio" aria-checked="false" data-turbo="1">Turbo<small>9 steps</small></button>
+              </div></div>
+            <div class="field"><span class="lbl">Quality <span class="hint" id="vid-steps-hint">denoising steps, 50 is the model default</span></span>
               <div class="slider"><input type="range" id="vid-steps" min="1" max="100" step="1" value="50" aria-label="Steps"><output id="vid-steps-o" for="vid-steps">50</output>
                 <div class="ends"><span>1, a quick look</span><span>100, slowest</span></div></div></div>
             <div class="field"><label for="vid-seed">Seed <span class="hint">empty is random, the same seed repeats a video</span></label>
@@ -480,10 +485,10 @@
                 <tbody>
                   <tr><td>4 s, 480p, 50 steps</td><td class="r num">9:52 to 12:40</td><td>2026-09-25 and 29; the spread is the NVMe's temperature</td></tr>
                   <tr><td>Keyframe, 4 s, 480p</td><td class="r num">about 11 min</td><td>2026-09-25, scene continued between frames</td></tr>
-                  <tr><td>4 s, 720p, 50 steps</td><td class="r num">about 25 min</td><td>peak 82 GB against 9.6 GB at 480p</td></tr>
+                  <tr><td>4 s, 720p, 50 steps</td><td class="r num">about 25 min</td><td>peak 80 GiB against 9.4 GiB at 480p</td></tr>
                   <tr><td>15 s, 480p, 50 steps</td><td class="r num" id="vid-cost-15">being measured</td><td>2026-09-29</td></tr>
                 </tbody></table>
-              <p>The denoiser streams its 61.7 GB of weights from the drive at every step, so a step takes as long as the NVMe needs to read them: 11 s cool, 15 s when it runs hot. Pixels cost more than linear: longer and larger videos grow the working memory fast, and on unified memory running out hangs the machine.</p>
+              <p>The denoiser streams its 61.7 GiB of weights from the drive at every step, so a step takes as long as the NVMe needs to read them: 11 s cool, 15 s when it runs hot. Pixels cost more than linear: longer and larger videos grow the working memory fast, and on unified memory running out hangs the machine.</p>
             </div>
           </details>
         </div>

@@ -213,7 +213,7 @@ class TheRefusals(Base):
 
     def test_ratio_and_canvas_outside_what_was_measured_are_refused(self):
         """The lane was served and costed at 16:9 and 9:16 canvases up to 1280x720
-        (81.9 GB peak of 121.6): other ratios would declare an aspect they are not,
+        (80.0 GiB peak of 121.6): other ratios would declare an aspect they are not,
         and bigger canvases are an unknown cost and a certain OOM - the image lane's
         IMAGE_MAX_PIXELS rule applied to step-seconds."""
         for size in ("640x640", "1024x768", "864x720", "1920x1080", "2560x1440"):
@@ -229,8 +229,8 @@ class TheRefusals(Base):
 
 
 class TheMemoryCeilingOfLongVideos(Base):
-    """A video's memory grows far faster than its length: 4 s at 480P peaked at 9.6 GB and
-    15 s at 78.3 GB (measured 2026-09-29), and 4 s at 720P at 82 GB of this box's 121.6
+    """A video's memory grows far faster than its length: 4 s at 480P peaked at 9.4 GiB and
+    15 s at 76.5 GiB (measured 2026-09-29), and 4 s at 720P at 80 GiB of this box's 121.6
     (2026-09-25). The time budget alone admitted 720P up to about 15 s, where the memory
     cannot fit, and on unified memory running out hangs the machine (a power cycle by
     hand). Only what was measured is admitted."""
@@ -473,13 +473,22 @@ class ASilenceIsNotAnAnswer(Base):
     confident "the lane was stopped" over a lane that was only mute, and the lock
     given back beside a job still generating. Silence answers "do not know"."""
 
+    def runs(self, seq):
+        """The run of the lane as systemd answers it, one answer per question; the Turbo's
+        runtime check (cockpit.py video_runtime_stale) asks systemd too, and is kept off the
+        sequence, or it takes the answer the poll was meant to read (review, 2026-10-10)."""
+        def answer(argv, timeout=5.0, merge_err=False):
+            if "ActiveState,ExecMainStartTimestamp" in argv:
+                return "ActiveState=inactive\n"
+            return next(seq, "ActiveState=active\nInvocationID=aaa\n")
+        return answer
+
     def test_a_mute_systemd_mid_poll_keeps_the_wait_and_the_lock(self):
         silent = self.ck.Ran("")
         silent.ok = False
         seq = iter(["ActiveState=active\nInvocationID=aaa\n", silent,
                     "ActiveState=active\nInvocationID=aaa\n"])
-        self.ck.run = lambda argv, timeout=5.0, merge_err=False: next(
-            seq, "ActiveState=active\nInvocationID=aaa\n")
+        self.ck.run = self.runs(seq)
         self.addCleanup(setattr, self.ck, "run", lambda argv, timeout=5.0, merge_err=False: "")
         self.spy.statuses = ["completed", "queued", "completed"]
         code, out = self.call({"prompt": "a cat"})
@@ -495,8 +504,7 @@ class ASilenceIsNotAnAnswer(Base):
         silent = self.ck.Ran("")
         silent.ok = False
         seq = iter([silent])
-        self.ck.run = lambda argv, timeout=5.0, merge_err=False: next(
-            seq, "ActiveState=active\nInvocationID=aaa\n")
+        self.ck.run = self.runs(seq)
         self.addCleanup(setattr, self.ck, "run", lambda argv, timeout=5.0, merge_err=False: "")
         self.spy.statuses = ["completed", "queued", "completed"]
         code, out = self.call({"prompt": "a cat"})

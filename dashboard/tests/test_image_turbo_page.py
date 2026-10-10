@@ -89,6 +89,26 @@ class TheImageViewUnderTheTurbo(unittest.TestCase):
         """)
         self.assertLess(r["turbo"], r["base"] / 4)
 
+    def test_the_thumb_says_eight_and_the_base_gets_its_setting_back(self):
+        """Seen on the reference box under the Turbo: the slider's thumb on the base's 40,
+        beside the 8 it printed."""
+        r = run(self, lanes("ready", "image") + r"""
+        $('img-steps').value = '33'; imgSync();
+        feed({lifecycle: life({'qwen38-sglang.service': eng('stopped'), 'qwen38-image.service': eng('ready', {target: 'image-turbo'})})});
+        imgSync(); const turbo = $('img-steps').value;
+        feed({lifecycle: life({'qwen38-sglang.service': eng('stopped'), 'qwen38-image.service': eng('ready', {target: 'image'})})});
+        imgSync(); report({turbo, base: $('img-steps').value, payload: imgPayload().num_inference_steps});
+        """)
+        self.assertEqual(r["turbo"], "8")
+        self.assertEqual(r["base"], "33")
+        self.assertEqual(r["payload"], 33)
+
+    def test_a_reset_under_the_turbo_keeps_the_thumb_on_eight(self):
+        r = run(self, lanes("ready", "image-turbo") + r"""
+        $('img-reset').click(); report($('img-steps').value);
+        """)
+        self.assertEqual(r, "8")
+
     def test_the_base_keeps_its_slider_and_its_setting(self):
         r = run(self, lanes("ready", "image") + r"""
         $('img-prompt').value = 'a cat'; $('img-steps').value = '33'; imgSync();

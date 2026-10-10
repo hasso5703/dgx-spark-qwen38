@@ -42,8 +42,8 @@ class TheVideoViewGuardsTheWire(unittest.TestCase):
         self.assertIn("rounds", r[7])
 
     def test_720p_is_admitted_at_the_4_s_it_was_measured_at_and_no_longer(self):
-        """A video's memory grows far faster than its length (9.6 GB for 4 s at 480p,
-        78.3 GB for 15 s), and 4 s at 720p already peaks at 82 GB of 121.6: the time
+        """A video's memory grows far faster than its length (9.4 GiB for 4 s at 480p,
+        76.5 GiB for 15 s), and 4 s at 720p already peaks at 80 GiB of 121.6: the time
         budget alone let 720p run to 15 s, which cannot fit and hangs the box. The page
         refuses what the server refuses (TheMemoryCeilingOfLongVideos), and the length
         slider ends where the size was measured."""

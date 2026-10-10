@@ -120,7 +120,7 @@ class TheCheckPins(PinsBase):
         rc, out = self.run_pins(None, "hf_secretvalue123")
         self.assertEqual(rc, 0, out)
         hf = [c for c in self.calls() if c["url"].startswith("https://huggingface.co/")]
-        self.assertEqual(len(hf), 12, hf)          # nine checkpoints and the diffusion lanes' three
+        self.assertEqual(len(hf), 13, hf)          # nine checkpoints, the diffusion lanes' three and the video Turbo adapter
         for c in hf:
             self.assertIn("Authorization: Bearer hf_secretvalue123", c["stdin"], c)
             self.assertFalse(any("hf_secretvalue123" in a for a in c["argv"]), c["argv"])
@@ -233,7 +233,7 @@ class TheEndpointsThatDoNotAnswer(PinsBase):
         for label in self.GITHUB:
             self.assertIn("HTTP 504 from the GitHub API, so not checked", self.line(out, label), out)
             self.assertNotIn("no such", self.line(out, label), out)
-        self.assertIn("3 of 19 pins could not be asked about", out)
+        self.assertIn("3 of 20 pins could not be asked about", out)
         self.assertIn("run it again before re-pinning anything", out)
         self.assertNotIn("A removed upstream revision", out)
 
