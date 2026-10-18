@@ -29,6 +29,36 @@ Environment=PROXY_BIND=__PROXY_BIND__
 # at 100M held 300M; with MemorySwapMax=0 the kernel stopped it at 100M, in its own cgroup).
 MemoryMax=1G
 MemorySwapMax=0
+# The proxy is what a client's bytes reach first, on every address the box has (PROXY_BIND),
+# so it gets no more of the machine than it uses: it reads its code, its key, and what the
+# operator names (QWEN38_CLIENT_KEYS_FILE, the TLS pair, the lanes' launch scripts), runs
+# systemctl to read the lanes' state, and writes nothing on disk. Without these lines a flaw
+# of it ran as this user, who is in the docker group with docker's socket one connect away,
+# and may run the cockpit's sudo commands (found in a cloud review, 2026-10-18, and not yet
+# run on the box: tests/test_proxy_unit_sandbox.py holds what the proxy needs).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# a call outside the set fails with EPERM in the call, where the default kills the proxy
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock
+UMask=0077
 ExecStart=/usr/bin/python3 __HOME__/.config/qwen38/keepalive-proxy.py __PROXY_PORT__
 Restart=always
 RestartSec=3
