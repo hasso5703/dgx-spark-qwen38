@@ -4164,19 +4164,21 @@ class H(BaseHTTPRequestHandler):
                     try: q.put(("e", str(e).encode()), timeout=5)
                     except Exception: pass
             finally:
+                # an if and its else, not a return: a return in a finally swallows what is
+                # raising, and Python 3.14 warns of it at compile time (PEP 765)
                 if drain.is_set():
                     log(f"drained an abandoned {self.path.split('?')[0]} for "
                         f"{time.time() - drain_t0[0]:.0f}s")
                     try: resp.close()
                     except Exception: pass
-                    return
-                if buf and not stop.is_set():
-                    try: q.put(("d", buf), timeout=2)
-                    except Exception: pass
-                while True:
-                    try: q.put(("f", b""), timeout=2); break
-                    except queue.Full:
-                        if stop.is_set(): break
+                else:
+                    if buf and not stop.is_set():
+                        try: q.put(("d", buf), timeout=2)
+                        except Exception: pass
+                    while True:
+                        try: q.put(("f", b""), timeout=2); break
+                        except queue.Full:
+                            if stop.is_set(): break
         threading.Thread(target=pump, daemon=True).start()
 
         def drop_upstream(why="client gone"):
