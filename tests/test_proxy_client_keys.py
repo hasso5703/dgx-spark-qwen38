@@ -273,6 +273,28 @@ class ClientKeys(unittest.TestCase):
             sys.stderr = real
         self.assertIn("key=alice", capture.getvalue())
 
+    def test_the_scheme_is_read_in_any_case_as_the_engine_reads_it(self):
+        """The wall read the scheme as "Bearer " only, where SGLang, vLLM's middleware and the
+        door without the wall take it in any case (RFC 9110, 11.1): a listed key sent as
+        "bearer <key>" got the wall's 401 (found in a cloud review, 2026-10-18)."""
+        port = self.live(self.keys_file('{"tok-alice":"alice"}'))
+
+        def send(value):
+            req = urllib.request.Request("http://127.0.0.1:%d/v1/chat/completions" % port, data=BODY,
+                                         headers={"Content-Type": "application/json",
+                                                  "Authorization": value})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        for scheme in ("Bearer", "bearer", "BEARER", "bEaReR"):
+            self.assertEqual(send(scheme + " tok-alice"), 200, scheme)
+        # still a bearer of a listed key, or nothing: another scheme, or no key after it
+        for value in ("Token tok-alice", "Basic tok-alice", "bearer", "Bearer   "):
+            self.assertEqual(send(value), 401, value)
+
     def journal_of(self, port, token, path="/v1/chat/completions"):
         capture, real = io.StringIO(), sys.stderr
         sys.stderr = capture

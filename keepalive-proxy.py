@@ -4861,8 +4861,12 @@ class H(BaseHTTPRequestHandler):
         self._labelled, self._client_label = True, None
         if not CLIENT_KEYS or self.path.split("?")[0] in OPEN_ROUTES:
             return
-        auth = (self.headers.get("Authorization") or "").strip()
-        self._client_label = CLIENT_KEYS.get(auth[7:].strip()) if auth.startswith("Bearer ") else None
+        # The scheme in any case, as the engine and the door read it (RFC 9110, 11.1): only
+        # "Bearer " was read here, so a listed key sent as "bearer <key>" got the wall's 401
+        # where the engine admits it (found in a cloud review, 2026-10-18).
+        scheme, _, token = (self.headers.get("Authorization") or "").strip().partition(" ")
+        token = token.strip()
+        self._client_label = CLIENT_KEYS.get(token) if scheme.lower() == "bearer" and token else None
         if self._client_label is not None:
             # one word however the label is written in keys.json: a space would split the
             # peer the cockpit matches on, a newline would forge a journal line
