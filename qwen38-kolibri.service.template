@@ -36,7 +36,7 @@ ExecStart=/bin/bash -c 'exec /usr/bin/docker run --rm --name qwen38-kolibri --gp
   -e PYTHONPATH=/opt/qwen38-auth -e QWEN38_KEY_FILE=/out/api-key \
   -v __HOME__/.config/qwen38/kolibri-cache:/root/.cache/vllm \
   -v __HF_CACHE__:/root/.cache/huggingface \
-  -v __HOME__/.config/qwen38:/out \
+  -v __HOME__/.config/qwen38:/out:ro \
   -v __HOME__/.config/qwen38/vllm-auth:/opt/qwen38-auth:ro \
   __IMAGE__ \
     __MODEL__ --revision __REV__ \

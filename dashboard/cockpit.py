@@ -2496,9 +2496,10 @@ def lane_startable(lane: str):
         text = path.read_text(errors="replace")
     except OSError:
         return None
-    # a path in quotes, as a unit edited by hand may write it, read without them
+    # a path in quotes, as a unit edited by hand may write it, read without them; the mount
+    # read-only too (:ro), as the engines have it since 2026-10-18
     tmpl = re.search(r"--chat-template\s+[\"']?/out/([^\s\"']+)", text)
-    out = re.search(r"-v\s+[\"']?([^ :\"']+)[\"']?:/out(?=[\"'\s]|$)", text, re.M)
+    out = re.search(r"-v\s+[\"']?([^ :\"']+)[\"']?:/out(?=[:\"'\s]|$)", text, re.M)
     if tmpl and out:
         try:
             if (Path(out.group(1)) / tmpl.group(1)).stat().st_size == 0:

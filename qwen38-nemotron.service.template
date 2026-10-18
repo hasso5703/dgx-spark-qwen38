@@ -56,7 +56,7 @@ ExecStart=/bin/bash -c 'exec /usr/bin/docker run --rm --name qwen38-nemotron --g
   -v __HOME__/.config/qwen38/nemotron-cache/flashinfer:/root/.cache/flashinfer \
   -v __HOME__/.config/qwen38/nemotron-cache/b12x:/root/.cache/b12x \
   -v __HF_CACHE__:/root/.cache/huggingface \
-  -v __HOME__/.config/qwen38:/out \
+  -v __HOME__/.config/qwen38:/out:ro \
   -v __HOME__/.config/qwen38/vllm-auth:/opt/qwen38-auth:ro \
   __IMAGE__ \
     __MODEL__ --revision __REV__ \

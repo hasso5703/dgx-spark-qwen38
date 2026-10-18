@@ -127,7 +127,7 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
   -e HF_HUB_OFFLINE=1 \
   -v "$CONFIG_DIR/sglang-cache":/cache \
   -v "$HF_CACHE":/root/.cache/huggingface \
-  -v "$CONFIG_DIR":/out \
+  -v "$CONFIG_DIR":/out:ro \
   "$SERVE_IMAGE" \
   python3 -m sglang.launch_server \
     --trust-remote-code --model-path "$MODEL_REPO" --revision "$MODEL_REV" --tp-size 1 \

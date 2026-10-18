@@ -27,7 +27,7 @@ ExecStart=/bin/bash -c 'exec /usr/bin/docker run --rm --name qwen38-sglang --gpu
   -e SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1 \
   -v __HOME__/.config/qwen38/sglang-cache:/cache \
   -v __HF_CACHE__:/root/.cache/huggingface \
-  -v __HOME__/.config/qwen38:/out \
+  -v __HOME__/.config/qwen38:/out:ro \
   __IMAGE__ \
   python3 -m sglang.launch_server \
     --trust-remote-code --context-length 1010000 --model-path __MODEL__ __MODEL_REV_ARGS__ --tp-size 1 \

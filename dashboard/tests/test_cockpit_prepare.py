@@ -238,6 +238,14 @@ class Prepare(unittest.TestCase):
         (cfg / "chat-template-flashnext.jinja").write_text("{{ x }}")
         self.assertIs(self.cp.lane_startable("flash"), True)
         self.assertIs(self.cp.collect_lanes_startable()["flash"], True)
+        # the mount read-only, as the engines have it: the template is still looked for there
+        launch = self.units / "launch-flash.sh"
+        launch.write_text(launch.read_text().replace(f"-v {cfg}:/out \\", f"-v {cfg}:/out:ro \\"))
+        self.assertIn(":/out:ro", launch.read_text())
+        (cfg / "chat-template-flashnext.jinja").write_text("")
+        self.assertIs(self.cp.lane_startable("flash"), False)            # an empty one, read-only mount
+        (cfg / "chat-template-flashnext.jinja").write_text("{{ x }}")
+        self.assertIs(self.cp.lane_startable("flash"), True)
         self.images.clear()
         self.assertIs(self.cp.lane_startable("flash"), False)            # not built: no Start either
         self.assertIsNone(self.cp.lane_startable("video"))               # not installed
