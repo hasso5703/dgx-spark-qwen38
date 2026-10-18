@@ -57,7 +57,11 @@ class Box:
         self.bin.mkdir()
         (self.bin / "docker").write_text(FAKE_DOCKER)
         (self.bin / "systemctl").write_text("#!/bin/sh\nexit 1\n")     # nothing enabled
-        for n in ("docker", "systemctl"):
+        # a disk with room for the checkpoint, whatever this machine's has: the real df
+        # answered here, and a 29 GB disk got the 45 GB refusal (found in a cloud review,
+        # 2026-10-18); the room check has its own tests, in tests/test_switch_room.py
+        (self.bin / "df").write_text("#!/bin/sh\necho Avail; echo 500G\n")
+        for n in ("docker", "systemctl", "df"):
             (self.bin / n).chmod(0o755)
         self.log = self.t / "docker.log"
         self.script = repo / "switch-model.sh"
