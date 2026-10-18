@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The proxy unit's MemoryMax holds the bodies the proxy accepts at once (2026-10-18).
 
-BODY_BUDGET_BYTES (384 MiB) bounds the bytes of the bodies in flight, and MemoryMax=1G with
+BODY_BUDGET_BYTES (384 MiB) bounds the bytes of the bodies in flight, and MemoryMax with
 MemorySwapMax=0 the proxy's memory, so that a proxy past any real use is stopped alone. But a
 body costs the proxy about four times its bytes while the guards work on it: the
 reasoning_effort route parses it and writes it again. Measured in a cloud container (x86_64,

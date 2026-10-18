@@ -1106,7 +1106,7 @@ class TheProxyUnitHasAMemoryCeiling(unittest.TestCase):
     def test_both_lines_are_in_the_service_section(self):
         text = (HERE.parents[1] / "qwen38-keepalive.service.template").read_text()
         service = text.split("[Service]", 1)[1].split("[Install]", 1)[0]
-        self.assertIn("\nMemoryMax=1G\n", service)
+        self.assertIn("\nMemoryMax=2G\n", service)   # 1G until 2026-10-18; see test_proxy_memory_ceiling
         self.assertIn("\nMemorySwapMax=0\n", service)
 
 class TheProxyAgreesWithItselfAboutItsVersion(unittest.TestCase):

@@ -2,7 +2,7 @@
 
 MAX_BODY_BYTES caps one body at 256 MiB, and nothing capped them together: each is read whole
 and parsed again by the guards, and four legitimate bodies near the cap reach the unit's
-MemoryMax=1G at once, where the kernel kills the proxy and every stream in flight with it (found
+MemoryMax=2G at once, where the kernel kills the proxy and every stream in flight with it (found
 in review, 2026-10-16). Past BODY_BUDGET_BYTES a body is not read: 503 with Retry-After.
 
 This harness sets the budget to 1 MiB and holds a first body of 700 kB in the fake engine.
