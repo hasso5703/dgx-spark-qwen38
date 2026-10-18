@@ -3494,7 +3494,15 @@ class H(BaseHTTPRequestHandler):
         return self._frid
 
     def _hdrs(self):
-        h = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+        # A caller's x-override-* stay here, but the rid. The SGLang lanes start their engine with
+        # SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES=1 for the rid this proxy names, and the switch
+        # makes the engine apply every override header it knows, from whoever sends it (v0.5.21:
+        # priority, routed_dp_rank, disagg_prefill_dp_rank, bootstrap_host, _port and _room,
+        # conversation_id): fields of its scheduler no client of this port has to set. By the
+        # prefix, so that one a later release adds stays here too (found in a cloud review,
+        # 2026-10-18).
+        h = {k: v for k, v in self.headers.items() if k.lower() not in HOP
+             and not (k.lower().startswith("x-override-") and k.lower() != "x-override-rid")}
         auth = _upstream_auth(self)
         if auth:
             h["Authorization"] = auth

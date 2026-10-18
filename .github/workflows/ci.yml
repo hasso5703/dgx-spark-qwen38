@@ -172,7 +172,7 @@ jobs:
                    tests/test_proxy_content_encoding.py tests/test_proxy_count_routes_cap.py \
                    tests/test_proxy_rejudge_after_hold.py tests/test_proxy_score_guard.py \
                    tests/test_proxy_uncountable_shapes.py tests/test_proxy_unknown_vocab.py \
-                   tests/test_proxy_video_guard.py \
+                   tests/test_proxy_video_guard.py tests/test_proxy_override_headers.py \
                    tests/test_tools.py tests/test_oc_fit_limits.py tests/test_oc_merge_limits.py; do
             "$PY" -m coverage run --branch --parallel-mode --source=. \
               --omit="dashboard/*,tests/*,.venv-test/*" "$f" >/dev/null 2>&1 || true
