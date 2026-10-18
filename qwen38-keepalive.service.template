@@ -27,7 +27,13 @@ Environment=PROXY_BIND=__PROXY_BIND__
 # (systemd's own accounting, 2026-09-24 to 10-07). Both lines are needed: with swap on the
 # box, MemoryMax alone moves the excess to swap instead (measured 2026-10-08: a unit capped
 # at 100M held 300M; with MemorySwapMax=0 the kernel stopped it at 100M, in its own cgroup).
-MemoryMax=1G
+# It has to hold what the proxy accepts at once too, and a body costs it about four times its
+# bytes while the guards work on it (the reasoning_effort route parses it and writes it again):
+# one body of 250 MiB, under MAX_BODY_BYTES, took a unit capped at 1G to the kernel's kill, with
+# every stream in flight (measured 2026-10-18 in a cloud container under systemd 255, and not
+# yet on the box). 2G holds BODY_BUDGET_BYTES at that rate; tests/test_proxy_memory_ceiling.py
+# measures the rate on the machine it runs on and holds the two together.
+MemoryMax=2G
 MemorySwapMax=0
 # The proxy is what a client's bytes reach first, on every address the box has (PROXY_BIND),
 # so it gets no more of the machine than it uses: it reads its code, its key, and what the
