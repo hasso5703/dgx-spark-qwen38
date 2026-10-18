@@ -130,7 +130,7 @@ exec docker run --rm --name qwen38-sglang-run --gpus all \
   -v "$CONFIG_DIR":/out:ro \
   "$SERVE_IMAGE" \
   python3 -m sglang.launch_server \
-    --trust-remote-code --model-path "$MODEL_REPO" --revision "$MODEL_REV" --tp-size 1 \
+    --model-path "$MODEL_REPO" --revision "$MODEL_REV" --tp-size 1 \
     --served-model-name qwen3.8-27b \
     --mem-fraction-static 0.50 ${KV_CACHE_ARGS} \
     --attention-backend flashinfer --chunked-prefill-size 8192 \
