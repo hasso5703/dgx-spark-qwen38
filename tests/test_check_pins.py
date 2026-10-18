@@ -132,7 +132,10 @@ class PinsBase(unittest.TestCase):
         self.log = self.t / "curl.log"
 
     def run_pins(self, scenario=None, token=None, *args):
-        env = {k: v for k, v in os.environ.items() if k != "HF_TOKEN"}
+        # neither of the caller's tokens: a GITHUB_TOKEN exported in the shell that runs the
+        # suite went on to the script, and the case without a token then sent one (found in
+        # a cloud review, 2026-10-18, in a container that exports it)
+        env = {k: v for k, v in os.environ.items() if k not in ("HF_TOKEN", "GITHUB_TOKEN")}
         env.update(PATH=f"{self.bin}:{env['PATH']}", FAKE_PINS=json.dumps(scenario or {}),
                    FAKE_LOG=str(self.log), FAKE_OC_SHA=OC_SHA)
         if token is not None:
