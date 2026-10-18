@@ -9,12 +9,17 @@ environment variable or a session, which a test's subprocess is free to drop.
 """
 import os
 import pathlib
+import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import suite_reaper  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 REAPER = str(REPO / "tests" / "suite_reaper.py")
@@ -24,9 +29,12 @@ LISTENER = ("import socket, sys, time; s = socket.socket(); s.bind(('127.0.0.1',
             "open(sys.argv[1], 'w').write(str(s.getsockname()[1])); time.sleep(60)")
 
 
-def reaper(command, grace="1"):
+def reaper(command, grace="1", path=None):
+    env = dict(os.environ, SUITE_REAPER_GRACE_S=grace)
+    if path:
+        env["PATH"] = path
     return subprocess.run([sys.executable, REAPER, "bash", "-c", command], capture_output=True,
-                          text=True, timeout=60, env=dict(os.environ, SUITE_REAPER_GRACE_S=grace))
+                          text=True, timeout=60, env=env)
 
 
 def refused(port):
@@ -84,6 +92,31 @@ class TheCommandsOwnLeftovers(unittest.TestCase):
         self.assertIn(f"pid {pid}: sleep 60", r.stdout)
         self.assertNotIn("listening socket", r.stdout)
         self.assertTrue(gone(pid))
+
+    def test_without_ss_the_listener_is_still_named_then_stopped(self):
+        # a machine without iproute2 (a cloud container, 2026-10-18): the reaper died on a
+        # traceback looking for ss and left the listener running, so each test above that
+        # leaves one waited its 60 s on a pipe the listener held. ss is kept off the PATH
+        # here, wherever it is installed.
+        tools = os.path.join(self.dir.name, "bin")
+        os.mkdir(tools)
+        for tool in ("bash", "sleep"):
+            os.symlink(shutil.which(tool), os.path.join(tools, tool))
+        r = reaper(f'{sys.executable} -c "{LISTENER}" "{self.portfile}" & {self.wait_for_port()}',
+                   path=tools)
+        port = int(pathlib.Path(self.portfile).read_text())
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn(f"127.0.0.1:{port} held by pid", r.stdout)
+        self.assertTrue(refused(port), "the listener must be stopped once reported")
+
+    def test_an_address_read_in_proc_is_spelled_as_ss_spells_it(self):
+        # the kernel's spelling of each, built with the address's words in this machine's
+        # order, as the kernel prints them; the IPv6 one is checked even where IPv6 is off
+        for family, host, spelled in ((socket.AF_INET, "127.0.0.1", "127.0.0.1:30001"),
+                                      (socket.AF_INET6, "::1", "[::1]:30001")):
+            raw = socket.inet_pton(family, host)
+            field = "".join(f"{w:08X}" for w in struct.unpack(f"={len(raw) // 4}I", raw)) + ":7531"
+            self.assertEqual(suite_reaper.proc_address(field, family), spelled)
 
     def test_a_process_on_its_way_out_is_given_the_grace(self):
         r = reaper("(sleep 0.3) & exit 0", grace="3")

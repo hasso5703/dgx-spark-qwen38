@@ -24,6 +24,8 @@ import ctypes
 import os
 import re
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -72,7 +74,13 @@ def descendants(root):
 
 def listening(pids):
     """{pid: [local address, ...]} for the TCP listeners these processes hold."""
-    out = subprocess.run(["ss", "-Htlnp"], capture_output=True, text=True).stdout
+    try:
+        out = subprocess.run(["ss", "-Htlnp"], capture_output=True, text=True).stdout
+    except OSError:
+        # no ss on this machine (a container without iproute2): the reaper died here on a
+        # traceback and left running what it was there to stop, so a test that waited on
+        # its output waited for its timeout (found in a cloud review, 2026-10-18)
+        return listening_in_proc(pids)
     held = {}
     for line in out.splitlines():
         cols = line.split()
@@ -80,6 +88,45 @@ def listening(pids):
             continue
         for pid in {int(p) for p in re.findall(r"pid=(\d+)", line)} & set(pids):
             held.setdefault(pid, []).append(cols[3])
+    return held
+
+
+def proc_address(field, family):
+    """A /proc/net/tcp or tcp6 local address as ss spells it: the kernel prints each 32-bit
+    word of the address in this machine's byte order, then the port, in hex."""
+    addr, port = field.split(":")
+    words = [int(addr[i:i + 8], 16) for i in range(0, len(addr), 8)]
+    host = socket.inet_ntop(family, struct.pack(f"={len(words)}I", *words))
+    return f"{host}:{int(port, 16)}" if family == socket.AF_INET else f"[{host}]:{int(port, 16)}"
+
+
+def listening_in_proc(pids):
+    """listening(), read from /proc: the processes' socket descriptors, then the listeners."""
+    owner = {}
+    for pid in pids:
+        try:
+            fds = os.listdir(f"/proc/{pid}/fd")
+        except OSError:
+            continue  # gone, or not ours to read
+        for fd in fds:
+            try:
+                link = os.readlink(f"/proc/{pid}/fd/{fd}")
+            except OSError:
+                continue  # closed between the listing and the read
+            if link.startswith("socket:["):
+                owner[link[len("socket:["):-1]] = pid
+    held = {}
+    for table, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socket.AF_INET6)):
+        try:
+            with open(table) as f:
+                rows = f.read().splitlines()[1:]
+        except OSError:
+            continue  # not on this machine (tcp6 without IPv6)
+        for row in rows:
+            cols = row.split()
+            # cols[3] is the state, 0A for LISTEN; cols[9] the socket's inode
+            if len(cols) > 9 and cols[3] == "0A" and cols[9] in owner:
+                held.setdefault(owner[cols[9]], []).append(proc_address(cols[1], family))
     return held
 
 

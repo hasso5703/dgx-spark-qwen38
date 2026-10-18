@@ -47,7 +47,11 @@ def run_units_only(lane):
             ("docker", f'case "$1 $2" in "info "*) echo "{docker_root}" ;; "image inspect") exit 1 ;; esac\nexit 0\n'),
             ("sudo", 'while [ -n "${1:-}" ] && [ "${1#-}" != "$1" ]; do shift; done\n'
                      '[ "$#" -eq 0 ] || [ "$1" = true ] && exit 0\n"$@"\n'),
-            ("systemctl", 'case "$1" in is-enabled|is-active) exit 1 ;; esac\nexit 0\n')):
+            ("systemctl", 'case "$1" in is-enabled|is-active) exit 1 ;; esac\nexit 0\n'),
+            # the preflight has to find it, and a lane's run then asks it nothing (the parent
+            # checked the ports): the host's was used, and a host without iproute2 died there,
+            # "ss not found" (a cloud container, 2026-10-18)
+            ("ss", 'exit 0\n')):
         (stubs / name).write_text(f'#!/bin/bash\necho "{name} $*" >> "{calls}"\n' + body)
         (stubs / name).chmod(0o755)
     env, fenced = wall.fenced_env(home=home, first=str(stubs), QWEN38_SECONDARY=lane, QWEN38_UNITS_ONLY="1",
