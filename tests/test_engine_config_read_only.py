@@ -49,8 +49,10 @@ class TheEnginesReadTheConfigDirectory(unittest.TestCase):
                              f"{name}: an /out/ path that is not a chat template, a config, a token map or the key")
 
     def test_the_draft_vocabulary_job_still_writes_its_map_there(self):
-        # not an engine: build-token-map.py writes the map it is asked for into /out, as this
-        # user (lanes.sh)
+        # not an engine: build-token-map.py writes the map it is asked for into /out, a short
+        # job of the installer and the switch (lanes.sh), as root: unlike its siblings in
+        # switch-model.sh, prepare-lane.sh and vllm-lane.sh it passes no --user (pointed out by
+        # the box's own agent, 2026-10-18)
         text = code("lanes.sh")
         job = text[text.index("docker run --rm --init --entrypoint python3"):]
         job = job[:job.index("|| return 1")]
