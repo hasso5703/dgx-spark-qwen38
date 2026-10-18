@@ -93,14 +93,30 @@ def strip_prefix(text):
     return split_prefix(text)[1]
 
 
+# The container demuxers an upload may be, and no others: an upload is a sound file, and some
+# of ffmpeg's demuxers read the file as a playlist or manifest that names somewhere else. A
+# crafted .audio in a DASH manifest made ffmpeg fetch an attacker's URL (a request from the box
+# the sender chooses the target of), and an ffconcat one made it read a second local file
+# (found in a cloud review, 2026-10-18, measured with ffmpeg 6.1.1). Pinning the input format
+# to the sound containers refuses those: ffmpeg says "Format not on whitelist" before it opens
+# anything. The protocol list is the second wall, for a demuxer on the list that still reaches
+# out: the upload is read from a file and the samples written to the pipe, nothing else.
+AUDIO_DEMUXERS = ("mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,wav,mp3,flac,aac,"
+                  "aiff,au,caf,w64,amr,amrnb,amrwb,wv")
+
+
 def decode_ffmpeg(data):
-    """The upload as 16 kHz mono 16-bit samples, whatever its format: llama.cpp's own decoder
-    reads WAV, MP3 and FLAC, not the m4a of a phone or the webm and ogg of a browser. From a
-    file, not a pipe: an m4a whose index is at its end cannot be read from a pipe."""
+    """The upload as 16 kHz mono 16-bit samples, whatever its (sound) format: llama.cpp's own
+    decoder reads WAV, MP3 and FLAC, not the m4a of a phone or the webm and ogg of a browser.
+    From a file, not a pipe: an m4a whose index is at its end cannot be read from a pipe. Only
+    the sound containers (AUDIO_DEMUXERS), and only the file and pipe protocols: an upload
+    names its own bytes, never another file or a host."""
     with tempfile.NamedTemporaryFile(prefix="qwen38-speech-", suffix=".audio") as f:
         f.write(data)
         f.flush()
-        p = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", f.name,
+        p = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                            "-protocol_whitelist", "file,pipe", "-format_whitelist", AUDIO_DEMUXERS,
+                            "-i", f.name,
                             "-vn", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"],
                            capture_output=True, timeout=300)
     if p.returncode != 0:

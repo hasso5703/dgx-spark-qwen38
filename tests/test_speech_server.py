@@ -413,6 +413,18 @@ class Helpers(unittest.TestCase):
         self.assertEqual(seen, b"m4a bytes")               # from a file, not a pipe
         self.assertEqual(argv[-8:], ["-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"])
         self.assertIn("-nostdin", argv)
+        # the input is pinned to the sound containers and to the file and pipe protocols, so a
+        # crafted upload cannot make ffmpeg fetch a URL or read another file (found 2026-10-18).
+        # Both options come before -i, where ffmpeg reads them as input options.
+        i = argv.index("-i")
+        self.assertEqual(argv[argv.index("-format_whitelist") + 1], ss.AUDIO_DEMUXERS)
+        self.assertLess(argv.index("-format_whitelist"), i)
+        self.assertEqual(argv[argv.index("-protocol_whitelist") + 1], "file,pipe")
+        self.assertLess(argv.index("-protocol_whitelist"), i)
+        # the dangerous demuxers are not on the list, the sound ones are
+        demuxers = ss.AUDIO_DEMUXERS.split(",")
+        self.assertEqual(set(demuxers) & {"hls", "dash", "concat", "sdp", "rtp", "rtsp", "image2", "ffconcat"}, set())
+        self.assertLessEqual({"wav", "mp3", "flac", "ogg", "matroska,webm".split(",")[0], "mov"}, set(demuxers))
 
     def test_decode_ffmpeg_says_ffmpegs_last_word(self):
         real = ss.subprocess.run
