@@ -9,6 +9,10 @@
 # the checkpoint had been fetched, and systemd started the lane again every 15 s. nvidia-smi names
 # the mode: ATS, HMM or None. The reference box runs in ATS; the box of issue #54 boots with the
 # same iommu.passthrough=0 and the same nvidia_uvm settings, so those alone do not decide it.
+# The answer holds for the whole lane: its FP4-Local config (b12x vLLM) reads the table from the
+# checkpoint's safetensors, not from such a file, and whether it needs ATS is not measured, so
+# its launcher asks too and the line below claims the file for the SGLang config only (found in
+# review, 2026-10-20).
 #
 # Prints one line. Exits 1 when nvidia-smi names HMM or None (the line says why), 0 otherwise: ATS,
 # and anything else (no nvidia-smi, a driver without the field, [N/A], no answer in time), where
@@ -26,7 +30,7 @@ fi
 case "$mode" in
   ATS) echo "addressing mode ATS" ;;
   HMM|None)
-    echo "the GPU's addressing mode is $mode (nvidia-smi --query-gpu=addressing_mode) and the flash lane needs ATS: it reads its 47.7 GiB N-gram table from a file on NVMe through the host page tables (docs/flash-lane.md)"
+    echo "the GPU's addressing mode is $mode (nvidia-smi --query-gpu=addressing_mode) and the flash lane needs ATS: its SGLang config reads its 47.7 GiB N-gram table from a file on NVMe through the host page tables, and the guard holds for the whole lane, FP4-Local too, whose need for ATS is not measured (docs/flash-lane.md)"
     exit 1 ;;
   *) echo "addressing mode not reported by nvidia-smi${mode:+ ($mode)}, the engine decides" ;;
 esac

@@ -68,6 +68,23 @@ class DockerImages(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertFalse(rows[0]["engine"])
 
+    def test_the_fp4_local_b12x_image_is_ours_by_digest_and_by_pin_tag(self):
+        # the flash lane's FP4-Local config runs it: missing from Library, and its recipe
+        # always read "image absent" (found in review, 2026-10-20)
+        assigns = rc.parse_assignments((REPO / "install.sh").read_text())
+        image = rc.builtin("flash-fp4-local", assigns, rc.load_templates(REPO))["engine"]["image"]
+        self.assertTrue(image.startswith("eugr/spark-vllm-b12x@sha256:"))
+        rows = rg.parse_docker_images([
+            f"{image} 28.1GB aaaaaaaaaaaa",
+            "eugr/spark-vllm-b12x:latest 28.1GB aaaaaaaaaaaa",
+            "qwen38-pinned:flash-local-0123456789ab 28.1GB aaaaaaaaaaaa",
+            "eugr/spark-vllm-b12x-other:latest 1GB bbbbbbbbbbbb",
+        ])
+        self.assertEqual([r["engine"] for r in rows], [True, True, True, False])
+        rec = rc.builtin("flash-fp4-local", assigns, rc.load_templates(REPO))
+        reg = {"images": [r for r in rows if r["engine"]], "models": []}
+        self.assertTrue(rc.presence(rec, reg)["image"])
+
 
 class Presence(unittest.TestCase):
     """presence() answers "is what this recipe needs on the box". A digest-pinned

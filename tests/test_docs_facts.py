@@ -131,15 +131,16 @@ class TheDiskNeedsAreThePreflights(unittest.TestCase):
     def test_the_readme_states_what_the_installer_checks(self):
         sh = (REPO / "install.sh").read_text()
         pairs = [(gb(h), gb(d)) for h, d in re.findall(r"NEED_GB=(\d+); DOCKER_NEED_GB=(\d+); IMG_LABEL=", sh)]
-        self.assertEqual(len(pairs), 2, "the preflight's two needs moved: fix the pattern")
-        (b_hf, b_docker), (f_hf, f_docker) = pairs
+        self.assertEqual(len(pairs), 3, "the preflight's three needs moved: fix the pattern")
+        (b_hf, b_docker), (l_hf, l_docker), (f_hf, f_docker) = pairs
         ple = re.findall(r"NEED_GB=\$\(\(NEED_GB \+ (\d+)\)\)", sh)
         self.assertEqual(len(ple), 1, "the PLE table's share moved: fix the pattern")
         f_hf += gb(ple[0])
         labels = [gb(n) for n in re.findall(r'IMG_LABEL="(\d+) GB Docker image"', sh)]
         readme = (REPO / "README.md").read_text()
         req = next(line for line in readme.splitlines() if line.startswith("Requirements:"))
-        for n in (b_hf, b_docker, f_hf, f_docker, b_hf + b_docker, f_hf + f_docker):
+        for n in (b_hf, b_docker, f_hf, f_docker, l_hf, l_docker,
+                  b_hf + b_docker, f_hf + f_docker, l_hf + l_docker):
             self.assertIn(f"**{n} GB**", req, f"install.sh checks {n} GB somewhere the README does not say")
         for n in labels:
             self.assertIn(f"its {n} GB image", req, f"install.sh names a {n} GB image the README does not")
@@ -154,6 +155,28 @@ class TheDiskNeedsAreThePreflights(unittest.TestCase):
         flags = dict(re.findall(r"--no-(image|video|kolibri|nemotron-super|nemotron)\s+leave the .*?\((?:vLLM, )?(\d+) GB\)", sh))
         self.assertEqual(set(said), {"image", "video", "kolibri", "nemotron", "nemotron-super"}, overview)
         self.assertEqual(said, flags)
+
+
+class TheSwitchSurfaceCountsItsTargetsOnce(unittest.TestCase):
+    def test_the_readme_count_is_the_table_and_the_switch(self):
+        # the page carried "seven switchable targets" above an eight-row table (found
+        # in review, 2026-10-18): the number word, the README table and switch-model.sh's
+        # 27B and flash targets must all be the same set
+        words = {7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+        sh = (REPO / "switch-model.sh").read_text()
+        switch = set(re.findall(r"^\s*([a-z0-9-]+)\)\s+TARGET_REPO=.*TARGET_LANE=(?:27b|flash) ;;$", sh, re.M))
+        readme = (REPO / "README.md").read_text()
+        heading = re.search(r"^## The (\w+) Qwen targets", readme, re.M)
+        section = readme[heading.end():]
+        table = re.search(r"^\|.*(?:\n\|.*)*", section, re.M)[0]
+        rows = re.findall(r"^\| `([a-z0-9-]+)`", table, re.M)
+        self.assertEqual(len(rows), len(set(rows)), table)
+        self.assertEqual(set(rows), switch, table)
+        word = words[len(switch)]
+        self.assertEqual(heading[1].lower(), word)
+        self.assertIn(f"**{word} switchable targets**", readme)
+        for other in set(words.values()) - {word}:
+            self.assertNotIn(f"{other} switchable targets", readme)
 
 
 if __name__ == "__main__":

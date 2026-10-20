@@ -15,7 +15,15 @@ HERE = Path(__file__).resolve()
 DASH = HERE.parents[1]
 REPO = HERE.parents[2]
 sys.path.insert(0, str(DASH))
-ENV_BEFORE = dict(os.environ)
+ENV_BEFORE: dict = {}
+
+
+def setUpModule():
+    # the snapshot is taken during the module's first test, not at import: pytest 9 keeps
+    # a note about the running test in os.environ and pops it when the last test ends; a
+    # teardown restoring an import-time snapshot takes that note with it, and the runner
+    # then cannot end the last test (KeyError in teardown, found 2026-10-19)
+    ENV_BEFORE.update(os.environ)
 
 
 def tearDownModule():
@@ -45,8 +53,11 @@ class Fetch(unittest.TestCase):
         cls.cp.NEMOTRON_SUPER_UNIT_PATH = cls.units / "qwen38-nemotron-super.service"
         cls.cp.IMAGE_UNIT_PATH = cls.units / "qwen38-image.service"
         cls.cp.VIDEO_UNIT_PATH = cls.units / "qwen38-video.service"
-        cls.cp.UNIT_PATHS = {"qwen38-sglang.service": cls.units / "qwen38-sglang.service",
-                             "qwen38-flash.service": cls.units / "launch-flash.sh"}
+        cls.cp.UNIT_PATHS = {"qwen38-sglang.service": cls.units / "qwen38-sglang.service"}
+        # the flash lane's one unit, two launchers: read from this test's folder (FP4-Local)
+        cls.cp.FLASH_LAUNCHERS = (cls.units / "launch-flash.sh",
+                                  cls.units / "launch-flash-fp4local.sh")
+        cls.cp.UNIT_DIR = cls.units
         cls.pins = cls.cp.registry_snapshot(max_age=0.0)["pins"]
 
     @classmethod

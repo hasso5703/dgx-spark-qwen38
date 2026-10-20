@@ -48,11 +48,13 @@ LABEL = {"stock": "Qwen3.8-27B NVFP4 + DFlash2",
          "fp8": "Qwen3.8-27B FP8 official + DFlash2",
          "uncensored-fp8": "Qwen3.8-27B FP8 abliterated + DFlash2",
          "flash": "Qwen3.8-Flash-Next NVFP4 + MTP",
-         # The three flash targets share one served-model-name too, so the same
-         # rule applies: without an entry here the picker keeps saying NVFP4
-         # while the box serves the abliterated build.
+         # The flash targets share one served-model-name too, so the same rule
+         # applies: without an entry here the picker keeps saying one build while
+         # the box serves another. FP4-Local is the lane's vLLM config; it shares
+         # the served name with the SGLang configs' checkpoints.
          "flash-uncensored": "Qwen3.8-Flash-Next NVFP4 abliterated + MTP",
          "flash-nvda": "Qwen3.8-Flash-Next NVFP4 NVIDIA export + MTP",
+         "flash-fp4-local": "Qwen3.8-Flash-Next FP4-Local (vLLM) + MTP",
          # The Kolibri lane's two checkpoints share its one served-model-name, kolibri-1.
          "kolibri": "Kolibri-1 FP8 official",
          "kolibri-nvfp4": "Kolibri-1 NVFP4 experts",

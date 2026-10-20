@@ -213,7 +213,7 @@ function renderActivity(){
     const stages = e.stages && e.stages.length ? e.stages : ALL_STAGES;
     facts(fx, [['Stages done', `${(e.stage_done || []).length} of ${stages.length}`], ['Elapsed', fmtDur(e.elapsed)],
                ['Left, about', eta && e.elapsed ? fmtDur(Math.max(0, eta - e.elapsed)) : 'first boot, learning'],
-               ['Timed from', e.eta ? `the median of ${(e.boots || []).length} boots here` : 'the reference box'],
+               ['Timed from', (e.boots || []).length ? `the median of ${e.boots.length} boots here` : 'the reference box'],
                e.overdue ? ['Note', 'over twice the usual time: read Logs', 'warn-t'] : [null, null]]);
     return;
   }
@@ -249,6 +249,8 @@ on('canary', d => {
   // the Kolibri lane is not probed: the last Qwen lane's result read as its own (review, 2026-10-14)
   else if (d.skipped && (servingEngine() || [])[0] === KOLIBRI_UNIT) txt = `not run: ${d.why || 'the Kolibri lane is checked by its own /health'}`;
   else if (d.skipped && isNemotron((servingEngine() || [])[0])) txt = `not run: ${d.why || 'the Nemotron lane is checked by its own /health'}`;
+  // nor is the flash lane's FP4-Local config: it read "not yet run" (review, 2026-10-20)
+  else if (d.skipped && fp4Holds()) txt = `not run: ${d.why || 'the FP4-Local config is checked by its own /health'}`;
   else if (d.skipped && d.last_ok == null) txt = 'not yet run';
   else if (d.fails > 0) txt = `${d.fails} failure${d.fails > 1 ? 's' : ''} in a row: ${d.last_err || ''}`;
   else if (d.last_ok) txt = `ok, ${d.latency} s` + (d.skipped ? ` (skipped this round: ${d.why || 'busy'})` : '');

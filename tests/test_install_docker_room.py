@@ -34,7 +34,10 @@ def block() -> str:
     return text[start:end]
 
 
-def run(lane, free, images):
+LOCAL_IMAGE = "eugr/spark-vllm-b12x@sha256:local"
+
+
+def run(lane, free, images, fp4=0):
     t = pathlib.Path(tempfile.mkdtemp(prefix="docker-room-"))
     for name, body in (("docker", FAKE_DOCKER), ("df", FAKE_DF)):
         (t / name).write_text(body)
@@ -43,6 +46,7 @@ def run(lane, free, images):
     script = ("set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n"
               f"LANE={lane}; DOCKER_NEED_GB={need}; IMG_LABEL='{label}'; UNITS_ONLY=0\n"   # a whole install
               "IMAGE=lmsysorg/sglang@sha256:27b; FLASH_IMAGE=lmsysorg/sglang@sha256:flash\n"
+              f"FLASH_FP4_LOCAL={fp4}; FLASH_LOCAL_IMAGE={LOCAL_IMAGE}\n"
               + block() + 'echo "PASS need=$DOCKER_NEED_GB pull=$PULL_TARGET"\n')
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
                        env={"PATH": f"{t}:/usr/bin:/bin", "FAKE_FREE": str(free),
@@ -69,6 +73,14 @@ class TheDockerRoomFollowsWhatThereIsToPull(unittest.TestCase):
         # the 27B's image being here says nothing about the flash lane's
         self.assertIn("DIE: Need ~35 GB free", run("flash", 20, ["lmsysorg/sglang@sha256:27b"]))
 
+    def test_the_fp4local_config_pulls_the_b12x_image_not_sglangs(self):
+        # the lane's other engine: its pull target is the b12x image, and neither
+        # serving image already being here excuses the room for it
+        self.assertIn(f"PASS need=5 pull={LOCAL_IMAGE}",
+                      run("flash", 20, [LOCAL_IMAGE], fp4=1))
+        self.assertIn("DIE: Need ~35 GB free",
+                      run("flash", 20, ["lmsysorg/sglang@sha256:flash"], fp4=1))
+
 
 
 class TheRoomCoversAPullsPeak(unittest.TestCase):
@@ -77,7 +89,8 @@ class TheRoomCoversAPullsPeak(unittest.TestCase):
     beside the unpacked image), in GiB as df -BG rounds them up. They asked for 40 and 35, the
     image alone, and Kolibri's installer 23 (found in review, 2026-10-15)."""
     # (GB unpacked, GB to download) of each image, from the registry and the reference box
-    PEAK = {"27b": (33.7, 14.8), "flash": (34.4, 15.3), "kolibri": (22.1, 9.6), "nemotron": (24.46, 10.30)}
+    PEAK = {"27b": (33.7, 14.8), "flash": (34.4, 15.3), "flash-fp4local": (18.19, 9.70),
+            "kolibri": (22.1, 9.6), "nemotron": (24.46, 10.30)}
 
     @staticmethod
     def need(unpacked, download):
@@ -86,13 +99,16 @@ class TheRoomCoversAPullsPeak(unittest.TestCase):
     def test_each_lane_asks_for_its_peak_and_the_two_scripts_agree(self):
         text = INSTALL.read_text()
         n27 = int(re.search(r'^NEED_GB=45; DOCKER_NEED_GB=(\d+);', text, re.M).group(1))
-        nfl = int(re.search(r'^  NEED_GB=180; DOCKER_NEED_GB=(\d+);', text, re.M).group(1))
+        nfl = int(re.search(r'^\s+NEED_GB=180; DOCKER_NEED_GB=(\d+);', text, re.M).group(1))
+        nlo = int(re.search(r'^\s+NEED_GB=106; DOCKER_NEED_GB=(\d+);', text, re.M).group(1))
         prep = (REPO / "prepare-lane.sh").read_text()
         p27 = int(re.search(r'pull_image "\$img" 27b (\d+)', prep).group(1))
         pfl = int(re.search(r'pull_image "\$img" flash (\d+)', prep).group(1))
+        plo = int(re.search(r'pull_image "\$FLASH_LOCAL_SERVE_IMAGE" flash-local (\d+)', prep).group(1))
         self.assertGreaterEqual(n27, self.need(*self.PEAK["27b"]))
         self.assertGreaterEqual(nfl, self.need(*self.PEAK["flash"]))
-        self.assertEqual((p27, pfl), (n27, nfl))          # one number each lane, the same in both
+        self.assertGreaterEqual(nlo, self.need(*self.PEAK["flash-fp4local"]))
+        self.assertEqual((p27, pfl, plo), (n27, nfl, nlo))   # one number each lane, both scripts
         for lane in ("kolibri", "nemotron"):
             with self.subTest(lane=lane):
                 inst = (REPO / f"install-{lane}.sh").read_text()
@@ -106,11 +122,12 @@ class TheCheckpointsRoomIsInOnePlace(unittest.TestCase):
     def test_install_the_switch_and_a_first_load_ask_the_same(self):
         text = INSTALL.read_text()
         n27 = int(re.search(r"^NEED_GB=(\d+); DOCKER_NEED_GB=", text, re.M).group(1))
-        nfl = int(re.search(r"^  NEED_GB=(\d+); DOCKER_NEED_GB=", text, re.M).group(1))
+        nfl = int(re.search(r"^\s+NEED_GB=(\d+); DOCKER_NEED_GB=49;", text, re.M).group(1))
+        nlo = int(re.search(r"^\s+NEED_GB=(\d+); DOCKER_NEED_GB=28;", text, re.M).group(1))
         lanes = (REPO / "lanes.sh").read_text()
         fn = lanes[lanes.index("ckpt_room_gb(){"):]
         self.assertIn(f"local n={n27} have dir=", fn)
-        self.assertIn(f'[ "$1" = flash ] && n={nfl}', fn)
+        self.assertIn(f'[ "$1" = flash ] && case "$3" in *FP4-Local*) n={nlo} ;; *) n={nfl} ;; esac', fn)
         self.assertIn('DL_NEED_GB="$(ckpt_room_gb "$TARGET_LANE" "$HF_CACHE" "$TARGET_REPO" "$TARGET_REV")"', (REPO / "switch-model.sh").read_text())
         self.assertIn("ckpt_room_gb flash", (REPO / "prepare-lane.sh").read_text())
         self.assertIn("ckpt_room_gb 27b", (REPO / "prepare-lane.sh").read_text())
@@ -196,7 +213,7 @@ class ThePinnedImagesAreTagged(unittest.TestCase):
 
     def test_install_sh_has_it_before_it_tags(self):
         text = INSTALL.read_text()
-        self.assertLess(text.index('. "$REPO_DIR/lanes.sh"'), text.index('pin_tag "$LANE" "$PULLED_IMAGE"'))
+        self.assertLess(text.index('. "$REPO_DIR/lanes.sh"'), text.index('pin_tag "$PIN_KEY" "$PULLED_IMAGE"'))
         self.assertNotIn("pin_tag() {", text)       # one definition, in lanes.sh
 
 if __name__ == "__main__":

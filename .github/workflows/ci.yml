@@ -68,7 +68,16 @@ jobs:
           shellcheck -S warning $files
 
       - name: opencode plugin syntax (node)
-        run: node --check extras/opencode/auto-continue.js
+        run: |
+          # The plugin is an ES module; node --check reads a .js by the
+          # package's type, which this repo has none of: the runner's Node
+          # detects the module and passes, a dev box on Node 18 died on the
+          # import lines (found on the box, 2026-10-19). The plugin's own
+          # driver imports the file as a .mjs copy; the check now does the
+          # same, so both hosts read it as the module it is.
+          scratch="${TMPDIR:-/tmp}"
+          cp extras/opencode/auto-continue.js "$scratch/auto-continue.mjs"
+          node --check "$scratch/auto-continue.mjs"
 
       - name: The cockpit page survives losing its server (headless browser, a cockpit of its own)
         run: |
@@ -488,7 +497,7 @@ jobs:
           case "$FLASH_IMAGE" in *@sha256:*) ;; *) echo "FLASH_IMAGE is not digest-pinned"; exit 1 ;; esac
           # Every flash target must resolve to the flash lane, or install.sh would
           # render a 27B unit for a 126 GiB checkpoint.
-          grep -qE '^ *flash\|flash-nvda\|flash-uncensored\) LANE=flash' install.sh \
+          grep -qE '^ *flash\|flash-nvda\|flash-uncensored\|flash-fp4-local\) LANE=flash' install.sh \
             || { echo "install.sh: a flash target no longer selects the flash lane"; exit 1; }
 
           # switch-model.sh rewrites the launcher's per-checkpoint flags in place, so

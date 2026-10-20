@@ -135,7 +135,8 @@ def main() -> None:
                 headers={"Authorization": f"Bearer {key}"}, method="POST"), timeout=20)
             print("prefix cache flushed")
         except Exception as exc:  # noqa: BLE001
-            # A flush is refused while anything is in flight, by design.
+            # A flush is refused while anything is in flight, by design; and the
+            # FP4-Local config (vLLM, no dev mode) has no flush route at all.
             print(f"note: flush refused ({str(exc)[:60]}); measuring on the cache as it is")
 
     # ~3.4 characters per token on this tokenizer, measured; the exact size does
@@ -147,9 +148,31 @@ def main() -> None:
                           "one short sentence each."},
                 {"role": "assistant", "content": "Understood."}]
 
+    # Self-label the transcript: which engine served the run. The FP4-Local
+    # config answers the same model name as the SGLang flash configs, so the
+    # name printed here cannot tell them apart; the counter names on /metrics
+    # can (the same discrimination as the cockpit's
+    # dashboard/engine_metrics.py). Asked of the endpoint this run targets,
+    # by default :30001, the keepalive proxy, not the engine: with a
+    # client-keys file the proxy refuses /metrics without a listed key, so
+    # the read carries the run's own bearer, which both engines accept on
+    # their open /metrics too (found in review, 2026-10-20). Not the
+    # hardcoded :30000: the offline suite's audit hook counts that connect
+    # among a test's, even an attempt (found in CI, 2026-10-19).
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                f"{base}/metrics", headers={"Authorization": f"Bearer {key}"}),
+                timeout=15) as r:
+            page = r.read().decode("utf-8", "replace")
+        flavour = ("vLLM" if "vllm:" in page
+                   else "SGLang" if "sglang:" in page else "unknown")
+    except Exception:  # noqa: BLE001
+        flavour = "unknown"
+
     print(f"agent loop: {args.turns} turns, ~{args.prefix_tokens} token prefix, "
           f"{args.turn_tokens} tokens per answer"
-          f"{' (pinned)' if args.pin_work else ' (not pinned)'}, {base}, model {model}")
+          f"{' (pinned)' if args.pin_work else ' (not pinned)'}, {base}, "
+          f"model {model}, engine {flavour}")
     print(f"{'turn':>4}  {'prompt':>8}  {'out':>4}  {'ttft':>7}  {'total':>7}  {'ms/tok':>7}")
 
     rows = []

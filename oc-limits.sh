@@ -52,7 +52,7 @@ CHOICE="${1:-}"
 # drift from it.
 if [ "$CHOICE" = "--max-out" ]; then
   MAXOUT=0
-  for _c in flash flash-nvda flash-uncensored; do
+  for _c in flash flash-nvda flash-uncensored flash-fp4-local; do
     for _t in context concurrency throughput; do
       _o="$("$0" "$_c" "$_t" | awk '{print $2}')"
       [ -n "$_o" ] || { printf 'oc-limits: --max-out could not read %s %s\n' "$_c" "$_t" >&2; exit 2; }
@@ -118,16 +118,21 @@ flag() {  # $1 flag name -> its value in the invocation, or empty
 }
 
 case "$CHOICE" in
-  flash|flash-nvda|flash-uncensored)
+  flash|flash-nvda|flash-uncensored|flash-fp4-local)
     TIER="$SELECTOR"
     if [ -z "$TIER" ]; then
       # Derived, or defaulted: the tier is what the launcher pins as concurrency.
-      case "$(flag '--max-running-requests')" in
-        24) TIER=throughput ;;
-        8)  TIER=concurrency ;;
-        *)  TIER=context ;;
+      # The FP4-Local config is the vLLM one, so its flag spells that word.
+      case "$(flag '--max-running-requests'; flag '--max-num-seqs')" in
+        24*) TIER=throughput ;;
+        8*)  TIER=concurrency ;;
+        *)   TIER=context ;;
       esac
     fi
+    # The FP4-Local launcher pins 8 requests and has no tier: a tier given for it (the
+    # FLASH_TIER install.sh reads back from the SGLang launcher a box moves away from) gave
+    # an 8-request 262K config the throughput tier's window (found in review, 2026-10-20).
+    [ "$CHOICE" = flash-fp4-local ] && TIER=concurrency
     # The budget is min(the proxy's one-prompt ceiling, what the tier's KV pool
     # holds alongside the answer).
     #

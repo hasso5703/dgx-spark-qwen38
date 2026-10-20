@@ -8,6 +8,11 @@
 #   ./switch-model.sh flash           # RadixArk/Qwen3.8-Flash-Next-NVFP4 (SGLang)
 #   ./switch-model.sh flash-nvda      # nvidia/Qwen3.8-Flash-Next-NVFP4, ModelOpt mixed precision
 #   ./switch-model.sh flash-uncensored # the abliterated build of the same tree
+#   ./switch-model.sh flash-fp4-local --fetch  # nvidia/Qwen3.8-Flash-Next-FP4-Local, the lane's
+#                                     # b12x vLLM config. --fetch works everywhere; the full
+#                                     # switch brings that config back where it is the installed
+#                                     # one, and says MODEL_CHOICE=flash-fp4-local ./install.sh
+#                                     # where the box still serves SGLang
 #   ./switch-model.sh image           # Qwen/Qwen-Image-2.1 (SGLang Diffusion, own venv)
 #   ./switch-model.sh image-turbo     # Qwen/Qwen-Image-2.1-Turbo, its eight-step distillation
 #   ./switch-model.sh video           # MiniMaxAI/MiniMax-H3 (SGLang Diffusion, own venv)
@@ -52,7 +57,7 @@ _ENV_HF_CACHE="${HF_CACHE:-}"      # before the pins below give it install.sh's 
 # 27B lane and restarting what follows it, where the usage was all anyone wanted (found
 # in review, 2026-09-24). MODEL_CHOICE= still names one, as install.sh takes it.
 CHOICE="${1:-${MODEL_CHOICE:-}}"
-case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image|image-turbo|video|kolibri|kolibri-nvfp4|nemotron|nemotron-super) ;; *) printf 'usage: ./switch-model.sh <stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|image|image-turbo|video|kolibri|kolibri-nvfp4|nemotron|nemotron-super> [--fetch]\n' >&2; [ -z "$CHOICE" ] && exit 2; die "unknown target: $CHOICE" ;; esac
+case "$CHOICE" in stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|flash-fp4-local|image|image-turbo|video|kolibri|kolibri-nvfp4|nemotron|nemotron-super) ;; *) printf 'usage: ./switch-model.sh <stock|uncensored|fp8|uncensored-fp8|flash|flash-nvda|flash-uncensored|flash-fp4-local|image|image-turbo|video|kolibri|kolibri-nvfp4|nemotron|nemotron-super> [--fetch]\n' >&2; [ -z "$CHOICE" ] && exit 2; die "unknown target: $CHOICE" ;; esac
 # --fetch: the target's checkpoint only, fetched as a switch fetches it (the cache first,
 # resumable, its room checked), and nothing else: no unit, no boot, no engine, no record.
 # Library's Download runs it, and a lane installed without its weights gets them so.
@@ -68,14 +73,13 @@ fetched(){  # $1 what: in --fetch mode the checkpoint is in the cache, and the r
   exit 0
 }
 
-
-PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_NVDA_REPO|FLASH_NVDA_REV|FLASH_UNC_REPO|FLASH_UNC_REV|FLASH_IMAGE|FLASH_SERVE_IMAGE|SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
+PINS="$(grep -E '^(IMAGE|STOCK_REPO|STOCK_REV|UNC_REPO|UNC_REV|FP8_REPO|FP8_REV|UNCFP8_REPO|UNCFP8_REV|FLASH_REPO|FLASH_REV|FLASH_NVDA_REPO|FLASH_NVDA_REV|FLASH_UNC_REPO|FLASH_UNC_REV|FLASH_LOCAL_REPO|FLASH_LOCAL_REV|FLASH_LOCAL_IMAGE|FLASH_LOCAL_SERVE_IMAGE|FLASH_IMAGE|FLASH_SERVE_IMAGE|SERVE_IMAGE|MODEL_CHOICE|HF_CACHE|CONFIG_DIR)=' "$REPO_DIR/install.sh" || true)"
 # A count of matched lines was the old check, and adding a pin broke both scripts
 # at once (it did, on 2026-09-08). What matters is not how many lines matched but
 # whether every name this script goes on to use is defined, so that is what is
 # asserted, and a failure says which one.
 eval "$PINS"
-for _v in IMAGE SERVE_IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV FLASH_REPO FLASH_REV FLASH_NVDA_REPO FLASH_NVDA_REV FLASH_UNC_REPO FLASH_UNC_REV FLASH_IMAGE FLASH_SERVE_IMAGE MODEL_CHOICE HF_CACHE CONFIG_DIR; do
+for _v in IMAGE SERVE_IMAGE STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV FLASH_REPO FLASH_REV FLASH_NVDA_REPO FLASH_NVDA_REV FLASH_UNC_REPO FLASH_UNC_REV FLASH_LOCAL_REPO FLASH_LOCAL_REV FLASH_LOCAL_IMAGE FLASH_LOCAL_SERVE_IMAGE FLASH_IMAGE FLASH_SERVE_IMAGE MODEL_CHOICE HF_CACHE CONFIG_DIR; do
   eval "[ -n \"\${$_v:-}\" ]" || die "install.sh no longer defines $_v (repo layout changed?)"
 done
 unset _v
@@ -734,7 +738,29 @@ case "$CHOICE" in
   flash)      TARGET_REPO="$FLASH_REPO"; TARGET_REV="$FLASH_REV"; TARGET_LANE=flash ;;
   flash-nvda) TARGET_REPO="$FLASH_NVDA_REPO"; TARGET_REV="$FLASH_NVDA_REV"; TARGET_LANE=flash ;;
   flash-uncensored) TARGET_REPO="$FLASH_UNC_REPO"; TARGET_REV="$FLASH_UNC_REV"; TARGET_LANE=flash ;;
+  flash-fp4-local)  TARGET_REPO="$FLASH_LOCAL_REPO"; TARGET_REV="$FLASH_LOCAL_REV"; TARGET_LANE=flash ;;
 esac
+# The FP4-Local config of the flash lane runs a different engine from the rest of
+# the lane (the community b12x vLLM container, not SGLang): --fetch treats it like
+# any other target, in every config and even on a box without the lane. A full
+# switch is the installer's job while the box serves SGLang: rendering the other
+# launcher and the unit around it is install.sh's, so refuse and say the exact
+# command. Where the unit ALREADY names the FP4-Local launcher, the full switch
+# is the lane-level bring-back the cockpit's Load needs (fetch, template, enable,
+# records, limits; the launcher's flags are never rewritten by a switch).
+FP4_LANE_SWITCH=0
+if [ "$CHOICE" = "flash-fp4-local" ] && [ "$FETCH_ONLY" -eq 0 ]; then
+  if [ -f "$FLASH_UNIT" ] && grep -q launch-flash-fp4local "$FLASH_UNIT" 2>/dev/null; then
+    FP4_LANE_SWITCH=1
+  else
+    die "flash-fp4-local is the flash lane's other engine, not a checkpoint switch: fetch it with ./switch-model.sh flash-fp4-local --fetch, then make it the serving config with MODEL_CHOICE=flash-fp4-local ./install.sh"
+  fi
+fi
+if [ "$TARGET_LANE" = flash ] && [ "$FP4_LANE_SWITCH" -eq 0 ] && [ "$FETCH_ONLY" -eq 0 ] \
+   && [ -f "$FLASH_UNIT" ] && grep -q launch-flash-fp4local "$FLASH_UNIT" 2>/dev/null; then
+  die "this box serves the flash lane's FP4-Local config; going back to $CHOICE means the SGLang engine: MODEL_CHOICE=$CHOICE ./install.sh"
+fi
+
 
 # The pins come from install.sh through eval, so a pin renamed or emptied there
 # would otherwise reach the download step as an empty repo or revision. CI
@@ -757,11 +783,37 @@ if [ "$TARGET_LANE" = "27b" ]; then
   INVOCATION="$SGL_UNIT"
   PIN_IMAGE="$SERVE_IMAGE"
 else
-  [ -f "$FLASH_UNIT" ] || die "the Flash-Next stack is not installed on this box (no $FLASH_UNIT). Install it once first: MODEL_CHOICE=$CHOICE ./install.sh (~152 GB download: the checkpoint 136, the image 16; no image build)"
-  TARGET_UNIT="$FLASH_UNIT"; TARGET_UNIT_NAME="qwen38-flash.service"
-  OTHER_UNIT="$SGL_UNIT"; OTHER_UNIT_NAME="qwen38-sglang.service"
-  INVOCATION="$CONFIG_DIR/launch-flash.sh"
-  PIN_IMAGE="$FLASH_SERVE_IMAGE"
+  if [ -f "$FLASH_UNIT" ]; then
+    TARGET_UNIT="$FLASH_UNIT"; TARGET_UNIT_NAME="qwen38-flash.service"
+    OTHER_UNIT="$SGL_UNIT"; OTHER_UNIT_NAME="qwen38-sglang.service"
+    # The invocation is whichever launcher the unit runs: the FP4-Local config
+    # carries its own, and the limits and cache below are read from it (a fixed
+    # launch-flash.sh would name the other config's flags, found in review,
+    # 2026-10-18). Read from the unit, not from the kind of switch: a --fetch on a
+    # box serving FP4-Local read launch-flash.sh and the 27B unit for the cache and
+    # fetched into another one than the engine mounts (found in review, 2026-10-20).
+    if grep -q launch-flash-fp4local "$FLASH_UNIT" 2>/dev/null; then
+      INVOCATION="$CONFIG_DIR/launch-flash-fp4local.sh"
+    else
+      INVOCATION="$CONFIG_DIR/launch-flash.sh"
+    fi
+    case "$CHOICE" in
+      flash-fp4-local) PIN_IMAGE="$FLASH_LOCAL_SERVE_IMAGE" ;;
+      *)               PIN_IMAGE="$FLASH_SERVE_IMAGE" ;;
+    esac
+  else
+    # --fetch on a box that never installed the lane (the cockpit's Library
+    # Download path): nothing to point at and nothing to serve; fetched() ends
+    # the run before any unit step.
+    [ "$FETCH_ONLY" -eq 1 ] \
+      || die "the Flash-Next stack is not installed on this box (no $FLASH_UNIT). Install it once first: MODEL_CHOICE=$CHOICE ./install.sh (~152 GB download: the checkpoint 136, the image 16; no image build)"
+    TARGET_UNIT_NAME="qwen38-flash.service"
+    INVOCATION="" OTHER_UNIT="" OTHER_UNIT_NAME="qwen38-sglang.service"
+    case "$CHOICE" in
+      flash-fp4-local) PIN_IMAGE="$FLASH_LOCAL_SERVE_IMAGE" ;;
+      *)               PIN_IMAGE="$FLASH_SERVE_IMAGE" ;;
+    esac
+  fi
 fi
 # The cache the installed engine mounts, read back the way install.sh does (CUR_HF),
 # not the default: a box installed with HF_CACHE=/data/hf and switched from the cockpit,
@@ -787,7 +839,7 @@ fi
 # above the one that calls the server.
 unit_image() {
   [ -f "$1" ] || return 0
-  awk '/sglang\.launch_server/ { print prev; exit } { prev = $0 }' "$1" \
+  awk '/sglang\.launch_server|(^| )vllm serve/ { print prev; exit } { prev = $0 }' "$1" \
     | sed -e 's/[[:space:]]*\\$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 # Point the flash launcher at another checkpoint of the same lane: the model
@@ -850,11 +902,24 @@ rewrite_flash_launcher() {  # $1 launcher, $2 repo, $3 revision, $4 quant args
 
 DL_IMAGE="$(unit_image "$INVOCATION")"
 case "$DL_IMAGE" in
-  *:*) ;;                                  # name:tag or name@sha256:... both match
+  *:*) ;;                                  # name:tag or name@digest both match
   *) DL_IMAGE="$PIN_IMAGE" ;;              # unreadable invocation: fall back to the repo's pin
 esac
-docker image inspect "$DL_IMAGE" >/dev/null 2>&1 \
-  || die "the image this box would serve is not present ($DL_IMAGE): a lane installed on demand is prepared by its first Load from the cockpit (or ./prepare-lane.sh $TARGET_LANE); otherwise run MODEL_CHOICE=$CHOICE ./install.sh once, the switch stays surgical"
+# The FP4-Local fetch runs in its own image's python: the SGLang image is what a
+# box serving the other config has, and a units-only box has neither, so a fetch
+# of this target must not depend on either (found in review, 2026-10-18). Where the
+# invocation IS the FP4-Local launcher, the image it names is the one read above, as
+# for every other invocation: the pin would refuse a box whose launcher runs another
+# image, a pin bump not installed yet (found in review, 2026-10-20).
+if [ "$CHOICE" = "flash-fp4-local" ] && [ "$INVOCATION" != "$CONFIG_DIR/launch-flash-fp4local.sh" ]; then
+  DL_IMAGE="$FLASH_LOCAL_SERVE_IMAGE"
+fi
+# The FP4-Local config is prepared by its own target: a bare ./prepare-lane.sh flash
+# prepares the SGLang config's image and checkpoint (found in review, 2026-10-20).
+PREPARE_CMD="./prepare-lane.sh $TARGET_LANE"
+[ "$CHOICE" = "flash-fp4-local" ] && PREPARE_CMD="./prepare-lane.sh flash flash-fp4-local"
+docker image inspect "$DL_IMAGE" >/dev/null \
+  || die "the image this box would fetch in is not present ($DL_IMAGE): a lane installed on demand is prepared by its first Load from the cockpit (or $PREPARE_CMD); otherwise run MODEL_CHOICE=$CHOICE ./install.sh once, the switch stays surgical"
 
 if [ "$FETCH_ONLY" -eq 1 ]; then
   echo "fetching $TARGET_REPO @ $TARGET_REV; nothing else changes (--fetch)"
@@ -934,6 +999,7 @@ fi
 # model. Read at service startup only, so writing it now is safe.
 TEMPLATE_OUT="$CONFIG_DIR/chat-template-sglang.jinja"
 [ "$TARGET_LANE" = "flash" ] && TEMPLATE_OUT="$CONFIG_DIR/chat-template-flashnext.jinja"
+[ "$FP4_LANE_SWITCH" -eq 1 ] && TEMPLATE_OUT="$CONFIG_DIR/chat-template-flashnext-local.jinja"
 python3 "$REPO_DIR/patch-template.py" "$HF_CACHE" "$TEMPLATE_OUT" "$TARGET_REV" "$TARGET_REPO" \
   || die "template patch failed for $TARGET_REPO (the switch was NOT applied to the unit yet)"
 
@@ -977,6 +1043,24 @@ if [ "$TARGET_LANE" = "27b" ]; then
   else
     diff "$STAGE_UNIT" "$TARGET_UNIT" || true   # show exactly what changes
     sudo install -m 644 "$STAGE_UNIT" "$TARGET_UNIT"
+  fi
+elif [ "$FP4_LANE_SWITCH" -eq 1 ]; then
+  # The FP4-Local launcher is rendered whole by the installer and its flags are
+  # never a per-checkpoint choice, so this switch checks it and moves only the
+  # --revision should install.sh's pin have shifted since the render.
+  FLASH_FP4_LAUNCH="$CONFIG_DIR/launch-flash-fp4local.sh"
+  [ -f "$FLASH_FP4_LAUNCH" ] \
+    || die "the unit names the FP4-Local launcher but $FLASH_FP4_LAUNCH is missing: re-run MODEL_CHOICE=flash-fp4-local ./install.sh"
+  [ "$(launcher_model "$FLASH_FP4_LAUNCH")" = "$TARGET_REPO" ] \
+    || die "$FLASH_FP4_LAUNCH does not serve $TARGET_REPO (hand-edited?): re-run MODEL_CHOICE=flash-fp4-local ./install.sh"
+  if grep -q -- '--revision ' "$FLASH_FP4_LAUNCH" && ! grep -q -- "--revision $TARGET_REV" "$FLASH_FP4_LAUNCH"; then
+    awk -v rev="$TARGET_REV" '{ sub(/--revision [A-Za-z0-9]+/, "--revision " rev); print }' "$FLASH_FP4_LAUNCH" > "$TMP_UNIT"
+    bash -n "$TMP_UNIT" || die "rewritten FP4-Local launch script does not parse"
+    diff "$TMP_UNIT" "$FLASH_FP4_LAUNCH" || true   # show exactly what changes
+    install -m 755 "$TMP_UNIT" "$FLASH_FP4_LAUNCH"
+    echo "FP4-Local launcher moved to --revision $TARGET_REV"
+  else
+    echo "launch script unchanged: the FP4-Local config already loads $CHOICE"
   fi
 else
   # Flash keeps its serving flags in a plain launch script; the unit just
@@ -1145,7 +1229,9 @@ for OC_JSON in "$CONFIG_DIR/opencode.json" "$HOME/.config/opencode/opencode.json
   # opencode's default model still pointed at flashnext: a switch that reported
   # failure and had in fact done nine tenths of the job. install.sh carries the
   # same pipeline and was fixed the same way on 2026-09-12; this copy was not.
-  OC_WINDOW="$(grep -oE -- '--context-length [0-9]+' "$INVOCATION" 2>/dev/null | awk '{print $2}' | head -1 || true)"
+  OC_WINDOW="$(grep -ohE -- '--context-length [0-9]+|--max-model-len [0-9]+' "$INVOCATION" 2>/dev/null | awk '{print $2}' | head -1 || true)"
+  # The FP4-Local launcher spells its window --max-model-len (vLLM's word for it);
+  # a launcher naming neither leaves the label unwindowed, as a native 27B's does.
   python3 "$REPO_DIR/oc-point-default.py" "$OC_JSON" "$TARGET_LANE" "$CHOICE" "$OC_WINDOW" \
     || echo "NOTE: could not update $OC_JSON (hand-edited?); set its \"model\" field yourself"
 done
@@ -1223,4 +1309,5 @@ case "$CHOICE" in
   flash)      echo "Switch back:      ./switch-model.sh stock   (or fp8, flash-nvda, uncensored, flash-uncensored)" ;;
   flash-nvda) echo "Switch back:      ./switch-model.sh flash   (or stock, fp8, flash-uncensored, uncensored)" ;;
   flash-uncensored) echo "Switch back:      ./switch-model.sh flash   (or flash-nvda, stock, fp8, uncensored)" ;;
+  flash-fp4-local) echo "Switch back:      MODEL_CHOICE=flash-nvda ./install.sh (a SGLang config; from there ./switch-model.sh reaches the other targets)" ;;
 esac

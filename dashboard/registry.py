@@ -23,6 +23,8 @@ PIN_MODELS = {
     "FLASH_REV": "RadixArk/Qwen3.8-Flash-Next-NVFP4",
     "FLASH_NVDA_REV": "nvidia/Qwen3.8-Flash-Next-NVFP4",
     "FLASH_UNC_REV": "dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4",
+    # the flash lane's other engine (the b12x vLLM container), pinned by install.sh
+    "FLASH_LOCAL_REV": "nvidia/Qwen3.8-Flash-Next-FP4-Local",
     "DRAFT_REV": "RadixArk/Qwen3.8-27B-DSpark",
     "DRAFT2_REV": "maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal",
     # The other lanes, each pinned by its own installer. Until 2026-10-14 their weights read
@@ -50,9 +52,12 @@ PIN_RE = re.compile(r'^\s*([A-Z][A-Z0-9_]*REV)="?\$?\{?[A-Z0-9_:-]*?([0-9a-f]{40
 
 # Images that belong to this stack (everything else is none of our business). The Kolibri and
 # Nemotron lanes run images built on the box, which carry a tag and no digest: their builds were
-# missing from Library's engine images (found on the reference box, 2026-10-16).
+# missing from Library's engine images (found on the reference box, 2026-10-16). The flash lane's
+# FP4-Local config runs the b12x vLLM image, by digest and under its pin tag: unmatched, it was
+# missing there too and its recipe always read "image absent" (found in review, 2026-10-20).
 ENGINE_IMAGE_RE = re.compile(
-    r"^(lmsysorg/sglang|qwen38-flash|qwen38-dflash2|qwen38-sglang|qwen38-kolibri:|qwen38-nemotron:|vllm)")
+    r"^(lmsysorg/sglang|qwen38-flash|qwen38-dflash2|qwen38-sglang|qwen38-kolibri:|qwen38-nemotron:|vllm"
+    r"|eugr/spark-vllm-b12x[:@]|qwen38-pinned:flash-local-)")
 
 
 # Where a lane's unit or launcher says its Hugging Face cache is: a text lane mounts it into

@@ -217,6 +217,95 @@ class TheKolibriLaneIsSaidAsItIs(unittest.TestCase):
         """)
         self.assertEqual((r["abort"], r["flush"]), ("", ""))
 
+
+class TheFlashLanesFp4ConfigIsSaidAsItIs(unittest.TestCase):
+    """The flash lane's FP4-Local config runs vLLM on the flash lane's unit: the page said the
+    SGLang config's belts, probe, table and runtime of it, and its Load ran a switch that
+    could only fail (found in review, 2026-10-20)."""
+
+    FP4 = r"""
+    const U = JSON.parse(JSON.stringify(UNITS));
+    U.units['qwen38-sglang.service'] = {active: 'inactive', enabled: 'disabled'};
+    U.units['qwen38-flash.service'] = {active: 'active', enabled: 'enabled'};
+    const fp4 = (state, extra) => life({'qwen38-flash.service': eng(state, {target: 'flash-fp4-local'}),
+                                        'qwen38-sglang.service': eng('stopped', {target: 'stock'})}, extra);
+    """
+
+    def test_the_belts_say_they_cannot_act_there(self):
+        r = run(self, self.FP4 + r"""
+        feed({config: CONFIG, units: U, lifecycle: fp4('ready', {pool_guard: {enabled: true, threshold: 0.6, fails: 0, flushes: 0}})});
+        feed({engine_fast: {mem_floor: {gib: 3, aborts: 0}}});
+        report({floor: txt('mm-floor'), guard: txt('mm-guard')});
+        """)
+        self.assertIn("cannot act on the flash lane's FP4-Local config", r["floor"])
+        self.assertIn("not on the flash lane's FP4-Local config", r["guard"])
+
+    def test_traffic_reads_its_drafter_and_cache_from_vllm(self):
+        r = run(self, self.FP4 + r"""
+        feed({config: CONFIG, units: U, lifecycle: fp4('ready')});
+        feed({engine_fast: {load: [{num_reqs: 1, num_waiting_reqs: 0, num_tokens: 1000000, num_used_tokens: 250000, accept_len: 3.1}]}});
+        feed({decode: {lane: null}});
+        report({acc: txt('tr-acc'), kv: txt('tr-kv')});
+        """)
+        self.assertEqual((r["acc"], r["kv"]), ("3.10", "25.0 %"))
+
+    def test_the_probe_line_says_it_does_not_run_there(self):
+        r = run(self, self.FP4 + r"""
+        feed({config: CONFIG, units: U, lifecycle: fp4('ready')});
+        feed({canary: {skipped: true, why: "the flash lane's FP4-Local config is checked by vLLM's own /health, not by a generation", last_ok: null, fails: 0}});
+        report({line: txt('px-probe'), last: txt('px-last')});
+        """)
+        self.assertIn("not run", r["line"])
+        self.assertEqual(r["last"], "none on the FP4-Local config")
+
+    def test_a_load_across_the_lanes_two_engines_says_the_install_command(self):
+        # switch-model.sh refuses both ways; the journey stopped the serving lane first and
+        # then always failed its switch
+        r = run(self, self.FP4 + r"""
+        feed({config: CONFIG, units: U, lifecycle: fp4('ready')});
+        askJourney('flash');
+        const back = {toast: toastText(), open: !$('scrim').hidden};
+        const S = JSON.parse(JSON.stringify(UNITS));
+        feed({units: S, lifecycle: life({'qwen38-sglang.service': eng('ready', {target: 'stock'}),
+                                         'qwen38-flash.service': eng('stopped', {target: 'flash'})})});
+        askJourney('flash-fp4-local');
+        report({back, there: {toast: toastText(), open: !$('scrim').hidden}});
+        """)
+        self.assertFalse(r["back"]["open"], r)
+        self.assertIn("MODEL_CHOICE=flash ./install.sh", r["back"]["toast"])
+        self.assertFalse(r["there"]["open"], r)
+        self.assertIn("MODEL_CHOICE=flash-fp4-local ./install.sh", r["there"]["toast"])
+
+    def test_its_first_load_says_what_it_really_fetches(self):
+        r = run(self, self.FP4 + r"""
+        U.units['qwen38-flash.service'] = {active: 'inactive', enabled: 'disabled'};
+        U.units['qwen38-sglang.service'] = {active: 'active', enabled: 'enabled'};
+        feed({config: CONFIG, units: U, lanes_ready: {flash: false, '27b': true},
+              lifecycle: life({'qwen38-flash.service': eng('stopped', {target: 'flash-fp4-local', elapsed: null, eta: 2700}),
+                               'qwen38-sglang.service': eng('ready', {target: 'stock'})})});
+        askJourney('flash-fp4-local');
+        report({open: !$('scrim').hidden, steps: [...$('sh-journey').children].map(li => li.textContent), toast: toastText()});
+        """)
+        self.assertTrue(r["open"], r)
+        self.assertIn("b12x vLLM image (about 10 GB to download", r["steps"][0])
+        self.assertIn("checkpoint (about 102 GB)", r["steps"][0])
+        self.assertNotIn("SGLang image", r["steps"][0])
+        self.assertNotIn("draft vocabulary", r["steps"][0])
+        self.assertIn("45 min", r["steps"][-1])     # the server's FP4 budget, not 13 min
+
+    def test_stopping_its_boot_mentions_no_table(self):
+        r = run(self, self.FP4 + r"""
+        U.units['qwen38-flash.service'] = {active: 'activating', enabled: 'enabled'};
+        feed({config: CONFIG, units: U, lifecycle: fp4('loading-weights', {})});
+        showView('lanes');
+        LCARDS.get('qwen38-flash.service').stop.click();
+        report({warns: txt('sh-warns'), open: !$('scrim').hidden});
+        """)
+        self.assertTrue(r["open"], r)
+        self.assertIn("This boot is thrown away", r["warns"])
+        self.assertNotIn("47.7 GiB", r["warns"])
+
+
 class TheProbeLineIsNotAStaleOk(unittest.TestCase):
     """With no text engine serving (stopped, or a diffusion lane up) the canary skips, and
     the page kept its last success on screen as "ok, 0.4 s (skipped this round: busy)"."""
@@ -1872,7 +1961,7 @@ class TheLastFiveMinutesSayTheEnginesCounters(unittest.TestCase):
         r = self.box({"lane": "qwen38-flash.service", "read": False, "watched_s": 0.0, "requests": None})
         self.assertEqual((r["cap"], r["facts"]), ("no counters", {}), r)
         self.assertIn("--enable-metrics", r["verdict"])
-        self.assertIn("a busy one answers a later read", r["verdict"])
+        self.assertIn("answers a later read", r["verdict"])
 
 
 

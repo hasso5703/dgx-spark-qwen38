@@ -30,9 +30,10 @@ on('decode', d => {
     setText('tr-kv', l.num_tokens ? (100 * (l.num_used_tokens || 0) / l.num_tokens).toFixed(1) + ' %' : 'idle');
     return;
   }
-  if (!d.lane && isNemotron((servingEngine() || [])[0])){
+  if (!d.lane && (isNemotron((servingEngine() || [])[0]) || fp4Holds())){
     // the same vLLM counters as Kolibri's, and a drafter: its mean acceptance over the last
-    // seconds, as vLLM counts it (nemotron_load), idle when no draft came in them
+    // seconds, as vLLM counts it (nemotron_load), idle when no draft came in them. The flash
+    // lane's FP4-Local config reads the same way, its MTP drafter included (review, 2026-10-20)
     const l = F.load || {};
     setText('tr-acc', l.accept_len != null ? l.accept_len.toFixed(2) : 'idle');
     setText('tr-kv', l.num_tokens ? (100 * (l.num_used_tokens || 0) / l.num_tokens).toFixed(1) + ' %' : 'idle');
@@ -65,7 +66,7 @@ on('metrics', d => {
     // nothing read yet for this engine: a read that failed is said apart from one on its way
     cap('wm-cap', d.read === false ? 'no counters' : 'first read', ''); setText('wm-note', '');
     setText('wm-verdict', d.read === false
-      ? 'The engine has not answered /metrics. An engine started without --enable-metrics has no counters to show (both text lanes here start with it), and a busy one answers a later read.'
+      ? 'The engine has not answered /metrics. An SGLang engine started without --enable-metrics has no counters to show (the SGLang lanes here start with it); the vLLM config of the flash lane always serves them. A busy one answers a later read.'
       : 'The first read of the engine’s counters is on its way.');
     facts($('wm-facts'), []); return;
   }
@@ -180,15 +181,19 @@ on('machine', d => {
 const kolibriHolds = () => (servingEngine() || [])[0] === KOLIBRI_UNIT;
 // the Nemotron lanes run on vLLM too: neither belt can act there either
 const nemotronHolds = () => isNemotron((servingEngine() || [])[0]);
+// and so does the flash lane's FP4-Local config (fp4Holds, base.js): its abort raises its
+// refusal and the pool guard skips it, while the page read "armed" there (review, 2026-10-20)
 on('engine_fast', d => {
   if (kolibriHolds()){ setText('mm-floor', `cannot act on the Kolibri lane: vLLM has no route to abort a generation (stopping the lane stops them)`); return; }
   if (nemotronHolds()){ setText('mm-floor', `cannot act on the Nemotron lane: vLLM has no route to abort a generation (stopping the lane stops them)`); return; }
+  if (fp4Holds()){ setText('mm-floor', `cannot act on the flash lane's FP4-Local config: vLLM has no route to abort a generation (stopping the lane stops them)`); return; }
   if (d.mem_floor){ const f = d.mem_floor; setText('mm-floor', `aborts generations under ${f.gib} GiB` + (f.aborts ? `, fired ${f.aborts} time${f.aborts > 1 ? 's' : ''}` : ', never fired')); }
 });
 on('lifecycle', d => {
   const g = d.pool_guard; if (!g) return;
   if (kolibriHolds()){ setText('mm-guard', 'not on the Kolibri lane: vLLM has no cache flush route, and evicts its prefix cache by itself'); return; }
   if (nemotronHolds()){ setText('mm-guard', 'not on the Nemotron lane: vLLM has no cache flush route, and evicts its prefix cache by itself'); return; }
+  if (fp4Holds()){ setText('mm-guard', "not on the flash lane's FP4-Local config: vLLM has no cache flush route, and evicts its prefix cache by itself"); return; }
   setText('mm-guard', !g.enabled ? 'off (COCKPIT_POOL_GUARD=0)' : g.fails ? `cannot flush since ${clockTime(g.last_fail)}: ${g.last_err}`
     : g.flushes ? `${g.flushes} flush${g.flushes > 1 ? 'es' : ''}, last ${clockTime(g.last)}, above ${Math.round(g.threshold * 100)} % held` : `armed at ${Math.round(g.threshold * 100)} % held, never fired`);
 });
@@ -296,8 +301,12 @@ async function scanRegistry(fresh = true){
       const st = tr.insertCell();
       st.append(tag(t.state === 'complete' ? 'on disk' : t.state === 'incomplete' ? 'begun' : 'not downloaded', t.state === 'complete' ? 'cool' : 'warn'));
       // a lane installed on demand and not prepared yet: the download runs in the image or the
-      // venv its first Load builds, so that Load is what downloads it
-      const lane = SIDE_LANE[TARGET_UNIT(t.target)], unbuilt = !!lane && (F.lanesReady || {})[lane] === false;
+      // venv its first Load builds, so that Load is what downloads it. The flash lane's
+      // FP4-Local config is not: its Download (prepare-lane's FP4 branch) needs neither the
+      // SGLang image nor the token map lanes_ready.flash measures, and is its only sane path
+      // where flash is not prepared (found in review, 2026-10-20)
+      const lane = SIDE_LANE[TARGET_UNIT(t.target)];
+      const unbuilt = !!lane && t.target !== 'flash-fp4-local' && (F.lanesReady || {})[lane] === false;
       if (t.state !== 'complete' && t.installed && !unbuilt){
         const b4 = el('button', 'btn sm ghost', t.state === 'incomplete' ? 'Finish the download' : 'Download'); b4.type = 'button';
         b4.addEventListener('click', () => askAction('fetch', {target: t.target}));

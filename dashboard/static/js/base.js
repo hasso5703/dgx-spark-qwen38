@@ -117,28 +117,29 @@ function makerMark(unit, cls = 'mark'){
 // median of its own boots replaces these.
 const READY_DEFAULT = {[U27]: 540, [UFLASH]: 780, [KOLIBRI_UNIT]: 600, [NEMOTRON_UNIT]: 450, [NEMOTRON_SUPER_UNIT]: 660, [IMAGE_UNIT]: 70, [VIDEO_UNIT]: 720};
 const TARGET_SHORT = {stock: 'stock', uncensored: 'uncensored', fp8: 'FP8', 'uncensored-fp8': 'FP8 uncensored',
-                      flash: '', 'flash-uncensored': 'uncensored', 'flash-nvda': 'NVIDIA export', image: '2.1', 'image-turbo': 'Turbo', video: 'H3',
+                      flash: '', 'flash-uncensored': 'uncensored', 'flash-nvda': 'NVIDIA export', 'flash-fp4-local': 'FP4-Local', image: '2.1', 'image-turbo': 'Turbo', video: 'H3',
                       kolibri: 'FP8', 'kolibri-nvfp4': 'NVFP4', nemotron: 'Bolt', 'nemotron-super': 'Super VL'};
 const TARGET_UNIT = t => t === 'image' || t === 'image-turbo' ? IMAGE_UNIT : t === 'video' ? VIDEO_UNIT
   : String(t).startsWith('kolibri') ? KOLIBRI_UNIT : t === 'nemotron-super' ? NEMOTRON_SUPER_UNIT : String(t).startsWith('nemotron') ? NEMOTRON_UNIT
   : String(t).startsWith('flash') ? UFLASH : U27;
-const LANE_TARGETS = {[U27]: ['stock', 'uncensored', 'fp8', 'uncensored-fp8'], [UFLASH]: ['flash', 'flash-uncensored', 'flash-nvda'],
+const LANE_TARGETS = {[U27]: ['stock', 'uncensored', 'fp8', 'uncensored-fp8'], [UFLASH]: ['flash', 'flash-uncensored', 'flash-nvda', 'flash-fp4-local'],
                       [KOLIBRI_UNIT]: ['kolibri', 'kolibri-nvfp4'], [NEMOTRON_UNIT]: ['nemotron'], [NEMOTRON_SUPER_UNIT]: ['nemotron-super'],
                       [IMAGE_UNIT]: ['image', 'image-turbo'], [VIDEO_UNIT]: ['video']};
 const TARGET_NAME = {stock: '27B stock, NVFP4', uncensored: '27B uncensored, NVFP4', fp8: '27B FP8, Qwen official',
                      'uncensored-fp8': '27B FP8 uncensored', flash: 'flash 176B, NVFP4', 'flash-uncensored': 'flash 176B uncensored',
-                     'flash-nvda': 'flash 176B, NVIDIA export', image: 'Qwen-Image 2.1', 'image-turbo': 'Qwen-Image 2.1 Turbo', video: 'MiniMax-H3',
+                     'flash-nvda': 'flash 176B, NVIDIA export', 'flash-fp4-local': 'flash 176B, FP4-Local (vLLM)', image: 'Qwen-Image 2.1', 'image-turbo': 'Qwen-Image 2.1 Turbo', video: 'MiniMax-H3',
                      kolibri: 'Kolibri-1, Aleph Alpha FP8', 'kolibri-nvfp4': 'Kolibri-1, NVFP4 experts', nemotron: 'Nemotron 3.5 Bolt, 24 GB',
                      'nemotron-super': 'Nemotron 3.5 Super VL, NVFP4'};
 // A version's name on its button in Lanes, and the line that tells it apart once chosen. A
 // target is declared in the tables of this block: a page test fails when one lacks a name or a line.
 const TARGET_SHORT_NAME = {stock: 'Stock', uncensored: 'Uncensored', fp8: 'FP8', 'uncensored-fp8': 'FP8 uncensored',
-  flash: 'Standard', 'flash-uncensored': 'Uncensored', 'flash-nvda': 'NVIDIA export', image: 'Base', 'image-turbo': 'Turbo', video: 'H3',
+  flash: 'Standard', 'flash-uncensored': 'Uncensored', 'flash-nvda': 'NVIDIA export', 'flash-fp4-local': 'FP4-Local', image: 'Base', 'image-turbo': 'Turbo', video: 'H3',
   kolibri: 'FP8', 'kolibri-nvfp4': 'NVFP4', nemotron: 'Bolt', 'nemotron-super': 'Super VL'};
 const TARGET_LINE = {
   stock: 'The default: smallest and fastest', uncensored: 'Refusals removed, same size and speed',
   fp8: "Qwen's own weights: the most faithful, and heavier", 'uncensored-fp8': 'Refusals removed, and heavier',
   flash: 'The default', 'flash-uncensored': 'Refusals removed', 'flash-nvda': "NVIDIA's own export",
+  'flash-fp4-local': "NVIDIA's FP4 build, served by vLLM",
   image: '40 steps, the most detail', 'image-turbo': '8 steps, about 4.5 times faster', video: 'The one version',
   kolibri: "Aleph Alpha's own weights: the reference", 'kolibri-nvfp4': '4-bit experts: faster under load, French a little weaker',
   nemotron: 'The one version: 2-bit experts and their drafter',
@@ -151,6 +152,7 @@ const TARGET_NOTE = {
   flash: 'The 176B Flash-Next lane: its own unit, its own image, and a 47.7 GiB N-gram table on the NVMe that the server rewrites at every boot.',
   'flash-uncensored': 'The abliterated build of the same 176B tree, byte-identical in layout, so every serving flag is the same. The first switch downloads about 136 GB.',
   'flash-nvda': 'NVIDIA’s own mixed-precision export of the same model, served with a pinned MoE runner. The first switch downloads about 133 GB.',
+  'flash-fp4-local': 'NVIDIA’s QAD FP4 build of the same model, whose new scale format only the pinned community b12x vLLM image reads: the lane’s other config, not another engine to set up, same unit, same served name, no PLE table. Its Download pulls that image and the checkpoint (about 103 GB); Load brings it up once install.sh has made it the config the unit names, and until then says the install command that does.',
   image: 'Text to image, editing with up to ten references, native RGBA. 31 GB of weights that do not fit beside a text lane.',
   'image-turbo': 'Qwen’s eight-step distillation of the same model, for the same three uses: a 1024 × 1024 image in 7.5 s against 34 s, at the same memory, the eight steps fixed by the checkpoint. The first switch downloads about 33 GB.',
   video: 'Text to video with joint audio, plus first and last frame conditioning. The checkpoint does not fit beside a text lane.',
@@ -189,9 +191,11 @@ function textReady(){ const s = servingEngine(); return servingReady() && !!s &&
 const imageServing = () => { const s = servingEngine(); return !!s && s[0] === IMAGE_UNIT; };
 const videoServing = () => { const s = servingEngine(); return !!s && s[0] === VIDEO_UNIT; };
 function bootSeconds(unit){
-  const b = ((engines()[unit] || {}).boots || []).slice().sort((a, c) => a - c), n = b.length;
-  // the median: the middle boot, or the mean of the two middle ones for an even count
-  return n ? (n % 2 ? b[(n - 1) / 2] : Math.round((b[n / 2 - 1] + b[n / 2]) / 2)) : (READY_DEFAULT[unit] || 540);
+  const e = engines()[unit] || {}, b = (e.boots || []).slice().sort((a, c) => a - c), n = b.length;
+  // the median: the middle boot, or the mean of the two middle ones for an even count. With
+  // none, the server's budget when it sends one (the FP4-Local config's slow default: 780 s
+  // here read "about 13 min" for a 45 min first boot, found in review, 2026-10-20)
+  return n ? (n % 2 ? b[(n - 1) / 2] : Math.round((b[n / 2 - 1] + b[n / 2]) / 2)) : (e.eta || READY_DEFAULT[unit] || 540);
 }
 const readyIn = unit => 'about ' + fmtDur(bootSeconds(unit));
 // the text engine's served target, when it is one of this unit's
@@ -211,6 +215,9 @@ function laneTarget(unit){
   // A target of another lane is the previous engine's, read before this one answered.
   return servedTarget(unit) || (engines()[unit] || {}).target || null;
 }
+// the flash lane holds the box in its FP4-Local config: vLLM, so none of the SGLang belts, log
+// lines or probes apply, as on the Kolibri and Nemotron lanes (found in review, 2026-10-20)
+const fp4Holds = () => (servingEngine() || [])[0] === UFLASH && laneTarget(UFLASH) === 'flash-fp4-local';
 function laneLabel(unit){
   if (unit === AGENT_UNIT) return 'the opencode web server';
   if (unit === PROXY_UNIT) return 'the keepalive proxy';
@@ -431,9 +438,16 @@ const NEMOTRON_CANNOT = {
   flush_cache: 'The Nemotron lane has no cache flush route: vLLM evicts its prefix cache by itself.',
   abort_all: 'The Nemotron lane has no route that aborts its generations: stopping the lane stops them.',
   fit_opencode: 'Nemotron\'s opencode limits are its own, set when it is loaded: there is nothing to fit to its pool.'};
+// the flash lane's FP4-Local config runs vLLM too: the same three (the words are the
+// server's: cockpit.py's FLASH_FP4LOCAL_CANNOT refuses the action the same way)
+const FLASH_FP4LOCAL_CANNOT = {
+  flush_cache: 'The flash lane\'s FP4-Local config has no cache flush route: vLLM evicts its prefix cache by itself.',
+  abort_all: 'The flash lane\'s FP4-Local config has no route that aborts its generations: stopping the lane stops them.',
+  fit_opencode: 'The flash lane\'s FP4-Local config has no SGLang /server_info to fit to: its opencode limits are static, written when the config is installed.'};
 function cannotWhy(name){
   const s = servingEngine();
-  return !s ? '' : s[0] === KOLIBRI_UNIT ? (KOLIBRI_CANNOT[name] || '') : isNemotron(s[0]) ? (NEMOTRON_CANNOT[name] || '') : '';
+  return !s ? '' : s[0] === KOLIBRI_UNIT ? (KOLIBRI_CANNOT[name] || '') : isNemotron(s[0]) ? (NEMOTRON_CANNOT[name] || '')
+    : s[0] === UFLASH && laneTarget(UFLASH) === 'flash-fp4-local' ? (FLASH_FP4LOCAL_CANNOT[name] || '') : '';
 }
 function noEngineWhy(){
   if (textReady()) return '';
@@ -478,7 +492,7 @@ EXPLAIN.prepare = p => {
   const lane = laneOfTarget(p.target), text = lane === 'flash' || lane === '27b';
   return (text ? `prepare-lane.sh ${lane} ${p.target} builds what the lane runs, and fetches the checkpoint of ${TARGET_NAME[p.target] || p.target}: `
     : `prepare-lane.sh runs install-${lane}.sh --prepare, which builds the lane's runtime: `)
-    + `${LANE_RUNTIME[lane] || 'its runtime'}, as the user, with no sudo. It changes nothing else: no unit, no boot, no engine.`;
+    + `${runtimeOf(p.target)}, as the user, with no sudo. It changes nothing else: no unit, no boot, no engine.`;
 };
 EXPLAIN.fetch = p => `switch-model.sh fetches the checkpoint of ${TARGET_NAME[p.target] || p.target} into the cache as a switch to it does: `
   + 'the cache first, resumable, its room checked before. It changes nothing else: no unit, no boot, no engine. The dock shows the bytes as they come.';
@@ -497,8 +511,12 @@ const TITLE = {unit: p => `${cap1(p.verb)} ${laneLabel(p.unit)}`, switch: p => `
 const VERB = {unit: p => cap1(p.verb) + ' ' + (LANE_NAME[p.unit] || laneLabel(p.unit)), switch: () => 'Point the boot', flush_cache: () => 'Flush',
   abort_all: () => 'Abort all', smoke: () => 'Run the probe', diag_bundle: () => 'Write the bundle', fit_opencode: () => 'Fit the limits',
   delete_strays: () => 'Delete them', fetch: () => 'Download', prepare: () => 'Build it'};
+// the same argv the server builds (cockpit.py ACTIONS): the FP4-Local Download is
+// prepare-lane's, because that config's image is part of what it needs
 const argvFor = (name, p) => name === 'unit' ? ['sudo', '-n', '/usr/bin/systemctl', p.verb, p.unit]
-  : name === 'switch' ? ['bash', 'switch-model.sh', p.target] : name === 'fetch' ? ['bash', 'switch-model.sh', p.target, '--fetch']
+  : name === 'switch' ? ['bash', 'switch-model.sh', p.target]
+  : name === 'fetch' ? (p.target === 'flash-fp4-local' ? ['bash', 'prepare-lane.sh', 'flash', p.target]
+                                                        : ['bash', 'switch-model.sh', p.target, '--fetch'])
   : name === 'prepare' ? ['bash', 'prepare-lane.sh', laneOfTarget(p.target)].concat(['flash', '27b'].includes(laneOfTarget(p.target)) ? [p.target] : [])
   : ['cockpit', name];
 
@@ -639,8 +657,27 @@ const LANE_RUNTIME = {flash: 'its SGLang image (about 16 GB to download), its ch
   kolibri: 'its vLLM image, about 10 GB to download (23 GB on disk), pulled and built here',
   nemotron: 'its vLLM image, about 11 GB to download (25 GB on disk), pulled and built here',
   'nemotron-super': 'the Nemotron lanes’ vLLM image (the Bolt lane’s), about 11 GB to download (25 GB on disk), pulled and built here once for the two'};
+// a target whose runtime is not its lane's: the flash lane's FP4-Local config pulls the b12x
+// vLLM image and its own checkpoint, none of the SGLang config's (prepare-lane.sh's FP4
+// branch). Described as the lane's, its Load promised 16 + 136 GB and a draft vocabulary
+// it never fetched (found in review, 2026-10-20)
+const TARGET_RUNTIME = {'flash-fp4-local': 'the community b12x vLLM image (about 10 GB to download, 18 GB unpacked) and its checkpoint (about 102 GB)'};
+const runtimeOf = t => TARGET_RUNTIME[t] || LANE_RUNTIME[laneOfTarget(t)] || 'its runtime';
 const SIDE_LANE = {[IMAGE_UNIT]: 'image', [VIDEO_UNIT]: 'video', [KOLIBRI_UNIT]: 'kolibri', [NEMOTRON_UNIT]: 'nemotron',
                    [NEMOTRON_SUPER_UNIT]: 'nemotron-super', [UFLASH]: 'flash', [U27]: '27b'};
+// A Load that crosses the flash lane's two engines: the switch step cannot do it (switch-model.sh
+// refuses either way, the launcher and the unit around it are install.sh's), so the journey
+// stopped the serving lane and then always failed its switch (found in review, 2026-10-20). The
+// install command that does it, or '' when the unit already names this target's config.
+function flashConfigWhy(target){
+  if (TARGET_UNIT(target) !== UFLASH) return '';
+  const fp4Unit = (engines()[UFLASH] || {}).target === 'flash-fp4-local';
+  if (target === 'flash-fp4-local' && !fp4Unit)
+    return `${TARGET_NAME[target]} is the flash lane’s other engine, and this box’s flash unit runs SGLang: MODEL_CHOICE=flash-fp4-local ./install.sh makes it the serving config. Library’s Download fetches it meanwhile.`;
+  if (target !== 'flash-fp4-local' && fp4Unit)
+    return `This box’s flash unit runs the FP4-Local config (vLLM); ${TARGET_NAME[target] || target} is the SGLang engine: MODEL_CHOICE=${target} ./install.sh brings it back.`;
+  return '';
+}
 function laneJourneySteps(target){
   const unit = TARGET_UNIT(target);
   const steps = [];
@@ -648,7 +685,7 @@ function laneJourneySteps(target){
   const lane = SIDE_LANE[unit];
   if (lane && (F.lanesReady || {})[lane] === false)
     steps.push({name: 'prepare', params: {target}, title: `Build the runtime of ${LANE_NAME[unit]}`,
-      desc: `Its first Load: ${LANE_RUNTIME[lane]}, with no sudo.` + (lane === 'flash' || lane === '27b' ? '' : ' The next step fetches its checkpoint.')});
+      desc: `Its first Load: ${runtimeOf(target)}, with no sudo.` + (lane === 'flash' || lane === '27b' ? '' : ' The next step fetches its checkpoint.')});
   // The Load of the lane that serves this very target, with an update owed to it, is the
   // restart that applies the update and nothing else: the steps below would point the boot at
   // it (a lane started as installed is not the boot lane) or switch it back, which no update
@@ -710,6 +747,8 @@ function askJourney(target, opts = {}){
   if (!$('scrim').hidden) return;
   const unit = TARGET_UNIT(target);
   if (!installed(unit)) return toast(`${LANE_NAME[unit]} is not installed on this box: ${LANE_INSTALL[unit]}`, 'warn', 7000);
+  const crossing = flashConfigWhy(target);
+  if (crossing) return toast(crossing, 'warn', 9000);
   const steps = laneJourneySteps(target);
   if (!steps.length) return toast(`${TARGET_NAME[target]} is already serving.`, 'ok');
   setText('sh-title', `Load ${TARGET_NAME[target]}`);

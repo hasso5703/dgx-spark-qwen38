@@ -89,7 +89,14 @@ class Base(unittest.TestCase):
         os.environ.update(COCKPIT_DRY_RUN="1", COCKPIT_CONFIG_DIR=str(cls.tmp),
                           COCKPIT_REPO_DIR=str(REPO), COCKPIT_PORT="0",
                           COCKPIT_AGENT_PORT="0", COCKPIT_AUTOHEAL="0",
-                          COCKPIT_ENGINE=CLOSED, COCKPIT_PROXY=CLOSED, COCKPIT_IMAGE=CLOSED)
+                          COCKPIT_ENGINE=CLOSED, COCKPIT_PROXY=CLOSED, COCKPIT_IMAGE=CLOSED,
+                          # the collector tests speak flash lanes constantly; with the real
+                          # /etc/systemd/system readable they ask the box which config runs
+                          # and inherit the reference box's answer (found 2026-10-19: every
+                          # SGLang-flash test flipped to the FP4-Local gates on this box).
+                          # No unit file, no launcher: the classic SGLang default, and a
+                          # test that cares points cp.UNIT_DIR at its own files.
+                          COCKPIT_UNIT_DIR=str(cls.tmp / "units"))
         sys.path.insert(0, str(DASH))
         spec = importlib.util.spec_from_file_location("cockpit_coll_under_test",
                                                       DASH / "cockpit.py")
@@ -665,6 +672,62 @@ class TheBootBarNeverGoesBack(Base):
                   "docker logs --since": fired})
         out = self.cp.collect_lifecycle()
         self.assertEqual(out.get("data", out)["engines"][self.U]["state"], "degraded")
+
+    def test_a_fp4local_boot_gets_its_own_slow_default_before_the_lane_degrades(self):
+        # a cockpit that joined the boot must not call a cold boot that has barely begun a
+        # failure: 2000 s in, the SGLang config is past its 780+300 and reads degraded, the
+        # FP4-Local one is still inside 2700+300 and reads warming-up (v1.37.0). Each config
+        # is read from ITS OWN log: what this lane's vLLM leaves is not SGLang's milestones,
+        # and the boot parser is asked per config (found in review, 2026-10-19).
+        F = "qwen38-flash.service"
+        fired = "\n[2026-09-22 19:58:40] The server is fired up and ready to roll!\n"
+        vllm = ("\n(EngineCore) Initializing a V1 LLM engine\n"
+                "(APIServer) Application startup complete.\n")
+        self.addCleanup(setattr, self.cp, "UNIT_DIR", self.cp.UNIT_DIR)
+        self.addCleanup(setattr, self.cp, "monotonic_now", self.cp.monotonic_now)
+        self.addCleanup(setattr, self.cp, "load_history", self.cp.load_history)
+        self.cp.UNIT_DIR = self.tmp
+        self.cp.monotonic_now = lambda: 5000.0
+        self.cp.load_history = lambda: {}
+        # the zombie belt asks SGLang's scheduler of a degraded SGLang engine, never of the
+        # FP4-Local one: vLLM has none, and the belt restarted an engine that was fine
+        asked = []
+        self.addCleanup(setattr, self.cp, "scheduler_alive", self.cp.scheduler_alive)
+        self.cp.scheduler_alive = lambda cont: asked.append(cont) or True
+        (self.tmp / "launch-flash.sh").write_text("exec docker run --rm img sglang\n")
+        (self.tmp / "qwen38-flash.service").write_text(
+            "[Service]\nExecStart=/bin/bash launch-flash.sh\n")
+        self.box({f"systemctl show {F}": "ActiveState=active\nSubState=running\n"
+                                         "ActiveEnterTimestampMonotonic=3000000000\n",
+                  "docker ps -q -f name=^qwen38-flash$": "c0ffee\n",
+                  "docker logs --tail 300 qwen38-flash": fired})
+        out = self.cp.collect_lifecycle()
+        self.assertEqual(out.get("data", out)["engines"][F]["state"], "degraded")
+        self.assertEqual(asked, ["qwen38-flash"])
+        self.assertIsNone(out.get("data", out)["engines"][F]["eta"])   # the page's own default
+        asked.clear()
+        (self.tmp / "launch-flash-fp4local.sh").write_text(
+            "exec docker run --rm img vllm serve "
+            f"{self.cp.rg.PIN_MODELS['FLASH_LOCAL_REV']} --revision {'a' * 40}\n")
+        with self.cp.LIFE_LOCK:                    # the second read must not inherit the first's
+            self.cp.LIFE["states"].pop(F, None)
+        (self.tmp / "qwen38-flash.service").write_text(
+            "[Service]\nExecStart=/bin/bash launch-flash-fp4local.sh\n")
+        self.box({f"systemctl show {F}": "ActiveState=active\nSubState=running\n"
+                                         "ActiveEnterTimestampMonotonic=3000000000\n",
+                  "docker ps -q -f name=^qwen38-flash$": "c0ffee\n",
+                  "docker logs --tail 300 qwen38-flash": vllm})
+        out = self.cp.collect_lifecycle()
+        self.assertEqual(out.get("data", out)["engines"][F]["state"], "warming-up")
+        # the page is told this config's budget, not left on its SGLang default (found in
+        # review, 2026-10-20: "of about 13 min" and a bar pinned at 97 % for half an hour)
+        self.assertEqual(out.get("data", out)["engines"][F]["eta"], self.cp.FP4_LOCAL_BOOT_DEFAULT_S)
+        self.cp.monotonic_now = lambda: 7000.0     # past 2700 + the 300 grace: it is trouble now
+        with self.cp.LIFE_LOCK:
+            self.cp.LIFE["states"].pop(F, None)
+        out = self.cp.collect_lifecycle()
+        self.assertEqual(out.get("data", out)["engines"][F]["state"], "degraded")
+        self.assertEqual(asked, [])
 
 
 
@@ -1472,6 +1535,29 @@ class TheLastFiveMinutesAreTheEnginesOwnCounters(Base):
         self.assertTrue(self.cp.collect_canary()["skipped"])
         self.assertEqual(self.count["requests"], 0)
 
+    def test_the_fp4local_config_answers_the_health_route_not_the_probe(self):
+        # the flash lane's other engine (vLLM in the b12x container) shares the served
+        # name but answers none of the SGLang routes: a generation probe against it
+        # fails on a lane that is fine (the Kolibri lane's rule, v1.37.0)
+        saved_dir = self.cp.UNIT_DIR
+        self.addCleanup(setattr, self.cp, "UNIT_DIR", saved_dir)
+        self.cp.UNIT_DIR = self.cp.CONFIG_DIR          # no unit file here: the names decide
+        self.cp.DRY_RUN = False
+        cfg = self.cp.CONFIG_DIR
+        (cfg / "launch-flash-fp4local.sh").write_text(
+            "exec /usr/bin/docker run --rm img vllm serve m\n")
+        try:
+            self.assertTrue(self.cp.flash_fp4_local())            # the only name on disk
+            self.cp.collect_engine_metrics()
+            canary = self.cp.collect_canary()
+            self.assertTrue(canary["skipped"], canary)
+            self.assertIn("FP4-Local", canary["why"])
+            self.assertEqual(self.count["requests"], 0, "no probe reached the engine")
+            (cfg / "launch-flash.sh").write_text("exec /usr/bin/docker run --rm img sglang\n")
+            self.assertFalse(self.cp.flash_fp4_local())           # unnamed, SGLang wins again
+        finally:
+            for n in ("launch-flash.sh", "launch-flash-fp4local.sh"):
+                (cfg / n).unlink(missing_ok=True)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

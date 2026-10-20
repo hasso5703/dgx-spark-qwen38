@@ -61,7 +61,7 @@ def run(lane, root, free_gb=1000, ple_other_disk=None):
         stub = f'PATH="{t}:$PATH"\n'
     script = (stub + "set -euo pipefail\ndie(){ echo \"DIE: $*\"; exit 1; }\n" + f'. "{REPO}/lanes.sh"\n'
               f'HF_CACHE="{root}"; MODEL_REPO=org/model; MODEL_REV=abc123; LANE={lane}\n'
-              f'PLE_DIR="{ple}"; FREE_DISK_GB={free_gb}; UNITS_ONLY=0   # a whole install (an on-demand one takes no room)\n'
+              f'PLE_DIR="{ple}"; FREE_DISK_GB={free_gb}; UNITS_ONLY=0; FLASH_FP4_LOCAL=0   # a whole install (an on-demand one takes no room)\n'
               + BLOCK + 'echo "NEED=$NEED_GB"\n')
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
@@ -127,7 +127,7 @@ class ThePleTableAndTheImageOnOneDisk(unittest.TestCase):
             (t / f).chmod(0o755)
         script = (f'PATH="{t}:$PATH"\nset -euo pipefail\ndie(){{ echo "DIE: $*"; exit 1; }}\n. "{REPO}/lanes.sh"\n'
                   f'HF_CACHE="{root}"; MODEL_REPO=org/model; MODEL_REV=abc123; LANE=flash; IMAGE=i; FLASH_IMAGE=f\n'
-                  f'PLE_DIR="{root}/otherdisk/ple"; FREE_DISK_GB=1000; UNITS_ONLY=0\n' + self.SECTION + "\necho FITS\n")
+                  f'PLE_DIR="{root}/otherdisk/ple"; FREE_DISK_GB=1000; UNITS_ONLY=0; FLASH_FP4_LOCAL=0\n' + self.SECTION + "\necho FITS\n")
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
         return r.stdout + r.stderr
 

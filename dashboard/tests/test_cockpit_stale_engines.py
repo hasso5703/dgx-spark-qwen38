@@ -145,6 +145,18 @@ class AnUpdateOwedToAServingEngine(unittest.TestCase):
         self.assertEqual(self.kws["qwen38-sglang.service"]["extra"], [])
         self.assertEqual(self.kws["qwen38-image.service"]["extra"], [])
 
+    def test_the_flash_lanes_fp4_config_counts_the_middleware_and_the_sglang_one_does_not(self):
+        # the FP4-Local launcher mounts the same middleware, its engine's only key gate: an
+        # update of it was never flagged on that config (found in review, 2026-10-20)
+        flash = self.units / "qwen38-flash.service"
+        self.addCleanup(flash.unlink, missing_ok=True)
+        mw = str(self.cp.CONFIG_DIR / "vllm-auth/vllm_engine_auth.py")
+        for launcher, extra in (("launch-flash-fp4local.sh", [mw]), ("launch-flash.sh", [])):
+            flash.write_text(f"[Service]\nExecStart=/bin/bash {self.tmp / launcher}\n")
+            self.fake({})
+            self.cp.stale_engines()
+            self.assertEqual(self.kws["qwen38-flash.service"]["extra"], extra, launcher)
+
     def test_those_files_are_the_vllm_installers_own_list(self):
         # vllm-lane.sh's LANE_FILES: the unit and engine-secrets.sh (which every vLLM unit runs,
         # so engine-inputs.py finds them), the start guard (no input of the engine, which

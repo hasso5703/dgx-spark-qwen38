@@ -94,16 +94,24 @@ class DiagBundleMasksTheKey(Base):
         cp.http_json = lambda url, timeout=4.0: {"api_key": KEY, "model_path": "x",
                                                  "note": f"key is {KEY}"}
         # and so does the launcher on disk
+        # the launcher the bundle reads must be the fixture's, not this machine's:
+        # the flash unit path answers from UNIT_DIR, and the box under test may run
+        # either config of the lane
+        self.real_units = cp.UNIT_DIR
+        cp.UNIT_DIR = self.tmp
         (self.tmp / "launch-flash.sh").write_text(
             f'exec docker run x --api-key "$(cat {self.tmp}/api-key)" --port 30000\n'
             f'# a stray copy of the key: {KEY}\n')
 
     def tearDown(self):
         self.cp.run, self.cp.http_json = self.real_run, self.real_http
+        self.cp.UNIT_DIR = self.real_units
         for f in self.home.glob("qwen38-diag-*.tar.gz"):
             f.unlink()
         for f in self.built:
             Path(f).unlink(missing_ok=True)
+        for leftover in ("qwen38-flash.service", "launch-flash-fp4local.sh"):
+            (self.tmp / leftover).unlink(missing_ok=True)
         if self.real_home is not None:
             os.environ["HOME"] = self.real_home
 
@@ -158,6 +166,24 @@ class DiagBundleMasksTheKey(Base):
         self.assertNotIn(KEY, text)
         self.assertIn("<masked>", text)
         self.assertIn("--port 30000", text, "the launcher was gutted, not masked")
+
+    def test_the_fp4local_config_travels_in_its_place(self):
+        # a box running the lane's vLLM config has no launch-flash.sh at all:
+        # the bundle must carry the invocation file the unit names instead,
+        # masked the same way (v1.37.0)
+        (self.tmp / "launch-flash-fp4local.sh").write_text(
+            'docker run x vllm serve m '
+            f'--api-key "$(cat {self.tmp}/api-key)"\n')
+        (self.tmp / "qwen38-flash.service").write_text(
+            "[Service]\nExecStart=/bin/bash -c 'bash launch-flash-fp4local.sh'\n")
+        path, _ = self._build()
+        with tarfile.open(path, "r:gz") as tar:
+            members = [n for n in tar.getnames() if "launch-flash" in n]
+            self.assertEqual([n.rsplit("/", 1)[-1] for n in members],
+                             ["launch-flash-fp4local.sh"], members)
+            text = tar.extractfile(tar.getmember(members[0])).read().decode()
+        self.assertNotIn(KEY, text)
+        self.assertIn("<masked>", text)
 
     def test_the_masked_fields_are_stripped_from_the_server_info(self):
         path, _ = self._build()

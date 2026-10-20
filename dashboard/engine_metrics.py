@@ -1,12 +1,26 @@
 """What the serving engine's own counters say about the last minutes (its /metrics).
 
-SGLang serves Prometheus counters on the engine's port: both text lanes start with
---enable-metrics, and the endpoint is exempt from the API key. Per FINISHED request it adds
+Both text engines serve Prometheus counters on the engine's port: the SGLang lanes
+start with --enable-metrics, and the endpoint is exempt from the API key; the vLLM config
+of the flash lane always serves /metrics with the repo middleware as its only gate (the
+engine's own key is not passed to that build: it hardens /metrics behind it, read in the
+pinned image, 2026-10-19). The window reads the same keys off either engine under the
+name it uses (`sglang:` or `vllm:`, see NAMES). Per FINISHED request SGLang adds
 the request's prompt tokens, how many of them the radix cache held, and its generated
 tokens; for every output after a request's first, the time since the previous one and the
-tokens it carried (inter_token_latency); per request, the time to its first output, which
+tokens it carried (inter_token_latency: its count is tokens, not samples, so its count
+over its sum is the decode speed); per request, the time to its first output, which
 is its first token when it streams (agents do); a request that does not stream has its
-first output when its length lands on a multiple of 50 tokens, or at its end. Measured on
+first output when its length lands on a multiple of 50 tokens, or at its end.
+vLLM counts differently: its prompt and generated tokens move every scheduler
+iteration, not at a request's end, and it samples the inter-token latency once per
+iteration that gave a request output after its first, whatever tokens that output
+carried, so its count is steps (with the drafter on, as many samples as drafts: 3,032 for
+7,706 tokens on the flash lane's vLLM, 2026-10-19). Its decode speed is therefore its
+generated tokens less its first tokens (the time-to-first-token count, also observed per
+iteration) over the inter-token sum: three counters on the same per-iteration clock, so a
+request straddling a window edge or still decoding at its end counts in the numerator
+exactly what it added to the time (found in review, 2026-10-20). SGLang measured on
 the reference box (2026-10-07) against the client's own view: prompt and generated tokens
 to the unit as the answer's usage says them, a decode speed of 115.35 against the client's
 115.3 tok/s, a first token at 56.103 s against 56.106 s (within 4 ms on every request). The
@@ -23,6 +37,10 @@ chunk, so a difference of two reads holds no idle time either. The `chunked_pref
 times the same chunks from the same start, inside `prefill_forward`, so it is not summed
 in: on a 27B lane an 80,400-token prompt in ten 8,192-token chunks ran 61.8 s of
 prefill_forward, 1,301 tok/s, which counting the chunks as well would have halved to 651.
+On vLLM the computed prompt tokens are `request_prefill_kv_computed_tokens` (a prompt
+less its cached tokens) and the stopwatch is `request_prefill_time_seconds`, both
+observed when a request finishes: its per-iteration `prompt_tokens_by_source` would add
+the prompt of a request still decoding with none of its time (found in review, 2026-10-20).
 Measured by this view's author (2026-10-08, a flash lane): a cold 1,908-token prompt took
 0.955 s of the stopwatch, 1,998 tok/s, the scale the benchmarks table's ~2,250 prefill says for a
 saturated lane. `queue_time_seconds` is the waiting before the engine starts a request,
@@ -61,31 +79,53 @@ import re
 from collections import deque
 
 NAMES = {
-    "requests": ("sglang:num_requests_total", None),
-    "prompt": ("sglang:prompt_tokens_total", None),
-    "cached": ("sglang:cached_tokens_total", None),
-    "generated": ("sglang:generation_tokens_total", None),
-    "ttft_sum": ("sglang:time_to_first_token_seconds_sum", None),
-    "ttft_count": ("sglang:time_to_first_token_seconds_count", None),
-    "itl_sum": ("sglang:inter_token_latency_seconds_sum", None),
-    # the drafter's verifications: generated tokens over them is the accept length
-    "ver": ("sglang:spec_verify_calls_total", None),
-    "itl_count": ("sglang:inter_token_latency_seconds_count", None),
+    # (the SGLang name, the vLLM name): the same keys, read off either text engine's
+    # /metrics; a filter belongs to the name it filters, and a key's pair list simply
+    # has no entry where an engine publishes no such metric
+    "requests": (("sglang:num_requests_total", None), ("vllm:request_success_total", None)),
+    "prompt": (("sglang:prompt_tokens_total", None), ("vllm:prompt_tokens_total", None)),
+    "cached": (("sglang:cached_tokens_total", None), ("vllm:prompt_tokens_cached_total", None)),
+    "generated": (("sglang:generation_tokens_total", None),
+                  ("vllm:generation_tokens_total", None)),
+    "ttft_sum": (("sglang:time_to_first_token_seconds_sum", None),
+                 ("vllm:time_to_first_token_seconds_sum", None)),
+    "ttft_count": (("sglang:time_to_first_token_seconds_count", None),
+                   ("vllm:time_to_first_token_seconds_count", None)),
+    "itl_sum": (("sglang:inter_token_latency_seconds_sum", None),
+                ("vllm:inter_token_latency_seconds_sum", None)),
+    # the drafter's verifications: generated tokens over them is the accept length;
+    # vLLM counts one draft per verification step, so the ratio keeps its meaning
+    "ver": (("sglang:spec_verify_calls_total", None),
+            ("vllm:spec_decode_num_drafts_total", None)),
+    # the decoded tokens the inter-token sum timed, on its clock: SGLang's inter-token
+    # count is already tokens (each sample adds the tokens of its output, the first
+    # output never sampled); vLLM's is steps, so its name here is the generated tokens,
+    # counted per iteration like the sum, with each request's first token in them
+    "decoded": (("sglang:inter_token_latency_seconds_count", None),
+                ("vllm:generation_tokens_total", None)),
+    # those first tokens, which vLLM counts in its generated tokens but never times in
+    # the inter-token sum (also per iteration); SGLang's count holds none, so no name
+    "first": (("vllm:time_to_first_token_seconds_count", None),),
     # what the engine computed (not read from its cache) across every prompt, and the
     # scheduler's own stopwatch of prefill: per-request stage times, so prefill speed holds
-    # no idle time and no cache-served token inflates it
-    "pc": ("sglang:realtime_tokens_total", 'mode="prefill_compute"'),
-    "fwd": ("sglang:per_stage_req_latency_seconds_sum", 'stage="prefill_forward"'),
-    "q_sum": ("sglang:queue_time_seconds_sum", None),
-    "q_count": ("sglang:queue_time_seconds_count", None),
-    "idle": ("sglang:scheduler_idle_seconds_total", None),
-    "aborted": ("sglang:num_aborted_requests_total", None),
+    # no idle time and no cache-served token inflates it. vLLM's pair is both observed
+    # per finished request, on one clock (found in review, 2026-10-20)
+    "pc": (("sglang:realtime_tokens_total", 'mode="prefill_compute"'),
+           ("vllm:request_prefill_kv_computed_tokens_sum", None)),
+    "fwd": (("sglang:per_stage_req_latency_seconds_sum", 'stage="prefill_forward"'),
+            ("vllm:request_prefill_time_seconds_sum", None)),
+    "q_sum": (("sglang:queue_time_seconds_sum", None),
+              ("vllm:request_queue_time_seconds_sum", None)),
+    "q_count": (("sglang:queue_time_seconds_count", None),
+                ("vllm:request_queue_time_seconds_count", None)),
+    "idle": (("sglang:scheduler_idle_seconds_total", None),),   # vLLM publishes no idle clock
+    "aborted": (("sglang:num_aborted_requests_total", None),),  # nor an abort counter of its own
 }
 # instantaneous levels, not counters: no delta, the window's own peaks of them
 GAUGES = {
-    "running": ("sglang:num_running_reqs", None),
-    "queued": ("sglang:num_queue_reqs", None),
-    "pool": ("sglang:full_token_usage", None),
+    "running": (("sglang:num_running_reqs", None), ("vllm:num_requests_running", None)),
+    "queued": (("sglang:num_queue_reqs", None), ("vllm:num_requests_waiting", None)),
+    "pool": (("sglang:full_token_usage", None), ("vllm:kv_cache_usage_perc", None)),
 }
 # each label set is one scheduler: within a DP group the ranks are state-synchronous and
 # only the group leader logs stats, so the sets on a page are independent schedulers and
@@ -96,8 +136,9 @@ _MAX_LEVELS = {"pool"}
 
 def _by(spec):
     out = {}
-    for key, (name, label) in spec.items():
-        out.setdefault(name, []).append((key, label))
+    for key, pairs in spec.items():
+        for name, label in pairs:
+            out.setdefault(name, []).append((key, label))
     return out
 
 
@@ -131,13 +172,13 @@ def _read(text: str, spec_by_name, keys, max_keys=()):
     first observed, and an engine just ready lists no cached tokens and no inter-token
     time (its own warm-up request had neither). Zero-filling of the absent names is tied
     to the engine's counter names: a caller that passes any other spec keeps its Nones
-    and must not difference them. None when the page has no SGLang metric at all: not an
-    SGLang engine's /metrics."""
+    and must not difference them. None when the page carries no engine metric at
+    all: not an engine's /metrics."""
     out = dict.fromkeys(keys, None)
-    sglang = False
+    engine_page = False
     for line in text.splitlines():
-        if "sglang:" in line:
-            sglang = True
+        if "sglang:" in line or "vllm:" in line:
+            engine_page = True
         if not line or line.startswith("#"):
             continue
         m = _SAMPLE.match(line.strip())
@@ -159,7 +200,7 @@ def _read(text: str, spec_by_name, keys, max_keys=()):
                     out[key] = max(out[key], v)
                 else:
                     out[key] += v
-    if not sglang:
+    if not engine_page:
         return None
     return {k: (0.0 if v is None else v) if spec_by_name is _BY_NAME else v
             for k, v in out.items()}
@@ -193,7 +234,8 @@ def isolated(d: dict) -> bool:
     token, and at most the one inter-token interval of its two tokens. The drafter's
     verification count moves only when a request finishes, where the first two already
     moved, so it adds nothing to this gate."""
-    return d["requests"] == 1 and d["ttft_count"] == 1 and d["itl_count"] <= 1
+    # decoded less first: the tokens the inter-token sum timed, on either engine
+    return d["requests"] == 1 and d["ttft_count"] == 1 and d["decoded"] - d["first"] <= 1
 
 
 class Window:
@@ -297,7 +339,13 @@ class Window:
             "prefill_tps": d["pc"] / d["fwd"] if d["pc"] > 0 and d["fwd"] > 0 else None,
             "queue_s": d["q_sum"] / d["q_count"] if d["q_count"] > 0 else None,
             "ttft_s": d["ttft_sum"] / d["ttft_count"] if d["ttft_count"] > 0 else None,
-            "decode_tps": d["itl_count"] / d["itl_sum"] if d["itl_sum"] > 0 and d["itl_count"] > 0 else None,
+            # decoded tokens over the time the inter-token samples spent decoding them,
+            # numerator and denominator on one clock: SGLang's per-token sample count
+            # (as before the vLLM config), vLLM's per-iteration generated tokens less
+            # its first tokens (its sample count is steps: read as tokens/s it showed
+            # 14.8 where the engine decoded 36.5, live box, 2026-10-19)
+            "decode_tps": (d["decoded"] - d["first"]) / d["itl_sum"]
+            if d["itl_sum"] > 0 and d["decoded"] > d["first"] else None,
             # finished tokens over the drafter's verifications: what a step netted, its own
             # count bearing no idle time; a lane without a drafter calls verify never
             "acc_len": d["generated"] / d["ver"] if d["ver"] > 0 else None,

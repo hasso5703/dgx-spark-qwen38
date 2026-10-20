@@ -20,8 +20,16 @@ sys.path.insert(0, str(DASH))
 sys.path.insert(0, str(HERE.parent))
 from test_registry import fake_repo  # noqa: E402
 
-ENV_BEFORE = dict(os.environ)
+ENV_BEFORE: dict = {}
 DSPARK = "RadixArk/Qwen3.8-27B-DSpark"
+
+
+def setUpModule():
+    # the snapshot is taken during the module's first test, not at import: pytest 9 keeps
+    # a note about the running test in os.environ and pops it when the last test ends; a
+    # teardown restoring an import-time snapshot takes that note with it, and the runner
+    # then cannot end the last test (KeyError in teardown, found 2026-10-19)
+    ENV_BEFORE.update(os.environ)
 
 
 def tearDownModule():

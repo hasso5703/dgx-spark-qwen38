@@ -21,6 +21,16 @@ import unittest
 REPO = pathlib.Path(__file__).resolve().parents[1]
 PLUGIN = REPO / "extras" / "opencode" / "auto-continue.js"
 
+
+def plugin_mjs(t: pathlib.Path) -> str:
+    """The plugin as the test host can import it: a `.js` beside no package.json is a
+    CommonJS file to Node until 20.10's module detection, and the driver's dynamic
+    `import()` then dies on the plugin's first `import`. The extension, not the code:
+    opencode loads the real file through its own loader either way."""
+    dst = t / "auto-continue.mjs"
+    shutil.copy(PLUGIN, dst)
+    return dst.as_uri()
+
 # One session: an error event, then the idle opencode sends when the turn stops. Prints
 # the prompts the plugin sent back.
 DRIVER = r"""
@@ -47,7 +57,7 @@ class TheAutoContinuePlugin(unittest.TestCase):
         shutil.rmtree(self.t, ignore_errors=True)
 
     def relaunches(self, name, message):
-        env = dict(os.environ, PLUGIN_URL=PLUGIN.as_uri(), AC_LOG=str(self.t / "ac.log"),
+        env = dict(os.environ, PLUGIN_URL=plugin_mjs(self.t), AC_LOG=str(self.t / "ac.log"),
                    AC_IDLE_DELAY_MS="0", AC_THROTTLE_MS="0",
                    ERROR=json.dumps({"name": name, "data": {"message": message}}))
         r = subprocess.run(["node", "--input-type=module", "-e", DRIVER], env=env,
@@ -122,7 +132,8 @@ class AThrottledRelaunch(unittest.TestCase):
     def sent(self, steps):
         t = tempfile.mkdtemp(prefix="auto-continue-")
         self.addCleanup(shutil.rmtree, t, ignore_errors=True)
-        env = dict(os.environ, PLUGIN_URL=PLUGIN.as_uri(), AC_LOG=os.path.join(t, "ac.log"),
+        env = dict(os.environ, PLUGIN_URL=plugin_mjs(pathlib.Path(t)),
+                   AC_LOG=os.path.join(t, "ac.log"),
                    AC_IDLE_DELAY_MS="0", AC_THROTTLE_MS="400", STEPS=json.dumps(steps))
         r = subprocess.run(["node", "--input-type=module", "-e", SCRIPT_DRIVER], env=env,
                            capture_output=True, text=True, timeout=60)

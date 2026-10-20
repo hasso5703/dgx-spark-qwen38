@@ -20,7 +20,8 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 ENGINES = ("qwen38-sglang.service.template", "qwen38-sglang-1m.service.template",
-           "qwen38-flash-launch.sh.template", "qwen38-kolibri.service.template",
+           "qwen38-flash-launch.sh.template", "qwen38-flash-fp4local-launch.sh.template",
+           "qwen38-kolibri.service.template",
            "qwen38-nemotron.service.template", "qwen38-nemotron-super.service.template", "run.sh")
 # -v SOURCE:/out[:OPTIONS], the source in quotes or not
 MOUNT = re.compile(r"""-v\s+["']?([^\s"':]+)["']?:/out(?::([\w,]+))?(?=["'\s]|$)""", re.M)

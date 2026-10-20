@@ -471,6 +471,7 @@ class TheOtherTextLaneOnDemand(unittest.TestCase):
                 with self.subTest(lane=lane, units_only=units_only):
                     script = (f'set -euo pipefail\nRECOMMENDED=0\ndie(){{ echo "DIE $*"; exit 1; }}\nLANE={lane}; UNITS_ONLY={units_only}\n'
                               f'HF_CACHE="{t}/hf"; PLE_DIR="{t}/ple"; MODEL_REPO=org/model; MODEL_REV=abc; IMAGE=img27; FLASH_IMAGE=imgflash\n'
+                              f'FLASH_FP4_LOCAL=0; FLASH_LOCAL_IMAGE=imglocal\n'
                               f'. "{REPO}/lanes.sh"\n' + section + '\necho ROOM-OK\n')
                     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60, env={"PATH": f"{t}:/usr/bin:/bin"})
                     self.assertEqual(r.returncode, rc, r.stdout + r.stderr)
@@ -589,6 +590,7 @@ class TheParentStartsIt(unittest.TestCase):
         script = ("set -euo pipefail\nRECOMMENDED=0\nstep(){ echo \"STEP $*\"; }\n"
                   f'SECONDARY=""; NO_SERVICE={no_service}; LANE={lane}; REPO_DIR="{repo}"; CONFIG_DIR="{t}/cfg"\n'
                   f'SGL_UNIT_PATH="{units}/qwen38-sglang.service"\n'
+                  f'FLASH_UNIT_PATH="{units}/qwen38-flash.service"; FLASH_FP4_LOCAL=0\n'
                   f"WANT_FLASH={want}; WANT_27B={want}; ALL_WEIGHTS={all_weights}; WITH_FLASH={with_flash}; WITH_27B={with_27b}\n"
                   f'. "{REPO}/lanes.sh"\n'
                   + self.PREPARED +
@@ -991,7 +993,8 @@ class ProvingATextLane(unittest.TestCase):
         stub(bin_ / "curl", f'case "$*" in *"/health"*) exit {health} ;; *) cat "{t}/answer.json" ;; esac')
         stub(bin_ / "journalctl", "echo JOURNAL")
         stub(bin_ / "sleep", "exit 0")
-        script = ("set -euo pipefail\nRECOMMENDED=0\nPORT=30000; KEY=k\n" + self.FUNC +
+        script = ("set -euo pipefail\nRECOMMENDED=0\nPORT=30000; KEY=k\n"
+                  f'FLASH_UNIT_PATH="{bin_}/no-unit"; FLASH_FP4_LOCAL=0\n' + self.FUNC +
                   f'\nif prove_text_lane qwen38-flash.service qwen3.8-flash-next {after}; then echo RC0; else echo RC1; fi\n')
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60,
                            env={"PATH": f"{bin_}:/usr/bin:/bin"})

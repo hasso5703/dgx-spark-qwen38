@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """What an engine reads when it starts, and whether the running one already has it.
 
-Usage: engine-inputs.py fingerprint <unit file> <config dir> <hf cache> [REPO@REV ...]
-       engine-inputs.py running     <unit file> <config dir> <hf cache> [REPO@REV ...]
+Usage: engine-inputs.py fingerprint <unit file> <config dir> <hf cache> [REPO@REV ...] [--extra=FILE ...]
+       engine-inputs.py running     <unit file> <config dir> <hf cache> [REPO@REV ...] [--extra=FILE ...]
 
 install.sh restarted the engine on every run, so an update that changed nothing the engine
 reads still cost a full boot (8 min on the 27B, 12 on flash, reference box 2026-09-23).
@@ -12,7 +12,8 @@ The inputs are found, not listed: the unit and its drop-ins; any script of the c
 the unit runs (the flash lane's launcher); every file of the config dir those name, directly
 or through the /out mount (chat template, token map, API key); the config.json of each
 checkpoint given as REPO@REV (install.sh patches YaRN into it in place); and the image ID
-of every image they name, since a local tag can move.
+of every image they name, since a local tag can move. --extra=FILE adds a file the engine
+reads that its unit does not name (the vLLM auth middleware, mounted from a folder).
 
 fingerprint prints a sha256 over all of it, by content: a file rewritten identically does
 not change it. running prints "yes" when the unit is active, started after every input was
@@ -88,9 +89,11 @@ def inputs(unit, config_dir, hf_cache, ckpts):
     # repo gives them, and whatever reference sits where the image goes, right before the
     # server command. A moving tag (IMAGE=lmsysorg/sglang:v0.5.19, a local SERVE_IMAGE)
     # matched neither of the first two, so a pull that moved it kept the engine.
+    # The qwen38 tag must not start inside a path (/opt/qwen38-auth:ro is a mount, not an
+    # image), and the server command is SGLang's or vLLM's (the FP4-Local b12x launcher).
     images = sorted(set(re.findall(r"[a-z0-9][a-z0-9./_-]*@sha256:[0-9a-f]{64}", body))
-                    | set(re.findall(r"\bqwen38-[a-z0-9-]+:[A-Za-z0-9._-]+", body))
-                    | set(re.findall(r"(?m)([^\s\\]+)\s*\\?\s*\n?\s*python3 -m sglang\.launch_server", body)))
+                    | set(re.findall(r"(?<![A-Za-z0-9./_-])qwen38-[a-z0-9-]+:[A-Za-z0-9._-]+", body))
+                    | set(re.findall(r"(?m)([^\s\\]+)\s*\\?\s*\n?\s*(?:python3 -m sglang\.launch_server|vllm serve )", body)))
     containers = sorted(set(re.findall(r"--name[ =]([A-Za-z0-9._-]+)", body)))
     return files, images, containers
 
@@ -101,8 +104,9 @@ def _image_id(ref, timeout=None):
     return r.stdout.strip() if r.returncode == 0 else "absent"
 
 
-def fingerprint(unit, config_dir, hf_cache, ckpts):
+def fingerprint(unit, config_dir, hf_cache, ckpts, extra=()):
     files, images, _ = inputs(unit, config_dir, hf_cache, ckpts)
+    files += [f for f in extra if f not in files]
     units = {unit} | set(glob.glob(unit + ".d/*.conf"))
     h = hashlib.sha256()
     for f in files:
@@ -165,14 +169,16 @@ def main(argv):
     if len(argv) < 5 or argv[1] not in ("fingerprint", "running"):
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    mode, unit, config_dir, hf_cache, ckpts = argv[1], argv[2], argv[3], argv[4], argv[5:]
+    mode, unit, config_dir, hf_cache = argv[1], argv[2], argv[3], argv[4]
+    extra = [a[len("--extra="):] for a in argv[5:] if a.startswith("--extra=")]
+    ckpts = [a for a in argv[5:] if not a.startswith("--extra=")]
     if not os.path.isfile(unit):
         print(f"no unit at {unit}", file=sys.stderr)
         return 1
     if mode == "fingerprint":
-        print(fingerprint(unit, config_dir, hf_cache, ckpts))
+        print(fingerprint(unit, config_dir, hf_cache, ckpts, extra))
     else:
-        print(running(unit, config_dir, hf_cache, ckpts))
+        print(running(unit, config_dir, hf_cache, ckpts, extra))
     return 0
 
 

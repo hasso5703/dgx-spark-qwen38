@@ -82,7 +82,8 @@ class Reading(unittest.TestCase):
                           ttft_sum=2.5, ttft_count=7, itl_sum=1.25, itl_count=26,
                           pc=900, fwd=0.5, chk=0.25, q_sum=1.5, q_count=5, idle=3.0, aborted=2, ver=9))
         self.assertEqual(v, {"requests": 7.0, "prompt": 1001.0, "cached": 700.0, "generated": 33.0,
-                             "ttft_sum": 2.5, "ttft_count": 7.0, "itl_sum": 1.25, "itl_count": 26.0,
+                             "ttft_sum": 2.5, "ttft_count": 7.0, "itl_sum": 1.25, "decoded": 26.0,
+                             "first": 0.0,
                              "pc": 900.0, "fwd": 0.5, "q_sum": 1.5, "q_count": 5.0,
                              "idle": 3.0, "aborted": 2.0, "ver": 9.0, "idle_seen": True})
 
@@ -107,7 +108,7 @@ class Reading(unittest.TestCase):
         v = em.parse(page_)
         self.assertEqual(v, {"requests": 1.0, "prompt": 178.0, "cached": 0.0, "generated": 8.0,
                              "ttft_sum": 12.01112219899369, "ttft_count": 1.0,
-                             "itl_sum": 0.0, "itl_count": 0.0,
+                             "itl_sum": 0.0, "decoded": 0.0, "first": 0.0,
                              "pc": 0.0, "fwd": 0.0, "q_sum": 0.0, "q_count": 0.0,
                              "idle": 0.0, "aborted": 0.0, "ver": 0.0, "idle_seen": False})
 
@@ -178,9 +179,9 @@ class TheWindow(unittest.TestCase):
     def test_two_reads_say_the_four_numbers(self):
         w = em.Window(300)
         w.add(1000, self.KEY, vals(requests=10, prompt=50_000, cached=40_000, generated=2_000,
-                                   ttft_sum=5, ttft_count=10, itl_sum=40, itl_count=1_990))
+                                   ttft_sum=5, ttft_count=10, itl_sum=40, decoded=1_990))
         w.add(1300, self.KEY, vals(requests=14, prompt=250_000, cached=230_000, generated=3_000,
-                                   ttft_sum=9, ttft_count=14, itl_sum=60, itl_count=2_986))
+                                   ttft_sum=9, ttft_count=14, itl_sum=60, decoded=2_986))
         s = w.stats(1300)
         self.assertEqual((s["requests"], s["prompt_tokens"], s["cached_tokens"], s["generated_tokens"]),
                          (4, 200_000, 190_000, 1_000))
@@ -194,7 +195,7 @@ class TheWindow(unittest.TestCase):
         w = em.Window(300)
         w.add(1000, self.KEY, vals())
         w.add(1090, self.KEY, vals(requests=1, prompt=100, generated=10, ttft_sum=0.2, ttft_count=1,
-                                   itl_sum=0.3, itl_count=9))
+                                   itl_sum=0.3, decoded=9))
         self.assertEqual(w.stats(1090)["watched_s"], 90.0)
 
     def test_the_window_starts_at_the_last_read_before_its_span(self):
@@ -217,11 +218,28 @@ class TheWindow(unittest.TestCase):
         # the inter-token counters move with every output; the request counters at its end
         w = em.Window(300)
         w.add(0, self.KEY, vals())
-        w.add(30, self.KEY, vals(ttft_sum=0.4, ttft_count=1, itl_sum=20, itl_count=900))
+        w.add(30, self.KEY, vals(ttft_sum=0.4, ttft_count=1, itl_sum=20, decoded=900))
         s = w.stats(30)
         self.assertEqual(s["requests"], 0)
         self.assertAlmostEqual(s["decode_tps"], 45.0)
         self.assertAlmostEqual(s["ttft_s"], 0.4)
+
+    def test_the_drafters_step_rate_is_not_printed_as_the_decode_speed(self):
+        # the flash lane's vLLM samples inter-token latency once per draft,
+        # not once per token: its MTP steps netted ~2.5 tokens each while the
+        # sample count equalled the drafter's exactly (live box, 2026-10-19).
+        # The sample count over the sample sum is a step rate: it printed
+        # 14.8 where the engine decoded 36.5 tokens per second. On a vLLM page
+        # "decoded" is the generated tokens and "first" the first-token count
+        w = em.Window(300)
+        w.add(0, self.KEY, vals())
+        w.add(30, self.KEY, vals(requests=1, prompt=500, generated=682, decoded=682, first=1,
+                                 ttft_sum=0.2, ttft_count=1, itl_sum=18.69, ver=276))
+        s = w.stats(30)
+        self.assertAlmostEqual(s["decode_tps"], (682 - 1) / 18.69, places=6)
+        self.assertGreater(s["decode_tps"], 2 * (276 / 18.69),
+                           "the step rate was printed again as the token rate:"
+                           " these steps netted 682/276 = 2.47 tokens each")
 
     def test_a_new_engine_starts_the_window_again(self):
         w = em.Window(300)
@@ -287,7 +305,7 @@ class TheWindow(unittest.TestCase):
     def test_a_lane_without_a_drafter_says_nothing_about_it(self):
         w = em.Window(300)
         w.add(0, self.KEY, vals())
-        w.add(50, self.KEY, vals(generated=100, itl_sum=2, itl_count=100))
+        w.add(50, self.KEY, vals(generated=100, itl_sum=2, decoded=100))
         self.assertIsNone(w.stats(50)["acc_len"], "no verification calls: no accept length")
 
     def test_a_chunked_prompt_counts_its_prefill_once(self):
@@ -310,7 +328,7 @@ class TheWindow(unittest.TestCase):
         self.assertIsNone(w.stats(600)["idle_share"], "one end still lacks the counter")
 
 
-CANARY = vals(requests=1, prompt=14, generated=2, ttft_sum=0.08, ttft_count=1, itl_sum=0.02, itl_count=1,
+CANARY = vals(requests=1, prompt=14, generated=2, ttft_sum=0.08, ttft_count=1, itl_sum=0.02, decoded=1,
               pc=14, fwd=0.01, q_sum=0.0004, q_count=1, ver=1)
 
 
@@ -340,7 +358,7 @@ class TheCanaryIsTakenOut(unittest.TestCase):
     def test_client_numbers_are_exact_with_a_canary_among_them(self):
         w = em.Window(300)
         client = vals(requests=2, prompt=40_000, cached=39_000, generated=800,
-                      ttft_sum=1.0, ttft_count=2, itl_sum=19.0, itl_count=798)
+                      ttft_sum=1.0, ttft_count=2, itl_sum=19.0, decoded=798)
         w.add(0, self.KEY, vals())
         w.canary(100, self.KEY, vals(), CANARY)
         w.add(200, self.KEY, plus(CANARY, client))
@@ -396,10 +414,10 @@ class TheCanaryIsTakenOut(unittest.TestCase):
         w.add(0, self.KEY, vals(idle=0))
         w.canary(100, self.KEY, vals(idle=95),
                  vals(idle=105, requests=1, prompt=14, generated=2, ttft_sum=0.08,
-                      ttft_count=1, itl_sum=0.02, itl_count=1, pc=14, fwd=0.01, ver=1))
+                      ttft_count=1, itl_sum=0.02, decoded=1, pc=14, fwd=0.01, ver=1))
         w.add(300, self.KEY,
               vals(idle=300, requests=1, prompt=14, generated=2, ttft_sum=0.08,
-                   ttft_count=1, itl_sum=0.02, itl_count=1, pc=14, fwd=0.01, ver=1))
+                   ttft_count=1, itl_sum=0.02, decoded=1, pc=14, fwd=0.01, ver=1))
         s = w.stats(300)
         self.assertAlmostEqual(s["idle_share"], 1.0)
         self.assertEqual((s["requests"], s["canaries_out"]), (0, 1))
@@ -428,7 +446,9 @@ class AgainstAReplay(unittest.TestCase):
                     events.append((t + rnd.uniform(0, 5), 0, "client", vals(
                         requests=1, prompt=p, cached=rnd.randint(0, p), generated=rnd.randint(1, 900),
                         ttft_sum=rnd.uniform(0.05, 30), ttft_count=1,
-                        itl_sum=rnd.uniform(0.1, 40), itl_count=rnd.randint(0, 899))))
+                        # SGLang's per-token inter-token count, drawn on its own: the
+                        # window must not tie it to the finish-time counters
+                        itl_sum=rnd.uniform(0.1, 40), decoded=rnd.randint(0, 899))))
                 if rnd.random() < 0.15:
                     b, x = t + rnd.uniform(0, 4.5), rnd.uniform(0.05, 0.5)
                     events += [(b, 1, "canary_begins", None), (b + x / 2, 2, "canary_counted", None),
@@ -471,8 +491,8 @@ class AgainstAReplay(unittest.TestCase):
                     self.assertEqual(s["generated_tokens"], want["generated"])
                     if want["ttft_count"]:
                         self.assertAlmostEqual(s["ttft_s"], want["ttft_sum"] / want["ttft_count"], places=6)
-                    if want["itl_count"]:
-                        self.assertAlmostEqual(s["decode_tps"], want["itl_count"] / want["itl_sum"], places=6)
+                    if want["decoded"]:
+                        self.assertAlmostEqual(s["decode_tps"], want["decoded"] / want["itl_sum"], places=6)
                     checked += 1
         self.assertGreater(checked, 5000)
         self.assertGreater(dropped, 0, "the replay never put a read across a canary")
@@ -505,6 +525,138 @@ class AReadAcrossTheCanaryIsDropped(unittest.TestCase):
         w.canary_begins(10)
         self.assertFalse(w.add(65, self.KEY, vals(), started=64.9))
         self.assertTrue(w.add(75, self.KEY, vals(), started=74.9))
+
+
+class TheVLLMPage(unittest.TestCase):
+    """The same window keys off a vLLM page (the flash lane's FP4-Local config serves
+    vLLM): the names differ, the reading does not, and a page carrying neither
+    prefix is still no engine's /metrics."""
+
+    def test_the_reference_page_of_the_serving_fp4_engine(self):
+        # captured on the reference box (2026-10-19) while its FP4-Local config served:
+        # every key the window reads is on the page, under the vllm: names
+        page_ = (DASH / "tests" / "fixtures" / "vllm-metrics-fp4-local.txt").read_text()
+        v = em.parse(page_)
+        self.assertIsNotNone(v)
+        # each key with a vLLM name read a value off the page: parse zero-fills an absent
+        # name, so a key set says nothing (found in review, 2026-10-20)
+        for key, pairs in em.NAMES.items():
+            if any(name.startswith("vllm:") for name, _ in pairs):
+                self.assertGreater(v[key], 0, key)
+        self.assertGreater(v["prompt"], v["cached"])        # the cache held most of the prompts
+        self.assertEqual(v["requests"], v["ttft_count"])    # every finished one timed its first token
+        self.assertEqual((v["decoded"], v["first"]), (v["generated"], v["ttft_count"]))
+        self.assertLess(v["pc"], v["prompt"])               # cache-served tokens are not in pc
+        self.assertEqual(v["pc"], 103958.0)                 # the computed tokens' histogram sum
+        self.assertEqual(v["fwd"], 54.32581236108672)
+        # every level read a value, not the None of a name not on the page
+        self.assertTrue(all(g is not None for g in em.parse_gauges(page_).values()),
+                        em.parse_gauges(page_))
+        w = em.Window(300)
+        w.add(0, ("qwen38-flash.service", "1"), dict.fromkeys(em.NAMES, 0.0))
+        w.add(300, ("qwen38-flash.service", "1"), v)
+        # 7,706 tokens less the 15 first ones over 211.9 s of inter-token time: the 36.5
+        # tok/s the engine decoded, not the 14.3 its 3,032 samples would say
+        self.assertAlmostEqual(w.stats(300)["decode_tps"], (7706 - 15) / 211.90875176200643, places=6)
+
+    def test_only_the_filtered_label_set_counts(self):
+        page = "\n".join([
+            'vllm:prompt_tokens_by_source_total{model_name="m",source="local_compute"} 100.0',
+            'vllm:prompt_tokens_by_source_total{model_name="m",source="local_cache_hit"} 400.0',
+            'vllm:request_prefill_kv_computed_tokens_count{model_name="m"} 2.0',
+            'vllm:request_prefill_kv_computed_tokens_sum{model_name="m"} 60.0',
+            'vllm:prompt_tokens_cached_total{model_name="m"} 400.0',
+            'vllm:request_success_total{model_name="m",finished_reason="stop"} 3.0',
+            'vllm:request_success_total{model_name="m",finished_reason="length"} 1.0',
+            'vllm:request_success_created{model_name="m"} 1.0',   # prometheus convention: not the counter
+            'vllm:generation_tokens_total{model_name="m"} 12.0',
+            'vllm:num_requests_running{model_name="m"} 2.0',
+            'vllm:num_requests_waiting{model_name="m"} 1.0',
+            'vllm:kv_cache_usage_perc{model_name="m"} 0.25',
+        ])
+        v = em.parse(page)
+        # pc is the finished requests' computed tokens, not the per-iteration source counter
+        self.assertEqual((v["pc"], v["cached"], v["requests"]), (60.0, 400.0, 4.0))
+        self.assertEqual((v["generated"], v["decoded"]), (12.0, 12.0))
+        self.assertEqual(em.parse_gauges(page), {"running": 2.0, "queued": 1.0, "pool": 0.25})
+
+    def test_a_page_of_neither_engine_is_no_read(self):
+        self.assertIsNone(em.parse('prometheus_build_info{v="1"} 1.0\n'))
+
+
+VL = 'engine="0",model_name="qwen3.8-flash-next"'
+
+
+def vllm_page(requests=0, prompt=0, by_source=0, kv_computed=0, prefill_s=0.0, generated=0,
+              ttft_count=0, ttft_sum=0.0, itl_count=0, itl_sum=0.0, drafts=0):
+    """A /metrics page in the shape the FP4-Local config's vLLM writes: the token, first
+    token and inter-token counters move every scheduler iteration; the request count and
+    the per-request prefill histograms when a request finishes."""
+    return "\n".join([
+        f'vllm:request_success_total{{{VL},finished_reason="stop"}} {requests}.0',
+        f'vllm:request_success_total{{{VL},finished_reason="abort"}} 0.0',
+        f'vllm:prompt_tokens_total{{{VL}}} {prompt}.0',
+        f'vllm:prompt_tokens_by_source_total{{{VL},source="local_compute"}} {by_source}.0',
+        f'vllm:request_prefill_kv_computed_tokens_count{{{VL}}} {requests}.0',
+        f'vllm:request_prefill_kv_computed_tokens_sum{{{VL}}} {kv_computed}.0',
+        f'vllm:request_prefill_time_seconds_count{{{VL}}} {requests}.0',
+        f'vllm:request_prefill_time_seconds_sum{{{VL}}} {prefill_s}',
+        f'vllm:generation_tokens_total{{{VL}}} {generated}.0',
+        f'vllm:time_to_first_token_seconds_count{{{VL}}} {ttft_count}.0',
+        f'vllm:time_to_first_token_seconds_sum{{{VL}}} {ttft_sum}',
+        f'vllm:inter_token_latency_seconds_count{{{VL}}} {itl_count}.0',
+        f'vllm:inter_token_latency_seconds_sum{{{VL}}} {itl_sum}',
+        f'vllm:spec_decode_num_drafts_total{{{VL}}} {drafts}.0',
+        "", ])
+
+
+class AtTheWindowsEdges(unittest.TestCase):
+    """A request straddling the window's start, or still decoding at its end, must not
+    skew the decode speed: numerator and denominator have to move on one clock. On
+    SGLang the inter-token count is tokens and moves with its sum, the request and
+    generated counters only at a finish; on vLLM the generated tokens, first tokens
+    and inter-token sum all move per iteration (found in review, 2026-10-20). Each
+    case decodes at 50 tok/s; the vLLM one in MTP steps of 3 tokens every 0.06 s."""
+    KEY = ("qwen38-flash.service", "9")
+
+    def speeds(self, a, b, t0=0, t1=300):
+        w = em.Window(300)
+        self.assertTrue(w.add(t0, self.KEY, em.parse(a)))
+        self.assertTrue(w.add(t1, self.KEY, em.parse(b)))
+        return w.stats(t1)
+
+    def test_sglang_a_request_straddling_the_windows_start(self):
+        # first token at 0, decoding until 600, 500 s of it before the window's start
+        s = self.speeds(page(ttft_count=1, ttft_sum=0.5, itl_count=25_000, itl_sum=500.0),
+                        page(requests=1, generated=30_001, ttft_count=1, ttft_sum=0.5,
+                             itl_count=30_000, itl_sum=600.0), 500, 800)
+        self.assertAlmostEqual(s["decode_tps"], 50.0)
+
+    def test_sglang_a_request_still_decoding_at_the_windows_end(self):
+        # a finished 10-token request, then one decoding for 100 s that has not finished
+        s = self.speeds(page(), page(requests=1, generated=10, ttft_count=2, ttft_sum=0.4,
+                                     itl_count=9 + 5_000, itl_sum=0.18 + 100.0))
+        self.assertAlmostEqual(s["decode_tps"], 50.0)
+
+    def test_vllm_a_request_straddling_the_windows_start(self):
+        # first token at 0, decoding until 600 in 0.06 s steps, finished inside the window
+        s = self.speeds(vllm_page(generated=1 + 25_000, ttft_count=1, ttft_sum=0.5,
+                                  itl_count=8_333, itl_sum=500.0, drafts=8_333),
+                        vllm_page(requests=1, generated=1 + 30_000, ttft_count=1, ttft_sum=0.5,
+                                  itl_count=10_000, itl_sum=600.0, drafts=10_000), 500, 800)
+        self.assertAlmostEqual(s["decode_tps"], 50.0)
+
+    def test_vllm_a_request_still_decoding_at_the_windows_end(self):
+        # a finished 10-token request (500 prompt tokens computed in 0.25 s), then an agent
+        # turn whose 50,000 computed prompt tokens and 5,001 tokens so far are on the
+        # per-iteration counters while it decodes, unfinished
+        s = self.speeds(vllm_page(), vllm_page(
+            requests=1, prompt=50_500, by_source=50_500, kv_computed=500, prefill_s=0.25,
+            generated=10 + 5_001, ttft_count=2, ttft_sum=0.4,
+            itl_count=3 + 1_667, itl_sum=0.18 + 100.0, drafts=3 + 1_667))
+        self.assertAlmostEqual(s["decode_tps"], 50.0)
+        # the in-flight prompt has no prefill time yet, so it adds no tokens either
+        self.assertAlmostEqual(s["prefill_tps"], 2_000.0)
 
 
 if __name__ == "__main__":

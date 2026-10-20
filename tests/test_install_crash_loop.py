@@ -62,8 +62,11 @@ class ACrashLoopIsNamed(unittest.TestCase):
         self.assertIn("STILL-WAITING", out)
 
     def test_it_sits_inside_the_wait_loop_after_the_restart(self):
-        self.assertLess(TEXT.index(BASE), TEXT.index('for i in $(seq 1 150); do'))
-        self.assertLess(TEXT.index('for i in $(seq 1 150); do'), TEXT.index(CHECK.strip().splitlines()[0]))
+        # the loop got a wall of its own per config when the FP4-Local lane arrived
+        # (v1.37.0): the wait reads $WAIT_IT, the check inside it is the same one
+        self.assertLess(TEXT.index(BASE), TEXT.index('for i in $(seq 1 "$WAIT_IT"); do'))
+        self.assertLess(TEXT.index('for i in $(seq 1 "$WAIT_IT"); do'),
+                        TEXT.index(CHECK.strip().splitlines()[0]))
 
 
 if __name__ == "__main__":

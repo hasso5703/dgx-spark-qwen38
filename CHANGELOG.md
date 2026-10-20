@@ -1,5 +1,104 @@
 # Changelog
 
+## v1.37.0 (2026-10-20): the flash lane gets a second config, NVIDIA's FP4-Local build, served by vLLM
+
+**The lane's other engine.** `MODEL_CHOICE=flash-fp4-local ./install.sh` installs
+[`nvidia/Qwen3.8-Flash-Next-FP4-Local`](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local),
+NVIDIA's quantization-aware-distilled FP4 build of the model this lane already serves:
+**102.3 GB measured at the pinned `b9ce18a` (95.24 GiB; the card rounds it to
+~96 GiB) against the 176B NVFP4 tree's 136 GB**, and its scale factors use a new
+lossless compression format that upstream vLLM does not read yet: the NVIDIA card
+requires the community container for it, so this config runs the pinned
+`eugr/spark-vllm-b12x` image instead of SGLang. That makes it a second config of the
+flash lane rather than just a fourth flash target: the engine, launcher
+(`launch-flash-fp4local.sh` beside `launch-flash.sh`) and wait walls (the installer
+waits 48 min for it where the SGLang configs get 20 and the cockpit gives it a
+45-minute boot budget. Those are this repo's own budgets, set with margin, not measured load
+times: the card publishes none) change, and only the installer renders them. It keeps
+the lane's serving surface whole: the same unit path, the same served name
+(`qwen3.8-flash-next`), the same patched chat template (this build's own file), the
+proxy in front, opencode's label saying which build. `./switch-model.sh
+flash-fp4-local` switches to it as a lane-level bring-back: it takes the unit over
+only where `install.sh` rendered this config (the unit's `ExecStart` naming
+`launch-flash-fp4local.sh`), and there it fetches the checkpoint, regenerates the
+served chat template from that build's patched file, enables `qwen38-flash.service`
+and disables the other lane units, and updates the keepalive ceiling, opencode's
+default and limits and the conformity target; everywhere else it refuses with the
+exact install command, and the same refusal holds for an SGLang flash target on a box
+running this config (`MODEL_CHOICE=<target> ./install.sh` is the answer it says).
+`--fetch` fetches the checkpoint in either config and with no flash lane installed at
+all, once the b12x image is on the box (it pulls no image: `./prepare-lane.sh flash
+flash-fp4-local` fetches both); checkpoint switches inside each config work as before.
+The config inherits the lane's ATS guard (v1.36.4): install, `prepare-lane.sh`, the
+switch and `--fetch` refuse it on a GPU outside ATS, and its own launcher asks
+`flash-ats-check.sh` and stops with exit 78, so the cockpit shows **cannot start on
+this GPU**. Whether its io_uring path needs ATS at all is not measured. The cockpit lists it as an
+eighth target with its own Download and Load. The PLE table is the SGLang config's
+alone: nothing generates one here: the container reads the n-gram table's rows
+directly from the checkpoint's own safetensors over io_uring
+(`VLLM_PLE_TABLE_MEMORY=disk`), so no 47.7 GiB backing file is ever written and the
+launcher's `seccomp=unconfined` is load-bearing, docker's default seccomp profile
+being what blocks io_uring.
+
+**What changed where.** New pins `FLASH_LOCAL_REPO`/`FLASH_LOCAL_REV`/`FLASH_LOCAL_IMAGE`
+(checked by `./check-pins.sh`, inventoried by `./uninstall.sh --list`); `prepare-lane.sh flash
+flash-fp4-local` pulls the image and fetches the checkpoint with no launcher on the box yet;
+`lanes.sh` asks 106 GiB for it where the SGLang flash configs ask 180 GiB for checkpoint and caches, plus 50 for their PLE table; the cockpit reads
+the flash unit's launcher from the unit's own `ExecStart`, so the target it shows is the config
+installed, gives the target its own 45-minute boot budget, takes its generation canary out on
+this config (vLLM has none of the SGLang routes the probe answers to; the target is
+followed by vLLM's own facts, `/health` and the served model, as every vLLM lane on
+this box is), compares each flash config in the recipe panel with an invocation of its own
+engine (the FP4-Local recipe against `launch-flash-fp4local.sh` through vLLM's flag
+spellings, the SGLang recipes against `launch-flash.sh`, so the config the box does not
+run reports nothing instead of every flag of the other engine as drift) and ships
+whichever launcher the unit names in the diagnostics bundle; every reader
+of an installed checkpoint (the installer's convergence, opencode's default, the cockpit,
+conformity) resolves it through `launcher_model` in `lanes.sh`, which knows vLLM's positional
+serve argument: the `--model-path`-only greps read this box as serving no model and no image,
+and a plain update would have fallen back to the SGLang engine on an uncached target (found
+in three reviews, 2026-10-18); the five-minute counter window now reads either engine's
+/metrics (`engine_metrics.py` carries both the `sglang:` and the `vllm:` name of every
+counter it reads), and because this build guards /metrics behind the server key: the
+first box to serve it answered 401 and showed no counters, the FP4-Local launcher hands
+the engine no key of its own, leaving the repo's middleware as the only gate and the
+counters key-free as on every lane (found on the box, 2026-10-19). The launcher keeps
+`VLLM_SERVER_DEV_MODE` off: it mounts vLLM's own `/server_info`, the proxy read that
+200 as SGLang's info route, found no pool in it and refused every big prompt as
+"unknown pool, engine warming up" (found on the box the same day); the price is that
+`bench-agent.py --flush` has no route on this config. The bench scripts now tell the
+lane's two engines apart: `bench.sh` labels its header from the counter names on the
+key-free `/metrics` (an MTP run no longer prints against the NEXTN reference line),
+and `bench-agent.py` self-labels its transcript. First numbers of the config on the
+reference box (BENCHMARKS.md): 59.1 tok/s greedy median (code 56, reasoning 62, prose
+34), 3.10 tokens per MTP step, 20.8 ms/tok in the agent loop, a warm boot in 4 min
+44 s. The vLLM
+middleware (`vllm-auth`) is kept while any vLLM lane mounts it, and the flash lane
+mounts it from its launcher, not its unit, so `vllm-lane.sh` counts the FP4-Local
+launcher among the mounters, and `uninstall.sh --list` reads its HF cache mount.
+The docs section "The lane's other config" in docs/flash-lane.md says what differs,
+and says plainly what this box has not measured: the quality numbers quoted are
+NVIDIA's card's, and the wait walls are this repo's budgets rather than times. The
+decode is this box's own: the numbers above come from three measured batches after
+a discarded one, with their protocol and tables in BENCHMARKS.md.
+
+**One test host fixed on the way.** The auto-continue plugin's test imported `auto-continue.js`
+as an ES module, which Node accepts from 20.10's module detection but not from the 18 on a dev
+box: the driver now imports a `.mjs` copy of the same file, so the suite runs on either host.
+
+**The decode speed on vLLM was the drafter's step rate.** The cockpit's five-minute
+window printed the inter-token samples over their sum. SGLang's count is tokens, so
+that holds there and the SGLang lanes keep it. vLLM samples once per scheduler
+iteration, whatever tokens that output carried: on the live FP4-Local config the
+sample count equalled the drafter's steps exactly and the panel said 14.8 tok/s per
+request where the engine decoded 36.5 (measured on the box, 2026-10-19). On vLLM the
+rate is now its generated tokens less each request's first, over the inter-token sum,
+three counters moved on the same per-iteration clock, so a request straddling the
+window's edge or still decoding counts only what it added. Its prefill rate now reads the
+computed prompt tokens per finished request (`request_prefill_kv_computed_tokens`)
+over the prefill time observed at the same moment, instead of a per-iteration prompt
+count that added a still-decoding request's prompt with none of its time.
+
 ## v1.36.4 (2026-10-19): the flash lane says it cannot start on a GPU outside its ATS mode, and fetches nothing for it (issue #54)
 
 The flash lane serves its 47.7 GiB N-gram table from a file on NVMe, which the GPU reads through the

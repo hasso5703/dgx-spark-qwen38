@@ -27,7 +27,8 @@ def block() -> str:
 
 PINS = "\n".join(line for line in INSTALL.read_text().splitlines()
                  if line.startswith(("STOCK_REPO=", "UNC_REPO=", "FP8_REPO=", "UNCFP8_REPO=",
-                                     "FLASH_REPO=", "FLASH_UNC_REPO=", "FLASH_NVDA_REPO=")))
+                                     "FLASH_REPO=", "FLASH_UNC_REPO=", "FLASH_NVDA_REPO=",
+                                     "FLASH_LOCAL_REPO=")))
 
 
 def generate(lane, mode, unit_ctx=None, flash_unit=False, model="RadixArk/Qwen3.8-27B-NVFP4",

@@ -314,6 +314,14 @@ class AnEngineSilentBeforeItsHead(Base):
                 break
             time.sleep(0.05)
         self.assertIsNotNone(rec["closed"], "the engine still holds the request")
+        # the proxy ends the upstream before _done prints this line: the
+        # engine's closed stamp, which the wait above watched, lands first
+        # (the runner read the log in the gap and saw none, 2026-10-19) -
+        # the same wait the CLIENT GONE assertion above gives its line
+        for _ in range(50):
+            if any("DROPPED upstream silent" in ln for ln in self.end_line()):
+                break
+            time.sleep(0.05)
         self.assertTrue(any("DROPPED upstream silent" in ln for ln in self.end_line()), self.end_line())
 
     def test_an_anthropic_stream_is_told_why(self):

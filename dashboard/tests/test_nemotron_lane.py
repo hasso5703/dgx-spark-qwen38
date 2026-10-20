@@ -275,8 +275,8 @@ class WhatItDoesNotHave(Base):
             self.serving(None)
         self.assertFalse(ok)
         self.assertEqual(data["reason"], "unsupported")
-        self.assertIn("the Nemotron lane's vLLM has no cache flush route", lines[0])
-        self.assertIn("the Nemotron lane's vLLM has no route that aborts", str(e.exception))
+        self.assertIn("The Nemotron lane has no cache flush route", lines[0])
+        self.assertIn("The Nemotron lane has no route that aborts its generations", str(e.exception))
 
     def test_system_one_points_at_the_qwen_lanes(self):
         self.serving("ready")

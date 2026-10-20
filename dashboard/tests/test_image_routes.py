@@ -54,6 +54,10 @@ def load_cockpit(config_dir: Path):
         COCKPIT_PORT="0",
         COCKPIT_AGENT_PORT="0",
         COCKPIT_AUTOHEAL="0",
+        # no unit file from the box: which flash config runs is the box's fact,
+        # and on the reference box it says FP4-Local, so these tests mean the
+        # classic SGLang lane unless they say otherwise (2026-10-19)
+        COCKPIT_UNIT_DIR=str(config_dir / "units"),
     )
     sys.path.insert(0, str(DASH))
     spec = importlib.util.spec_from_file_location("cockpit_image_under_test",

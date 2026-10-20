@@ -199,6 +199,17 @@ FLASH_NVDA_REV="fc694b54fb0174e0913e6adf86691ef85a4ead47"
 # anywhere in the image, so it cannot be served here at all.
 FLASH_UNC_REPO="dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4"
 FLASH_UNC_REV="be794b990578ef3031eccf9f28e675a289a09ee9"
+# NVIDIA's QAD-quantized build of the same Flash-Next model, in the lossless
+# NVFP4 scale-factor format that upstream vLLM (and this repo's SGLang) cannot
+# read yet: the b12x community container is the only runtime that can, so this
+# target serves from vLLM, not SGLang, and needs no PLE table generated beside it:
+# the container reads its n-gram embedding straight from the checkpoint's own
+# safetensors over io_uring (VLLM_PLE_TABLE_MEMORY=disk writes no backing file;
+# read in the image's b12x code, 2026-10-18, which is why seccomp=unconfined is
+# load-bearing). 96 GiB on disk, so the lane's disk need drops to 106. Whole at
+# this revision (refs/main, checked 2026-10-18).
+FLASH_LOCAL_REPO="nvidia/Qwen3.8-Flash-Next-FP4-Local"
+FLASH_LOCAL_REV="b9ce18a6887e18c089fdea8509a33e63429a3300"
 # The flash lane's image. Since v1.8 this is the image the cookbook points DGX
 # Spark at: the qwen4-main-squashed build, which carries the file-backed PLE
 # table backend (sglang#37068, replacing this repo's mmap overlay), the merged
@@ -207,6 +218,14 @@ FLASH_UNC_REV="be794b990578ef3031eccf9f28e675a289a09ee9"
 # which is the root cause of the wall of "!" the proxy learned to detect in
 # v1.6), and the mixed-precision loader (sglang#38121).
 FLASH_IMAGE="${FLASH_IMAGE:-lmsysorg/sglang@sha256:3e79541d1e2a6818979c4aa9ca1fa63d6961d7bc50120867953ea6baaf1d8f62}"  # = lmsysorg/sglang:nightly-cu134-20261011-53295c6, measured 2026-10-12 on this box against 6caf0ff, same target and tier: logprobs bit-identical on 30 fixed texts (NLL 1.6229 both), GSM8K 247 vs 248 of 250, needle 120k/200k 2/2 with identical replies, greedy decode median 46.6/49.6 vs 44.3/46.9 tok/s, serving c4 output 61.0 vs 58.0 tok/s with a tighter p99, pool +1.9% (boot noise), every client green (SDK, Node, Bun, LiteLLM, 4 agents; one isolated Hermes truncation retested 3/3). The previous pin was 6caf0ff (nightly-cu134-20260928, 2026-09-28); an update untags it like any retired pin (unpin_stale below), so a docker image prune reclaims it.
+# The FP4-Local config's image: the community b12x vLLM container the NVIDIA
+# model card names for DGX Spark (it carries the reader for the new lossless
+# NVFP4 scale format; no other runtime can load the checkpoint). The card
+# publishes one moving :latest tag; the digest this box pulled at pinning time
+# is what ships here (17 GiB unpacked, measured 2026-10-18), overridable like
+# every image pin. The card also swaps this tag's contents without warning
+# until the format lands upstream, which is the whole reason for the digest.
+FLASH_LOCAL_IMAGE="${FLASH_LOCAL_IMAGE:-eugr/spark-vllm-b12x@sha256:03a956544e9f9b4b7ba91690469fbe7848bdbef29a7d2e0f5788368467bb3595}"
 # Backing store for the flash target's file-backed 47.7 GiB PLE table. The
 # server rewrites it on every boot (~10 min from a fresh sparse file, ~55 min
 # over a populated one), so the launcher deletes the previous file first.
@@ -227,7 +246,8 @@ case "$MODEL_CHOICE" in
   flash)      MODEL_REPO="$FLASH_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_REV}" ;;
   flash-nvda) MODEL_REPO="$FLASH_NVDA_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_NVDA_REV}" ;;
   flash-uncensored) MODEL_REPO="$FLASH_UNC_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_UNC_REV}" ;;
-  *) printf 'ERROR: MODEL_CHOICE must be "stock", "uncensored", "fp8", "uncensored-fp8", "flash", "flash-nvda" or "flash-uncensored" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
+  flash-fp4-local) MODEL_REPO="$FLASH_LOCAL_REPO"; MODEL_REV="${MODEL_REV:-$FLASH_LOCAL_REV}" ;;
+  *) printf 'ERROR: MODEL_CHOICE must be one of "stock", "uncensored", "fp8", "uncensored-fp8", "flash", "flash-nvda", "flash-uncensored" or "flash-fp4-local" (got: %s)\n' "$MODEL_CHOICE" >&2; exit 1 ;;
 esac
 # Which flags the flash lane's checkpoint wants. The RadixArk export is plain
 # NVFP4 and says so; NVIDIA's is a mixed-precision export that resolves its own
@@ -250,6 +270,11 @@ resolve_flash_checkpoint_args() {
   case "$MODEL_CHOICE" in
     flash|flash-uncensored)
       FLASH_QUANT_ARGS="--quantization modelopt_fp4 --speculative-draft-model-quantization unquant " ;;
+    flash-fp4-local)
+      # Mixed by construction (QAD NVFP4 routed experts, MXFP8 attention), and
+      # the new scale format is why this target never leaves its container:
+      # the quantization is the b12x loader's to resolve.
+      FLASH_QUANT_ARGS="--quantization modelopt_mixed " ;;
     flash-nvda)
       FLASH_QUANT_ARGS="--moe-runner-backend flashinfer_cutlass " ;;
     *)
@@ -262,7 +287,7 @@ resolve_flash_checkpoint_args
 # never enabled together.
 LANE=27b; UNIT_NAME="qwen38-sglang.service"
 case "$MODEL_CHOICE" in
-  flash|flash-nvda|flash-uncensored) LANE=flash; UNIT_NAME="qwen38-flash.service" ;;
+  flash|flash-nvda|flash-uncensored|flash-fp4-local) LANE=flash; UNIT_NAME="qwen38-flash.service" ;;
 esac
 # Serving tier of the flash lane. Every mamba state slot costs 0.206 GiB of the
 # same pool the KV cache comes out of (measured here), and the hybrid GDN/QSA
@@ -319,6 +344,9 @@ resolve_flash_tier_args
 # The cookbook's verified value for both single-Spark cells. Lower it if your box
 # runs co-tenants: the pools are sized from what the host has free at profiling.
 FLASH_MEM_FRACTION="${FLASH_MEM_FRACTION:-0.85}"
+# The FP4-Local config's share: vLLM's own word for the same idea, and the
+# model card's verified DGX Spark cell runs it at 0.8.
+FLASH_GPU_UTIL="${FLASH_GPU_UTIL:-0.8}"
 # Reduced draft vocabulary, in token ids (0 = off). A speculative step's draft
 # reads the model's lm_head in full, and at 248,320 x 2560 in BF16 that is
 # 1.18 GiB read three times per MTP-3 engine step. SGLang can hand the draft a
@@ -424,6 +452,7 @@ fi
 # eval them with nothing else bound.
 SERVE_IMAGE="${SERVE_IMAGE:-$IMAGE}"
 FLASH_SERVE_IMAGE="${FLASH_SERVE_IMAGE:-$FLASH_IMAGE}"
+FLASH_LOCAL_SERVE_IMAGE="${FLASH_LOCAL_SERVE_IMAGE:-$FLASH_LOCAL_IMAGE}"
 # opencode, the client this repo configures and serves in the cockpit's Agent tab, is
 # pinned like everything else. Four things the repo does were read out of this
 # version's own binary and checked against its behaviour: the compaction threshold
@@ -591,7 +620,7 @@ without a terminal.
                         stay (--plan --recommended lists what it moves)
 
 Re-running over an existing install keeps the operator's choices: the target
-model (any of the seven), the context mode (native/1m), the flash serving tier,
+model (any of the eight), the context mode (native/1m), the flash serving tier,
 the port, the HF cache location and the opencode on/off choice are read from
 the installed unit or launcher (or the marker file) unless the env var or flag
 is passed explicitly, or --recommended. A value only an older release's default put there, which
@@ -627,6 +656,11 @@ box, the 27B image on 2026-10-09):
                                      precision export (~133 GB download), served
                                      with no --quantization and a pinned MoE
                                      runner; measured here as a tie with stock
+  MODEL_CHOICE=flash-fp4-local       the NVIDIA QAD FP4 build of the same model
+                                     (~96 GiB): its scale factors are in a new
+                                     lossless format, so this one serves from
+                                     the community b12x vLLM container instead
+                                     of SGLang, and needs no PLE table on NVMe
   SPEC_TOKEN_MAP_SIZE=0              flash: serve without the reduced draft
                                      vocabulary (it is worth 14 to 25% of decode
                                      and cannot change what the model may say)
@@ -639,6 +673,7 @@ box, the 27B image on 2026-10-09):
                                      fixed ring (measured +20% pool on this box,
                                      decode neutral, canaries 4/4)
   FLASH_MEM_FRACTION=0.85            flash only: static memory fraction
+  FLASH_GPU_UTIL=0.8                 FP4-Local only: vLLM's gpu-memory-utilization
   PLE_RSS_BUDGET_GB=8                flash only: resident-set budget of the
                                      N-gram table's mapping (0 disables the trim)
   PLE_DIR=~/flashnext-ple            flash only: where the 47.7 GiB backing file
@@ -652,6 +687,7 @@ box, the 27B image on 2026-10-09):
   PROXY_PORT=30001                   keepalive proxy port (default: PORT+1)
   SERVE_IMAGE=ref                    serving image for the 27B lane
   FLASH_SERVE_IMAGE=ref              serving image for the Flash-Next lane
+  FLASH_LOCAL_SERVE_IMAGE=ref        serving image for the FP4-Local flash config
   HF_CACHE=/path                     HuggingFace cache location (~24 GB for a 27B
                                      target and its draft, ~136 GB for flash)
   PORT=30000                         serving port
@@ -667,7 +703,7 @@ export QWEN38_RECOMMENDED="$RECOMMENDED"   # the side lanes' installers this run
 
 # ── Converge on the operator's installed choices ──
 # Re-running the installer (or the get.sh one-liner) must never silently reset
-# a choice that is already serving: the target model (any of the seven targets),
+# a choice that is already serving: the target model (any of the eight targets),
 # the port, and the HF cache location are read from the installed units and
 # kept, unless the corresponding env var was passed explicitly on this
 # invocation. Everything else (image digest, checkpoint revisions, launch
@@ -867,11 +903,23 @@ if [ "$INSTALLED_CHOICE" = "flash" ]; then
   # Converge on the installed flash launch script (the unit only points at it;
   # the engine flags and mounts live in $CONFIG_DIR/launch-flash.sh).
   FLASH_LAUNCH="$CONFIG_DIR/launch-flash.sh"
+  # The FP4-Local config swaps the lane's launcher for one that runs the b12x
+  # vLLM container; the unit's ExecStart points at whichever this box serves,
+  # and that is the one whose choices this run reads back.
+  if grep -q 'launch-flash-fp4local.sh' "$FLASH_UNIT_PATH" 2>/dev/null; then
+    FLASH_LAUNCH="$CONFIG_DIR/launch-flash-fp4local.sh"
+  fi
   CUR_REV=""; CUR_PORT=""; CUR_HF=""
   if [ -r "$FLASH_LAUNCH" ]; then
     CUR_REV="$(grep -oE -- '--revision [^ ]+' "$FLASH_LAUNCH" | head -1 | cut -d' ' -f2 || true)"
     if grep -q 'sglang.launch_server' "$FLASH_LAUNCH"; then
       # v1.5+ shape (SGLang, host networking): --port IS the host port.
+      CUR_PORT="$(grep -oE -- '--port [0-9]+' "$FLASH_LAUNCH" | head -1 | tr -dc '0-9' || true)"
+      CUR_HF="$(unit_hf_cache "$FLASH_LAUNCH")"
+    elif grep -q 'vllm serve' "$FLASH_LAUNCH"; then
+      # FP4-Local config (b12x vLLM, host networking): --port is the host port
+      # here too and the cache mount reads the same way; the model is vllm's
+      # serve argument, not a --model-path flag, and is read below.
       CUR_PORT="$(grep -oE -- '--port [0-9]+' "$FLASH_LAUNCH" | head -1 | tr -dc '0-9' || true)"
       CUR_HF="$(unit_hf_cache "$FLASH_LAUNCH")"
     else
@@ -885,7 +933,13 @@ if [ "$INSTALLED_CHOICE" = "flash" ]; then
       echo "      (working prefix caching; see CHANGELOG v1.5). Port/cache/model choices are kept."
     fi
     CUR_PLE="$(grep -oE -- '-v [^ :]+:/ple' "$FLASH_LAUNCH" | head -1 | sed -e 's/^-v //' -e 's|:/ple$||' || true)"
-    CUR_MODEL="$(grep -oE -- '--model-path [^ ]+' "$FLASH_LAUNCH" | head -1 | cut -d' ' -f2 || true)"
+    # Whichever of the three spellings the installed launcher uses (--model-path,
+    # a bare --model, or vLLM's serve argument, lanes.sh launcher_model): the
+    # FP4-Local launcher names its checkpoint positionally, and reading only the
+    # flags read this box as serving NO model, which sent a plain re-run to the
+    # SGLang engine on a target nobody chose (found in review, 2026-10-18). The
+    # retired v1.4 launcher named it the same way and is regenerated either way.
+    CUR_MODEL="$(launcher_model "$FLASH_LAUNCH")"
     # The tier lives in the launcher as the concurrency it pins, so a re-run
     # without FLASH_TIER keeps the tier the box is serving.
     if [ -z "${FLASH_TIER_ENV:-}" ] && [ "$RECOMMENDED" -eq 0 ]; then
@@ -940,6 +994,8 @@ if [ "$INSTALLED_CHOICE" = "flash" ]; then
       MODEL_CHOICE=flash-nvda; MODEL_REPO="$FLASH_NVDA_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$FLASH_NVDA_REV}"
     elif [ "$RECOMMENDED" -eq 0 ] && [ -n "${CUR_MODEL:-}" ] && [ "$CUR_MODEL" = "$FLASH_UNC_REPO" ]; then
       MODEL_CHOICE=flash-uncensored; MODEL_REPO="$FLASH_UNC_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$FLASH_UNC_REV}"
+    elif [ "$RECOMMENDED" -eq 0 ] && [ -n "${CUR_MODEL:-}" ] && [ "$CUR_MODEL" = "$FLASH_LOCAL_REPO" ]; then
+      MODEL_CHOICE=flash-fp4-local; MODEL_REPO="$FLASH_LOCAL_REPO"; MODEL_REV="${_ENV_MODEL_REV:-$FLASH_LOCAL_REV}"
     fi
     LANE=flash; UNIT_NAME="qwen38-flash.service"
     if [ "$RECOMMENDED" -eq 1 ]; then
@@ -1079,6 +1135,14 @@ if [ -n "$INSTALLED_CHOICE" ]; then
     fi
   fi
 fi
+
+# The one knob the steps below read to tell which engine the flash lane runs
+# this run: SGLang (every other flash target) or the b12x vLLM container that
+# is the only runtime able to load the FP4-Local scale format. Set after the
+# convergence block, which is the last place MODEL_CHOICE can still move.
+FLASH_FP4_LOCAL=0
+if [ "$MODEL_CHOICE" = "flash-fp4-local" ]; then FLASH_FP4_LOCAL=1; fi
+
 # (die() is defined at the top of this file, above the root wall that is now the
 # first refusal to call it. It moved out of the steps in v1.10.2 because of the
 # port refusals below: a function defined under a call that fires printed
@@ -1328,7 +1392,14 @@ side_begun(){  # $1 lane (image, video, kolibri, nemotron, nemotron-super)
 # finished on stock (found in review, 2026-10-15).
 text_lane_prepared(){  # $1 flash|27b
   local f img map model rev hf
-  if [ "$1" = flash ]; then f="$CONFIG_DIR/launch-flash.sh"; else f="$SGL_UNIT_PATH"; fi
+  f="$SGL_UNIT_PATH"
+  if [ "$1" = flash ]; then
+    # which config of the lane the box installed: the unit's ExecStart says
+    f="$CONFIG_DIR/launch-flash.sh"
+    if [ -f "$FLASH_UNIT_PATH" ] && grep -q launch-flash-fp4local "$FLASH_UNIT_PATH" 2>/dev/null; then
+      f="$CONFIG_DIR/launch-flash-fp4local.sh"
+    fi
+  fi
   img="$(engine_image "$f")"
   if [ -z "$img" ] || ! docker image inspect "$img" >/dev/null 2>&1; then return 1; fi
   if [ "$1" = flash ]; then
@@ -1337,7 +1408,7 @@ text_lane_prepared(){  # $1 flash|27b
   else
     draft_in_cache "$f" || return 1
   fi
-  model="$({ grep -m1 -oE -- '--model-path [^ ]+' "$f" 2>/dev/null || true; } | head -1 | cut -d' ' -f2)"
+  model="$(launcher_model "$f")"
   rev="$({ grep -m1 -oE -- '--revision [^ ]+' "$f" 2>/dev/null || true; } | head -1 | cut -d' ' -f2)"
   hf="$(unit_hf_cache "$f")"
   [ -n "$model" ] && ckpt_cached "${hf:-$HF_CACHE}/hub/models--${model//\//--}" "${rev:-main}"
@@ -1489,7 +1560,15 @@ FREE_DISK_GB=$({ df -BG --output=avail "$HF_CACHE" 2>/dev/null || true; } | tail
 # that free outgrew in either store (found in review, 2026-10-15).
 NEED_GB=45; DOCKER_NEED_GB=48; IMG_LABEL="31 GB Docker image"
 if [ "$LANE" = "flash" ]; then
-  NEED_GB=180; DOCKER_NEED_GB=49; IMG_LABEL="32 GB Docker image"
+  if [ "$FLASH_FP4_LOCAL" -eq 1 ]; then
+    # 106, the same number lanes.sh asks for a first Load of this checkpoint: the
+    # 96 GiB of weights and the fetch caches, with no PLE table beside them. The
+    # b12x image is 18.19 GB unpacked and 9.70 GB to download (measured at the
+    # pin, 2026-10-18): 28 GiB at the pull's peak by the store rule above.
+    NEED_GB=106; DOCKER_NEED_GB=28; IMG_LABEL="17 GB Docker image"
+  else
+    NEED_GB=180; DOCKER_NEED_GB=49; IMG_LABEL="32 GB Docker image"
+  fi
 fi
 # What is left to download, not what a checkpoint weighs. huggingface_hub creates the
 # snapshot folder before the first byte of the first file (file_download.py, 1.31.0), so a
@@ -1506,7 +1585,7 @@ else
   NEED_GB=$((NEED_GB - ${HAVE_B:-0} / 1073741824)); [ "$NEED_GB" -ge 10 ] || NEED_GB=10   # floor: never under the need
 fi
 PLE_OWN_DEV=""
-if [ "$LANE" = "flash" ] && [ "$UNITS_ONLY" -eq 0 ] && ! ls "$PLE_DIR"/ple_table_*.bin >/dev/null 2>&1; then
+if [ "$LANE" = "flash" ] && [ "$FLASH_FP4_LOCAL" -eq 0 ] && [ "$UNITS_ONLY" -eq 0 ] && ! ls "$PLE_DIR"/ple_table_*.bin >/dev/null 2>&1; then
   # The 47.7 GiB sparse backing file is written on every boot, in PLE_DIR; the space
   # has to be there whether or not a previous boot left one behind, and on that disk:
   # it was counted against HF_CACHE's, which says nothing when PLE_DIR is elsewhere.
@@ -1527,7 +1606,7 @@ DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var
 DOCKER_FREE_GB=$({ df -BG --output=avail "$DOCKER_ROOT" 2>/dev/null || true; } | tail -1 | tr -dc '0-9')
 # What step 2 pulls, decided here because the room it needs depends on it.
 if [ "$LANE" = "flash" ]; then
-  PULL_TARGET="$FLASH_IMAGE"
+  if [ "$FLASH_FP4_LOCAL" -eq 1 ]; then PULL_TARGET="$FLASH_LOCAL_IMAGE"; else PULL_TARGET="$FLASH_IMAGE"; fi
 else
   PULL_TARGET="$IMAGE"
 fi
@@ -1598,8 +1677,13 @@ echo "OK (aarch64, ${TOTAL_GB} GB RAM, ${FREE_DISK_GB} GB free)"
 
 if [ "$UNITS_ONLY" -eq 1 ]; then
   if [ -n "$ATS_CANNOT" ]; then step "2/10 The Flash-Next image: not pulled, as this GPU cannot start the flash lane"
+  elif [ "$LANE" = "flash" ] && [ "$FLASH_FP4_LOCAL" -eq 1 ]; then step "2/10 The b12x vLLM image: pulled at the lane's first Load"
   elif [ "$LANE" = "flash" ]; then step "2/10 The Flash-Next image: pulled at the lane's first Load (~16 GB to download, 35 GB on disk)"
   else step "2/10 The SGLang image: pulled at the lane's first Load (~15 GB to download)"; fi
+  PULLED_IMAGE="$PULL_TARGET"
+elif [ "$LANE" = "flash" ] && [ "$FLASH_FP4_LOCAL" -eq 1 ]; then
+  step "2/10 Pulling the b12x vLLM image, the FP4-Local serving runtime (~10 GB to download, 18 GB unpacked, one-time, resumable)"
+  docker pull "$PULL_TARGET" || die "docker pull failed. Causes: no internet, Docker Hub rate limit (retry in a few minutes or 'docker login'), or the pinned digest was removed upstream: try FLASH_LOCAL_IMAGE=eugr/spark-vllm-b12x:latest ./install.sh, the moving tag the model card publishes"
   PULLED_IMAGE="$PULL_TARGET"
 elif [ "$LANE" = "flash" ]; then
   step "2/10 Pulling the official SGLang Flash-Next image (~16 GB to download, 35 GB on disk, one-time, resumable)"
@@ -1621,7 +1705,10 @@ unpin_stale() {   # $1 lane, $2 the image the lane is pinned to now
   cur="$(docker image inspect "$2" --format '{{.Id}}' 2>/dev/null)" || return 0
   docker images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}' qwen38-pinned 2>/dev/null \
     | while read -r tag id; do
-        case "$tag" in "qwen38-pinned:$1-"*) ;; *) continue ;; esac
+        # The exact key: "flash-" is a prefix of "flash-local-", and a prefix match let
+        # an SGLang-flash or 27B run untag the FP4-Local pin and the other way round
+        # (found in review, 2026-10-20).
+        [[ "$tag" =~ ^qwen38-pinned:$1-[0-9a-f]{12}$ ]] || continue
         if [ "$id" = "$cur" ] || [ -n "$(docker ps -aq --filter "ancestor=$id" 2>/dev/null)" ]; then
           continue
         fi
@@ -1630,10 +1717,29 @@ unpin_stale() {   # $1 lane, $2 the image the lane is pinned to now
         fi
       done
 }
-pin_tag "$LANE" "$PULLED_IMAGE"
-if [ "$LANE" = "flash" ]; then pin_tag 27b "$IMAGE"; else pin_tag flash "$FLASH_IMAGE"; fi
-unpin_stale "$LANE" "$PULLED_IMAGE" || true
-if [ "$LANE" = "flash" ]; then unpin_stale 27b "$IMAGE" || true; else unpin_stale flash "$FLASH_IMAGE" || true; fi
+# The lane's own pin key: the FP4-Local config's image is pinned under flash-local, and
+# only there (the SGLang flash image keeps flash).
+PIN_KEY="$LANE"; [ "$FLASH_FP4_LOCAL" -eq 1 ] && PIN_KEY=flash-local
+pin_tag "$PIN_KEY" "$PULLED_IMAGE"
+if [ "$LANE" = "flash" ]; then
+  pin_tag 27b "$IMAGE"
+  # The two configs of the flash lane are two images, and one lane key would let
+  # the other config's install untag the one this box serves: unpin_stale retires
+  # every tag under the key except the current one (found in review, 2026-10-18,
+  # when a 27B-lane install untagged the serving b12x image). The FP4-Local pin
+  # therefore lives under its own key; uninstall deletes the whole qwen38-pinned
+  # repo either way.
+  if [ "$FLASH_FP4_LOCAL" -eq 0 ]; then pin_tag flash "$FLASH_IMAGE"; fi
+else
+  pin_tag flash "$FLASH_IMAGE"
+fi
+unpin_stale "$PIN_KEY" "$PULLED_IMAGE" || true
+if [ "$LANE" = "flash" ]; then
+  unpin_stale 27b "$IMAGE" || true
+  if [ "$FLASH_FP4_LOCAL" -eq 0 ]; then unpin_stale flash "$FLASH_IMAGE" || true; fi
+else
+  unpin_stale flash "$FLASH_IMAGE" || true
+fi
 
 if [ -n "$ATS_CANNOT" ]; then
   step "3/10 The GPU from a container: not asked, as this GPU cannot start the flash lane"
@@ -1652,8 +1758,12 @@ fi
 
 if [ "$UNITS_ONLY" -eq 1 ]; then
   if [ -n "$ATS_CANNOT" ]; then step "4/10 The Flash-Next checkpoint: not fetched, as this GPU cannot start the flash lane"
+  elif [ "$LANE" = "flash" ] && [ "$FLASH_FP4_LOCAL" -eq 1 ]; then step "4/10 The FP4-Local checkpoint: fetched at the lane's first Load (~102 GB)"
   elif [ "$LANE" = "flash" ]; then step "4/10 The Flash-Next checkpoint: fetched at the lane's first Load (~136 GB)"
   else step "4/10 The checkpoints (the target and its DFlash2 draft): fetched at the lane's first Load (~24 GB, ~33 for an FP8 target)"; fi
+elif [ "$LANE" = "flash" ] && [ "$FLASH_FP4_LOCAL" -eq 1 ]; then
+  step "4/10 Downloading the FP4-Local checkpoint (~102 GB, one-time, reuses/resumes any local copy)"
+  echo "This is the big one: at 100 MB/s it takes ~17 min. Interrupting is safe, re-running resumes."
 elif [ "$LANE" = "flash" ]; then
   step "4/10 Downloading the Flash-Next checkpoint (~136 GB, one-time, reuses/resumes any local copy)"
   echo "This is the big one: at 100 MB/s it takes ~25 min. Interrupting is safe, re-running resumes."
@@ -1714,8 +1824,8 @@ fi
 # are the same thing on a default install and different the moment someone
 # passes SERVE_IMAGE=, which is the one case where this line is the only
 # on-screen confirmation that the override took.
-LANE_SERVE_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_SERVE_IMAGE" || echo "$SERVE_IMAGE")"
-LANE_PIN_IMAGE="$([ "$LANE" = flash ] && echo "$FLASH_IMAGE" || echo "$IMAGE")"
+LANE_SERVE_IMAGE="$([ "$LANE" = flash ] && { [ "$FLASH_FP4_LOCAL" -eq 1 ] && echo "$FLASH_LOCAL_SERVE_IMAGE" || echo "$FLASH_SERVE_IMAGE"; } || echo "$SERVE_IMAGE")"
+LANE_PIN_IMAGE="$([ "$LANE" = flash ] && { [ "$FLASH_FP4_LOCAL" -eq 1 ] && echo "$FLASH_LOCAL_IMAGE" || echo "$FLASH_IMAGE"; } || echo "$IMAGE")"
 if [ "$LANE_SERVE_IMAGE" = "$LANE_PIN_IMAGE" ]; then
   step "5/10 Serving image: the pinned official one, nothing to build"
   echo "$LANE_SERVE_IMAGE"
@@ -1731,7 +1841,7 @@ else
 fi
 
 # The reduced draft vocabulary (lanes.sh: flash_token_map says how and why).
-if [ "$LANE" = "flash" ] && [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ] && [ "$UNITS_ONLY" -eq 0 ]; then
+if [ "$LANE" = "flash" ] && [ "$FLASH_FP4_LOCAL" -eq 0 ] && [ "${SPEC_TOKEN_MAP_SIZE:-0}" -gt 0 ] && [ "$UNITS_ONLY" -eq 0 ]; then
   flash_token_map "$FLASH_IMAGE" "$HF_CACHE" "$MODEL_REPO" "$MODEL_REV" "$SPEC_TOKEN_MAP_SIZE" \
     "Re-run ./install.sh after the checkpoint is in place to build and serve it." \
     || die "building the reduced draft vocabulary failed. It is an optimization, not a requirement: re-run with SPEC_TOKEN_MAP_SIZE=0 to serve without it, and please open an issue with the output above."
@@ -1744,6 +1854,10 @@ fi
 ENGINE_UNIT_PATH="$SGL_UNIT_PATH"; [ "$LANE" = "flash" ] && ENGINE_UNIT_PATH="$FLASH_UNIT_PATH"
 ENGINE_CKPTS=("$MODEL_REPO@$MODEL_REV")
 [ "$LANE" = "27b" ] && ENGINE_CKPTS+=("$DRAFT2_REPO@$DRAFT2_REV")
+# The FP4-Local engine's only gate is the vLLM auth middleware, mounted from a folder the
+# unit names only as a directory: passed as a file, as vllm-lane.sh's LANE_FILES does, so an
+# update that changes it restarts the engine (found in review, 2026-10-20).
+[ "$FLASH_FP4_LOCAL" -eq 1 ] && ENGINE_CKPTS+=("--extra=$CONFIG_DIR/vllm-auth/vllm_engine_auth.py")
 ENGINE_FP_BEFORE=""; ENGINE_RUNNING_IT="no: not installed yet"
 if [ -f "$ENGINE_UNIT_PATH" ]; then
   ENGINE_FP_BEFORE="$(python3 "$REPO_DIR/engine-inputs.py" fingerprint "$ENGINE_UNIT_PATH" "$CONFIG_DIR" "$HF_CACHE" "${ENGINE_CKPTS[@]}" 2>/dev/null || true)"
@@ -1781,7 +1895,16 @@ cmp -s "$REPO_DIR/flash-ats-check.sh" "$CONFIG_DIR/flash-ats-check.sh" \
 # the served model (both fixes: reasoning_effort normalization + mid-conversation
 # system messages as <system-reminder> blocks; see patch-template.py).
 TEMPLATE_OUT="$CONFIG_DIR/chat-template-sglang.jinja"
-[ "$LANE" = "flash" ] && TEMPLATE_OUT="$CONFIG_DIR/chat-template-flashnext.jinja"
+if [ "$LANE" = "flash" ]; then
+  # One file per config, not one per lane: the two flash configs boot from two
+  # patched checkpoints, and whichever unit is enabled must read the template
+  # patched from the checkpoint it serves, not the other one's last install.
+  if [ "$FLASH_FP4_LOCAL" -eq 1 ]; then
+    TEMPLATE_OUT="$CONFIG_DIR/chat-template-flashnext-local.jinja"
+  else
+    TEMPLATE_OUT="$CONFIG_DIR/chat-template-flashnext.jinja"
+  fi
+fi
 if [ "$KEEP_MODEL_VERBATIM" -eq 1 ]; then
   [ -s "$TEMPLATE_OUT" ] \
     || die "custom model kept, but no patched template at $TEMPLATE_OUT. Pass MODEL_CHOICE=stock, uncensored, fp8 or uncensored-fp8 to regenerate it."
@@ -2184,9 +2307,16 @@ esac
 OC_27B_WINDOW=262144; [ "$OC_27B_MODE" = "1m" ] && OC_27B_WINDOW=1010000
 OC_27B_NAME="$(python3 "$REPO_DIR/oc-point-default.py" --label "$OC_27B_TARGET" "$OC_27B_WINDOW" || true)"
 OC_FLASH_TARGET=flash
-case "$(grep -oE -- '--model-path [^ ]+' "$CONFIG_DIR/launch-flash.sh" 2>/dev/null | head -1 | cut -d' ' -f2 || true)" in
-  "$FLASH_UNC_REPO")  OC_FLASH_TARGET=flash-uncensored ;;
-  "$FLASH_NVDA_REPO") OC_FLASH_TARGET=flash-nvda ;;
+# the launcher the flash unit actually runs, and its checkpoint, decide the label:
+# the FP4-Local config keeps its own launcher name beside the SGLang one
+OC_FLASH_LAUNCH="$CONFIG_DIR/launch-flash.sh"
+if [ -f "$FLASH_UNIT_PATH" ] && grep -q launch-flash-fp4local "$FLASH_UNIT_PATH" 2>/dev/null; then
+  OC_FLASH_LAUNCH="$CONFIG_DIR/launch-flash-fp4local.sh"
+fi
+case "$(launcher_model "$OC_FLASH_LAUNCH")" in
+  "$FLASH_UNC_REPO")    OC_FLASH_TARGET=flash-uncensored ;;
+  "$FLASH_NVDA_REPO")   OC_FLASH_TARGET=flash-nvda ;;
+  "$FLASH_LOCAL_REPO")  OC_FLASH_TARGET=flash-fp4-local ;;
 esac
 OC_FLASH_NAME="$(python3 "$REPO_DIR/oc-point-default.py" --label "$OC_FLASH_TARGET" 262144 || true)"
 # Its pair from the same table, for the tier its launcher runs, as the 27B's above. A copy
@@ -2194,7 +2324,7 @@ OC_FLASH_NAME="$(python3 "$REPO_DIR/oc-point-default.py" --label "$OC_FLASH_TARG
 # context tiers to 110,000 at every run that served the 27B (the reference box, 2026-10-06).
 OC_FLASH_CTX=""; OC_FLASH_OUT=""
 if [ "$OC_FLASH" -eq 1 ] && [ "$LANE" != "flash" ]; then
-  OC_FLASH_PAIR="$("$REPO_DIR/oc-limits.sh" "$OC_FLASH_TARGET" --from "$CONFIG_DIR/launch-flash.sh")" \
+  OC_FLASH_PAIR="$("$REPO_DIR/oc-limits.sh" "$OC_FLASH_TARGET" --from "$OC_FLASH_LAUNCH")" \
     || die "oc-limits.sh refused $OC_FLASH_TARGET (repo bug: please open an issue)"
   OC_FLASH_CTX="${OC_FLASH_PAIR%% *}"; OC_FLASH_OUT="$(echo "$OC_FLASH_PAIR" | cut -d' ' -f2)"
 fi
@@ -2585,8 +2715,16 @@ if [ -f "$UNIT_PATH" ]; then
   echo "previous unit backed up at $CONFIG_DIR/$UNIT_NAME.bak-preupdate"
 fi
 if [ "$LANE" = "flash" ]; then
-  UNIT_TPL="$REPO_DIR/qwen38-flash.service.template"
-  SERVE_IMAGE_FINAL="$FLASH_SERVE_IMAGE"
+  if [ "$FLASH_FP4_LOCAL" -eq 1 ]; then
+    # The same unit name, a different launcher: the FP4-Local config differs
+    # from every other flash target in its runtime, not in its lane. A box
+    # installing it takes the unit whose ExecStart runs the b12x launcher.
+    UNIT_TPL="$REPO_DIR/qwen38-flash-fp4local.service.template"
+    SERVE_IMAGE_FINAL="$FLASH_LOCAL_SERVE_IMAGE"
+  else
+    UNIT_TPL="$REPO_DIR/qwen38-flash.service.template"
+    SERVE_IMAGE_FINAL="$FLASH_SERVE_IMAGE"
+  fi
 else
   UNIT_TPL="$REPO_DIR/qwen38-sglang.service.template"
   [ "$CONTEXT_MODE" = "1m" ] && UNIT_TPL="$REPO_DIR/qwen38-sglang-1m.service.template"
@@ -2664,6 +2802,7 @@ render_tpl() {  # $1 template file; substituted result on stdout
       -e "s|__FLASH_MEM_FRACTION__|$(esc "$FLASH_MEM_FRACTION")|g" \
       -e "s|__PLE_RSS_BUDGET_GB__|$(esc "$PLE_RSS_BUDGET_GB")|g" \
       -e "s|__SPEC_TOKEN_MAP_LINE__|$(esc "$SPEC_TOKEN_MAP_LINE")|g" \
+      -e "s|__FLASH_GPU_UTIL__|$(esc "$FLASH_GPU_UTIL")|g" \
       "$1"
 }
 # What this run renders before installing it is removed however the run ends: a die between
@@ -2672,21 +2811,37 @@ RENDERED=()
 forget_rendered(){ local f; for f in "${RENDERED[@]}"; do if [ -f "$f" ]; then rm -f -- "$f"; fi; done; return 0; }
 trap forget_rendered EXIT
 if [ "$LANE" = "flash" ]; then
-  mkdir -p "$PLE_DIR"
+  if [ "$FLASH_FP4_LOCAL" -eq 1 ]; then
+    LAUNCH_TPL="$REPO_DIR/qwen38-flash-fp4local-launch.sh.template"
+    LAUNCH_NAME="launch-flash-fp4local.sh"
+    # No PLE table: the b12x runtime carries the n-gram embedding inside its
+    # own loading path, so this config never writes the 47.7 GiB backing file.
+    # The launcher mounts these; made here, as this user, so docker never
+    # creates them root-owned on the first start (the Nemotron lane's lesson).
+    # vllm_engine_auth is every vLLM lane's middleware, in its shared folder.
+    mkdir -p "$CONFIG_DIR/flashnext-local-cache"/{vllm,flashinfer,b12x,triton}
+    mkdir -p "$CONFIG_DIR/vllm-auth"
+    cmp -s "$REPO_DIR/vllm_engine_auth.py" "$CONFIG_DIR/vllm-auth/vllm_engine_auth.py" \
+      || install -m 644 "$REPO_DIR/vllm_engine_auth.py" "$CONFIG_DIR/vllm-auth/vllm_engine_auth.py"
+  else
+    LAUNCH_TPL="$REPO_DIR/qwen38-flash-launch.sh.template"
+    LAUNCH_NAME="launch-flash.sh"
+    mkdir -p "$PLE_DIR"
+  fi
   # The docker-run command lives in a plain launch script, not in ExecStart:
   # systemd applies its own C-style unescaping before bash would, and the JSON
   # arguments (--speculative-config, splitting_ops) do not survive two rounds.
   TMP_LAUNCH="$(mktemp)"; RENDERED+=("$TMP_LAUNCH")
-  render_tpl "$REPO_DIR/qwen38-flash-launch.sh.template" > "$TMP_LAUNCH"
+  render_tpl "$LAUNCH_TPL" > "$TMP_LAUNCH"
   bash -n "$TMP_LAUNCH" || die "rendered flash launch script does not parse (report this repo bug)"
   # rewritten only when it changes: the engine reads it at start, and a rewrite, even an
   # identical one, would make the next run restart a running engine (engine-inputs.py)
   # said as it is: an update that changed nothing here read "wrote" all the same
-  if cmp -s "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh"; then
-    echo "launch script unchanged: $CONFIG_DIR/launch-flash.sh"
+  if cmp -s "$TMP_LAUNCH" "$CONFIG_DIR/$LAUNCH_NAME"; then
+    echo "launch script unchanged: $CONFIG_DIR/$LAUNCH_NAME"
   else
-    install -m 755 "$TMP_LAUNCH" "$CONFIG_DIR/launch-flash.sh"
-    echo "wrote $CONFIG_DIR/launch-flash.sh"
+    install -m 755 "$TMP_LAUNCH" "$CONFIG_DIR/$LAUNCH_NAME"
+    echo "wrote $CONFIG_DIR/$LAUNCH_NAME"
   fi
   rm -f "$TMP_LAUNCH"
 fi
@@ -2938,6 +3093,8 @@ else
 fi
 if [ "$ENGINE_KEEP" -eq 1 ]; then
   step "9/10 Keeping the running engine: nothing it reads changed since it started (RESTART_ENGINE=1 restarts it)"
+elif [ "$LANE" = "flash" ] && [ "$FLASH_FP4_LOCAL" -eq 1 ]; then
+  step "9/10 Starting (the first boot loads 96 GiB and builds its kernels; later boots load the cache)"
 elif [ "$LANE" = "flash" ]; then
   step "9/10 Starting (every boot ≈ 12-15 min: the weight load writes the whole 47.7 GiB PLE table into its file, then CUDA graph capture)"
 else
@@ -2969,7 +3126,13 @@ prove_text_lane(){
   local unit="$1" model="$2" after="${3:-}" r0 n st raw verdict rc=0
   r0="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null | tr -dc '0-9')"
   sudo systemctl start "$unit" || { echo "NOTE: $unit did not start (journalctl -u $unit -n 50)"; return 1; }
-  for n in $(seq 1 150); do
+  local wait_n=150
+  # The FP4-Local config of the flash lane loads 96 GiB and AOT-compiles cold;
+  # 20 min is the SGLang lanes' wall, not this one's.
+  if [ "$unit" = "qwen38-flash.service" ] && grep -q launch-flash-fp4local "$FLASH_UNIT_PATH" 2>/dev/null; then
+    wait_n=360
+  fi
+  for n in $(seq 1 "$wait_n"); do
     if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
       raw="$(curl -s -m 300 "http://127.0.0.1:$PORT/v1/chat/completions" \
         -H @<(printf 'Authorization: Bearer %s\n' "$KEY") -H 'Content-Type: application/json' \
@@ -2978,7 +3141,7 @@ prove_text_lane(){
       verdict="$(printf '%s' "$raw" | python3 -c 'import json,sys
 try:
     m=json.load(sys.stdin)["choices"][0]["message"]
-    text=(m.get("content") or "")+(m.get("reasoning_content") or "")
+    text=(m.get("content") or "")+(m.get("reasoning_content") or "")+(m.get("reasoning") or "")
     print("CORRUPT" if "!"*32 in text else "OK" if text.strip() else "EMPTY")
 except Exception as e:
     print(f"FAIL:{e}")')"
@@ -3001,14 +3164,25 @@ except Exception as e:
     sleep 8
   done
   [ "$after" = stop ] && sudo systemctl stop "$unit"
-  echo "NOTE: $unit did not answer within 20 min: journalctl -u $unit -n 50"
+  echo "NOTE: $unit did not answer within $((wait_n * 8 / 60)) min: journalctl -u $unit -n 50"
   return 1
 }
 # what the wait is made of: the flash lane rewrites its PLE table on every boot, and said
 # "first boot compiles kernels" through a 13-minute load that compiled nothing
 LOAD_WHY="first boot compiles kernels, be patient"
-[ "$LANE" = "flash" ] && LOAD_WHY="every boot writes the 47.7 GiB PLE table, be patient"
-for i in $(seq 1 150); do
+WAIT_IT=150
+if [ "$LANE" = "flash" ]; then
+  if [ "$FLASH_FP4_LOCAL" -eq 1 ]; then
+    # The FP4-Local config loads 96 GiB and AOT-compiles on a cold first boot (the
+    # card names the runtime and the AOT flags, not its minutes); the artifacts
+    # live in the mounted caches, so later boots are load-only.
+    LOAD_WHY="the first boot loads 96 GiB and builds its kernels, later ones load the cache"
+    WAIT_IT=360
+  else
+    LOAD_WHY="every boot writes the 47.7 GiB PLE table, be patient"
+  fi
+fi
+for i in $(seq 1 "$WAIT_IT"); do
   if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     echo "health OK, running a real generation smoke test..."
     # curl on its own, so its failure is named: in the pipe it came out through the ERR trap
@@ -3030,7 +3204,7 @@ for i in $(seq 1 150); do
     SMOKE="$(printf '%s' "$SMOKE_RAW" | python3 -c 'import json,sys
 try:
     m=json.load(sys.stdin)["choices"][0]["message"]
-    text=(m.get("content") or "")+(m.get("reasoning_content") or "")
+    text=(m.get("content") or "")+(m.get("reasoning_content") or "")+(m.get("reasoning") or "")
     print("CORRUPT" if "!"*32 in text else "OK" if text.strip() else "EMPTY")
 except Exception as e:
     print(f"FAIL:{e}")')"
@@ -3065,6 +3239,7 @@ except Exception as e:
       # are offered: the 27B one since v1.14 serves the official image, the flash
       # one since v1.18.7 retired OVERLAY_FLASH=1, its rollback.
       [ -n "$tagref" ] && [ "$tagref" != "$SERVE_IMAGE" ] && [ "$tagref" != "$FLASH_SERVE_IMAGE" ] \
+        && [ "$tagref" != "$FLASH_LOCAL_SERVE_IMAGE" ] \
         && case "$LEFTOVER_NOTES" in *"'$tagref'"*) ;; *) LEFTOVER_NOTES="${LEFTOVER_NOTES}      docker rmi '$tagref'\n" ;; esac
     done < <({ docker images --format '{{.Repository}}:{{.Tag}}' qwen38-dflash2 2>/dev/null; docker images --format '{{.Repository}}:{{.Tag}}' qwen38-flash 2>/dev/null; } || true)
     if [ -n "$LEFTOVER_NOTES" ]; then
@@ -3371,4 +3546,4 @@ except Exception as e:
   [ $((i % 15)) -eq 0 ] && echo "  still loading... ($((i*8))s; $LOAD_WHY)"
   sleep 8
 done
-die "Server did not come up within 20 min. Watch: journalctl -u $UNIT_NAME -f"
+die "Server did not come up within $((WAIT_IT * 8 / 60)) min. Watch: journalctl -u $UNIT_NAME -f"

@@ -49,7 +49,8 @@ in another mode fetches nothing for it:
   (`prepare-lane.sh`, `switch-model.sh`) refuse it before the first byte, and
   before the serving lane is stopped.
 - The launcher stops its start with the reason, which the cockpit shows as
-  **cannot start on this GPU**, instead of a new start every 15 s.
+  **cannot start on this GPU**, instead of a new start every 15 s. The
+  FP4-Local config's own launcher asks the same way (below).
 
 A mode nvidia-smi does not name (an older driver, `[N/A]`), or a check that
 cannot run, leaves the engine to decide, as before. Serving the table on a GPU without ATS would take a
@@ -241,5 +242,109 @@ prefill, new requests can starve while one request decodes a long answer
 agent client never notices, concurrent clients see bursty latency.
 `/flush_cache` is refused with a 400 while anything is in flight, by design:
 flush when the lane is idle.
+
+## The lane's other config: FP4-Local, on vLLM
+
+`nvidia/Qwen3.8-Flash-Next-FP4-Local` is NVIDIA's QAD (quantization-aware
+distillation) FP4 build of the same model: **102,262,310,289 bytes measured at
+the pinned `b9ce18a` (95.24 GiB, what the card rounds to ~96 GiB), against the
+176B NVFP4 tree's 136 GB** (units noted: the card counts GiB, this page's disk
+numbers are GB of 10^9). Its scale factors are in a new lossless compression
+format that upstream vLLM does not read yet: the NVIDIA card is explicit that
+a community container is required, so this config runs the pinned
+`eugr/spark-vllm-b12x` image, not SGLang. That makes it a *config* of this lane
+rather than just another target: the serving engine changes, and only the
+installer renders the unit and its launcher around it, so `switch-model.sh` can
+switch onto that render, never into one it has to make (below).
+
+```
+MODEL_CHOICE=flash-fp4-local ./install.sh      # make it the serving config
+./switch-model.sh flash-fp4-local              # lane-level bring-back once its launcher is the unit's
+./switch-model.sh flash-fp4-local --fetch      # only the checkpoint, once the b12x image is here
+./prepare-lane.sh flash flash-fp4-local        # image and checkpoint, no serving
+MODEL_CHOICE=flash ./install.sh                # back to the SGLang config above
+```
+
+It keeps the lane's whole serving surface: the same unit (`qwen38-flash.service`),
+the same launcher pattern (`launch-flash-fp4local.sh` beside `launch-flash.sh`;
+the unit's `ExecStart` says which one is installed), the same served name
+(`qwen3.8-flash-next`, so the proxy, the cockpit and opencode keep working with no
+new mapping), and the same patched-template and media-hardening steps: this
+build's own patched template, served from `chat-template-flashnext-local.jinja`.
+The cockpit lists it as the eighth target: its Download runs
+`./prepare-lane.sh flash flash-fp4-local` (image and checkpoint, no launcher on
+the box needed) and its Load runs `./switch-model.sh flash-fp4-local`. That
+switch is a lane-level bring-back, and it claims only what `install.sh` has
+already installed: when the unit's `ExecStart` names `launch-flash-fp4local.sh`
+it fetches the checkpoint, regenerates the served chat template from that
+patched file, enables `qwen38-flash.service`, disables the other lane units,
+and updates the keepalive ceiling, opencode's default and limits and the
+conformity target. While the unit still names the SGLang launcher it refuses,
+with the exact install command; `--fetch` works in either config and with no
+flash unit installed at all, but fetches the checkpoint only and needs the b12x
+image already on the box (`./prepare-lane.sh flash flash-fp4-local` fetches
+both without serving), and like every flash target it is refused on a GPU
+outside ATS. The reverse direction is the same rule: an SGLang
+flash target on a box running this config is refused, and `MODEL_CHOICE=<target> ./install.sh`
+is the answer it says. Checkpoint switches inside each config work as before.
+
+What differs:
+
+* **No PLE table.** Nothing generates one here and no backing file is ever
+  written: with `VLLM_PLE_TABLE_MEMORY=disk` (the card's own DGX Spark setting)
+  the b12x runtime reads the 47.7 GiB n-gram table's rows *directly from the
+  checkpoint's own safetensors*, over io_uring inside the container. So there is
+  no rewrite at every boot and no 52 GB file beside the checkpoint: the disk
+  ask for this config is 114 GB (106 GiB) where the SGLang flash configs ask
+  248 GB (180 GiB for the checkpoint and its caches, plus 50 GiB for the PLE
+  table), and the launcher's `seccomp=unconfined` is load-bearing: docker's
+  default seccomp profile blocks io_uring.
+* **The ATS guard, inherited.** The lane's guard covers this config whole:
+  install, `prepare-lane.sh`, the switch and `--fetch` refuse it on a GPU
+  outside ATS, and its launcher asks `flash-ats-check.sh` first and stops with
+  exit 78 (the unit's `RestartPreventExitStatus=78`), so the cockpit shows
+  **cannot start on this GPU**. This engine reads no table file through host
+  page tables; whether its io_uring path needs ATS is not measured, so the
+  guard stays until a box outside ATS shows it serving.
+* **The key, on the repo's terms.** This build's own guard puts `/metrics`
+  behind the server key (its `UNGUARDED_PATHS` lost the path and the upstream
+  toggle for it, read in the pinned image, 2026-10-19), which would blind the
+  cockpit's five-minute counter window and the installer's probes, readers
+  the repo's contract keeps key-free on every lane. So the FP4-Local launcher
+  hands the engine no `--config` with a key at all: `vllm_engine_auth.RequireKey`
+  is the only gate, reading the box's key from the mounted file and exempting
+  exactly `/health` and `/metrics`, as the SGLang lanes do. The config leaves
+  `VLLM_SERVER_DEV_MODE` off, and that is load-bearing: dev mode mounts vLLM's
+  own `GET /server_info`, which the proxy reads as SGLang's info route; it finds
+  no `max_total_num_tokens` in it, never falls back to the `/metrics` pool, and
+  refuses every big prompt as "unknown pool, engine warming up" (found on the
+  box, 2026-10-19). "vLLM has no `/server_info`" is how the proxy and the
+  cockpit tell the two dialects apart. The price is no `/reset_prefix_cache`,
+  so `bench-agent.py --flush` cannot make a cold-shape run on this config.
+* **Boots.** vLLM's AOT-compiled kernels live in the mounted caches under
+  `~/.config/qwen38/flashnext-local-cache/`: the cold first boot loads the
+  checkpoint (95.24 GiB) and builds them, later boots load the cache. The
+  installer waits 48 min for it where the SGLang configs get 20, and the
+  cockpit gives the target a 45-minute boot budget. Those walls are this repo's
+  own boot budgets, set with margin; they are not measured load times, and
+  they are not the card's either: the card publishes no load times to take
+  margin from. One boot of this config has been timed on the reference box
+  (2026-10-19, a restart on warm caches): 4 min 44 s to "Application startup
+  complete", of which the weights took 184 s and the engine's own init 69 s;
+  the cold first boot that builds the AOT kernels is not timed yet. Its measured
+  decode (59 tok/s greedy median, 3.1 tokens per MTP step) is in BENCHMARKS.md.
+* **The engine's knobs** are vLLM's (`--gpu-memory-utilization 0.8` where SGLang
+  takes the `FLASH_MEM_FRACTION` share; `--max-num-seqs 8`, MTP x4 through
+  `--speculative-config`). Its recipe card and drift check read the file at the
+  unit's `ExecStart` with vLLM's flag spellings, so the config the box does not
+  run reports nothing: cross-engine comparison would read every flag of the
+  other dialect as drift.
+* **Quality**, per the card: GPQA Diamond **91.5 %** against the BF16 base's
+  92.2 %, ToolEvalBench **88.7 %** against 89.4 %. That is NVIDIA's measurement,
+  not this box's, and the lane's canaries do not close the gap: they are SGLang
+  probes, and the cockpit does not run them against this config: a vLLM engine
+  is judged by vLLM facts (`/health`, the served model), as every vLLM lane on
+  this box is. Until this box probes the checkpoint itself, no quality number of
+  ours is claimed for it.
 
 [Back to the README](../README.md)

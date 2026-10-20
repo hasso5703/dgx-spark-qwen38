@@ -18,7 +18,15 @@ HERE = Path(__file__).resolve()
 DASH = HERE.parents[1]
 REPO = HERE.parents[2]
 sys.path.insert(0, str(DASH))
-ENV_BEFORE = dict(os.environ)
+ENV_BEFORE: dict = {}
+
+
+def setUpModule():
+    # the snapshot is taken during the module's first test, not at import: pytest 9 keeps
+    # a note about the running test in os.environ and pops it when the last test ends; a
+    # teardown restoring an import-time snapshot takes that note with it, and the runner
+    # then cannot end the last test (KeyError in teardown, found 2026-10-19)
+    ENV_BEFORE.update(os.environ)
 
 
 def tearDownModule():
@@ -47,8 +55,12 @@ class Prepare(unittest.TestCase):
         # the box's own Nemotron unit, once installed, read as this test's (found on the reference box, 2026-10-16)
         cls.cp.NEMOTRON_UNIT_PATH = cls.units / "qwen38-nemotron.service"
         cls.cp.NEMOTRON_SUPER_UNIT_PATH = cls.units / "qwen38-nemotron-super.service"
-        cls.cp.UNIT_PATHS = {"qwen38-sglang.service": cls.units / "qwen38-sglang.service",
-                             "qwen38-flash.service": cls.units / "launch-flash.sh"}
+        cls.cp.UNIT_PATHS = {"qwen38-sglang.service": cls.units / "qwen38-sglang.service"}
+        # the flash lane's one unit, two launchers (the FP4-Local config rides the same
+        # unit path): the fixture reads both names from its own folder, ExecStart included
+        cls.cp.FLASH_LAUNCHERS = (cls.units / "launch-flash.sh",
+                                  cls.units / "launch-flash-fp4local.sh")
+        cls.cp.UNIT_DIR = cls.units
 
     @classmethod
     def tearDownClass(cls):
@@ -267,6 +279,30 @@ class Prepare(unittest.TestCase):
         self.assertIs(self.cp.lane_startable("27b"), False)              # native config, 1M unit
         (snap27 / "config.json").write_text('{"text_config": {"max_position_embeddings": 1010000}}')
         self.assertIs(self.cp.lane_startable("27b"), True)
+
+    def test_the_flash_unit_names_which_config_of_the_lane_serves(self):
+        # one unit path, two configs (v1.37.0): the unit's own ExecStart is the fact that
+        # says whether the lane runs SGLang or the FP4-Local b12x vLLM, not either file's
+        # name and not either mtime - a re-install points the unit at the other launcher
+        # without touching the file the unit used to name
+        (self.units / "launch-flash-fp4local.sh").write_text(
+            "exec /usr/bin/docker run --rm img vllm serve "
+            f"{self.cp.rg.PIN_MODELS['FLASH_LOCAL_REV']} --revision {'a' * 40}\n")
+        (self.units / "launch-flash.sh").write_text(
+            "exec /usr/bin/docker run --rm img python3 -m sglang.launch_server --model-path "
+            f"{self.cp.rg.PIN_MODELS['FLASH_NVDA_REV']} --revision {'c' * 40}\n")
+        self.assertFalse(self.cp.flash_fp4_local())            # both on disk, no unit: sglang
+        self.assertEqual(self.cp.unit_target("qwen38-flash.service")["target"], "flash-nvda")
+        (self.units / "qwen38-flash.service").write_text(
+            "[Service]\nExecStart=/bin/bash /x/launch-flash-fp4local.sh\n")
+        self.assertTrue(self.cp.flash_fp4_local())
+        got = self.cp.unit_target("qwen38-flash.service")
+        self.assertEqual(got["target"], "flash-fp4-local")
+        self.assertEqual(got["model"], self.cp.rg.PIN_MODELS["FLASH_LOCAL_REV"])
+        (self.units / "qwen38-flash.service").write_text(
+            "[Service]\nExecStart=/bin/bash /x/launch-flash.sh\n")
+        self.assertEqual(self.cp.unit_target("qwen38-flash.service")["target"], "flash-nvda",
+                         "pointing the unit back flips the target with no launcher rewritten")
 
     def test_an_image_lane_starts_once_the_checkpoint_it_serves_is_whole(self):
         # its runtime built, its checkpoint the one refs/main names, as the unit serves it offline

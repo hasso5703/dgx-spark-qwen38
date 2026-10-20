@@ -1,0 +1,34 @@
+[Unit]
+Description=Qwen3.8-Flash-Next FP4-Local (b12x vLLM, n-gram table read from the checkpoint, capped docker), OpenAI API :__PORT__
+Wants=network-online.target
+Requires=docker.service
+# One engine at a time on this box, said to systemd: starting this lane stops the others
+# and starting another stops this one, the stop finishing before the start in both
+# directions (Conflicts= alone orders nothing; measured with throwaway units on the
+# reference box's systemd 255, 2026-09-24). This unit is the FP4-Local config of the
+# flash lane: it installs at qwen38-flash.service, the same path the SGLang config's
+# unit holds, and exactly one of the two is ever there.
+Conflicts=qwen38-sglang.service qwen38-image.service qwen38-video.service qwen38-kolibri.service qwen38-nemotron.service qwen38-nemotron-super.service
+After=network-online.target docker.service qwen38-sglang.service qwen38-image.service qwen38-video.service qwen38-kolibri.service qwen38-nemotron.service qwen38-nemotron-super.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+ExecStartPre=-/usr/bin/docker rm -f qwen38-flash
+# The memory the last engine held has to be back before this one starts (see engine-preflight.sh).
+ExecStartPre=/bin/bash __HOME__/.config/qwen38/engine-preflight.sh qwen38-flash.service
+ExecStart=/bin/bash __HOME__/.config/qwen38/launch-flash-fp4local.sh
+ExecStop=-/usr/bin/docker stop -t 20 qwen38-flash
+Restart=always
+# 78: the launcher found a GPU outside its ATS addressing mode, which no new start changes
+# (flash-ats-check.sh, issue #54, the whole lane's guard); the unit stays failed with the
+# reason in its journal
+RestartPreventExitStatus=78
+# docker kills vLLM with SIGKILL (137) or SIGTERM (143) on a plain stop; that is
+# a clean stop, not a failure (same rule as every lane; v1.5.5 precedent)
+SuccessExitStatus=137 143
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

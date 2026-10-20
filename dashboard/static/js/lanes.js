@@ -56,7 +56,11 @@ function laneCard(unit){
   stop.addEventListener('click', () => {
     const e = engines()[unit] || {};
     const warns = [];
-    if (TRANSITIONAL.has(e.state) && unit === UFLASH) warns.push('This boot is thrown away: every flash boot writes its 47.7 GiB table from scratch, so the next start takes a whole boot again (' + readyIn(unit) + ').');
+    // the FP4-Local config writes no table (vLLM, its AOT caches kept): the boot it throws
+    // away is the boot itself (found in review, 2026-10-20)
+    if (TRANSITIONAL.has(e.state) && unit === UFLASH) warns.push(e.target === 'flash-fp4-local'
+      ? 'This boot is thrown away: the next start takes a whole boot again (' + readyIn(unit) + ').'
+      : 'This boot is thrown away: every flash boot writes its 47.7 GiB table from scratch, so the next start takes a whole boot again (' + readyIn(unit) + ').');
     if (e.state === 'ready') warns.push(unit === IMAGE_UNIT ? 'An image being made right now is lost.' : unit === VIDEO_UNIT ? 'A video being made right now is lost: the runtime cancels it as it stops.'
       : 'Clients on :30001 get "engine unavailable" until an engine answers again.');
     askAction('unit', {verb: 'stop', unit}, warns);
@@ -141,7 +145,7 @@ function renderLanes(){
       const ph = el('div', 'phases'); stages.forEach((sg, k) => ph.append(el('span', k < done ? 'done' : k === done ? 'now' : '', STAGE_LABEL[sg] || sg))); c.boot.append(ph);
       c.boot.append(el('p', 'help', e.held ? `Waiting for GPU memory: ${e.held}. It starts by itself once that memory is back.`
         : `${STATE_LABEL[st]}${e.detail && e.detail !== 'ready' ? ' (' + e.detail + ')' : ''}, ${fmtDur(e.elapsed)} elapsed, ` +
-        (e.elapsed && eta ? `about ${fmtDur(Math.max(0, eta - e.elapsed))} left` : 'learning the duration') + (e.eta ? ` (median of ${(e.boots || []).length} boots)` : ' (reference box)')));
+        (e.elapsed && eta ? `about ${fmtDur(Math.max(0, eta - e.elapsed))} left` : 'learning the duration') + ((e.boots || []).length ? ` (median of ${e.boots.length} boots)` : ' (reference box)')));
       if (e.overdue) c.boot.append(el('p', 'help warn-t', 'This boot takes more than twice the usual time: read its journal.'));
     } else if (e && st === 'stopping'){
       c.boot.hidden = false; clear(c.boot);
@@ -210,6 +214,7 @@ on('canary', d => {
   setText('px-probe', F.canaryTxt || '…');
   setText('px-last', d.skipped && (servingEngine() || [])[0] === KOLIBRI_UNIT ? 'none on the Kolibri lane'
     : d.skipped && isNemotron((servingEngine() || [])[0]) ? 'none on the Nemotron lanes'
+    : d.skipped && fp4Holds() ? 'none on the FP4-Local config'
     : d.last_ok ? clockTime(d.last_ok) : 'never in this cockpit’s life');
 });
 function renderProxy(){

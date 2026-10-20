@@ -24,6 +24,9 @@ SERVED = []          # the model name each generation request asked for
 class Fake(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     model = "qwen3.8-flash-next"
+    # whose counters answer on the key-free /metrics: the only thing that tells
+    # the flash lane's two configs apart when both serve the same model name
+    metrics = "sglang:prompt_tokens_total 1.0\n"
 
     def log_message(self, *a):
         pass
@@ -39,6 +42,19 @@ class Fake(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/health"):
             return self._send(200, {"ok": True})
+        if self.path.startswith("/metrics"):
+            # as the proxy with a client-keys file (PORT=30001): no listed key, no
+            # counters, so the flavour falls back to the NEXTN header (found in
+            # review, 2026-10-20)
+            if self.headers.get("Authorization") != "Bearer test-key":
+                return self._send(401, {"detail": "Unauthorized"})
+            raw = Fake.metrics.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if self.path.startswith("/v1/models"):
             if Fake.model is None:                     # an engine that does not answer it
                 return self._send(404, {"detail": "Not Found"})
@@ -62,8 +78,9 @@ class Fake(http.server.BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-def run_bench(model):
+def run_bench(model, metrics=None):
     Fake.model = model
+    Fake.metrics = "sglang:prompt_tokens_total 1.0\n" if metrics is None else metrics
     SERVED.clear()
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
     srv.daemon_threads = True
@@ -107,6 +124,20 @@ def main():
         fails.append("the flash header was printed for the 27B lane")
     if set(SERVED) != {"qwen3.8-27b"}:
         fails.append(f"the 27B lane sent {set(SERVED)}")
+
+    # The lane's FP4-Local config serves the same model name under vLLM. The
+    # header and reference lines must follow the engine, not the name: an MTP
+    # run printed under the NEXTN header reads as a 12-tok/s regression
+    # against a baseline that belongs to the other config (2026-10-19).
+    out = run_bench("qwen3.8-flash-next", metrics="vllm:prompt_tokens_total 1.0\n")
+    if "FP4-Local" not in out:
+        fails.append(f"the FP4-Local config is not named in the header:\n{out[:400]}")
+    if "NVFP4+NEXTN" in out:
+        fails.append("the NEXTN header was printed for the FP4-Local config")
+    if "reference box (v1.8" in out:
+        fails.append("the SGLang flash reference line was printed for the FP4-Local config")
+    if "MTP at num_speculative_tokens=4" not in out:
+        fails.append("the FP4-Local closing note was not printed")
 
     # An engine that does not answer /v1/models, or answers it with no name, must not stop
     # the benchmark. Only the second was simulated (a 200 with an empty id), so the path

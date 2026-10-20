@@ -209,9 +209,22 @@ def observe(units_dir=UNITS, config_dir=None, lane="27b", repo_dir=REPO):
         out["CONTEXT_MODE"] = "1m" if "--context-length 1010000" in sgl else "native"
         if lane == "27b":
             _engine_place(sgl, out)
-    launch = _read(config_dir / "launch-flash.sh") if (Path(units_dir) / "qwen38-flash.service").exists() else None
+    launch = None
+    if (Path(units_dir) / "qwen38-flash.service").exists():
+        # Two launchers for the flash lane: the unit's ExecStart says which config the
+        # box serves (b12x vLLM or SGLang); without a unit that says, whichever exists.
+        unit_txt = _read(Path(units_dir) / "qwen38-flash.service") or ""
+        if "launch-flash-fp4local" in unit_txt:
+            launch = _read(config_dir / "launch-flash-fp4local.sh")
+        else:
+            launch = _read(config_dir / "launch-flash.sh")
+            if launch is None:
+                launch = _read(config_dir / "launch-flash-fp4local.sh")
     if launch is not None:
-        model = _first(r"--model-path ([^ ]+)", launch)
+        # three spellings, as in lanes.sh launcher_model: the FP4-Local launcher names
+        # its checkpoint as vllm's own serve argument
+        model = _first(r"--model-path ([^ ]+)", launch) or _first(r"--model ([^ ]+)", launch) \
+            or _first(r"\bvllm serve ([^ ]+)", launch)
         if model:
             out["target.flash"] = by_repo.get(model, model)
         # the last tier whose concurrency the launcher names, as install.sh's loop decides it
@@ -228,7 +241,7 @@ def observe(units_dir=UNITS, config_dir=None, lane="27b", repo_dir=REPO):
         ple = _first(r"-v ([^ :]+):/ple", launch)
         if ple:
             out["PLE_DIR"] = ple
-        if lane == "flash" and "sglang.launch_server" in launch:
+        if lane == "flash" and ("sglang.launch_server" in launch or "vllm serve" in launch):
             _engine_place(launch, out)
     proxy = _read(Path(units_dir) / "qwen38-keepalive.service")
     if proxy is not None:

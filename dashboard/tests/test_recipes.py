@@ -51,10 +51,14 @@ class ParseAssignments(unittest.TestCase):
                   "FLASH_REV", "FLASH_NVDA_REPO", "FLASH_NVDA_REV", "FLASH_TIER",
                   "FLASH_MEM_FRACTION", "PLE_RSS_BUDGET_GB",
                   "FLASH_SERVE_IMAGE", "FLASH_IMAGE", "SERVE_IMAGE", "DRAFT2_REPO",
-                  "DRAFT2_REV", "DRAFT2_QUANT", "DRAFT2_TOKENS"):
+                  "DRAFT2_REV", "DRAFT2_QUANT", "DRAFT2_TOKENS",
+                  "FLASH_LOCAL_REPO", "FLASH_LOCAL_REV", "FLASH_LOCAL_IMAGE",
+                  "FLASH_LOCAL_SERVE_IMAGE", "FLASH_GPU_UTIL"):
             self.assertIn(k, ASSIGNS, k)
         self.assertRegex(ASSIGNS["FLASH_REV"], r"^[0-9a-f]{40}$")
+        self.assertRegex(ASSIGNS["FLASH_LOCAL_REV"], r"^[0-9a-f]{40}$")
         self.assertTrue(ASSIGNS["FLASH_IMAGE"].startswith("lmsysorg/sglang@sha256:"))
+        self.assertTrue(ASSIGNS["FLASH_LOCAL_IMAGE"].startswith("eugr/spark-vllm-b12x@sha256:"))
 
 
 class ProfileFromText(unittest.TestCase):
@@ -138,7 +142,7 @@ class Builtins(unittest.TestCase):
         recs = rc.builtins(ASSIGNS, TEMPLATES)
         self.assertEqual([r["id"] for r in recs],
                          ["stock", "uncensored", "fp8", "uncensored-fp8", "flash",
-                          "flash-nvda", "flash-uncensored"])
+                          "flash-nvda", "flash-uncensored", "flash-fp4-local"])
         for r in recs:
             errs = rc.validate(r) if r["lane"] == "flash" else rc.validate(
                 {**r, "serve": {**r["serve"], "context_length": 262144}})
@@ -208,6 +212,131 @@ class Builtins(unittest.TestCase):
             rc.builtin("banana", ASSIGNS, TEMPLATES)
 
 
+class FP4LocalRecipe(unittest.TestCase):
+    """The flash lane's vLLM config. Its recipe is the only builtin that is not
+    SGLang, and the only one whose flags live in another engine's spelling."""
+
+    def fp4(self):
+        return rc.builtin("flash-fp4-local", ASSIGNS, TEMPLATES)
+
+    def test_derived_from_the_real_install_sh(self):
+        r = self.fp4()
+        self.assertEqual(r["engine"]["family"], "vllm")
+        self.assertEqual(r["engine"]["image"], ASSIGNS["FLASH_LOCAL_IMAGE"])
+        self.assertIsNone(r["engine"]["overlay"])  # the b12x image needs no overlay
+        self.assertEqual(r["model"]["repo"], ASSIGNS["FLASH_LOCAL_REPO"])
+        self.assertEqual(r["model"]["revision"], ASSIGNS["FLASH_LOCAL_REV"])
+        self.assertEqual(r["engine"]["base_image"], ASSIGNS["FLASH_LOCAL_IMAGE"])
+
+    def test_the_serving_knobs_are_the_templates_ones(self):
+        r = self.fp4()
+        self.assertEqual(r["serve"]["quantization"], "modelopt_mixed")
+        self.assertEqual(r["serve"]["kv_cache_dtype"], "fp8")
+        self.assertEqual(r["serve"]["context_length"], 262144)
+        self.assertEqual(r["serve"]["mem_fraction"], float(ASSIGNS["FLASH_GPU_UTIL"]))
+        self.assertEqual(r["serve"]["max_running_requests"], 8)
+        self.assertEqual(r["serve"]["chunked_prefill"], 4096)
+        # the MTP drafter lives in --speculative-config's JSON, in-checkpoint
+        self.assertEqual(r["drafter"]["algorithm"], "MTP")
+        self.assertEqual(r["drafter"]["draft_tokens"], 4)
+        self.assertIsNone(r["drafter"]["repo"])
+        # the SGLang canaries answer to SGLang routes only
+        self.assertEqual(r["validation"]["canaries"], 0)
+
+    def test_quant_args_mirror_install_sh(self):
+        # the same invariant as the NVFP4 arms' greps: the default lives once,
+        # in install.sh's arm; recipes.py repeats it, so a silent move of the
+        # scheme in one spelling and not the other fails here
+        fn = re.search(r"^resolve_flash_checkpoint_args\(\) \{\n.*?^\}\n",
+                       (REPO / "install.sh").read_text(), re.M | re.S)
+        out = subprocess.run(["bash", "-c", fn.group(0)
+                              + 'MODEL_CHOICE=flash-fp4-local; resolve_flash_checkpoint_args; '
+                              'printf %s "$FLASH_QUANT_ARGS"'],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(out, "--quantization modelopt_mixed ")
+        self.assertIn('quant_args = "--quantization modelopt_mixed "',
+                      (HERE.parents[1] / "recipes.py").read_text())
+
+    def test_the_parser_sees_the_templates_shape(self):
+        # builtin() reads the template with profile_from_vllm_text: everything
+        # the drift panel compares must be visible through the vLLM spellings
+        # (the raw template keeps its placeholders, which drift() skips)
+        r = self.fp4()
+        self.assertEqual(r["serve"]["quantization"], "modelopt_mixed")
+        self.assertEqual(r["drafter"]["algorithm"], "MTP")
+        self.assertEqual(r["engine"]["image"], ASSIGNS["FLASH_LOCAL_IMAGE"])
+
+
+class ProfileFromVllm(unittest.TestCase):
+    INVOCATION = (
+        "# prose naming --max-model-len 999999 must not parse\n"
+        "exec /usr/bin/docker run --rm \\\n"
+        "  -e HF_HUB_OFFLINE=1 -e VLLM_PLE_TABLE_MEMORY=disk \\\n"
+        "  eugr/spark-vllm-b12x@sha256:" + "0" * 64 + " \\\n"
+        "  vllm serve nvidia/Some-FP4-Local --revision " + "a" * 40 + " \\\n"
+        "    --quantization modelopt_mixed --kv-cache-dtype fp8 \\\n"
+        "    --max-model-len 262144 --max-num-seqs 8 --max-num-batched-tokens 4096 \\\n"
+        "    --gpu-memory-utilization 0.8 \\\n"
+        "    --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":4}'\n")
+
+    def test_reads_the_vllm_spellings(self):
+        p = rc.profile_from_vllm_text(self.INVOCATION)
+        self.assertEqual(p["engine"], {"family": "vllm",
+                                       "image": "eugr/spark-vllm-b12x@sha256:" + "0" * 64})
+        self.assertEqual(p["model"], {"repo": "nvidia/Some-FP4-Local", "revision": "a" * 40})
+        self.assertEqual(p["serve"]["context_length"], 262144)
+        self.assertEqual(p["serve"]["mem_fraction"], 0.8)
+        self.assertEqual(p["serve"]["max_running_requests"], 8)
+        self.assertEqual(p["serve"]["chunked_prefill"], 4096)
+        self.assertEqual(p["drafter"], {"algorithm": "MTP", "repo": None,
+                                        "revision": None, "draft_tokens": 4})
+        self.assertEqual(p["env"]["VLLM_PLE_TABLE_MEMORY"], "disk")
+        self.assertNotIn("max_total_tokens", p["serve"])  # an SGLang-only key
+        self.assertEqual(p["switches"], {})
+
+    def test_no_speculative_config_is_no_drafter(self):
+        p = rc.profile_from_vllm_text(self.INVOCATION.split("--speculative-config")[0])
+        self.assertEqual(p["drafter"], {"algorithm": "none", "repo": None, "revision": None})
+
+    def test_unparseable_speculative_config_degrades_to_none(self):
+        p = rc.profile_from_vllm_text(
+            self.INVOCATION.replace('{"method":"mtp","num_speculative_tokens":4}', "{oops"))
+        self.assertEqual(p["drafter"]["algorithm"], "none")
+        p = rc.profile_from_vllm_text(
+            self.INVOCATION.replace('{"method":"mtp","num_speculative_tokens":4}', "[1,2]"))
+        self.assertEqual(p["drafter"]["algorithm"], "none")
+        p = rc.profile_from_vllm_text(
+            self.INVOCATION.replace('"num_speculative_tokens":4', '"num_speculative_tokens":"x"'))
+        self.assertEqual(p["drafter"]["algorithm"], "MTP")
+        self.assertNotIn("draft_tokens", p["drafter"])
+        p = rc.profile_from_vllm_text(
+            self.INVOCATION.replace('{"method":"mtp","num_speculative_tokens":4}', '{"method":}'))
+        self.assertEqual(p["drafter"]["algorithm"], "none")  # regex-matched, unparseable
+        p = rc.profile_from_vllm_text(
+            self.INVOCATION.replace('{"method":"mtp","num_speculative_tokens":4}',
+                                    '{"num_speculative_tokens":4}'))
+        self.assertEqual(p["drafter"]["algorithm"], "none")  # a dict with no method
+        p = rc.profile_from_vllm_text(
+            self.INVOCATION.replace('"method":"mtp"', '"method":""'))
+        self.assertEqual(p["drafter"]["algorithm"], "none")  # an empty one
+
+    def test_no_serve_line_is_not_an_invocation(self):
+        p = rc.profile_from_vllm_text("echo hello\n")
+        self.assertIsNone(p["engine"]["image"])
+        self.assertIsNone(p["model"]["repo"])
+        p = rc.profile_from_vllm_text("docker run -d busybox \\\n  vllm serve x\n")
+        self.assertEqual(p["engine"]["image"], "docker run -d busybox")  # the previous line, whatever it is
+
+    def test_every_flag_spelling_exists_for_every_family(self):
+        # the property behind _serve_of's "pragma: no branch": an entry either
+        # spells the flag for every family (a plain string) or for each one in
+        # FAMILIES explicitly. A dict missing a family would make that guard
+        # reachable and silently drop the key from that engine's profile.
+        for key, (flag, _typ, _rng) in rc.FLAGS.items():
+            if isinstance(flag, dict):
+                self.assertEqual(set(flag), set(rc.FAMILIES), key)
+
+
 def good():
     return {
         "id": "my-flash", "lane": "flash",
@@ -242,7 +371,7 @@ class Validate(unittest.TestCase):
         self.check(lambda r: r.update(id="Flash!"), "id:")
         self.check(lambda r: r.update(id="flash"), "reserved")
         self.check(lambda r: r.update(lane="vllm"), "lane:")
-        self.check(lambda r: r["engine"].update(family="vllm"), "engine.family")
+        self.check(lambda r: r["engine"].update(family="llamacpp"), "engine.family")
         self.check(lambda r: r["engine"].update(image="qwen38-flash:latest"), "moving tag")
         self.check(lambda r: r["engine"].update(image="qwen38-flash"), "engine.image")
         self.check(lambda r: r["model"].update(revision="main"), "model.revision")

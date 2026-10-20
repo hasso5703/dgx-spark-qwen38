@@ -39,7 +39,7 @@ no_answer() {  # $1 http code ("000": none), [$2 x-ratelimit-remaining]: 0 when 
 }
 said() { [ "${1:-000}" = 000 ] && echo "no answer" || echo "HTTP $1"; }
 
-pins="$(grep -E '^(STOCK|UNC|FP8|UNCFP8|FLASH|FLASH_NVDA|FLASH_UNC|DRAFT|DRAFT2)_(REPO|REV)=' "$REPO_DIR/install.sh")"
+pins="$(grep -E '^(STOCK|UNC|FP8|UNCFP8|FLASH|FLASH_NVDA|FLASH_UNC|FLASH_LOCAL|DRAFT|DRAFT2)_(REPO|REV)=' "$REPO_DIR/install.sh")"
 eval "$pins"
 # The pins that do not live in the pin block: opencode's release and its digest, and the
 # image lane's checkpoint, source commit and wheel. None of them was checked, so a release
@@ -381,6 +381,7 @@ check_model uncensored-fp8 "$UNCFP8_REPO"     "$UNCFP8_REV"
 check_model flash          "$FLASH_REPO"      "$FLASH_REV"
 check_model flash-nvda     "$FLASH_NVDA_REPO" "$FLASH_NVDA_REV"
 check_model flash-unc      "$FLASH_UNC_REPO"  "$FLASH_UNC_REV"
+check_model flash-fp4-local "$FLASH_LOCAL_REPO" "$FLASH_LOCAL_REV"
 check_model dflash2-draft  "$DRAFT2_REPO"     "$DRAFT2_REV"
 check_model dspark-draft   "$DRAFT_REPO"      "$DRAFT_REV"
 
@@ -421,10 +422,11 @@ check_asset  speech-kokoro  "$KOKORO_GH" "$KOKORO_TAG" "$KOKORO_MODEL_FILE"  "$K
 check_asset  speech-voices  "$KOKORO_GH" "$KOKORO_TAG" "$KOKORO_VOICES_FILE" "$KOKORO_VOICES_SHA" undigested
 
 echo "Images"
-img="$(grep -E '^(IMAGE|FLASH_IMAGE)=' "$REPO_DIR/install.sh")"
+img="$(grep -E '^(IMAGE|FLASH_IMAGE|FLASH_LOCAL_IMAGE)=' "$REPO_DIR/install.sh")"
 eval "$img"
 check_image 27b-base       "$IMAGE"
 check_image flash-base     "$FLASH_IMAGE"
+check_image flash-local    "$FLASH_LOCAL_IMAGE"
 check_image kolibri-base   "$KOLIBRI_BASE_IMAGE"
 check_image nemotron-base  "$NEMOTRON_BASE_IMAGE"
 

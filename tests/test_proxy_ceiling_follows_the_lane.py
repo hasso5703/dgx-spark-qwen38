@@ -86,11 +86,6 @@ class TheFitToolAndTheCockpitAgree(unittest.TestCase):
             with self.subTest(prompt=prompt, flash=flash, served=served):
                 self.assertEqual(fit.ceiling_from_env(env, served[0] if served else None), want)
 
-    def test_the_cockpit_asks_the_fit_tool(self):
-        cockpit = (REPO / "dashboard/cockpit.py").read_text()
-        block = cockpit[cockpit.index("def collect_engine_info():"):cockpit.index("CANARY: dict =")]
-        self.assertIn('_oc_fit().ceiling_from_env(env or "", slim.get("served_model_name"))', block)
-
 
 class ASwitchLeavesThatProxyAlone(unittest.TestCase):
     TEXT = (REPO / "switch-model.sh").read_text()

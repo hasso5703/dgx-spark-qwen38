@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Launch script for qwen38-flash.service in its FP4-Local config, rendered by
+# install.sh (a plain file so no systemd-vs-bash double escaping can ever
+# corrupt an argument; regenerated on every install; the serve revision is
+# refreshed by switch-model.sh).
+#
+# Engine: the community b12x vLLM image, which carries the loader for the new
+# lossless NVFP4 scale format of nvidia/Qwen3.8-Flash-Next-FP4-Local. Upstream
+# vLLM and SGLang cannot read that checkpoint at all, so this config is the
+# only flash target that does not run SGLang, and the serve line below is
+# NVIDIA's own DGX Spark cell from the model card, plus this box's port, key
+# and serving surface (served name, patched template, media hardening).
+set -euo pipefail
+
+# The ATS guard of the whole flash lane (issue #54), as the SGLang config's launcher asks it:
+# install.sh, prepare-lane.sh and switch-model.sh refuse this config on a GPU outside its ATS
+# addressing mode, and a GPU that leaves it later (a driver or module change) must not start
+# it either. Whether the b12x engine's disk read of the n-gram table needs ATS is not measured;
+# the lane keeps one rule until it is (found in review, 2026-10-20). 78 is the unit's
+# RestartPreventExitStatus, and the line is the one the cockpit reads (dashboard/lifecycle.py).
+# Only the check's status 1 says so: any other (the check not there, say) leaves the engine to
+# decide.
+ats_rc=0; why="$(bash __HOME__/.config/qwen38/flash-ats-check.sh)" || ats_rc=$?
+if [ "$ats_rc" -eq 1 ] && [ -n "$why" ]; then
+  echo "preflight: qwen38-flash.service cannot start: $why"
+  exit 78
+fi
+
+# Memory pre-flight, above the SGLang config's floor: vLLM's worker refuses to start
+# when the host holds less than gpu-memory-utilization x MemTotal at init, which on
+# this integrated GPU's 121.7 GiB is 97.4 GiB, so the floor is 100 (a boot started
+# while another tenant still holds memory comes up short for the life of the boot).
+# Bounded: it never blocks a boot, it only waits for one.
+MEM_FLOOR_GIB="${QWEN38_FLASH_MEM_FLOOR_GIB:-100}"
+floor_kib=$((MEM_FLOOR_GIB * 1024 * 1024))
+avail_kib() { awk '/MemAvailable/{print $2}' /proc/meminfo; }
+for i in $(seq 1 18); do
+  a=$(avail_kib)
+  [ "$a" -ge "$floor_kib" ] && break
+  [ "$i" -eq 1 ] && echo "qwen38-flash (FP4-Local): waiting for host memory to settle ($((a / 1048576)) GiB available, floor ${MEM_FLOOR_GIB} GiB)"
+  sleep 10
+done
+a=$(avail_kib)
+if [ "$a" -ge "$floor_kib" ]; then
+  echo "qwen38-flash (FP4-Local): host MemAvailable at launch $((a / 1048576)) GiB"
+else
+  echo "qwen38-flash (FP4-Local): starting anyway after 180 s with $((a / 1048576)) GiB available; the KV pool may come up short"
+fi
+
+# The card serves the n-gram (PLE) table from disk inside the container
+# (VLLM_PLE_TABLE_MEMORY=disk over io_uring): vLLM reads the table DIRECTLY from the
+# checkpoint's own safetensors at their stored offsets. No backing file is ever
+# written, nothing has to be deleted before a boot, and the disk need of this config
+# is the checkpoint alone. io_uring is why seccomp=unconfined below is load-bearing:
+# Docker's default profile blocks it.
+#
+# The four cache mounts (vLLM's compile cache, FlashInfer's kernels, the b12x
+# kernels, Triton's cache) are this config's own folders, so the AOT artifacts
+# survive restarts and a retag of the image; the first boot builds them, later
+# ones load them. HF_MODULES_CACHE/PYTHONDONTWRITEBYTECODE: root in the
+# container must not leave a cache in the user's HF folder (found on the
+# Nemotron lane, 2026-10-15, and the same trap is here).
+#
+# No --config here, unlike every other engine on the box: the key would reach the
+# server, and this build's own guard (entrypoints/serve/middleware/authenticate.py)
+# then reads /metrics too, hardening it against the cockpit, the installer and every
+# reader the repo's contract keeps key-free on all lanes (its UNGUARDED_PATHS lost
+# /metrics and the upstream toggle for it, read in the pinned image, 2026-10-19).
+# vllm_engine_auth.RequireKey is the gate instead: it reads the key from the file
+# mounted below, never from the command line, and keeps exactly /health and
+# /metrics open, as the SGLang lanes do.
+# No VLLM_SERVER_DEV_MODE: it mounts vLLM's own GET /server_info (and the
+# sleep/rpc/weight-update admin routes). The proxy takes a 200 there for SGLang's
+# info route, finds no max_total_num_tokens in it, and never falls back to the
+# /metrics pool: every big prompt is refused "unknown pool, engine warming up"
+# (found on the box, 2026-10-19). "vLLM has no /server_info" is how the proxy
+# and the cockpit tell the dialects apart. The price: no /reset_prefix_cache,
+# so bench-agent.py --flush cannot make a cold-shape run on this config.
+exec /usr/bin/docker run --rm --name qwen38-flash --gpus all \
+  --memory 110g --memory-swap 110g --shm-size 16g --network host --ipc=host \
+  --ulimit memlock=-1 --ulimit stack=67108864 \
+  --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+  -e HF_HUB_OFFLINE=1 -e VLLM_NO_USAGE_STATS=1 -e DO_NOT_TRACK=1 \
+  -e PYTHONDONTWRITEBYTECODE=1 -e HF_MODULES_CACHE=/tmp/hf-modules \
+  -e PYTHONPATH=/opt/qwen38-auth -e QWEN38_KEY_FILE=/out/api-key \
+  -e VLLM_PLE_TABLE_MEMORY=disk -e B12X_DISK_BACKEND=io_uring \
+  -e CUTE_DSL_ARCH=sm_121a -e SAFETENSORS_FAST_GPU=1 \
+  -e VLLM_WORKER_MULTIPROC_METHOD=spawn -e VLLM_SSM_CONV_STATE_LAYOUT=DS \
+  -e VLLM_USE_AOT_COMPILE=1 -e VLLM_USE_MEGA_AOT_ARTIFACT=1 \
+  -e VLLM_USE_V2_MODEL_RUNNER=1 -e B12X_POLICY_MODE=auto \
+  -e VLLM_MXFP8_LM_HEAD=1 -e VLLM_B12X_MOE_FP4_LAYER_MAX_INPUT_SCALE=w13 \
+  -e VLLM_B12X_MOE_FP4_FORCE_A16=1 -e B12X_W4A16_A4_PREFILL=1 \
+  -v __HF_CACHE__:/root/.cache/huggingface \
+  -v __HOME__/.config/qwen38/flashnext-local-cache/vllm:/root/.cache/vllm \
+  -v __HOME__/.config/qwen38/flashnext-local-cache/flashinfer:/root/.cache/flashinfer \
+  -v __HOME__/.config/qwen38/flashnext-local-cache/b12x:/root/.cache/b12x \
+  -v __HOME__/.config/qwen38/flashnext-local-cache/triton:/root/.triton \
+  -v __HOME__/.config/qwen38:/out:ro \
+  -v __HOME__/.config/qwen38/vllm-auth:/opt/qwen38-auth:ro \
+  __IMAGE__ \
+  vllm serve __MODEL__ __MODEL_REV_ARGS__ \
+    --served-model-name qwen3.8-flash-next \
+    __FLASH_QUANT_ARGS__--load-format b12x \
+    --dtype bfloat16 --kv-cache-dtype fp8 --block-size 16 \
+    --mamba-cache-mode align --enable-prefix-caching --enable-chunked-prefill \
+    --max-model-len 262144 --max-num-seqs 8 --max-num-batched-tokens 4096 \
+    --gpu-memory-utilization __FLASH_GPU_UTIL__ \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":4}' \
+    --gdn-decode-kernel b12x --linear-backend b12x --moe-backend b12x \
+    --no-enable-flashinfer-autotune --mm-encoder-tp-mode data \
+    --reasoning-parser qwen3 --tool-call-parser qwen3_xml --enable-auto-tool-choice \
+    --chat-template /out/chat-template-flashnext-local.jinja \
+    --allowed-media-domains media.invalid \
+    --compilation-config '{"pass_config":{"fuse_act_quant":true}}' \
+    --middleware vllm_engine_auth.RequireKey \
+    --host __ENGINE_BIND__ --port __PORT__

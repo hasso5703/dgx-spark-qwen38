@@ -13,8 +13,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# every module hands the next one the environment it found (test_env_isolation.py)
-ENV_BEFORE = dict(os.environ)
+# every module hands the next one the environment it found (test_env_isolation.py). The
+# snapshot is taken during the module's first test, not at import: pytest keeps a note
+# about the running test in os.environ and pops it after the last test's teardown; a
+# teardown built at import time carries that note off with it, and the runner can no
+# longer end the last test (KeyError in teardown, found 2026-10-19).
+ENV_BEFORE: dict = {}
+
+
+def setUpModule():
+    ENV_BEFORE.update(os.environ)
 
 
 def tearDownModule():

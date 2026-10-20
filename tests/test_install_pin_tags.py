@@ -47,13 +47,14 @@ def run(tags, used=(), current="lmsysorg/sglang@sha256:new"):
 
 class RetiredPinsAreUntagged(unittest.TestCase):
     def test_the_install_calls_it_for_both_lanes(self):
-        self.assertIn('unpin_stale "$LANE" "$PULLED_IMAGE" || true', TEXT)
+        self.assertIn('unpin_stale "$PIN_KEY" "$PULLED_IMAGE" || true', TEXT)
         self.assertIn('unpin_stale 27b "$IMAGE" || true', TEXT)
         self.assertIn('unpin_stale flash "$FLASH_IMAGE" || true', TEXT)
 
     def test_a_retired_pin_of_the_lane_goes(self):
-        out, removed = run([("qwen38-pinned:27b-new", "sha256:NEW"), ("qwen38-pinned:27b-old", "sha256:OLD")])
-        self.assertEqual(removed, ["qwen38-pinned:27b-old"], out)
+        # pin_tag's tags end in the digest's first 12 hex digits, and only those are matched
+        out, removed = run([("qwen38-pinned:27b-" + "1" * 12, "sha256:NEW"), ("qwen38-pinned:27b-" + "0" * 12, "sha256:OLD")])
+        self.assertEqual(removed, ["qwen38-pinned:27b-" + "0" * 12], out)
         self.assertIn("END", out)
 
     def test_the_other_lane_and_images_in_use_stay(self):

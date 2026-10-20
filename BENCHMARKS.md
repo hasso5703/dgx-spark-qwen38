@@ -544,6 +544,61 @@ lane whose whole point since v1.8 is serving the official image with nothing
 added. Rejected with the engine's own error as the receipt; the CI gate keeps
 asserting steps 3 on both speculative tiers.
 
+### FP4-Local (b12x vLLM), measured (2026-10-19)
+
+The second config of this lane: `nvidia/Qwen3.8-Flash-Next-FP4-Local`, QAD
+NVFP4 (~96 GiB on disk), served by the pinned community b12x vLLM container,
+the only stack that reads this checkpoint's lossless NVFP4 scale format
+(docs/flash-lane.md, "The lane's other config"). Serving config as the repo
+launches it: MTP `num_speculative_tokens=4`, FP8 KV cache, 262,144 context,
+`--gpu-memory-utilization 0.8`, PLE table read directly from the checkpoint
+over io_uring (`VLLM_PLE_TABLE_MEMORY=disk`, so no generated table and no
+boot-time rewrite). The engine's own counters answer key-free on
+`:30000/metrics` (the repo's middleware is the only gate; the build's own
+guard would have put the page behind the server key). The model card
+(NVIDIA, 2026-10-05) publishes 91.5% GPQA Diamond and 88.7% ToolEvalBench
+against the BF16 teacher's 92.2 / 89.4; this box has not re-run those.
+
+Protocol, the same instruments as this section: `./bench.sh` (which labels the
+config from the counter names on the engine port, so an MTP run is never read
+against the NEXTN reference line), one discarded batch right after the boot and
+then three measured ones, back to back on an idle engine; then `./bench-agent.py`
+through the proxy and `MODEL=qwen3.8-flash-next ./bench-matrix.sh` on the engine.
+Acceptance is not a bench-script field: it is the deltas of
+`vllm:spec_decode_num_drafts_total` and `…_accepted_tokens_total` on
+`:30000/metrics` between the first and the last measured batch. The boot was a
+restart on warm AOT caches: 4 min 44 s from `systemctl start` to "Application
+startup complete" (weights 184 s, the engine's own init 69 s); the KV pool came
+out at 950,761 tokens, 3.63x a 262,144-token request.
+
+| probe | measured |
+|---|---|
+| decode, code (greedy, `./bench.sh`) | 55.8-56.1 tok/s over three batches |
+| decode, reasoning (greedy) | 62.1-62.3 tok/s |
+| decode, math peak (temp 0.6) | 55.7-59.2 tok/s (sampled: the noisiest probe) |
+| decode, free prose (greedy, worst case) | 33.5-34.5 tok/s |
+| greedy median, `./bench.sh` | **59.1 / 59.1 / 59.0 tok/s** (discarded first batch: 59.2) |
+| battery, `./bench-matrix.sh` (two-call delta, one run) | code EN 58.5, code DE 55.9, technical FR 51.7, reasoning FR 60.7, prose EN 34.5 / FR 32.1 / DE 34.6 tok/s; math EN skipped by the script's own guard (Δtok=100, Δt=1.69 s: too short a sample) |
+| MTP acceptance, 4 drafted | **3.10 tokens/step** (14,518 tokens over 4,686 steps, so 2.10 of the 4 drafts accepted); by position 0.79 / 0.57 / 0.43 / 0.31 |
+| agent loop, `./bench-agent.py` (8 turns, ~8K prefix, 130 tokens, proxy) | median **20.8 ms/tok** over turns 2-8 (turns 3-8: 18.2-22.7; turn 2: 55.1, an outlier the median absorbs); cold turn 41.1 ms/tok, TTFT 2.85 s at 6,431 prompt tokens; acceptance over the loop 2.97 tokens/step |
+| prefix caching | the agent loop's TTFT stays 0.31-0.39 s from 6.5K to 7.3K prompt tokens (+27 ms per added 1K, ±114): the prefix is served from the cache. The 30K identical re-serve of the SGLang tables was not run |
+| prefill rate, long-context needle, quality canaries | not measured on this config |
+
+Read against the SGLang NEXTN config's rows above (code 47.9, math 47.1, prose
+29.3, agent loop 27.7 ms/tok; a different drafter, a different image, and those
+figures were taken on other days), this config decodes about 17% faster on code,
+and its free prose keeps the same 0.6 of the code rate (34 / 56 here, 29 / 48
+there). No warm-up gap showed: the discarded batch (59.2) equals the three kept
+ones, unlike the 38.8 / 39.1 / 24.8 first batch the SGLang lane showed after a
+boot. That is one boot on warm caches; the cold first boot (which builds the AOT
+kernels) was not timed here. The one config-level cost this run found: no
+`/flush_cache` or `/reset_prefix_cache` on this engine, so `./bench-agent.py
+--flush` cannot make a cold-shape run on it (docs/flash-lane.md says why).
+
+For scale, the only other vLLM-on-this-model figures on this box are the v1.4
+historical section above (different checkpoint and drafter depth: code 31.0,
+reasoning 31.1, prose 20.8).
+
 ## The flash target on SGLang (v1.5), measured (2026-08-28)
 
 Same box, same two-call instrument. Serving config: official SGLang image +

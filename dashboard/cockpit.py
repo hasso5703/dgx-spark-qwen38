@@ -540,6 +540,21 @@ KOLIBRI_CANNOT = {
     "fit_opencode": "Kolibri's opencode limits are its own, set when it is loaded: there is nothing to fit to its pool.",
 }
 
+# The flash lane's FP4-Local config runs the same vLLM engine (the community b12x container
+# install.sh pins as FLASH_LOCAL_SERVE_IMAGE): the same refusals apply to it, the fit of
+# opencode's limits included. That fit reads the engine's KV pool from SGLang's /server_info
+# (oc-limits.sh, oc-fit-limits.py) - a route this config has no answer for; its limits are
+# static, written by install.sh when the config is made (205,000 + 32,000 for the
+# 262,144-token window), so there is nothing there to fit to.
+FLASH_FP4LOCAL_CANNOT = {
+    "flush_cache": "The flash lane's FP4-Local config has no cache flush route: vLLM evicts "
+                   "its prefix cache by itself.",
+    "abort_all": "The flash lane's FP4-Local config has no route that aborts its generations: "
+                 "stopping the lane stops them.",
+    "fit_opencode": "The flash lane's FP4-Local config has no SGLang /server_info to fit to: "
+                    "its opencode limits are static, written when the config is installed.",
+}
+
 
 def vllm_metrics_facts(text: str) -> dict:
     """What the cockpit reads off vLLM's /metrics: requests running and waiting, the share of
@@ -682,13 +697,23 @@ def _nemotron_log(container: str = "qwen38-nemotron") -> list[str]:
 
 
 def nemotron_engine_state(unit: str, *, active: str, sub: str, prev_state: str | None,
-                          enter_key: str) -> tuple:
-    """(state, boot, running) for a Nemotron lane, from its own facts, as the Kolibri lane's."""
-    container = NEMOTRON_LANES[unit][0]
+                          enter_key: str, container: str | None = None,
+                          ready_enter: dict | None = None,
+                          warm_unwatched: bool = True) -> tuple:
+    """(state, boot, running) for a Nemotron lane, from its own facts, as the Kolibri lane's.
+
+    The unit-specific bits stand open: a vLLM caller outside NEMOTRON_LANES names its own
+    container and the cache that remembers which activation of it last served (the flash
+    lane's FP4-Local config is followed the same way: the same engine class, the same
+    routes, the same boot lines). The rule that a degraded engine this cockpit never saw
+    serve reads warming-up is open too: a config whose cold boot runs far past the grace
+    replaces it with a boot budget of its own (flash_fp4_local_engine_state)."""
+    container = container or NEMOTRON_LANES[unit][0]
+    entered = ready_enter if ready_enter is not None else NEMOTRON_READY_ENTER
     running = bool(run(["docker", "ps", "-q", "-f", f"name=^{container}$"]).strip())
     healthy = running and kolibri_healthy()          # vLLM's /health, on the same port
     UNHEALTHY_TICKS[unit] = 0 if healthy else UNHEALTHY_TICKS.get(unit, 0) + 1
-    served_here = NEMOTRON_READY_ENTER.get(unit) == enter_key and enter_key != "0"
+    served_here = entered.get(unit) == enter_key and enter_key != "0"
     boot = {"stage": None, "fired_up": False, "done": []}
     if running and not healthy:
         if served_here:
@@ -698,20 +723,23 @@ def nemotron_engine_state(unit: str, *, active: str, sub: str, prev_state: str |
             boot = lc.parse_nemotron_boot_log(_nemotron_log(container))
     st = lc.derive_state(unit_active=active, unit_sub=sub, container_running=running,
                          healthy=healthy, boot=boot)
-    if st["state"] == "degraded" and prev_state not in ("ready", "degraded"):
+    if st["state"] == "degraded" and prev_state not in ("ready", "degraded") and warm_unwatched:
         st["state"] = "warming-up"
     if st["state"] == "ready":
-        NEMOTRON_READY_ENTER[unit] = enter_key
+        entered[unit] = enter_key
     return st, boot, running
 
 
 def engine_abort_all(timeout: float = 8.0):
+    # the vLLM engines of this box have no route that aborts anything: said from the same
+    # tables the page refuses it from (base.js, KOLIBRI_CANNOT and friends), so a caller
+    # other than the page hears the same sentence
     if kolibri_serving():
-        raise RuntimeError("the Kolibri lane's vLLM has no route that aborts its generations "
-                           "(stopping the lane stops them)")
+        raise RuntimeError(KOLIBRI_CANNOT["abort_all"])
     if nemotron_serving():
-        raise RuntimeError("the Nemotron lane's vLLM has no route that aborts its generations "
-                           "(stopping the lane stops them)")
+        raise RuntimeError(NEMOTRON_CANNOT["abort_all"])
+    if flash_fp4_local_serving():
+        raise RuntimeError(FLASH_FP4LOCAL_CANNOT["abort_all"])
     req = urllib.request.Request(ENGINE_BASE + "/abort_request", method="POST",
                                  data=json.dumps({"abort_all": True}).encode(),
                                  headers={"Content-Type": "application/json",
@@ -726,14 +754,18 @@ HEALTH_RECHECK_S = float(os.environ.get("COCKPIT_HEALTH_RECHECK_S", "30"))
 @guard
 def collect_engine_fast():
     try:
-        # the Kolibri and Nemotron lanes' vLLM answers none of SGLang's load routes (404, twice a second)
-        load = (kolibri_load(timeout=3) if kolibri_serving() else nemotron_load(timeout=3) if nemotron_serving()
-                else engine_load(timeout=3))
+        # every vLLM engine of this box answers none of SGLang's load routes (404, twice a
+        # second): the Kolibri and Nemotron lanes, and the flash lane's FP4-Local config,
+        # which shares the flash lane's served name and is read the Nemotron way (vLLM's
+        # /metrics, its MTP counters included)
+        load = (kolibri_load(timeout=3) if kolibri_serving() else nemotron_load(timeout=3)
+                if nemotron_serving() or flash_fp4_local_serving() else engine_load(timeout=3))
     except Exception as e:  # noqa: BLE001
         load = None
         if vllm_answered("load", e):
             try:
-                load = kolibri_load(timeout=3)
+                load = (nemotron_load(timeout=3) if nemotron_serving() or flash_fp4_local_serving()
+                        else kolibri_load(timeout=3))
             except Exception:  # noqa: BLE001
                 load = None
     now = time.time()
@@ -833,6 +865,11 @@ def collect_engine_info():
         return kolibri_engine_info()
     if nemotron_serving():
         return nemotron_engine_info()
+    if flash_fp4_local_serving():
+        # the flash lane's other engine: /server_info is one of the routes it has no answer
+        # for, so its facts come from the vLLM ones, as the Nemotron lane's (the 404
+        # fallback below would find the same facts, after two failed probes every round)
+        return flash_fp4_local_engine_info()
     # 10 s, not 6: SGLang's event loop stalls under a long prefill and a late answer is
     # far better than none (measured 30/08: three timeouts in a row at 6 s while the same
     # endpoint answered in 0.19 s between two requests).
@@ -861,17 +898,22 @@ def collect_engine_info():
         if repo == slim.get("model_path") and var in VAR2TARGET:
             served_target = VAR2TARGET[var]
             break
-    # the one-prompt ceiling the proxy applies to the model that serves, as deployed in the
-    # keepalive unit (0 = pool share only): the fit tool's own reading of it, so the two
-    # cannot disagree (the flash lane's ceiling follows that lane since proxy v6.25)
+    return {"node_id": "local", "info": slim,
+            "prompt_ceiling_tokens": proxy_prompt_ceiling(slim.get("served_model_name")),
+            "served_target": served_target}
+
+
+def proxy_prompt_ceiling(served_model_name) -> int:
+    """The one-prompt ceiling the proxy applies to the model that serves, as deployed in the
+    keepalive unit (0 = pool share only): the fit tool's own reading of it, so the two
+    cannot disagree (the flash lane's ceiling follows that lane since proxy v6.25, whichever
+    engine serves its name)."""
     env = run(["systemctl", "show", "qwen38-keepalive.service", "-p", "Environment"], timeout=5)
     try:
-        ceiling = _oc_fit().ceiling_from_env(env or "", slim.get("served_model_name"))
+        return _oc_fit().ceiling_from_env(env or "", served_model_name)
     except Exception:  # noqa: BLE001 (a missing fit tool must not darken the panel)
         m = re.search(r"(?<![A-Z_])PROMPT_CEILING_TOKENS=(\d+)", env or "")
-        ceiling = int(m.group(1)) if m else 0
-    return {"node_id": "local", "info": slim, "prompt_ceiling_tokens": ceiling,
-            "served_target": served_target}
+        return int(m.group(1)) if m else 0
 
 
 def kolibri_engine_info(models: list | None = None):
@@ -944,11 +986,57 @@ def _unit_int(path: Path, pattern: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def flash_fp4_local_engine_info(models: list | None = None):
+    """The engine panel's facts for the flash lane's FP4-Local config, read the way the
+    Kolibri lane's are (the same vLLM routes). It is still the flash lane: the target these
+    weights are comes from the registry pins the way collect_engine_info derives the SGLang
+    one, so the card says flash-fp4-local, not a Kolibri guess."""
+    if models is None:
+        models = http_json(ENGINE_BASE + "/v1/models", timeout=10).get("data") or [{}]
+    with urllib.request.urlopen(ENGINE_BASE + "/metrics", timeout=10) as r:
+        text = r.read(2_000_000).decode("utf-8", "replace")
+    facts = vllm_metrics_facts(text)
+    cfg = re.search(r"^vllm:cache_config_info\{([^}]*)\}", text, re.M)
+    labels = dict(re.findall(r'(\w+)="([^"]*)"', cfg.group(1))) if cfg else {}
+    version = (http_json(ENGINE_BASE + "/version", timeout=5) or {}).get("version")
+    root = models[0].get("root") or ""
+    target = next((VAR2TARGET[var] for var, repo in rg.PIN_MODELS.items()
+                   if var in VAR2TARGET and repo == root), None)
+    slim = {"model_path": root, "served_model_name": models[0].get("id"),
+            "context_length": models[0].get("max_model_len"),
+            "max_total_num_tokens": facts["pool"] or None,
+            "kv_cache_dtype": labels.get("cache_dtype"),
+            "mem_fraction_static": float(labels["gpu_memory_utilization"]) if labels.get("gpu_memory_utilization") else None,
+            # the launcher's own word for it: mixed by construction (QAD NVFP4 experts,
+            # MXFP8 attention), resolved by the b12x loader
+            "quantization": "modelopt_mixed" if root else None,
+            # MTP, its draft length from the launcher that started it (the engine does not
+            # publish it): without these the panel read "no speculative decoding" for an
+            # MTP-4 engine (found in review, 2026-10-20)
+            "speculative_algorithm": "MTP" if root else None,
+            "speculative_num_draft_tokens": _unit_int(flash_launcher_path(),
+                                                      r'"num_speculative_tokens"\s*:\s*(\d+)') if root else None,
+            "version": f"vLLM {version}" if version else None}
+    # the proxy applies the flash lane's ceiling to the name this config serves, whichever
+    # engine answers it: 0 here read "no proxy ceiling" while the proxy enforced one, and
+    # the opencode fit ignored it (found in review, 2026-10-20)
+    return {"node_id": "local", "info": slim,
+            "prompt_ceiling_tokens": proxy_prompt_ceiling(slim["served_model_name"]) if root else 0,
+            "served_target": target}
+
+
 def vllm_engine_info():
     """A vLLM engine's facts read before the lifecycle says which lane it is: by the name it
-    serves, a Nemotron lane's or else the Kolibri lane's."""
+    serves, a Nemotron lane's, the flash lane's FP4-Local config's or else the Kolibri lane's.
+    The name is the whole test: the flash config answers exactly the name its SGLang configs
+    answer (qwen3.8-flash-next), and those answer /server_info, so an engine here with that
+    name is vLLM serving the flash lane and nothing else."""
     models = http_json(ENGINE_BASE + "/v1/models", timeout=10).get("data") or [{}]
-    return nemotron_engine_info(models) if nemotron_unit_serving(models) else kolibri_engine_info(models)
+    if nemotron_unit_serving(models):
+        return nemotron_engine_info(models)
+    if (models[0].get("id") or "") == FLASH_SERVED_NAME:
+        return flash_fp4_local_engine_info(models)
+    return kolibri_engine_info(models)
 
 
 CANARY: dict = {"fails": 0, "last_ok": None, "last_err": "", "latency": None}
@@ -1035,6 +1123,14 @@ def collect_canary():
     if not ready and any(states.get(u) in ("ready", "degraded") for u in NEMOTRON_LANES):
         return {"node_id": "local", **CANARY, "skipped": True,
                 "why": "the Nemotron lane is checked by vLLM's own /health, not by a generation"}
+    if "qwen38-flash.service" in ready and flash_fp4_local():
+        # The FP4-Local config runs vLLM under the flash lane's own served name: it refuses
+        # the probe's model name, and its 404 would count as a generation failure, on a
+        # lane that was never asked (the Kolibri lane's rule; this config runs vLLM, which
+        # answers none of the lane's SGLang routes).
+        return {"node_id": "local", **CANARY, "skipped": True,
+                "why": "the flash lane's FP4-Local config is checked by vLLM's own /health, "
+                       "not by a generation"}
     why = ("this cockpit is a dry run" if DRY_RUN else "no text engine is ready" if not ready
            else "an action is running" if JOB_LOCK.locked() else "requests are running" if busy
            else "a client was active in the last minute" if recent else "")
@@ -1097,8 +1193,9 @@ METRICS_LOCK = threading.Lock()
 
 def engine_metrics_read(timeout: float = 4.0):
     """One read of the serving engine's counters and the levels it showed with them, or
-    None: no engine, no answer in time, or not an SGLang page. Unauthenticated: SGLang
-    exempts /metrics from the API key."""
+    None: no engine, no answer in time, or not an engine's /metrics page at all.
+    Unauthenticated on every text lane: SGLang exempts /metrics, and the vLLM config
+    keeps it exempt by not handing the engine a key of its own (the launcher says why)."""
     try:
         with urllib.request.urlopen(ENGINE_BASE + "/metrics", timeout=timeout) as r:
             text = r.read(4_000_000).decode("utf-8", "replace")
@@ -1140,14 +1237,25 @@ DECODE_RE = re.compile(
     r"#running-req: (\d+).*?token usage: ([\d.]+).*?accept len: ([\d.]+)")
 
 
+def sgl_active_container() -> str | None:
+    """The SGLang container that runs, for the readers of SGLang's own log lines and env.
+    qwen38-flash runs vLLM in the flash lane's FP4-Local config: read as SGLang, its decode
+    was always None (Traffic read idle under load) and the zombie chip said its override
+    was off (found in review, 2026-10-20). That config's load is nemotron_load's, as the
+    Kolibri and Nemotron lanes', which are not in the tuple."""
+    fp4 = flash_fp4_local_serving()
+    for c in SGL_CONTAINERS:
+        if c == "qwen38-flash" and fp4:
+            continue
+        if run(["docker", "ps", "-q", "-f", f"name=^{c}$"]).strip():
+            return c
+    return None
+
+
 @guard
 def collect_decode_telemetry():
     """Parse the newest scheduler lines from the serving container's log."""
-    active = None
-    for c in SGL_CONTAINERS:
-        if run(["docker", "ps", "-q", "-f", f"name=^{c}$"]).strip():
-            active = c
-            break
+    active = sgl_active_container()
     if not active:
         return {"node_id": "local", "lane": None}
     tail = run(["docker", "logs", "--since", "30s", active], timeout=6,
@@ -1216,11 +1324,7 @@ def collect_guard():
     abort can be addressed at all: SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES is off
     by default upstream, and without it a request lost during prefill has no name
     the engine would recognise. See CHANGELOG v1.8.4 and sglang#35255."""
-    active = None
-    for c in SGL_CONTAINERS:
-        if run(["docker", "ps", "-q", "-f", f"name=^{c}$"]).strip():
-            active = c
-            break
+    active = sgl_active_container()
     zombies = lc.parse_zombies("")
     override = None
     if active:
@@ -1321,6 +1425,12 @@ def maybe_autofit(fit: dict | None, states: dict, ceiling: int) -> str:
     unit = next((u for u in lc.TEXT_UNITS if states.get(u) == "ready"), None)
     if not unit:
         return "no text engine is ready"
+    if unit == FLASH_UNIT and flash_fp4_local():
+        # the fit's only engine reading is SGLang's /server_info (oc-limits.sh,
+        # oc-fit-limits.py) - the route the flash lane's FP4-Local config has no answer
+        # for, so the job started here could only fail. Its limits are static, written by
+        # install.sh when the config is made, and they fit the window it serves.
+        return FLASH_FP4LOCAL_CANNOT["fit_opencode"]
     with LIFE_LOCK:
         enter = (LIFE.get("enter") or {}).get(unit)
     if not enter or enter == "0" or AUTOFIT_DONE.get(unit) == enter:
@@ -1644,7 +1754,10 @@ def stale_engines() -> dict:
         path = UNIT_DIR / unit
         if unit == "qwen38-keepalive.service" or not path.is_file():
             continue
-        extra = [str(CONFIG_DIR / f) for f in VLLM_LANE_FILES] if unit in VLLM_UNITS else []
+        # the flash lane's FP4-Local config mounts the same middleware, its engine's only key
+        # gate: an update of it was never flagged on that config (found in review, 2026-10-20)
+        vllm = unit in VLLM_UNITS or (unit == FLASH_UNIT and flash_fp4_local())
+        extra = [str(CONFIG_DIR / f) for f in VLLM_LANE_FILES] if vllm else []
         try:
             reason = _owed_reason(unit, ei.running(str(path), str(CONFIG_DIR), hf, [],
                                                    extra=extra, timeout=ENGINE_INPUTS_TIMEOUT_S))
@@ -1706,7 +1819,10 @@ def conformity_state():
             lane = "flash" if noted == "qwen38-flash.service" else "27b"
         files = ([UNIT_DIR / n for n in ("qwen38-sglang.service", "qwen38-flash.service", "qwen38-keepalive.service",
                                          "qwen38-kolibri.service", "qwen38-image.service", "qwen38-video.service")]
-                 + [CONFIG_DIR / n for n in ("launch-flash.sh", "installed.json", "api-key", "text-lane")]
+                # both flash launchers: the unit's ExecStart says which one serves, and a
+                # re-render of either can move what the plan reads back (FP4-Local config)
+                 + [CONFIG_DIR / n for n in ("launch-flash.sh", "launch-flash-fp4local.sh",
+                                           "installed.json", "api-key", "text-lane")]
                  + [REPO_DIR / n for n in ("install.sh", "install-kolibri.sh", "install-image.sh", "install-video.sh",
                                            "CHANGELOG.md")])
         key = (lane,) + tuple(_mtime_ns(f) for f in files)
@@ -1813,10 +1929,80 @@ def _guard_failed(err: str):
 
 VAR2TARGET = {"STOCK_REV": "stock", "UNC_REV": "uncensored", "FP8_REV": "fp8",
               "UNCFP8_REV": "uncensored-fp8", "FLASH_REV": "flash",
-              "FLASH_NVDA_REV": "flash-nvda", "FLASH_UNC_REV": "flash-uncensored"}
-UNIT_PATHS = {"qwen38-sglang.service": Path("/etc/systemd/system/qwen38-sglang.service"),
-              "qwen38-flash.service": CONFIG_DIR / "launch-flash.sh"}
+              "FLASH_NVDA_REV": "flash-nvda", "FLASH_UNC_REV": "flash-uncensored",
+              "FLASH_LOCAL_REV": "flash-fp4-local"}
+UNIT_PATHS = {"qwen38-sglang.service": Path("/etc/systemd/system/qwen38-sglang.service")}
+# The flash lane keeps one unit path for both of its configs, so its file is not a fixed
+# name here: which of the two launchers under FLASH_LAUNCHERS the box runs is what the
+# unit's own ExecStart names (install.sh renders the FP4-Local one beside the SGLang one
+# and points the unit's ExecStart at whichever MODEL_CHOICE picked).
+FLASH_UNIT = "qwen38-flash.service"
+FLASH_LAUNCHERS = (CONFIG_DIR / "launch-flash.sh", CONFIG_DIR / "launch-flash-fp4local.sh")
+# both configs of the flash lane answer to this served name; the fp4-local one through
+# --served-model-name, its SGLang configs through theirs
+FLASH_SERVED_NAME = "qwen3.8-flash-next"
 UNIT_TARGET_CACHE: dict = {}
+
+
+def flash_launcher_path() -> Path:
+    """The flash lane's invocation file, as its unit names it: the unit's ExecStart is the
+    one fact that says whether this box runs the SGLang launcher or the FP4-Local (b12x
+    vLLM) one. With no unit file at all (a lane prepared but never made the serving one,
+    a cockpit installed on its own), a name on disk decides it: launch-flash.sh wins a tie,
+    because the SGLang configs are the lane's classic ones, and with no name on disk
+    either the answer is still launch-flash.sh: nothing has installed the FP4-Local
+    config, so nothing has earned its vLLM gates yet."""
+    try:
+        text = (UNIT_DIR / FLASH_UNIT).read_text(errors="replace")
+    except OSError:
+        text = ""
+    m = re.search(r"^ExecStart=.*$", text, re.M)
+    if m:
+        return FLASH_LAUNCHERS[1] if FLASH_LAUNCHERS[1].name in m.group(0) else FLASH_LAUNCHERS[0]
+    sglang_c, fp4_c = FLASH_LAUNCHERS
+    return fp4_c if fp4_c.exists() and not sglang_c.exists() else sglang_c
+
+
+def flash_fp4_local() -> bool:
+    """True when the flash lane's invocation file is the FP4-Local (b12x vLLM) config:
+    whichever config the unit names, not what the engine answers: the launcher is the
+    file the installer writes and the only one that exists before the first boot. vLLM
+    has none of the routes the SGLang belts read (/flush_cache, /v1/loads, /server_info:
+    404s, measured on the Kolibri lane on 2026-10-14, the same engine class), so every
+    SGLang-only probe against the text port gates on this."""
+    return flash_launcher_path() == FLASH_LAUNCHERS[1]
+
+
+def flash_fp4_local_serving() -> bool:
+    """True while the flash lane holds the text port in its FP4-Local (vLLM) config, from
+    its boot to its stop: the lane's own busy states, and the launcher its unit names.
+    Every collector that has to choose between SGLang's routes and vLLM's asks this."""
+    with LIFE_LOCK:
+        busy = (LIFE.get("states") or {}).get(FLASH_UNIT) in lc.BUSY_STATES
+    return busy and flash_fp4_local()
+
+
+FP4LOCAL_READY_ENTER: dict = {}
+
+
+def flash_fp4_local_engine_state(unit: str, *, active: str, sub: str,
+                                 prev_state: str | None, enter_key: str,
+                                 age: float | None, usual: float) -> tuple:
+    """(state, boot, running) for the flash lane's FP4-Local config, followed the way the
+    Nemotron lanes are: vLLM's /health on the text port, vLLM's boot lines, a fresh
+    container per start, and none of the SGLang belts. One thing the Nemotron lanes do
+    not need and this config does: a cockpit that joined a first cold boot cannot tell it
+    from trouble, and that boot takes far longer than the grace covers. While the unit is
+    inside the target's boot budget (its own recorded boots, FP4_LOCAL_BOOT_DEFAULT_S when
+    this box has recorded none) plus the warm-up grace, an engine this cockpit never saw
+    serve still reads warming-up; past it, degraded."""
+    st, boot, running = nemotron_engine_state(
+        unit, active=active, sub=sub, prev_state=prev_state, enter_key=enter_key,
+        container=UNIT2CONT[unit], ready_enter=FP4LOCAL_READY_ENTER, warm_unwatched=False)
+    if st["state"] == "degraded" and prev_state not in ("ready", "degraded") \
+            and (age is None or age <= usual + WARMUP_GRACE_S):
+        st = {**st, "state": "warming-up"}
+    return st, boot, running
 
 
 def unit_target(unit: str) -> dict:
@@ -1852,21 +2038,35 @@ def unit_target(unit: str) -> dict:
         model = _video_unit_flag("--model-path", "MiniMaxAI/MiniMax-H3") \
             if VIDEO_UNIT_PATH.exists() else None
         return {"model": model, "target": "video" if model else None}
-    path = UNIT_PATHS.get(unit)
-    if not path:
-        return {"model": None, "target": None}
+    if unit == FLASH_UNIT:
+        # one unit path, two configs: read the launcher the unit's ExecStart names, and
+        # ride the unit's own mtime into the cache key - a re-install that points the unit
+        # at the other launcher changes what the lane serves without touching the file
+        # that launcher used to name, so the launcher mtime alone would not invalidate.
+        path, stamp = flash_launcher_path(), (_mtime_ns(UNIT_DIR / FLASH_UNIT),)
+    else:
+        path = UNIT_PATHS.get(unit)
+        if not path:
+            return {"model": None, "target": None}
+        stamp = ()
     try:
         mtime = path.stat().st_mtime
     except OSError:
         return {"model": None, "target": None}
+    stamp += (mtime,)
     hit = UNIT_TARGET_CACHE.get(unit)
-    if hit and hit[0] == mtime:
+    if hit and hit[0] == stamp:
         return hit[1]
     try:
         text = path.read_text(errors="replace")
     except OSError:
         return {"model": None, "target": None}
-    m = re.search(r"--model-path\s+(\S+)", text)
+    # the flash lane's FP4-Local config spells the checkpoint the way the SGLang configs
+    # do (--model-path <repo>), and it may arrive as vllm's own positional
+    # (`vllm serve <repo> --revision <sha>`); a bare --model word is what install.sh's
+    # own read of a launcher accepts, so this read accepts all three.
+    m = re.search(r"--model-path\s+(\S+)", text) or re.search(r"--model\s+(\S+)", text) \
+        or re.search(r"\bvllm serve\s+(\S+)", text)
     model = m.group(1) if m else None
     target = None
     for var, repo in rg.PIN_MODELS.items():
@@ -1874,7 +2074,7 @@ def unit_target(unit: str) -> dict:
             target = VAR2TARGET[var]
             break
     out = {"model": model, "target": target}
-    UNIT_TARGET_CACHE[unit] = (mtime, out)
+    UNIT_TARGET_CACHE[unit] = (stamp, out)
     return out
 
 
@@ -1891,6 +2091,10 @@ def monotonic_now() -> float:
 # (the reference box's medians, as the page's READY_DEFAULT), and the grace after it
 # during which "fired up but not answering" still reads as the warm-up it usually is.
 TEXT_BOOT_DEFAULT_S = {"qwen38-sglang.service": 540.0, "qwen38-flash.service": 780.0}
+# The flash lane's FP4-Local config is not SGLang: this is the boot budget for a first
+# cold boot when this box recorded none of its own; recorded boots replace it, and the
+# table above stays what the SGLang configs expect.
+FP4_LOCAL_BOOT_DEFAULT_S = 2700.0
 WARMUP_GRACE_S = 300.0
 # How long the other sampler tiers wait for the first health sample (start_samplers): the
 # engine is asked /v1/loads then, when idle, /health, 3 s and 4 s at most.
@@ -1947,14 +2151,23 @@ def collect_lifecycle():
         is_video = unit == lc.VIDEO_UNIT
         is_kolibri = unit == lc.KOLIBRI_UNIT
         is_nemotron = unit in (lc.NEMOTRON_UNIT, lc.NEMOTRON_SUPER_UNIT)
+        # the flash lane's other config: vLLM in the b12x container, riding the lane's own
+        # unit. The launcher the unit's ExecStart names decides it (flash_fp4_local): the
+        # engine on the text port answers under the lane's shared served name and says
+        # nothing about which of the two configs it is.
+        is_fp4 = unit == FLASH_UNIT and flash_fp4_local()
         if (is_image or is_video) and not (IMAGE_UNIT_PATH.exists() if is_image else VIDEO_UNIT_PATH.exists()):
             continue                    # not installed: no card, no pill, no gate
         if is_kolibri and not KOLIBRI_UNIT_PATH.exists():
             continue
         if is_nemotron and not nemotron_unit_path(unit).exists():
             continue
-        # the lanes the cockpit follows on their own facts, not the SGLang text belts
-        own_facts = is_image or is_video or is_kolibri or is_nemotron
+        # the lanes the cockpit follows on their own facts, not the SGLang text belts:
+        # scheduler_alive, the pool guard, the wedge autoheal and the zombie restart all
+        # read SGLang routes and log lines the FP4-Local engine does not have - asked of
+        # a serving vLLM they answer "no scheduler, no health", and the belt restarted an
+        # engine that was fine (found in review, 2026-10-19)
+        own_facts = is_image or is_video or is_kolibri or is_nemotron or is_fp4
         # The checkpoint the unit names, read once per unit and per poll; and the one this
         # activation booted, kept from its start: a switch during a boot rewrites the unit,
         # whose file then names the NEXT start's checkpoint, and the boot landed in that
@@ -1983,10 +2196,17 @@ def collect_lifecycle():
             st, boot, running = kolibri_engine_state(
                 unit, active=active, sub=d.get("SubState", "?"), prev_state=prev.get(unit),
                 enter_key=d.get("ActiveEnterTimestampMonotonic", "0"))
-        elif is_nemotron:
-            st, boot, running = nemotron_engine_state(
+        elif is_fp4:
+            # its boot budget wants this activation's age and the target's own recorded
+            # median (FP4_LOCAL_BOOT_DEFAULT_S until this box has measured a boot of it)
+            try:
+                age = monotonic_now() - int(enter_now) / 1e6 if int(enter_now) > 0 else None
+            except ValueError:
+                age = None
+            st, boot, running = flash_fp4_local_engine_state(
                 unit, active=active, sub=d.get("SubState", "?"), prev_state=prev.get(unit),
-                enter_key=d.get("ActiveEnterTimestampMonotonic", "0"))
+                enter_key=enter_now, age=age,
+                usual=lc.eta_for(history, unit, booted) or FP4_LOCAL_BOOT_DEFAULT_S)
         else:
             cont = UNIT2CONT[unit]
             running = bool(run(["docker", "ps", "-q", "-f",
@@ -2060,8 +2280,7 @@ def collect_lifecycle():
                         age = monotonic_now() - mono_us / 1e6
                 except ValueError:
                     pass
-                usual = lc.eta_for(history, unit, booted) \
-                    or TEXT_BOOT_DEFAULT_S.get(unit, 780.0)
+                usual = lc.eta_for(history, unit, booted) or TEXT_BOOT_DEFAULT_S.get(unit, 780.0)
                 if watched or age is None or age <= usual + WARMUP_GRACE_S:
                     st["state"] = "warming-up"
             # An activation that served has fired up, whatever the last 300 lines say later.
@@ -2240,7 +2459,10 @@ def collect_lifecycle():
                 LAST_PROGRESS["ts"] = None
                 READY_SINCE.pop(unit, None)
             witnessed = LIFE["witnessed"].get(unit, False)
-        eta = lc.eta_for(history, unit, booted)
+        # the FP4-Local config's first boot is budgeted at its own slow default: sent as
+        # None, the page fell back to its SGLang flash default (13 min) and pinned the bar
+        # at 97 % for half an hour (found in review, 2026-10-20)
+        eta = lc.eta_for(history, unit, booted) or (FP4_LOCAL_BOOT_DEFAULT_S if is_fp4 else None)
         overdue = bool(eta and elapsed and st["state"] in lc.TRANSITIONAL
                        and elapsed > 2 * eta)
         # the image engine's own answer to which checkpoint it serves (the unit's file says
@@ -2254,7 +2476,7 @@ def collect_lifecycle():
                          # now: the UI draws each from here rather than assuming
                           "stages": list(lc.VIDEO_STAGES if is_video else lc.IMAGE_STAGES if is_image
                                          else lc.KOLIBRI_STAGES if is_kolibri
-                                         else lc.NEMOTRON_STAGES if is_nemotron else lc.STAGES),
+                                         else lc.NEMOTRON_STAGES if is_nemotron or is_fp4 else lc.STAGES),
                           "detail": boot.get("detail", ""),
                           "kind": "video" if is_video else "image" if is_image else "text",
                          # systemd's own word for how the last run ended: "timeout" is a
@@ -2286,7 +2508,8 @@ def collect_lifecycle():
                 if own_facts:
                     # Neither diffusion lane has a KV pool, and ENGINE_BASE is the text lane's
                     # port: reading a pool here would record the wrong engine's, or nothing.
-                    # The Kolibri and Nemotron lanes' are set by their memory share, read on /metrics.
+                    # The vLLM engines' (Kolibri, Nemotron, the flash lane's FP4-Local config)
+                    # are set by their memory share, read on /metrics, not on /server_info.
                     save_history(history)
                     with LIFE_LOCK:
                         LIFE["witnessed"][unit] = False
@@ -2354,12 +2577,18 @@ def collect_jobs():
 
 
 def engine_image(text: str):
-    """The image a text lane's launcher (flash) or unit (27B) runs: the word on the line before
-    its server command, whatever its form (a digest pin, a tag an operator passed, a local
-    build), as lanes.sh reads it."""
+    """The image a text lane's launcher (flash) or unit (27B) runs: the word on the line
+    before its server command, whatever its form (a digest pin, a tag an operator passed, a
+    local build), as lanes.sh reads it. The SGLang configs serve with
+    `python3 -m sglang.launch_server`; the flash lane's FP4-Local config serves with vLLM's
+    own `vllm serve` (the container line above it ends in the image, so the same read
+    works). Comments are skipped: a line saying "vllm serve" in prose must not pass for
+    the serve line, and the SGLang check has carried this hazard since it was written."""
     lines = text.splitlines()
     for i, line in enumerate(lines[1:], 1):
-        if "python3 -m sglang.launch_server" in line:
+        if line.lstrip().startswith("#"):
+            continue                    # prose, not the command
+        if "python3 -m sglang.launch_server" in line or re.search(r"(?<!\w)vllm serve\b", line):
             words = lines[i - 1].split()
             return words[0] if words else None
     return None
@@ -2408,7 +2637,7 @@ def lane_prepared(lane: str):
     needs. None when the lane is not installed (no unit, no launcher)."""
     unit = {"image": IMAGE_UNIT_PATH, "video": VIDEO_UNIT_PATH, "kolibri": KOLIBRI_UNIT_PATH,
             "nemotron": NEMOTRON_UNIT_PATH, "nemotron-super": NEMOTRON_SUPER_UNIT_PATH,
-            "flash": UNIT_PATHS["qwen38-flash.service"], "27b": UNIT_PATHS["qwen38-sglang.service"]}[lane]
+            "flash": flash_launcher_path(), "27b": UNIT_PATHS["qwen38-sglang.service"]}[lane]
     try:
         text = unit.read_text(errors="replace")
     except OSError:
@@ -2495,7 +2724,8 @@ def lane_startable(lane: str):
         return built
     unit = UNIT_OF_LANE[lane]
     path = {"image": IMAGE_UNIT_PATH, "video": VIDEO_UNIT_PATH, "kolibri": KOLIBRI_UNIT_PATH,
-            "nemotron": NEMOTRON_UNIT_PATH, "nemotron-super": NEMOTRON_SUPER_UNIT_PATH}.get(lane) or UNIT_PATHS[unit]
+            "nemotron": NEMOTRON_UNIT_PATH, "nemotron-super": NEMOTRON_SUPER_UNIT_PATH}.get(lane) \
+            or (flash_launcher_path() if unit == FLASH_UNIT else UNIT_PATHS[unit])
     try:
         text = path.read_text(errors="replace")
     except OSError:
@@ -2628,7 +2858,7 @@ def _lane_unit_texts() -> list[str]:
     """What every lane's installed unit or launcher says (the caches it reads, the revisions it
     serves), '' for one not installed."""
     texts = []
-    for path in (UNIT_PATHS["qwen38-sglang.service"], UNIT_PATHS["qwen38-flash.service"],
+    for path in (UNIT_PATHS["qwen38-sglang.service"], flash_launcher_path(),
                  KOLIBRI_UNIT_PATH, NEMOTRON_UNIT_PATH, NEMOTRON_SUPER_UNIT_PATH, IMAGE_UNIT_PATH, VIDEO_UNIT_PATH):
         try:
             texts.append(path.read_text(errors="replace"))
@@ -2650,7 +2880,8 @@ ACTIONS = {
     "switch": {
         "danger": "medium",
         "params": {"target": ["stock", "uncensored", "fp8", "uncensored-fp8",
-                              "flash", "flash-nvda", "flash-uncensored", "image", "image-turbo",
+                              "flash", "flash-nvda", "flash-uncensored", "flash-fp4-local",
+                              "image", "image-turbo",
                               "video", "kolibri", "kolibri-nvfp4", "nemotron", "nemotron-super"]},
         "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"]],
         # A switch can download a whole checkpoint: 124 GB for flash take about 23 min at
@@ -2714,7 +2945,13 @@ ACTIONS = {
 ACTIONS["fetch"] = {
     "danger": "low",
     "params": {"target": ACTIONS["switch"]["params"]["target"]},
-    "argv": lambda p: ["bash", str(REPO_DIR / "switch-model.sh"), p["target"], "--fetch"],
+    # The FP4-Local row's Download is prepare-lane's, not a --fetch: this config's engine
+    # is a container the SGLang configs never pull, so image and checkpoint are both
+    # "what it needs", and prepare-lane takes them without a launcher on the box (the
+    # Library card says the same: ./prepare-lane.sh flash flash-fp4-local).
+    "argv": lambda p: (["bash", str(REPO_DIR / "prepare-lane.sh"), "flash", p["target"]]
+                       if p["target"] == "flash-fp4-local" else
+                       ["bash", str(REPO_DIR / "switch-model.sh"), p["target"], "--fetch"]),
     "timeout": 7200,
 }
 # Every lane but the one that serves is installed on demand: its units at install, its runtime
@@ -2757,6 +2994,7 @@ ACTIONS["prepare"] = {
 # Which pin each switch target serves (registry.PIN_MODELS names its repo).
 TARGET_PIN = {"stock": "STOCK_REV", "uncensored": "UNC_REV", "fp8": "FP8_REV", "uncensored-fp8": "UNCFP8_REV",
               "flash": "FLASH_REV", "flash-nvda": "FLASH_NVDA_REV", "flash-uncensored": "FLASH_UNC_REV",
+              "flash-fp4-local": "FLASH_LOCAL_REV",
               "image": "IMAGE_MODEL_PIN_REV", "image-turbo": "IMAGE_TURBO_PIN_REV",
               "video": "VIDEO_MODEL_PIN_REV", "kolibri": "KOLIBRI_FP8_REV", "kolibri-nvfp4": "KOLIBRI_NVFP4_REV",
               "nemotron": "NEMOTRON_BOLT_REV", "nemotron-super": "NEMOTRON_SUPER_REV"}
@@ -2780,7 +3018,10 @@ def target_unit(target: str) -> Path:
     if target.startswith("nemotron"):
         return NEMOTRON_UNIT_PATH
     if target.startswith("flash"):
-        return UNIT_PATHS["qwen38-flash.service"]
+        # either config's launcher on disk says the flash lane is installed; the FP4-Local
+        # row's Download needs no launcher of its own (its fetch pulls image and
+        # checkpoint, and install.sh renders its file beside the SGLang one anyway)
+        return flash_launcher_path()
     return UNIT_PATHS["qwen38-sglang.service"]
 
 
@@ -4531,12 +4772,15 @@ def video_content(vid: str) -> tuple[int, bytes, str]:
 
 
 def job_flush_cache(job: Job):
-    if kolibri_serving():
-        return False, ["the Kolibri lane's vLLM has no cache flush route (nothing was flushed); "
-                       "vLLM evicts its prefix cache by itself"], {"ok": False, "reason": "unsupported"}
-    if nemotron_serving():
-        return False, ["the Nemotron lane's vLLM has no cache flush route (nothing was flushed); "
-                       "vLLM evicts its prefix cache by itself"], {"ok": False, "reason": "unsupported"}
+    # said from the same tables the page and start_action refuse from; the job line adds
+    # that nothing was sent, since a caller past the gate still lands here (the autoheal's
+    # memory-floor belt calls this function directly, not through start_action)
+    for serving, table in ((kolibri_serving, KOLIBRI_CANNOT),
+                           (nemotron_serving, NEMOTRON_CANNOT),
+                           (flash_fp4_local_serving, FLASH_FP4LOCAL_CANNOT)):
+        if serving():
+            return (False, [f"{table['flush_cache']} (nothing was flushed)"],
+                    {"ok": False, "reason": "unsupported"})
     req = urllib.request.Request(ENGINE_BASE + "/flush_cache", method="POST", data=b"",
                                  headers={"Authorization": f"Bearer {api_key()}"})
     try:
@@ -4599,10 +4843,12 @@ def job_diag_bundle(job: Job):
         (tdp / "system.txt").write_text(run(["uname", "-a"]) + run(["free", "-g"]) + run(["df", "-h", str(Path.home())]) + run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}} {{.ID}}"], timeout=10))
         (tdp / "units.txt").write_text("".join(run(["systemctl", "show", u, "--no-pager"], timeout=5) + "\n" for u in JOURNAL_UNITS))
         try:
-            # the Kolibri and Nemotron lanes' facts are their own: SGLang's route was a 404 there (review, 2026-10-14)
+            # every vLLM engine of this box answers none of SGLang's routes (review, 2026-10-14;
+            # the flash lane's FP4-Local config the same, found 2026-10-19)
             try:
-                info = (kolibri_engine_info() if kolibri_serving() else nemotron_engine_info() if nemotron_serving()
-                        else engine_server_info(timeout=6))
+                info = (kolibri_engine_info() if kolibri_serving() else nemotron_engine_info()
+                        if nemotron_serving() else flash_fp4_local_engine_info()
+                        if flash_fp4_local_serving() else engine_server_info(timeout=6))
             except Exception as e:  # noqa: BLE001
                 if not vllm_answered("info", e):
                     raise
@@ -4612,10 +4858,10 @@ def job_diag_bundle(job: Job):
             (tdp / "server-info.json").write_text(json.dumps(info, default=str, indent=1))
         except Exception as e:  # noqa: BLE001
             (tdp / "server-info.json").write_text(json.dumps({"error": str(e)[:200]}))
-        launch = CONFIG_DIR / "launch-flash.sh"
+        launch = flash_launcher_path()          # whichever config the unit names
         if launch.exists():
             txt = re.sub(r'--api-key "\$\(cat [^)]*\)"', '--api-key <masked>', launch.read_text())
-            (tdp / "launch-flash.sh").write_text(txt)
+            (tdp / launch.name).write_text(txt)
         # scrub the key VALUE everywhere: SGLang prints api_key=... in its
         # ServerArgs banner, which lands in docker logs and the journal
         key = api_key()
@@ -4702,6 +4948,10 @@ def start_action(name: str, params: dict, origin: str = "ui") -> tuple[int, dict
     if name in NEMOTRON_CANNOT and nemotron_serving():
         audit({"kind": "action_blocked", "action": name, "params": clean, "reasons": [NEMOTRON_CANNOT[name]]})
         return 409, {"error": "blocked", "reasons": [NEMOTRON_CANNOT[name]]}
+    if name in FLASH_FP4LOCAL_CANNOT and flash_fp4_local_serving():
+        # the flash lane's other config: same engine, same missing routes
+        audit({"kind": "action_blocked", "action": name, "params": clean, "reasons": [FLASH_FP4LOCAL_CANNOT[name]]})
+        return 409, {"error": "blocked", "reasons": [FLASH_FP4LOCAL_CANNOT[name]]}
     warnings = []
     if name in ("unit", "switch", "prepare"):
         with LIFE_LOCK:
@@ -4838,7 +5088,10 @@ def pinned_pool(unit: str) -> int | None:
 
 
 INSTALLED_INVOCATION = {"27b": Path("/etc/systemd/system/qwen38-sglang.service"),
-                        "flash": CONFIG_DIR / "launch-flash.sh"}
+                        "flash": CONFIG_DIR / "launch-flash.sh",
+                        # The flash lane's other dialect: the FP4-Local config's
+                        # launcher is a vLLM one, and its own file.
+                        "flash-fp4-local": CONFIG_DIR / "launch-flash-fp4local.sh"}
 
 
 def recipes_snapshot(max_age: float = 60.0) -> dict:
@@ -4851,15 +5104,33 @@ def recipes_snapshot(max_age: float = 60.0) -> dict:
         assigns = rp.parse_assignments((REPO_DIR / "install.sh").read_text())
         templates = rp.load_templates(REPO_DIR)
         installed = {}
+        # The flash lane's two launchers: only the one the unit's ExecStart names is
+        # installed. install.sh renders the chosen config's launcher and never removes the
+        # other, so a leftover read as installed (and drifted) on a config that does not run
+        # (found in review, 2026-10-20).
+        flash_runs = flash_launcher_path().name
         for lane, path in INSTALLED_INVOCATION.items():
+            if lane in ("flash", "flash-fp4-local") and path.name != flash_runs:
+                installed[lane] = None
+                continue
             try:
-                installed[lane] = rp.profile_from_text(path.read_text())
+                text = path.read_text()
+                installed[lane] = (rp.profile_from_vllm_text(text) if lane == "flash-fp4-local"
+                                   else rp.profile_from_text(text))
             except OSError:
                 installed[lane] = None
         reg = registry_snapshot()
 
         def enrich(rec):
-            inst = installed.get(rec["lane"])
+            inst = installed.get("flash-fp4-local" if rec["id"] == "flash-fp4-local"
+                                 else rec["lane"])
+            # A recipe speaks one engine and the installed invocation may speak
+            # the other (the flash lane has two configs and one lane): comparing
+            # across dialects would report every flag of the other engine as
+            # missing, so a dialect mismatch reads as "not installed", not drift.
+            if inst and (inst.get("engine") or {}).get("family", "sglang") != \
+                    (rec.get("engine") or {}).get("family", "sglang"):
+                inst = None
             return {"recipe": rec, "presence": rp.presence(rec, reg),
                     "drift": rp.drift(rec, inst) if inst else None,
                     "installed": bool(inst) and inst["model"].get("revision") == rec["model"]["revision"]

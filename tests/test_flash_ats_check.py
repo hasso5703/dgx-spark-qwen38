@@ -172,6 +172,48 @@ class TheLauncher(Box):
         self.assertEqual((r.returncode, r.stdout.strip().splitlines()[-1]), (0, "REACHED"), r.stdout + r.stderr)
 
 
+class TheFP4Launcher(Box):
+    """The FP4-Local config asks the same question at its start: install.sh, prepare-lane.sh
+    and switch-model.sh refused it on such a GPU while its launcher started anyway, every 15 s
+    (found in review, 2026-10-20). Whether its engine needs ATS is not measured; the lane keeps
+    one rule."""
+    TEMPLATE = (REPO / "qwen38-flash-fp4local-launch.sh.template").read_text()
+
+    def run_launcher(self, smi):
+        """The whole launcher as rendered, its docker a stub that says it ran."""
+        home = self.t / "home"
+        cfg = home / ".config" / "qwen38"
+        cfg.mkdir(parents=True, exist_ok=True)
+        shutil.copy(CHECK, cfg / "flash-ats-check.sh")
+        docker = self.t / "docker"
+        docker.write_text('#!/bin/sh\necho DOCKER "$@"\n')
+        docker.chmod(0o755)
+        text = (self.TEMPLATE.replace("__HOME__", str(home)).replace("/usr/bin/docker", str(docker)))
+        text = re.sub(r"__[A-Z_]+__", "x", text)
+        (self.t / "launch.sh").write_text(text)
+        return subprocess.run(["bash", str(self.t / "launch.sh")], capture_output=True, text=True, timeout=30,
+                              env={"PATH": "/usr/bin:/bin", "QWEN38_PREFLIGHT_SMI": smi,
+                                   "QWEN38_FLASH_MEM_FLOOR_GIB": "0"})
+
+    def test_a_gpu_in_hmm_ends_the_start_before_any_docker_call(self):
+        r = self.run_launcher(self.smi("HMM\n"))
+        unit = (REPO / "qwen38-flash-fp4local.service.template").read_text()
+        code = int(re.search(r"^RestartPreventExitStatus=(\d+)$", unit, re.M).group(1))
+        self.assertEqual((r.returncode, code), (78, 78), r.stdout + r.stderr)
+        self.assertNotIn("DOCKER", r.stdout)
+        self.assertEqual(r.stdout.splitlines()[0][:46], "preflight: qwen38-flash.service cannot start: ")
+        said = load_lifecycle().parse_preflight(r.stdout.splitlines())
+        self.assertEqual(said["verdict"], "cannot start", r.stdout)
+        self.assertIn("addressing mode is HMM", said["reason"])
+        # the reason claims no table file for this config
+        self.assertIn("whose need for ATS is not measured", said["reason"])
+
+    def test_ats_goes_on_to_the_engine(self):
+        r = self.run_launcher(self.smi("ATS\n"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("DOCKER run --rm --name qwen38-flash", r.stdout)
+
+
 class TheInstaller(Box):
     TEXT = (REPO / "install.sh").read_text()
 

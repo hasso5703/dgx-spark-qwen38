@@ -7,7 +7,7 @@ KEY_FILE="$HOME/.config/qwen38/api-key"
 [ -s "$KEY_FILE" ] || { echo "API key not found at $KEY_FILE. Run ./install.sh first"; exit 1; }
 for i in 1 2 3; do
   curl -s -m 5 "http://127.0.0.1:$PORT/health" >/dev/null && break
-  [ "$i" = 3 ] && { echo "server not up on :$PORT after 3 tries (systemctl status qwen38-sglang)"; exit 1; }
+  [ "$i" = 3 ] && { echo "server not up on :$PORT after 3 tries (systemctl status qwen38-sglang qwen38-flash)"; exit 1; }
   sleep 5
 done
 
@@ -47,7 +47,31 @@ def served_model():
 
 
 MODEL = served_model()
-LANE = "flash" if "flash" in MODEL else "27b"
+# Which engine answers decides the lane as much as the name does: the FP4-Local
+# config serves the same model name as the SGLang flash configs, so "flash" in
+# the name alone would print the NVFP4+NEXTN header and its reference lines over
+# an MTP run. /metrics's counter names say whose they are, the same
+# discrimination the cockpit makes (engine_metrics.py). The read carries the key:
+# both engines leave /metrics open and accept it there, and with PORT=30001 the
+# proxy refuses /metrics without a listed key once a client-keys file is set
+# (found in review, 2026-10-20).
+def engine_flavour():
+    req = urllib.request.Request(BASE + "/metrics",
+                                 headers={"Authorization": f"Bearer {KEY}"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            page = r.read().decode("utf-8", "replace")
+    except Exception:
+        return "?"
+    if "\nvllm:" in page or page.startswith("vllm:"):
+        return "vllm"
+    if "sglang:" in page:
+        return "sglang"
+    return "?"
+
+
+FLAVOUR = engine_flavour()
+LANE = "27b" if "flash" not in MODEL else ("flash-fp4" if FLAVOUR == "vllm" else "flash")
 HEADERS = {
     # The median is the v1.14 campaign on the official release image (README, CHANGELOG
     # v1.14.0); the per-probe figures are the last ones published, v1.9's, whose median was
@@ -64,6 +88,16 @@ HEADERS = {
               "  the abliterated target measures 45.4-46.4 / 43.7-46.6 / 27.3-27.7\n"
               "  DISCARD THE FIRST BATCH on this lane: one batch right after a boot came in\n"
               "  at 38.8 / 39.1 / 24.8 and the next three at 47.7-49.1 (BENCHMARKS.md)"),
+    # The FP4-Local config of the same lane: b12x vLLM, MTP n=4. Its reference line
+    # is this config's own measurement (BENCHMARKS.md, 2026-10-19, three batches
+    # after a discarded one: greedy median 59.0-59.1, code 55.8-56.1, reasoning
+    # 62.1-62.3, math peak 55.7-59.2, prose 33.5-34.5, 3.10 tokens per MTP step),
+    # never the NEXTN config's line, whose drafter and image are another stack's.
+    "flash-fp4": ("Qwen3.8-Flash-Next FP4-Local benchmark (b12x vLLM, MTP n=4, batch 1 decode)",
+                  "reference box (2026-10-19, warm restart): greedy median ~59 / code ~56 /\n"
+                  "  reasoning ~62 / math peak ~56-59 / prose ~34; MTP ~3.1 tokens per step\n"
+                  "  no warm-up gap seen: the discarded first batch (59.2) equalled the next\n"
+                  "  three (59.0-59.1); the cold first boot was not measured (BENCHMARKS.md)"),
 }
 
 
@@ -131,6 +165,11 @@ print("  (numbers vary with content: acceptance length drives everything;")
 if LANE == "27b":
     print("   math/code accept ~3.3-5.6 tokens/step, free prose ~1.5-2.2 in any")
     print("   language, see BENCHMARKS.md)")
+elif LANE == "flash-fp4":
+    print("   acceptance here is MTP at num_speculative_tokens=4 (measured ~3.1 tokens")
+    print("   per step): the draft/accept counts are the vllm:spec_decode_* counters")
+    print("   on :30000/metrics; free prose runs at ~0.6 of the code rate, as on the")
+    print("   NEXTN config, see BENCHMARKS.md)")
 else:
     print("   free prose costs this lane about a third of its code rate, on any")
     print("   engine and drafter measured here, see BENCHMARKS.md)")

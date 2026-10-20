@@ -186,6 +186,46 @@ class RefsAndMovingTags(unittest.TestCase):
         self.assertNotEqual(box.run("fingerprint"), fp, "a pull that moved the tag is a change")
         self.assertIn("another image", box.run("running"))
 
+    def fp4_box(self, image):
+        """The FP4-Local unit and its launcher rendered from the repo's template, with image as
+        the serving image (FLASH_LOCAL_IMAGE=eugr/spark-vllm-b12x:latest, the override the
+        step-2 die message recommends)."""
+        box = Box()
+        launcher = box.cfg / "launch-flash-fp4local.sh"
+        subs = {"__HOME__/.config/qwen38": str(box.cfg), "__HOME__": str(box.t), "__HF_CACHE__": str(box.hf),
+                "__IMAGE__": image, "__MODEL__": "nvidia/Qwen3.8-Flash-Next-FP4-Local",
+                "__MODEL_REV_ARGS__": "--revision rev1", "__FLASH_QUANT_ARGS__": "--quantization modelopt_mixed ",
+                "__FLASH_GPU_UTIL__": "0.8", "__ENGINE_BIND__": "127.0.0.1", "__PORT__": "30001"}
+        text = (REPO / "qwen38-flash-fp4local-launch.sh.template").read_text()
+        for k, v in subs.items():
+            text = text.replace(k, v)
+        launcher.write_text(text)
+        box.unit.write_text(f"[Service]\nExecStart=/bin/bash {launcher}\n")
+        return box
+
+    def test_the_fp4_local_launcher_names_its_image_by_a_tag_too(self):
+        # only SGLang's server command was known, and the mount /opt/qwen38-auth:ro matched the
+        # qwen38 tag pattern instead (found in review, 2026-10-20)
+        box = self.fp4_box("eugr/spark-vllm-b12x:latest")
+        spec = importlib.util.spec_from_file_location("engine_inputs_fp4", TOOL)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _, images, _ = mod.inputs(str(box.unit), str(box.cfg), str(box.hf), [])
+        self.assertEqual(images, ["eugr/spark-vllm-b12x:latest"])
+
+    def test_the_fp4_local_middleware_is_an_input_the_installer_names(self):
+        # the launcher mounts its folder only, so the installer passes the file (found in
+        # review, 2026-10-20)
+        box = self.fp4_box("eugr/spark-vllm-b12x:latest")
+        auth = box.cfg / "vllm-auth" / "vllm_engine_auth.py"
+        auth.parent.mkdir()
+        auth.write_text("v1\n")
+        fp = box.run("fingerprint", f"--extra={auth}")
+        auth.write_text("v2\n")
+        self.assertNotEqual(box.run("fingerprint", f"--extra={auth}"), fp)
+        self.assertIn('ENGINE_CKPTS+=("--extra=$CONFIG_DIR/vllm-auth/vllm_engine_auth.py")',
+                      (REPO / "install.sh").read_text())
+
 
 class TheFingerprintIsByContent(unittest.TestCase):
     def test_a_changed_template_changes_it(self):
@@ -496,9 +536,11 @@ class TheInstallerDecides(unittest.TestCase):
         self.assertNotIn('sudo install -m 644 "$TMP_UNIT"', text, "the unit goes in through unit_put alone")
         # the launcher is installed in the branch where the comparison found a difference,
         # and only there (it also says which of the two happened, since 2026-09-30)
-        self.assertRegex(text, r'if cmp -s "\$TMP_LAUNCH" "\$CONFIG_DIR/launch-flash\.sh"; then\n'
+        # the written name is a variable since the lane's FP4-Local config (v1.37.0):
+        # the same compare-then-write path covers whichever launcher MODEL_CHOICE picked
+        self.assertRegex(text, r'if cmp -s "\$TMP_LAUNCH" "\$CONFIG_DIR/\$LAUNCH_NAME"; then\n'
                                r'\s*echo "launch script unchanged[^\n]*\n\s*else\n'
-                               r'\s*install -m 755 "\$TMP_LAUNCH" "\$CONFIG_DIR/launch-flash\.sh"\n')
+                               r'\s*install -m 755 "\$TMP_LAUNCH" "\$CONFIG_DIR/\$LAUNCH_NAME"\n')
         self.assertEqual(text.count('install -m 755 "$TMP_LAUNCH"'), 1, "no other path writes the launcher")
 
     def test_the_restart_itself_is_the_one_the_decision_guards(self):

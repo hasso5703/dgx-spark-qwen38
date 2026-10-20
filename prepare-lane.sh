@@ -67,8 +67,9 @@ pull_image(){  # $1 image, $2 the lane (its local tag), $3 the room its pull nee
 }
 pins_or_die(){  # the pins install.sh declares, the one place they are, each checked defined
   local v
-  eval "$(grep -E '^(FLASH(_NVDA|_UNC)?|STOCK|UNC|FP8|UNCFP8)_(REPO|REV)=' "$HERE/install.sh" || true)"
+  eval "$(grep -E '^(FLASH(_NVDA|_UNC|_LOCAL)?|STOCK|UNC|FP8|UNCFP8)_(REPO|REV)=|^FLASH_LOCAL_IMAGE=|^FLASH_LOCAL_SERVE_IMAGE=' "$HERE/install.sh" || true)"
   for v in FLASH_REPO FLASH_REV FLASH_NVDA_REPO FLASH_NVDA_REV FLASH_UNC_REPO FLASH_UNC_REV \
+           FLASH_LOCAL_REPO FLASH_LOCAL_REV FLASH_LOCAL_SERVE_IMAGE \
            STOCK_REPO STOCK_REV UNC_REPO UNC_REV FP8_REPO FP8_REV UNCFP8_REPO UNCFP8_REV; do
     eval "[ -n \"\${$v:-}\" ]" || die "install.sh no longer defines $v (repo layout changed?)"
   done
@@ -76,6 +77,39 @@ pins_or_die(){  # the pins install.sh declares, the one place they are, each che
 
 prepare_flash(){
   local launch="$CONFIG_DIR/launch-flash.sh" img model hf ple map target rev why
+  # FP4-Local is the lane's other engine (the b12x vLLM container). Its prep needs no
+  # unit and no launcher on this box, only install.sh's pins: the cockpit's Library
+  # Download runs this before the config was ever installed, and its first install
+  # then finds image and checkpoint in place. No PLE table and no draft-vocabulary
+  # step: the b12x runtime reads the n-gram table from the checkpoint itself.
+  if [ "${TARGET:-}" = flash-fp4-local ] || [ "${TARGET:-}" = "$FLASH_LOCAL_REPO" ]; then
+    # nothing downloads on a GPU outside its ATS mode: the guard holds for the whole
+    # lane (issue #54), and the FP4-Local launcher asks it at its start too
+    if why="$(flash_cannot_start)"; then die "the flash lane cannot start on this box: $why"; fi
+    # The cache by switch-model.sh's own rule, and handed to it, so the room is checked
+    # where the checkpoint lands: an explicit HF_CACHE, else the launcher the flash unit
+    # runs, the 27B unit, launch-flash.sh, the default. A stale fp4 launcher won over the
+    # serving one here while the switch read another cache (found in review, 2026-10-20).
+    local serving=""
+    if [ -f /etc/systemd/system/qwen38-flash.service ]; then
+      serving="$launch"
+      grep -q launch-flash-fp4local /etc/systemd/system/qwen38-flash.service 2>/dev/null \
+        && serving="$CONFIG_DIR/launch-flash-fp4local.sh"
+    fi
+    hf="${HF_CACHE:-}"
+    [ -n "$hf" ] || hf="$(unit_hf_cache "$serving" /etc/systemd/system/qwen38-sglang.service "$launch")"
+    [ -n "$hf" ] || hf="$HOME/.cache/huggingface"
+    local img_need=28
+    docker image inspect "$FLASH_LOCAL_SERVE_IMAGE" >/dev/null 2>&1 && img_need=0
+    room_per_disk "$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)|$img_need|its image" \
+                  "$hf|$(ckpt_room_gb flash "$hf" "$FLASH_LOCAL_REPO" "$FLASH_LOCAL_REV")|its checkpoint and its caches"
+    # the fp4 image's own tag key, as install.sh pins it: the shared flash key would
+    # let a 27B-lane install untag it again (found in review, 2026-10-18)
+    pull_image "$FLASH_LOCAL_SERVE_IMAGE" flash-local 28   # its peak, as install.sh counts it
+    HF_CACHE="$hf" bash "$HERE/switch-model.sh" flash-fp4-local --fetch
+    printf '\n\033[1;32m── Done: the FP4-Local config is prepared; MODEL_CHOICE=flash-fp4-local ./install.sh makes it the serving one\033[0m\n'
+    return 0
+  fi
   [ -f "$launch" ] || die "the flash lane is not installed on this box (no $launch): ./install.sh installs it"
   # its image and its checkpoint (223 GB in all) for a lane that cannot start on a GB10 outside
   # its ATS addressing mode (issue #54): said before the first byte
@@ -93,7 +127,7 @@ prepare_flash(){
     flash|"$FLASH_REPO") target=flash; model="$FLASH_REPO"; rev="$FLASH_REV" ;;
     flash-nvda|"$FLASH_NVDA_REPO") target=flash-nvda; model="$FLASH_NVDA_REPO"; rev="$FLASH_NVDA_REV" ;;
     flash-uncensored|"$FLASH_UNC_REPO") target=flash-uncensored; model="$FLASH_UNC_REPO"; rev="$FLASH_UNC_REV" ;;
-    *) if [ -n "$TARGET" ]; then die "$TARGET is not a flash lane target (flash, flash-nvda or flash-uncensored)"; fi
+    *) if [ -n "$TARGET" ]; then die "$TARGET is not a flash lane target (flash, flash-nvda, flash-uncensored or flash-fp4-local)"; fi
        die "the flash launcher serves $model, which no flash target names: ./switch-model.sh flash points it at one" ;;
   esac
   # what it downloads, summed on each disk before the first byte (lanes.sh room_per_disk); each

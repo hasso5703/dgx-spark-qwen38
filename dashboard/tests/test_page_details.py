@@ -706,6 +706,24 @@ class TheModelsViewDownloadsWhatALaneCanLoad(unittest.TestCase):
         self.assertIn("its first Load downloads it", r["rows"][2])
         self.assertIn("its lane is not installed", r["rows"][3])
 
+    def test_the_fp4_local_download_does_not_wait_for_the_sglang_runtime(self):
+        # lanes_ready.flash measures the SGLang launcher's image and token map; the FP4-Local
+        # Download (prepare-lane's FP4 branch) needs neither, and was hidden exactly where it
+        # is the only sane path (found in review, 2026-10-20)
+        reg = {"images": [], "other_models": [], "caches": ["/c"], "models": [],
+               "targets": [{"target": "flash", "repo": "RadixArk/Qwen3.8-Flash-Next-NVFP4", "rev": "a" * 40, "state": "absent", "installed": True},
+                           {"target": "flash-fp4-local", "repo": "nvidia/Qwen3.8-Flash-Next-FP4-Local", "rev": "b" * 40, "state": "absent", "installed": True}]}
+        r = run(self, r"""
+        feed({lanes_ready: {kolibri: true, image: true, video: true, flash: false}});
+        __fetch = async (url, init) => url.startsWith('/api/registry') ? __response(200, %s) : new Promise(() => {});
+        await scanRegistry();
+        report({rows: [...$('reg-targets').tBodies[0].rows].map(tr => tr.textContent),
+                btns: [...$('reg-targets').querySelectorAll('button')].map(b => b.textContent)});
+        """ % json.dumps(reg))
+        self.assertIn("its first Load downloads it", r["rows"][0])
+        self.assertEqual(r["btns"], ["Download"])
+        self.assertIn("Download", r["rows"][1])
+
 
 class ExampleNamesCountRight(unittest.TestCase):
     """U41: the "Twenty options" example had eight."""

@@ -215,8 +215,24 @@ flash_cannot_start(){
 
 # The image a text lane's launcher (flash) or unit (27B) runs: the word on the line before its
 # server command, whatever its form (a digest pin, a tag an operator passed, a local build).
+# Two server commands: SGLang's module, and vLLM's serve line (the flash lane's FP4-Local
+# config runs the b12x vLLM container, whose image sits on the line above it).
 engine_image(){  # $1 the launcher or the unit
-  { grep -B1 -m1 -- 'python3 -m sglang.launch_server' "$1" 2>/dev/null || true; } | head -1 | awk '{print $1}'
+  { grep -B1 -m1 -E -- 'python3 -m sglang\.launch_server|(^| )vllm serve ' "$1" 2>/dev/null || true; } | head -1 | awk '{print $1}'
+}
+# The checkpoint a launcher or unit names, whichever of the three spellings it uses:
+# --model-path (every SGLang config), a bare --model, or vLLM's own serve argument
+# (`vllm serve <repo> --revision <sha>`, the flash lane's FP4-Local config, and the
+# retired v1.4 launcher). The comments of the fp4 launcher never put the word vllm
+# before serve in lower case, so the serve line is the only match. Every reader of an
+# installed checkpoint goes through this; each copy that read only one spelling was
+# blind to the FP4-Local launcher (three found in review, 2026-10-19).
+launcher_model(){  # $1 the launcher or the unit
+  local m
+  m="$({ grep -m1 -oE -- '--model-path [^ ]+' "$1" 2>/dev/null || true; } | head -1 | cut -d' ' -f2)"
+  [ -n "$m" ] || m="$({ grep -m1 -oE -- '--model [^ ]+' "$1" 2>/dev/null || true; } | head -1 | cut -d' ' -f2)"
+  [ -n "$m" ] || m="$({ grep -m1 -oE 'vllm serve [^ ]+' "$1" 2>/dev/null || true; } | head -1 | sed -E 's/^vllm serve //')"
+  printf '%s' "$m"
 }
 # Whether a checkpoint is whole in a cache: every shard its index names is in the snapshot of the
 # revision, since a file appears there only once its blob is whole (a link to a blob gone is not).
@@ -291,7 +307,12 @@ video_first_start_caches(){
 # install.sh, and a first Load after a Download from Library was refused for want of room it
 # did not need (found in review, 2026-10-15).
 ckpt_room_gb(){  # $1 flash|27b, $2 the HF cache, $3 the repo, $4 its revision
-  local n=45 have dir="$2/hub/models--${3//\//--}"; [ "$1" = flash ] && n=180
+  local n=45 have dir="$2/hub/models--${3//\//--}"
+  # 106 GiB for the FP4-Local checkpoint (95.2 GiB) and its caches, against 180 GiB for the
+  # SGLang configs' 136 GB checkpoint and caches; the SGLang configs' 50 GiB PLE table comes
+  # on top of the 180 (install.sh, prepare-lane.sh), so their full ask is 230 GiB (found in
+  # review, 2026-10-20).
+  [ "$1" = flash ] && case "$3" in *FP4-Local*) n=106 ;; *) n=180 ;; esac
   if ckpt_cached "$dir" "${4:-main}"; then echo 10; return 0; fi
   have="$({ du -s --apparent-size -B1 "$dir/blobs" 2>/dev/null || true; } | cut -f1)"
   n=$(( n - ${have:-0} / 1073741824 )); [ "$n" -ge 10 ] || n=10

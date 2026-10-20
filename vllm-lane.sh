@@ -138,6 +138,14 @@ vlane_uninstall_runtime(){  # $1 the image's repository, $2 the base image, $3..
   for u in qwen38-kolibri.service qwen38-nemotron.service qwen38-nemotron-super.service; do
     [ "$u" != "$UNIT" ] && [ -f "$LANES_UNIT_DIR/$u" ] && keep=1
   done
+  # The flash lane is one of these only in its FP4-Local config (the b12x vLLM one),
+  # and that config mounts the middleware in its LAUNCHER, not in the unit; the unit
+  # carries the word nowhere (grep of it was the miss, found in review, 2026-10-18:
+  # uninstalling the last other vLLM lane deleted vllm-auth under the serving engine).
+  { [ "$UNIT" != "qwen38-flash.service" ] \
+    && { grep -q vllm-auth "$LANES_UNIT_DIR/qwen38-flash.service" 2>/dev/null \
+         || grep -q vllm-auth "$CONFIG_DIR/launch-flash-fp4local.sh" 2>/dev/null; } \
+    && keep=1; } || true
   if [ -n "$keep" ]; then
     echo "vllm-auth kept: another vLLM lane uses it too"
   else

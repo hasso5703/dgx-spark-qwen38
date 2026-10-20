@@ -32,6 +32,25 @@ class Engine(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path.startswith("/metrics"):
+            # the proxy on :30001, the default target, refuses /metrics without a
+            # listed key once a client-keys file is set: the label is read with the
+            # run's own key or it reads "unknown" (found in review, 2026-10-20)
+            if self.headers.get("Authorization") != "Bearer k":
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            # sglang: names on purpose: the only other /metrics a test run can
+            # reach is the reference box's proxy on :30000, and it answers
+            # vllm: today - a label read from the wrong port can never match
+            body = b"sglang:prompt_tokens_total 1.0\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         body = json.dumps({"data": [{"id": "m"}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -77,6 +96,26 @@ class TheSlopeIsInMilliseconds(unittest.TestCase):
         # the fake engine charges 500 ms per 1k prompt tokens; allow for timing noise
         self.assertGreater(slope, 300, r.stdout)
         self.assertLess(slope, 800, r.stdout)
+
+    def test_the_transcript_names_the_engine_on_the_run_target(self):
+        # The self-label asks the endpoint the run itself targets, not a
+        # hardcoded proxy port: a connect to the proxy's :30000 is a serving
+        # port the offline suite's audit hook counts against the test, and
+        # the label has to survive an engine reachable on no proxy at all
+        # (found in CI, 2026-10-19).
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Engine)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            env = dict(os.environ, QWEN38_API_KEY="k", HOME=tempfile.mkdtemp(prefix="ba-flavour-"))
+            r = subprocess.run([sys.executable, str(REPO / "bench-agent.py"), "--port",
+                                str(srv.server_address[1]), "--turns", "2", "--turn-tokens", "4",
+                                "--prefix-tokens", "50"],
+                               capture_output=True, text=True, env=env, timeout=60)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("engine SGLang", r.stdout)
 
 
 if __name__ == "__main__":
