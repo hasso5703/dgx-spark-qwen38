@@ -1,0 +1,56 @@
+--- a/dashboard/tests/test_env_isolation.py
++++ b/dashboard/tests/test_env_isolation.py
+@@ -8,8 +8,11 @@
+ left all of it behind, so every module after it ran with a HOME that did not exist and
+ passed or failed on that rather than on the code (found in review, 2026-09-24).
+ 
+-One test of each module is run, which is enough to run all of its fixtures (module, then
+-class), and the environment is compared before and after, in a process of its own.
++The first test of each class of each module is run, which is enough to run all of its fixtures
++(module, then each class's), and the environment is compared before and after, in a process of its
++own. One test per module ran only the first class's fixtures: test_cockpit_logs_masked.py's first
++test is in a class that sets nothing, and the class that sets six COCKPIT_ variables and never puts
++them back was never run here (found by a whole-file probe, 2026-10-22).
+ """
+ import os
+ import pathlib
+@@ -28,17 +31,17 @@
+         continue
+     name = "tests." + path.stem
+     suite = unittest.defaultTestLoader.loadTestsFromName(name)
+-    stack, first = [suite], None
+-    while stack and first is None:
++    stack, firsts = [suite], {}
++    while stack:
+         item = stack.pop(0)
+         if isinstance(item, unittest.TestSuite):
+             stack[:0] = list(item)
+         else:
+-            first = item
+-    if first is None:
++            firsts.setdefault(type(item), item)
++    if not firsts:
+         continue
+     before = dict(os.environ)
+-    unittest.TestSuite([first]).run(unittest.TestResult())
++    unittest.TestSuite(list(firsts.values())).run(unittest.TestResult())
+     after = dict(os.environ)
+     for var in sorted(set(before) | set(after)):
+         if before.get(var) != after.get(var):
+--- a/dashboard/tests/test_cockpit_logs_masked.py
++++ b/dashboard/tests/test_cockpit_logs_masked.py
+@@ -18,6 +18,14 @@
+ HERE = Path(__file__).resolve()
+ DASH = HERE.parents[1]
+ KEY = "k-" + "Z" * 40
++# every module hands the next one the environment it found (test_env_isolation.py)
++ENV_BEFORE = dict(os.environ)
++
++
++def tearDownModule():
++    for name in set(os.environ) - set(ENV_BEFORE):
++        del os.environ[name]
++    os.environ.update(ENV_BEFORE)
+ 
+ 
+ class TheLogs(unittest.TestCase):

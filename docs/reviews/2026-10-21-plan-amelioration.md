@@ -53,7 +53,7 @@ preuve, sa première étape prête et sa mesure de succès :
 
 | # | Recommandation | Le problème, en chiffres | Ce qui est fourni et testé ici | Effort |
 |---|---|---|---|---|
-| 1 | **Une échelle de vérification**, de la milliseconde à la CI complète | la seule vérification d'ensemble prend 45 min sur la box et 42 min (médiane) sur GitHub ; deux étapes font 72 % de la CI ; `test_text_lane.py` (9 330 séquences, sept lanes sur huit) y tourne quatre fois | hook de portes statiques (50 à 120 ms) ; `affected-tests.py` (rejeu de 100 commits : 1,4 min en médiane, 6,0 min au 90e centile avec le correctif 1, au lieu de 22 min pour toute la suite) ; deux patchs sur les deux étapes lourdes, la CI complète à 41 min ici avec les correctifs 1 et 2 (mesuré : 51 % de moins) ; un test instable trouvé et corrigé | 2 à 3 jours |
+| 1 | **Une échelle de vérification**, de la milliseconde à la CI complète | la seule vérification d'ensemble prend 45 min sur la box et 42 min (médiane) sur GitHub ; deux étapes font 72 % de la CI ; `test_text_lane.py` (9 330 séquences, sept lanes sur huit) y tourne quatre fois | hook de portes statiques (50 à 120 ms) ; `affected-tests.py` (rejeu de 100 commits : 1,4 min en médiane, 6,0 min au 90e centile avec le correctif 1, au lieu de 22 min pour toute la suite) ; deux patchs sur les deux étapes lourdes, la CI complète à 41 min ici avec les correctifs 1 et 2 (mesuré : 51 % de moins) ; un test instable et une fuite d'environnement trouvés, et corrigés | 2 à 3 jours |
 | 2 | **Une seule liste des lanes**, le reste généré ou vérifié | 64 listes dans 20 fichiers ; FP4-Local a demandé 35 fichiers partagés câblés à la main ; blocs vLLM de `switch-model.sh` identiques à 73-77 % | `lanes.toml` et `lanegen.py check` : 27 listes sur 27 d'accord, sans rien changer | phase 1 : 1 à 2 jours |
 | 3 | **Des tests qui vérifient le comportement, pas le texte** | au moins 489 ancres de découpage dans 89 fichiers de test ; les 3 refactorings neutres essayés cassent chacun un test ou une étape de CI | expérience de refactorings neutres, porte à cliquet `anchor-ratchet.py` (testée) | 1 heure, puis au fil de l'eau |
 | 4 | **Ce qui arrive chez l'utilisateur est ce qui a été validé** | `main` en avance sur sa CI 21,7 h en 8 jours, et rouge jusqu'à 3,5 h ; 232 paquets non épinglés dans le venv image ; 7 rapports de bugs externes sur 13 viennent de box neuves | job `promote` du canal `stable` (zizmor : 0), lock hashé démontré | 1 à 3 jours |
@@ -236,7 +236,7 @@ Les autres étapes ne changent pas. En root, ces deux étapes échouent avant co
    un `sitecustomize` (son audit des ports). Y ajouter la comparaison de `os.environ` entre le
    démarrage et `atexit`, écrite dans un journal que l'étape lit, fait le même contrôle pendant
    l'exécution unique de chaque fichier. La relance complète disparaît ; restent le test d'import
-   et celui des fixtures de clé, 4,6 secondes ici pour les deux. **[mesuré ici]** La sonde nomme un fichier de test écrit pour laisser `UPSTREAM` changé, et pas un fichier qui remet l'environnement en place. L'étape hors ligne patchée, en root, tourne en 6 minutes au lieu de 20, mais s'arrête sur les refus de root avant de lire la sonde : son passage complet en utilisateur ordinaire, la vraie preuve qu'aucun des 232 fichiers ne déclenche la sonde à tort, est à refaire sur la box (deux essais ici ont été coupés par des redémarrages du conteneur).
+   et celui des fixtures de clé, 4,6 secondes ici pour les deux. **[mesuré ici]** La sonde nomme un fichier de test écrit pour laisser `UPSTREAM` changé, et pas un fichier qui remet l'environnement en place. Puis, sur la vraie suite et en utilisateur ordinaire, l'étape hors ligne patchée fait passer tous les fichiers (220 quatre à la fois en 276 s, puis les 12 seuls en 185 s), et la sonde signale **une fuite réelle** : `dashboard/tests/test_cockpit_logs_masked.py` laisse six variables `COCKPIT_*` changées, dont `COCKPIT_CONFIG_DIR`, qui pointe vers le dossier que son `tearDownClass` vient de supprimer, pour tous les modules qui le suivent dans l'étape « Cockpit unit tests », qui les exécute dans un seul processus. C'est la classe de défaut du 2026-09-24, et `dashboard/tests/test_env_isolation.py` existe pour elle ; mais il ne lance que le premier test de chaque module, et celui de ce module est dans une autre classe que celle qui pose les variables. `patches/cockpit-env-leak.diff` corrige les deux : la sonde du cockpit lance le premier test de chaque classe (elle échoue alors en nommant la fuite **[mesuré ici]**), et le module rend l'environnement comme les autres (elle passe). L'ancienne relance ne couvrait que `tests/` : la sonde couvre aussi `dashboard/tests/`.
 3. **L'exécution commune de `tests/` en quatre processus** : quatre lots fixes de modules, chacun
    dans un seul processus, gardent l'essentiel de ce que cette étape attrape (un module qui
    change l'état du processus pour ceux qui le suivent dans son lot), et le compte « déclarés
@@ -260,7 +260,11 @@ ligne relancée ici en utilisateur ordinaire a échoué sur ce test, puis le fic
 (attendre la ligne avec la même échéance que la fermeture), en alternance et dans les mêmes
 conditions. Le dépôt refuse d'appeler cela un flake (« the kind of failure that gets called a
 flake and muted », `tests/test_suite_isolation.py`) : le correctif 5 le rendrait plus fréquent, à
-corriger avant.
+corriger avant. Un second test l'est sans doute aussi : `tests/test_bench_agent_slope.py` a lu une
+pente de 214 pour un plancher de 300 dans une étape à quatre fichiers à la fois, et passe seul
+(20 fois sur 20 sous une charge modérée). Sa pente se calcule sur deux points et une croissance
+d'une centaine de jetons, le cas que décrit le commentaire même de `bench-agent.py` (« a few
+milliseconds of jitter read as a steep slope ») : lui donner une croissance plus grande.
 
 **Gain attendu.** La CI complète n'est plus le prix de chaque modification, seulement celui de ce
 qui sort de la box. Pour un commit courant, la vérification passe de 45 minutes à 1,4 min en médiane ; au 90e centile 6,0 min avec le correctif 1 ci-dessous, 20 min sans **[mesuré ici]**.
@@ -754,7 +758,7 @@ rapport gain sur effort, et la dépendance entre les recommandations.
 | Jour 1 | Phase 0 (section 2) | l'inventaire est fait, et chaque élément a sa case |
 | Jour 1 | Hooks `fast-checks` et `guard-release`, tampon de `ci-local.sh`, `.cache/` dans `.gitignore` | un tiret écrit est signalé dans le tour ; un tag sans CI complète est refusé |
 | Jour 1 | Actions épinglées par SHA, `persist-credentials: false`, zizmor en CI (6.3) | zizmor ne trouve rien |
-| Jour 1 | `patches/proxy-drop-test-race.diff` (section 3) | le test passe sous charge |
+| Jour 1 | `patches/proxy-drop-test-race.diff` et `patches/cockpit-env-leak.diff` (section 3) | le test du proxy passe sous charge ; la sonde du cockpit voit chaque classe |
 | Jours 2 et 3 | `patches/test-text-lane-reduced.diff` et `patches/env-probe-instead-of-rerun.diff` (correctifs 1 et 2 de la section 3), puis `affected-tests.py` adopté et sa carte construite sur la box | les deux étapes lourdes perdent ce que la section 3 mesure ; un commit courant se valide en quelques minutes |
 | Jour 2 | `tools/anchor-ratchet.py` en CI, son plafond écrit une fois (section 5) | aucune ancre nouvelle n'entre |
 | Jour 3 | `CLAUDE.md` de projet, skills `/release` et `/new-lane`, sous-agent `repo-reviewer` (section 7) ; les propositions acceptées entrent dans ROADMAP.md | la prochaine release passe par `/release` |
@@ -868,6 +872,7 @@ applique à tout fichier suivi (tirets, placeholders, blocs de code, `bash -n`, 
 | `claude/settings.proposed.json` | le câblage des deux hooks | JSON valide | à fusionner dans `.claude/settings.json` |
 | `patches/test-text-lane-reduced.diff` | `test_text_lane.py` sur les huit lanes : exhaustif jusqu'à quatre bascules, puis 300 séquences tirées avec une graine fixe, et le test ciblé qui manquait (correctif 1 de la section 3) | ses 22 tests passent, dont un nouveau qui tue deux mutants que le fichier actuel laisse passer (section 3) | `git apply` ; puis remettre à jour la ligne `first=` de l'étape hors ligne (ses fichiers les plus longs) |
 | `patches/env-probe-instead-of-rerun.diff` | la sonde `sitecustomize` de l'étape hors ligne compare l'environnement au début et à la fin de chaque fichier ; `test_suite_isolation.py` perd sa relance complète (correctif 2) | un fichier qui laisse `UPSTREAM` changé est nommé, un fichier propre ne l'est pas ; la CI « après » de la section 3 | `git apply` ; les docstrings qui disent « tests/test_suite_isolation.py holds it » nomment ensuite la sonde |
+| `patches/cockpit-env-leak.diff` | `test_cockpit_logs_masked.py` rend l'environnement qu'il a trouvé ; `test_env_isolation.py` lance le premier test de chaque classe, pas seulement de chaque module (section 3, correctif 2) | la sonde corrigée échoue sur la fuite sans le correctif et passe avec | `git apply` |
 | `patches/proxy-drop-test-race.diff` | `test_proxy_engine_withholds_headers.py` attend la ligne de fin du proxy au lieu de la lire une fois (section 3) | 1 échec sur 30 sans, 0 sur 30 avec, en alternance sous charge | `git apply` |
 | `patches/ci-local-stamp.diff` | `ci-local.sh` écrit `.cache/ci-pass` après une exécution complète, propre, sans saut | exécutions propre et modifiée sur un dépôt jouet | `git apply` |
 | `claude/skills/new-lane/SKILL.md`, `qualify-lane/`, `release/` | les trois procédures (recommandation 5) | front-matter conforme à la doc | `.claude/skills/` |
