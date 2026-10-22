@@ -211,10 +211,27 @@ Le rejeu surestime un peu : ses durées par fichier viennent d'une mesure à qua
 où `test_text_lane.py` prend 17 minutes au lieu de 12 seul : pour les deux dernières modifications, il
 aurait annoncé 17 minutes, la mesure en donne 13.
 
+**Sûreté [mesuré ici].** 5 mutants d'une ligne, chacun dans un clone : chaque fichier de test, sauf
+les deux plus longs, a tourné contre le mutant, et chaque fichier qui passait avant et échouait après devait
+être dans ce que `run` lance pour ce seul fichier changé.
+
+| Mutant | Fichiers qui échouent | Fichiers que `run` lance | Ratés |
+|---|---:|---:|---:|
+| `lanes.sh` : l'enregistrement de la lane texte n'est jamais écrit | 2 | 51 | 0 |
+| `oc-limits.sh` : la limite opencode du palier context change | 2 | 18 | 0 |
+| `dashboard/lifecycle.py` : un classificateur du cockpit disparaît | 3 | 47 | 0 |
+| `qwen38-kolibri.service.template` : Kolibri n'est plus en conflit avec Nemotron Bolt | 2 | 18 | 0 |
+| `switch-model.sh` : sans cible, le script sort en 3 au lieu de 2 | 1 | 46 | 0 |
+
+Ratés au total : 0. Les deux plus longs n'ont pas été relancés : `test_suite_isolation.py`, que
+`run` laisse de toute façon au barreau 2, et `test_text_lane.py`, que la carte sélectionne pour `lanes.sh` et `switch-model.sh` et pour aucun des autres fichiers mutés, qu'il n'ouvre jamais. La
+sélection est large, comme l'annonçait Facebook : 1 à 3 fichiers échouent, 18 à 51 sont lancés ; c'est le prix
+d'une sélection par dépendances, sans raté sur ces cinq mutants.
+
 C'est la sélection par dépendances, que Facebook décrit comme sûre mais trop large (« It ends up
 saying "yes, this test is impacted" more often than is actually necessary ») avant de lui ajouter
 un modèle appris ([Predictive Test Selection, 2018](https://engineering.fb.com/developer-tools/predictive-test-selection/)).
-Pour ce dépôt, la version simple suffit : elle ne sélectionne que des fichiers qui lisent ce qui a changé, et tout ce qu'elle ne peut pas garantir sélectionne tout ; sa sûreté se vérifie en lançant toute la suite contre des mutants d'une ligne, chaque fichier qui échoue devant être dans la sélection (la série lancée ici a été coupée par un redémarrage du conteneur, elle est à refaire sur la box), et la CI complète reste obligatoire
+Pour ce dépôt, la version simple suffit : elle ne sélectionne que des fichiers qui lisent ce qui a changé, tout ce qu'elle ne peut pas garantir sélectionne tout, et sur les cinq mutants ci-dessus elle n'a raté aucun fichier qui échouait, et la CI complète reste obligatoire
 avant tout ce qui quitte la box.
 
 **Barreau 2 : la CI complète, plus courte sans rien perdre.** Cinq correctifs, du plus rentable
