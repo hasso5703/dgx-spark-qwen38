@@ -1,0 +1,122 @@
+diff --git a/tests/test_text_lane.py b/tests/test_text_lane.py
+index 79f403c..8e8e551 100644
+--- a/tests/test_text_lane.py
++++ b/tests/test_text_lane.py
+@@ -13,6 +13,7 @@ the one truth: the text lane is the last SGLang text lane the box served.
+ import itertools
+ import os
+ import pathlib
++import random
+ import re
+ import subprocess
+ import tempfile
+@@ -29,8 +30,8 @@ SWITCH = (REPO / "switch-model.sh").read_text()
+ INSTALL = (REPO / "install.sh").read_text()
+ UNIT = {"27b": "qwen38-sglang.service", "flash": "qwen38-flash.service", "image": "qwen38-image.service",
+         "video": "qwen38-video.service", "kolibri": "qwen38-kolibri.service", "nemotron": "qwen38-nemotron.service",
+-        "nemotron-super": "qwen38-nemotron-super.service"}
+-SIDES = ("image", "video", "kolibri", "nemotron", "nemotron-super")
++        "nemotron-super": "qwen38-nemotron-super.service", "flash-local": "qwen38-flash-local.service"}
++SIDES = ("image", "video", "kolibri", "nemotron", "nemotron-super", "flash-local")
+ 
+ 
+ def side_note(lane):
+@@ -40,7 +41,8 @@ def side_note(lane):
+             "kolibri": 'if [ "$CHOICE" = "kolibri" ] || [ "$CHOICE" = "kolibri-nvfp4" ]; then',
+             # the two Nemotron lanes' one block
+             "nemotron": 'if [ "$CHOICE" = "nemotron" ] || [ "$CHOICE" = "nemotron-super" ]; then',
+-            "nemotron-super": 'if [ "$CHOICE" = "nemotron" ] || [ "$CHOICE" = "nemotron-super" ]; then'}[lane]
++            "nemotron-super": 'if [ "$CHOICE" = "nemotron" ] || [ "$CHOICE" = "nemotron-super" ]; then',
++            "flash-local": 'if [ "$CHOICE" = "flash-local" ]; then'}[lane]
+     at = SWITCH.index(head)
+     m = re.compile(r"\n  for TEXT_UNIT_NAME in [^\n]*; do\n    if systemctl is-enabled --quiet \"\$TEXT_UNIT_NAME\" "
+                    r"2>/dev/null; then\n      text_lane_note \"\$TEXT_UNIT_NAME\"(; break[^\n]*)?\n    fi\n  done\n").search(SWITCH, at)
+@@ -59,7 +61,7 @@ class Box:
+     enabled at boot from a file. Its text lanes can start (text_lane_fixture) but those named
+     in unready, whose unit is there and names nothing; sudo writes down what it is given."""
+ 
+-    def __init__(self, units=("27b", "flash", "image", "video", "kolibri", "nemotron", "nemotron-super"), unready=()):
++    def __init__(self, units=tuple(UNIT), unready=()):
+         self.d = pathlib.Path(tempfile.mkdtemp(prefix="text-lane-"))
+         self.cfg, self.units, self.bin = self.d / "cfg", self.d / "units", self.d / "bin"
+         for p in (self.cfg, self.units, self.bin):
+@@ -155,6 +157,19 @@ class TheLibrary(unittest.TestCase):
+                 b.run(NOTES[lane])
+                 self.assertEqual((b.cfg / "text-lane").read_text(), "qwen38-sglang.service\n")
+ 
++    def test_a_lone_flash_at_boot_is_noted_by_every_side_lane(self):
++        # a side lane's switch notes the text lane it leaves: a flash at boot under a record that
++        # says the 27B (a unit enabled by hand, a record from before) is the flash after the switch.
++        # No other test held this: a note cut to the 27B alone passed the whole file (the mutants
++        # of docs/reviews/2026-10-21-plan-amelioration.md, section 3).
++        for lane in SIDES:
++            with self.subTest(lane=lane):
++                b = Box()
++                (b.d / "enabled").write_text("qwen38-flash.service\n")
++                (b.cfg / "text-lane").write_text("qwen38-sglang.service\n")
++                b.run(NOTES[lane])
++                self.assertEqual((b.cfg / "text-lane").read_text(), "qwen38-flash.service\n")
++
+     def test_links_newer_than_the_record_are_read_again(self):
+         # the box went back to v1.29, which switched from the 27B to the image lane and wrote its
+         # link, then came to v1.30 again: the record says what v1.30 saw before (found in review,
+@@ -331,9 +346,14 @@ class TheLibrary(unittest.TestCase):
+ 
+ 
+ class EverySequenceOfSwitches(unittest.TestCase):
+-    """Every sequence of lanes up to six long (9,330) that starts on a text lane (the box's first
+-    install does), switched through switch-model.sh's own notes: install.sh resolves the last
+-    text lane served, and the uninstall of the side lane at boot gives the boot back to it."""
++    """Sequences of lanes that start on a text lane (the box's first install does), switched
++    through switch-model.sh's own notes: install.sh resolves the last text lane served, and the
++    uninstall of the side lane at boot gives the boot back to it. Every sequence up to four long
++    (399 on eight lanes: every round trip between two side lanes from a text lane, the shape of
++    the 2026-10-14 defect), then 300 from five to eight long, drawn with a fixed seed. All of
++    them up to six long were 9,330 on seven lanes, 19,607 on eight: the record is one file, and
++    every mutant of lanes.sh and of the notes that a sequence catches, one up to four long
++    catches (docs/reviews/2026-10-21-plan-amelioration.md, section 3)."""
+ 
+     BOX = None
+ 
+@@ -355,20 +375,29 @@ class EverySequenceOfSwitches(unittest.TestCase):
+         out = dict(ln.split("=", 1) for ln in b.run("".join(steps)).splitlines() if "=" in ln)
+         return out["R"], out.get("B")
+ 
++    def sequences(self):
++        lanes = tuple(UNIT)
++        for length in range(2, 5):
++            for tail in itertools.product(lanes, repeat=length - 1):
++                seq = (("flash", "27b")[length % 2],) + tail
++                if not any(a == b for a, b in zip(seq, seq[1:])):
++                    yield seq
++        rng = random.Random(20261014)
++        for _ in range(300):
++            seq = [rng.choice(("27b", "flash"))]
++            for _ in range(rng.randint(5, 8) - 1):
++                seq.append(rng.choice([lane for lane in lanes if lane != seq[-1]]))
++            yield tuple(seq)
++
+     def test_every_sequence(self):
+         n, bad = 0, []
+-        for length in range(2, 7):
+-            for tail in itertools.product(("27b", "flash", "image", "video", "kolibri", "nemotron", "nemotron-super"),
+-                                          repeat=length - 1):
+-                seq = (("flash", "27b")[length % 2],) + tail
+-                if any(a == b for a, b in zip(seq, seq[1:])):
+-                    continue
+-                truth = UNIT[[lane for lane in seq if lane not in SIDES][-1]]
+-                n += 1
+-                resolved, back = self.replay(seq)
+-                if resolved != truth or back not in (None, truth):
+-                    bad.append((seq, resolved, back, truth))
+-        self.assertGreater(n, 1000)
++        for seq in self.sequences():
++            truth = UNIT[[lane for lane in seq if lane not in SIDES][-1]]
++            n += 1
++            resolved, back = self.replay(seq)
++            if resolved != truth or back not in (None, truth):
++                bad.append((seq, resolved, back, truth))
++        self.assertEqual(n, 699)
+         self.assertEqual(bad[:5], [], f"{len(bad)} of {n} sequences")
+ 
+ 

@@ -1,0 +1,27 @@
+--- a/ci-local.sh
++++ b/ci-local.sh
+@@ -21,6 +21,12 @@
+ # "through", "high" or "github", the sudoers gate among them, and docker is named by two
+ # steps that never run it (found in review, 2026-09-24). Each missing tool gets a stub,
+ # first on PATH, that records the call and fails the way a missing command does.
++# The full run's receipt (.cache/ci-pass, below) names a tree only if nothing tracked changed
++# while it ran: a worktree edited during a 45-minute run is not the tree the run tested.
++def worktree_clean():
++    return not subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
++                              capture_output=True, text=True).stdout.strip()
++clean_at_start = worktree_clean()
+ stubs = tempfile.mkdtemp(prefix="ci-local-stubs-")
+ for tool in ("shellcheck", "docker", "gh"):
+     if not shutil.which(tool):
+@@ -90,6 +96,11 @@
+ finally:
+     shutil.rmtree(stubs, ignore_errors=True)
+ print(f"\nCI local: {ok} ok, {fail} echecs, {skip} sautes")
++if not flt and ok and not fail and not skip and clean_at_start and worktree_clean():
++    # .claude/hooks/guard-release.sh lets a tag, a release or a push to main through only on this tree
++    os.makedirs(".cache", exist_ok=True)
++    with open(".cache/ci-pass", "w") as f:
++        f.write(subprocess.run(["git", "rev-parse", "HEAD^{tree}"], capture_output=True, text=True).stdout)
+ if fail:
+     sys.exit(1)
+ if not ok:

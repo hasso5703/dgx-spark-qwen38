@@ -1,0 +1,136 @@
+# lanes.toml: the one list of the engine lanes, read by tools/lanegen.py (stdlib tomllib).
+#
+# The order of the [[lane]] tables is the order the lanes came in: every unit's Conflicts= and
+# After= list the others in this order, as the templates do today. `ui_order` is where the cockpit
+# shows a lane. What a lane IS lives here; what it was measured to do stays in its docs page, and its
+# pins stay in its installer until phase 2 of the migration moves them here too. The speech lane
+# (install-speech.sh, on the CPU, beside whichever lane serves) takes no turn in the GPU pool and is
+# not one of these; phase 2 can add it as a kind of its own.
+
+[[lane]]
+id = "27b"
+unit = "qwen38-sglang.service"
+templates = ["qwen38-sglang.service.template", "qwen38-sglang-1m.service.template"]
+kind = "text"
+engine = "sglang"
+docker = true
+families = []
+targets = ["stock", "uncensored", "fp8", "uncensored-fp8"]
+model_choice = true          # a MODEL_CHOICE of install.sh, not a lane a flag installs
+installer = "install.sh"
+with_flag = "--with-27b"
+stage = "qwen38-sglang.service.switch-stage"
+ready_default_s = 540
+ui_order = 1
+name = "27B"
+
+[[lane]]
+id = "flash"
+unit = "qwen38-flash.service"
+templates = ["qwen38-flash.service.template"]
+kind = "text"
+engine = "sglang"
+docker = true
+families = []
+targets = ["flash", "flash-uncensored", "flash-nvda"]
+model_choice = true
+installer = "install.sh"
+with_flag = "--with-flash"
+ready_default_s = 780
+ui_order = 2
+name = "flash 176B"
+
+[[lane]]
+id = "image"
+unit = "qwen38-image.service"
+templates = ["qwen38-image.service.template"]
+kind = "image"
+engine = "sglang-diffusion"
+docker = false
+families = []
+targets = ["image", "image-turbo"]
+installer = "install-image.sh"
+with_flag = "--with-image"
+stage = "qwen38-image.service.switch-stage"
+ready_default_s = 70
+ui_order = 7
+name = "Qwen-Image"
+
+[[lane]]
+id = "video"
+unit = "qwen38-video.service"
+templates = ["qwen38-video.service.template"]
+kind = "video"
+engine = "sglang-diffusion"
+docker = false
+families = []
+targets = ["video"]
+installer = "install-video.sh"
+with_flag = "--with-video"
+ready_default_s = 720
+ui_order = 8
+name = "MiniMax-H3"
+
+[[lane]]
+id = "kolibri"
+unit = "qwen38-kolibri.service"
+templates = ["qwen38-kolibri.service.template"]
+kind = "text"
+engine = "vllm"
+docker = true
+families = ["vllm"]
+targets = ["kolibri", "kolibri-nvfp4"]
+installer = "install-kolibri.sh"
+with_flag = "--with-kolibri"
+stage = "qwen38-kolibri.service.switch-stage"
+ready_default_s = 600
+ui_order = 4
+name = "Kolibri-1"
+
+[[lane]]
+id = "nemotron"
+unit = "qwen38-nemotron.service"
+templates = ["qwen38-nemotron.service.template"]
+kind = "text"
+engine = "vllm"
+docker = true
+families = ["vllm", "b12x"]
+targets = ["nemotron"]
+installer = "install-nemotron.sh"
+with_flag = "--with-nemotron"
+stage = "qwen38-nemotron.service.switch-stage"
+ready_default_s = 450
+ui_order = 5
+name = "Nemotron Bolt"
+
+[[lane]]
+id = "nemotron-super"
+unit = "qwen38-nemotron-super.service"
+templates = ["qwen38-nemotron-super.service.template"]
+kind = "text"
+engine = "vllm"
+docker = true
+families = ["vllm", "b12x"]
+targets = ["nemotron-super"]
+installer = "install-nemotron-super.sh"
+with_flag = "--with-nemotron-super"
+stage = "qwen38-nemotron-super.service.switch-stage"
+ready_default_s = 660
+ui_order = 6
+name = "Nemotron Super VL"
+
+[[lane]]
+id = "flash-local"
+unit = "qwen38-flash-local.service"
+templates = ["qwen38-flash-local.service.template"]
+kind = "text"
+engine = "vllm"
+docker = true
+families = ["vllm", "b12x"]
+targets = ["flash-local"]
+installer = "install-flash-local.sh"
+with_flag = "--with-flash-local"
+stage = "qwen38-flash-local.service.switch-stage"
+ready_default_s = 1020
+ui_order = 3
+name = "Flash FP4-Local"

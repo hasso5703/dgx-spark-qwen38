@@ -1,0 +1,29 @@
+  # Appended to .github/workflows/ci.yml, under jobs: (beside `checks`).
+  # The branch `stable` moves to a release commit once every step of `checks` passed on it, and never
+  # before. get.sh installs `stable` by default (CHANNEL=main for the newest commit), so a new box gets
+  # a release whose whole CI was green: on 2026-10-21 main was ahead of its CI for 5.0 hours, and a red
+  # main stayed installable for up to 3.5 hours (2026-10-11).
+  promote:
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0, what @v5 resolves to on 2026-10-21
+        with:
+          fetch-depth: 0
+          persist-credentials: true   # this job pushes one ref, below
+      - name: Move stable to this commit when it is a release
+        run: |
+          set -euo pipefail
+          # ci-local.sh runs every step of every job: on a developer's box this one must push nothing
+          [ "${GITHUB_ACTIONS:-}" = true ] || { echo "not on a GitHub runner: stable is moved by GitHub only"; exit 0; }
+          tag="$(git tag --points-at "$GITHUB_SHA" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+          if [ -z "$tag" ]; then echo "$GITHUB_SHA is no release commit: stable stays"; exit 0; fi
+          # forward only: a run that finishes late for an older release never moves stable back
+          if git rev-parse -q --verify origin/stable >/dev/null && ! git merge-base --is-ancestor origin/stable "$GITHUB_SHA"; then
+            echo "stable is ahead of $tag: nothing to do"; exit 0
+          fi
+          git push origin "$GITHUB_SHA:refs/heads/stable"
+          echo "stable is now $tag ($GITHUB_SHA)"

@@ -1,0 +1,14 @@
+--- a/tests/test_proxy_engine_withholds_headers.py
++++ b/tests/test_proxy_engine_withholds_headers.py
+@@ -314,6 +314,11 @@
+                 break
+             time.sleep(0.05)
+         self.assertIsNotNone(rec["closed"], "the engine still holds the request")
++        # the proxy logs its end line (_done) after it has finished the answer read above: wait for it
++        for _ in range(60):
++            if any("DROPPED upstream silent" in ln for ln in self.end_line()):
++                break
++            time.sleep(0.05)
+         self.assertTrue(any("DROPPED upstream silent" in ln for ln in self.end_line()), self.end_line())
+ 
+     def test_an_anthropic_stream_is_told_why(self):
